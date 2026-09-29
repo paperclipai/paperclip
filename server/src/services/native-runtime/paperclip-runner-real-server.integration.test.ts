@@ -1,3 +1,4 @@
+import { resolveRunnerCargoTestBinary, resolveRunnerCargoTestBinaryOrDefault } from "./cargo-test-binary.js";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -10,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary,
 } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import {
@@ -20,12 +21,20 @@ import {
 } from "../../realtime/runner-prp-ws.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
-const fakeCodexAppServer = resolve(
-  import.meta.dirname,
-  "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server",
+const runnerWorkspace = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner");
+const runnerBinary = () => resolveRunnerCargoTestBinaryOrDefault(
+  runnerWorkspace,
+  "debug",
+  "paperclip-runnerd",
+  qualifiedCapabilityRunnerdBinary,
+);
+const fakeCodexAppServer = resolveRunnerCargoTestBinary(
+  runnerWorkspace,
+  "debug",
+  "fake-codex-app-server",
 );
 const runnerBinariesAvailable =
-  existsSync(defaultCapabilityRunnerdBinary()) && existsSync(fakeCodexAppServer);
+  existsSync(runnerBinary()) && existsSync(fakeCodexAppServer);
 const runnerBinaryIt = runnerBinariesAvailable ? it : it.skip;
 
 describe("paperclip-runner real server vertical slice", () => {
@@ -92,7 +101,7 @@ describe("paperclip-runner real server vertical slice", () => {
     await writeFile(expectedContextFile, JSON.stringify({ companyId, actorId: agentId, taskId: issueId, runId, callId: "semantic-call-1" }));
     const fakeArgs = ["--state-file", resolve(stateDirectory, "fake-provider-state.json"), "--emit-tool-call", "--durable-turn-ids", "--durable-tool-ids", "--expected-canonical-task-context-file", expectedContextFile];
     const bundle = createRunnerdCodexTransport({
-      runnerBinary: defaultCapabilityRunnerdBinary(),
+      runnerBinary: runnerBinary(),
       codexCommand: fakeCodexAppServer,
       codexArgs: fakeArgs,
       stateDirectory,
@@ -163,7 +172,7 @@ describe("paperclip-runner real server vertical slice", () => {
       });
       await writeFile(expectedContextFile, JSON.stringify({ companyId, actorId: agentId, taskId: issueId, runId: resumedRunId, callId: "semantic-call-2" }));
       const restored = createRunnerdCodexTransport({
-        runnerBinary: defaultCapabilityRunnerdBinary(),
+        runnerBinary: runnerBinary(),
         codexCommand: fakeCodexAppServer,
         codexArgs: fakeArgs,
         stateDirectory,

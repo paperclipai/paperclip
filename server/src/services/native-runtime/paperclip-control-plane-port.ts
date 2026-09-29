@@ -1,9 +1,12 @@
+import { runEventCursor } from "../run-event-history.js";
+import { readRunOutputChunk } from "../run-output-body.js";
 import { and, asc, eq, gt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  nativeSourceEpochs,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -19,6 +22,7 @@ import type {
   ReplayControlPlaneEventsInput,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  advanceSourceCursor,
   normalizePrpResultSignals,
   validatePrpEvent,
   validatePrpStructuredRunResult,
@@ -205,6 +209,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         sourceInstanceId: event.sourceInstanceId,
         sourceEventId: event.sourceEventId,
         sourceSeq: event.sourceSeq,
+        sourceEpoch: event.sourceEpoch,
+        sourceEpochTransition: event.sourceEpochTransition,
         protocolSchemaVersion: event.schemaVersion,
         canonicalPayload: event as unknown as Record<string, unknown>,
       },
@@ -216,6 +222,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         runId: this.#binding.runId,
         agentId: this.#binding.agentId,
         seq: persisted.row.seq,
+        id: persisted.row.id,
+        eventEpoch: persisted.row.eventEpoch,
+        cursor: runEventCursor(persisted.row),
         eventType: event.eventType,
       });
       await this.#onCommittedEvent?.(event);
@@ -227,8 +236,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       await this.#onDuplicateEvent?.(event);
     }
     return {
-      cursor: persisted.row.seq,
+      cursor: persisted.row.eventEpoch ? runEventCursor(persisted.row) : persisted.row.seq,
       highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+      ...(persisted.highestContiguousSourceEpoch ? { highestContiguousSourceEpoch: persisted.highestContiguousSourceEpoch } : {}),
       disposition: persisted.disposition,
     };
   }
@@ -240,27 +250,43 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     ) {
       throw new Error("native_replay_binding_mismatch");
     }
-    const rows = await this.#db
+    let sourceEpoch = input.sourceEpoch, after = input.afterSourceSeq;
+    const read = () => this.#db
       .select({ payload: heartbeatRunEvents.payload, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents)
-      .where(and(
-        eq(heartbeatRunEvents.runId, this.#binding.runId),
-        eq(heartbeatRunEvents.sourceInstanceId, input.sourceInstanceId),
-        gt(heartbeatRunEvents.sourceSeq, input.afterSourceSeq),
-      ))
-      .orderBy(asc(heartbeatRunEvents.sourceSeq))
-      .limit(Math.max(1, Math.min(input.limit, 1_000)));
-    const events = rows.flatMap((row) => {
-      const candidate = row.payload?.prpEvent;
-      const parsed = validatePrpEvent(candidate);
-      return parsed.ok ? [parsed.event] : [];
-    });
-    let cursor = input.afterSourceSeq;
-    for (const event of events) {
-      if (event.sourceSeq === cursor + 1) cursor += 1;
-      else if (event.sourceSeq > cursor + 1) break;
+      .where(and(eq(heartbeatRunEvents.runId, this.#binding.runId), eq(heartbeatRunEvents.companyId, this.#binding.companyId),
+        eq(heartbeatRunEvents.sourceInstanceId, input.sourceInstanceId), eq(heartbeatRunEvents.sourceEpoch, sourceEpoch ?? ""), gt(heartbeatRunEvents.sourceSeq, after)))
+      .orderBy(asc(heartbeatRunEvents.sourceSeq)).limit(Math.max(1, Math.min(input.limit, 128)));
+    let rows = await read();
+    if (!rows.length) {
+      const [close] = await this.#db.select().from(nativeSourceEpochs).where(and(eq(nativeSourceEpochs.runId, input.runId),
+        eq(nativeSourceEpochs.companyId, this.#binding.companyId), eq(nativeSourceEpochs.sourceInstanceId, input.sourceInstanceId), eq(nativeSourceEpochs.fromEpoch, sourceEpoch ?? ""))).limit(1);
+      if (close) {
+        if (close.finalOrdinal !== after) throw new Error("native_replay_epoch_cursor_invalid");
+        sourceEpoch = close.nextEpoch; after = 0; rows = await read();
+        if (!rows.length) throw new Error("native_replay_epoch_first_event_missing");
+      }
     }
-    return { events, highestContiguousSourceSeq: cursor };
+    const events = await Promise.all(rows.map(async row => {
+      let candidate = row.payload?.prpEvent;
+      const envelope = record(candidate);
+      if (envelope.eventType === "output.body.chunk") {
+        const { textRef: _, ...payload } = await readRunOutputChunk({ companyId: this.#binding.companyId, runId: this.#binding.runId }, envelope.payload);
+        candidate = { ...envelope, payload };
+      }
+      const parsed = validatePrpEvent(candidate);
+      if (!parsed.ok) throw new Error("native_replay_event_invalid");
+      return parsed.event;
+    }));
+    let cursor = { sourceEpoch: input.sourceEpoch, sourceSeq: input.afterSourceSeq };
+    for (const event of events) {
+      // Gap support is retained; it must not manufacture a contiguous ACK.
+      if (event.sourceEpoch === cursor.sourceEpoch && event.sourceSeq > cursor.sourceSeq + 1) break;
+      const next = advanceSourceCursor(cursor, event);
+      cursor = { sourceEpoch: next.sourceEpoch, sourceSeq: next.sourceSeq };
+    }
+    return { events, highestContiguousSourceSeq: cursor.sourceSeq,
+      ...(cursor.sourceEpoch ? { highestContiguousSourceEpoch: cursor.sourceEpoch } : {}) };
   }
 
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {

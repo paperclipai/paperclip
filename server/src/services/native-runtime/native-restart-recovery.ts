@@ -1,14 +1,15 @@
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
-  heartbeatRunEvents,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
+  nativeAuthorityWork,
+  nativeSessionAuthorities,
 } from "@paperclipai/db";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
@@ -16,6 +17,7 @@ import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { readRunEventLane } from "../run-event-history.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -76,6 +78,17 @@ export type NativeRestartRecoveryDisposition =
       runId: string;
       reason: string;
     };
+
+/** Kept as a bounded diagnostic for retained rows and API compatibility.
+ * Ownership is the exact random leaseOwner plus controller identity, never
+ * this counter alone. Saturation must not prevent another controller claim
+ * or make an old lease valid again. */
+export function nextNativeControllerGeneration(current: number): number {
+  if (!Number.isInteger(current) || current < 0 || current > 2_147_483_647) {
+    throw new Error("native_controller_generation_invalid");
+  }
+  return Math.min(current + 1, 2_147_483_647);
+}
 
 export function nextNativeProviderAttempt(
   currentAttempt: number,
@@ -289,6 +302,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
+  unretiredIndexedProcessOwner?: boolean;
   hasCheckpoint: boolean;
   checkpointIdentityMatches?: boolean;
   hasProviderEvidence: boolean;
@@ -328,6 +342,12 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       reason: input.runnerPidAlive
         ? "live_runner_identity_mismatch"
         : "live_runner_process_group_without_exact_pid",
+    };
+  }
+  if (input.unretiredIndexedProcessOwner) {
+    return {
+      claimKind: null,
+      reason: "provider_process_tree_retirement_unproven",
     };
   }
   if (input.knownProviderProcessAlive) {
@@ -659,28 +679,25 @@ export async function claimNativeRestartRecoveries(input: {
           typeof checkpointRecord.providerIdentity === "object" &&
           !Array.isArray(checkpointRecord.providerIdentity) &&
           Object.keys(checkpointRecord.providerIdentity).length > 0);
-      const providerEvents = await tx
-        .select({
-          id: heartbeatRunEvents.id,
-          payload: heartbeatRunEvents.payload,
-        })
-        .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, row.run.id),
-            inArray(heartbeatRunEvents.eventType, [
-              "harness.ready",
-              "session.started",
-              "session.resumed",
-              "session.updated",
-              "turn.started",
-              "provider.event",
-              "provider.rpc_result",
-            ]),
-          ),
-        )
-        .orderBy(desc(heartbeatRunEvents.id))
-        .limit(100);
+      const [indexedAuthority] = row.run.nativeSessionId ? await tx.select().from(nativeSessionAuthorities).where(and(
+        eq(nativeSessionAuthorities.companyId, row.run.companyId),
+        eq(nativeSessionAuthorities.issueId, row.coordinator.issueId),
+        eq(nativeSessionAuthorities.normalizedSessionId, row.run.nativeSessionId),
+        eq(nativeSessionAuthorities.runId, row.run.id),
+      )).for("share") : [];
+      // A filtered LIMIT over the transcript can still inspect all history when
+      // recent output contains none of these event types. Indexed recovery uses
+      // the materialized owner relation and sticky bootstrap fact exclusively.
+      const providerEvents = indexedAuthority
+        ? []
+        : (await readRunEventLane(
+            tx as unknown as Db,
+            row.run.id,
+            "provider-identity",
+            100,
+          ))
+            .filter((event) => event.companyId === row.run.companyId)
+            .map(({ id, payload }) => ({ id, payload }));
       const checkpointProcess =
         checkpointRecord.process &&
         typeof checkpointRecord.process === "object" &&
@@ -746,8 +763,40 @@ export async function claimNativeRestartRecoveries(input: {
           (identity) => identity.pid !== row.run.processPid,
         ),
       });
+      // Indexed owners are current authority, independent of transcript rows.
+      // Admission checks their presence without loading historical launch facts.
+      let indexedOwnerEvidence = false;
+      let unretiredIndexedProcessOwner = false;
+      if (indexedAuthority) {
+        const authority = indexedAuthority;
+        if (authority.successorRunId !== null) throw new Error("native_process_owner_authority_superseded");
+        if (authority.stateSha256 !== createHash("sha256").update(authority.state).digest("hex")) throw new Error("native_process_owner_authority_corrupt");
+        const currentState = JSON.parse(authority.state);
+        const currentIdentity = currentState.identity;
+        if (currentIdentity?.normalizedSessionId !== row.run.nativeSessionId || currentIdentity?.runId !== row.run.id) throw new Error("native_process_owner_authority_binding_invalid");
+        if (currentState.indexedState?.processOwnerIndexVersion !== 1 || typeof currentState.indexedState?.providerEverStarted !== "boolean") throw new Error("native_process_owner_index_not_ready");
+        indexedOwnerEvidence = currentState.indexedState.providerEverStarted;
+        // A surviving runner retains ownership; reattachment only restores
+        // its authenticated transport. Replacement requires retirement of
+        // every earlier launch, including children which escaped a process
+        // group. A missing PID cannot establish that proof. Any unresolved
+        // owner therefore holds replacement; an indexed existence query is
+        // sufficient regardless of the number of earlier launches. Remote
+        // reattachment separately verifies the original sandbox and runner.
+        if (!exactRunnerIdentity && !remoteSandbox) {
+          const unresolved = await tx.select({ workId: nativeAuthorityWork.workId })
+            .from(nativeAuthorityWork).where(and(
+              eq(nativeAuthorityWork.companyId, row.run.companyId),
+              eq(nativeAuthorityWork.issueId, row.coordinator.issueId),
+              eq(nativeAuthorityWork.normalizedSessionId, authority.normalizedSessionId),
+              eq(nativeAuthorityWork.collection, "process-owner"),
+            )).limit(1);
+          unretiredIndexedProcessOwner = unresolved.length > 0;
+          indexedOwnerEvidence ||= unretiredIndexedProcessOwner;
+        }
+      }
       const hasProviderEvidence =
-        hasCheckpointProviderIdentity || providerEvents.length > 0;
+        hasCheckpointProviderIdentity || providerEvents.length > 0 || indexedOwnerEvidence;
 
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox,
@@ -757,6 +806,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
+        unretiredIndexedProcessOwner,
         hasCheckpoint,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
@@ -888,7 +938,7 @@ export async function claimNativeRestartRecoveries(input: {
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 
-      const generation = row.coordinator.controllerGeneration + 1;
+      const generation = nextNativeControllerGeneration(row.coordinator.controllerGeneration);
       const leaseOwner = `${controller.bootId}:${generation}:${randomUUID()}`;
       const event = historyEntry({
         now,

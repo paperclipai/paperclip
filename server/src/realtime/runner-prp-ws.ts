@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { authorityJson } from "../vendor/paperclip-runner/index.js";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 
@@ -25,7 +27,7 @@ interface RegisteredAuthority {
   readonly generation: symbol;
   readonly runtimeRequestResolutions: Map<
     string,
-    { readonly fingerprint: string; readonly commandId: string }
+    { readonly fingerprint: string; readonly result: Promise<{ readonly commandId: string }> }
   >;
 }
 
@@ -172,30 +174,30 @@ export async function registerRunnerPrpAuthority(input: {
   };
 }
 
-export function queueLiveRunnerPrpCommand(input: {
+export async function queueLiveRunnerPrpCommand(input: {
   companyId: string;
   issueId: string;
   agentId: string;
   type: string;
   payload?: Record<string, unknown>;
   commandId?: string;
-}): {
+}): Promise<{
   runId: string;
   commandId: string;
   controllerSeq: number;
   completion: Promise<Record<string, unknown> | null>;
-} | null {
+} | null> {
   const current = currentLiveAuthorities.get(liveAuthorityKey(input));
   if (!current) return null;
   const binding = registrations.get(current.runId);
   if (!binding || binding.generation !== current.generation) return null;
   const runId = current.runId;
-  const command = binding.authority.queueCommand(
+  const command = (await binding.authority.queueCommand(
     input.type,
     input.payload ?? {},
     input.commandId,
     true,
-  );
+  ));
   return {
     runId,
     commandId: command.commandId,
@@ -203,7 +205,7 @@ export function queueLiveRunnerPrpCommand(input: {
     completion: (async () => {
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
-        const outcome = binding.authority.commandOutcome(command.commandId);
+        const outcome = (await binding.authority.commandOutcome(command.commandId));
         if (!outcome) {
           throw new Error(`runner_prp_command_missing:${command.commandId}`);
         }
@@ -241,13 +243,13 @@ export class RunnerPrpRuntimeRequestResolutionError extends Error {
  * Identical browser retries reuse the original command; a different answer for
  * the same request fails closed instead of answering the provider twice.
  */
-export function queueRunnerPrpRuntimeRequestResolution(input: {
+export async function queueRunnerPrpRuntimeRequestResolution(input: {
   readonly companyId: string;
   readonly runId: string;
   readonly pendingRequest: PendingNativeRuntimeRequest;
   readonly actor: NativeRuntimeRequestResolver;
   readonly resolution: HarnessRuntimeRequestResolution;
-}): { readonly commandId: string } {
+}): Promise<{ readonly commandId: string }> {
   const registration = registrations.get(input.runId);
   if (
     !registration
@@ -274,39 +276,45 @@ export function queueRunnerPrpRuntimeRequestResolution(input: {
   // but only this edge owns the durable command mutation.
   assertNativeRuntimeRequestResolverAuthorized(pending, input.actor);
 
-  const fingerprint = JSON.stringify({
+  const payload = {
+    requestId: pending.requestId,
     requestKind: pending.requestKind,
     turnId: pending.turnId,
-    actor: input.actor,
     resolution: input.resolution,
-  });
+    resolutionActor: input.actor,
+  };
+  const fingerprint = authorityJson(payload);
   const previous = registration.runtimeRequestResolutions.get(pending.requestId);
   if (previous) {
     if (previous.fingerprint !== fingerprint) {
-      throw new RunnerPrpRuntimeRequestResolutionError(
-        "runtime_request_resolution_conflict",
-      );
+      throw new RunnerPrpRuntimeRequestResolutionError("runtime_request_resolution_conflict");
     }
-    return { commandId: previous.commandId };
+    return previous.result;
   }
-
-  const command = registration.authority.queueCommand(
-    "request.resolve",
-    {
-      requestId: pending.requestId,
-      requestKind: pending.requestKind,
-      turnId: pending.turnId,
-      resolution: input.resolution,
-      resolutionActor: input.actor,
-    },
-    undefined,
-    true,
-  );
-  registration.runtimeRequestResolutions.set(pending.requestId, {
-    fingerprint,
-    commandId: command.commandId,
-  });
-  return { commandId: command.commandId };
+  // A stable identity lets the durable receipt own retries across restarts.
+  // This map only coalesces concurrent requests; settled history stays on disk.
+  const commandId = `runtime_resolution_${createHash("sha256")
+    .update(authorityJson([input.companyId, input.runId, pending.requestId]))
+    .digest("hex")}`;
+  const result = (async () => {
+    try {
+      const command = await registration.authority.queueCommand(
+        "request.resolve", payload, commandId, true,
+      );
+      return { commandId: command.commandId };
+    } catch (error) {
+      if (error instanceof Error && error.message === "Durable PRP command replay conflicts with persisted state.") {
+        throw new RunnerPrpRuntimeRequestResolutionError("runtime_request_resolution_conflict");
+      }
+      throw error;
+    }
+  })();
+  registration.runtimeRequestResolutions.set(pending.requestId, { fingerprint, result });
+  try {
+    return await result;
+  } finally {
+    registration.runtimeRequestResolutions.delete(pending.requestId);
+  }
 }
 
 export const runnerPrpWebSocketInternals = {

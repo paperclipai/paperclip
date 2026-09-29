@@ -132,35 +132,35 @@ describe("runner PRP websocket route", () => {
     });
 
     expect(
-      queueLiveRunnerPrpCommand({
+      (await queueLiveRunnerPrpCommand({
         companyId: "company-1",
         issueId: "issue-1",
         agentId: "agent-1",
         type: "session.goal.get",
-      }),
+      })),
     ).toMatchObject({ runId: newRunId, commandId: "new-command" });
     expect(oldQueueCommand).not.toHaveBeenCalled();
     expect(newQueueCommand).toHaveBeenCalledOnce();
 
     await oldRegistration.release();
     expect(
-      queueLiveRunnerPrpCommand({
+      (await queueLiveRunnerPrpCommand({
         companyId: "company-1",
         issueId: "issue-1",
         agentId: "agent-1",
         type: "session.goal.get",
-      }),
+      })),
     ).toMatchObject({ runId: newRunId, commandId: "new-command" });
     expect(newQueueCommand).toHaveBeenCalledTimes(2);
 
     await newRegistration.release();
     expect(
-      queueLiveRunnerPrpCommand({
+      (await queueLiveRunnerPrpCommand({
         companyId: "company-1",
         issueId: "issue-1",
         agentId: "agent-1",
         type: "session.goal.get",
-      }),
+      })),
     ).toBeNull();
     server.close();
   });
@@ -168,7 +168,15 @@ describe("runner PRP websocket route", () => {
   it("queues one company-bound, idempotent runtime request resolution", async () => {
     const server = createServer();
     setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
-    const queueCommand = vi.fn(() => ({ commandId: "command-resolution-1" }));
+    const receipts = new Map<string, string>();
+    const queueCommand = vi.fn(async (_type, payload, id) => {
+      const encoded = JSON.stringify(payload);
+      if (receipts.has(id) && receipts.get(id) !== encoded) {
+        throw new Error("Durable PRP command replay conflicts with persisted state.");
+      }
+      receipts.set(id, encoded);
+      return { commandId: "command-resolution-1" };
+    });
     const runId = "00000000-0000-4000-8000-000000000780";
     const registration = await registerRunnerPrpAuthority({
       companyId: "company-1",
@@ -197,12 +205,10 @@ describe("runner PRP websocket route", () => {
       resolution: { action: "accept" as const },
     };
 
-    expect(queueRunnerPrpRuntimeRequestResolution(input)).toEqual({
-      commandId: "command-resolution-1",
-    });
-    expect(queueRunnerPrpRuntimeRequestResolution(input)).toEqual({
-      commandId: "command-resolution-1",
-    });
+    expect(await Promise.all([
+      queueRunnerPrpRuntimeRequestResolution(input),
+      queueRunnerPrpRuntimeRequestResolution(input),
+    ])).toEqual([{ commandId: "command-resolution-1" }, { commandId: "command-resolution-1" }]);
     expect(queueCommand).toHaveBeenCalledTimes(1);
     expect(queueCommand).toHaveBeenCalledWith(
       "request.resolve",
@@ -217,46 +223,48 @@ describe("runner PRP websocket route", () => {
           isInstanceAdmin: true,
         },
       },
-      undefined,
+      expect.stringMatching(/^runtime_resolution_[a-f0-9]{64}$/),
       true,
     );
 
-    expect(() =>
-      queueRunnerPrpRuntimeRequestResolution({
+    await expect(async () =>
+      (await queueRunnerPrpRuntimeRequestResolution({
         ...input,
         companyId: "company-2",
-      }),
-    ).toThrowError("runner_prp_authority_not_active");
-    expect(() =>
-      queueRunnerPrpRuntimeRequestResolution({
+      })),
+    ).rejects.toThrowError("runner_prp_authority_not_active");
+    await expect(async () =>
+      (await queueRunnerPrpRuntimeRequestResolution({
         ...input,
         resolution: { action: "decline" },
-      }),
-    ).toThrowError(RunnerPrpRuntimeRequestResolutionError);
+      })),
+    ).rejects.toThrowError(RunnerPrpRuntimeRequestResolutionError);
 
-    expect(() =>
-      queueRunnerPrpRuntimeRequestResolution({
+    await expect(async () =>
+      (await queueRunnerPrpRuntimeRequestResolution({
         ...input,
         actor: {
           type: "user",
           userId: "ordinary-member",
           isInstanceAdmin: false,
         },
-      }),
-    ).toThrowError("native_runtime_request_resolver_denied");
+      })),
+    ).rejects.toThrowError("native_runtime_request_resolver_denied");
     for (const pendingRequest of [
       { ...input.pendingRequest, companyId: "company-2" },
       { ...input.pendingRequest, runId: "00000000-0000-4000-8000-000000000783" },
     ]) {
-      expect(() => queueRunnerPrpRuntimeRequestResolution({
+      await expect(async () => (await queueRunnerPrpRuntimeRequestResolution({
         ...input,
         pendingRequest,
-      })).toThrowError("runner_prp_authority_not_active");
+      }))).rejects.toThrowError("runner_prp_authority_not_active");
     }
-    expect(queueCommand).toHaveBeenCalledTimes(1);
+    expect(queueCommand).toHaveBeenCalledTimes(2);
+    expect(await queueRunnerPrpRuntimeRequestResolution(input)).toEqual({ commandId: "command-resolution-1" });
+    expect(receipts.size).toBe(1);
 
     await registration.release();
-    expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
+    await expect(async () => (await queueRunnerPrpRuntimeRequestResolution(input))).rejects.toThrowError(
       "runner_prp_authority_not_active",
     );
     server.close();
@@ -329,14 +337,14 @@ describe("runner PRP websocket route", () => {
           },
         };
         // Registering the future URL cannot dispatch into the old authority.
-        expect(() =>
-          queueRunnerPrpRuntimeRequestResolution(nextInput),
-        ).toThrowError(
+        await expect(async () =>
+          (await queueRunnerPrpRuntimeRequestResolution(nextInput)),
+        ).rejects.toThrowError(
           "runner_prp_authority_not_active",
         );
         expect(authority.store.state.commands).toEqual([]);
         if (cached) {
-          const queued = queueRunnerPrpRuntimeRequestResolution(input);
+          const queued = (await queueRunnerPrpRuntimeRequestResolution(input));
           const command = authority.store.state.commands.find(
             (candidate) => candidate.commandId === queued.commandId,
           )!;
@@ -344,20 +352,20 @@ describe("runner PRP websocket route", () => {
           command.status = "completed";
           command.result = { status: "completed" };
         }
-        authority.rotateRunIdentity(nextIdentity);
+        (await authority.rotateRunIdentity(nextIdentity));
         expect(authority.store.state.identity).toEqual(nextIdentity);
         expect(authority.store.state.commands).toEqual([]);
         const statePath = join(directory, "control-plane-state.json");
         const before = readFileSync(statePath, "utf8");
 
-        expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
+        await expect(async () => (await queueRunnerPrpRuntimeRequestResolution(input))).rejects.toThrowError(
           "runner_prp_authority_not_active",
         );
         expect(authority.store.state.commands).toEqual([]);
         expect(readFileSync(statePath, "utf8")).toBe(before);
 
-        const next = queueRunnerPrpRuntimeRequestResolution(nextInput);
-        expect(queueRunnerPrpRuntimeRequestResolution(nextInput)).toEqual(next);
+        const next = (await queueRunnerPrpRuntimeRequestResolution(nextInput));
+        expect((await queueRunnerPrpRuntimeRequestResolution(nextInput))).toEqual(next);
         expect(authority.store.state.commands).toHaveLength(1);
         expect(authority.store.state.commands[0]).toMatchObject({
           commandId: next.commandId,

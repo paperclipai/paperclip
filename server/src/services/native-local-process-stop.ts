@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { readNativeProcessEvidence } from "./native-process-evidence.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
@@ -46,16 +47,7 @@ export async function recordNativeLocalProcessStop(db: Db, run: typeof heartbeat
 
 /** Only server-authored evidence counts. A later launch invalidates the receipt. */
 export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
-  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType })
-    .from(heartbeatRunEvents)
-    .where(and(
-      eq(heartbeatRunEvents.companyId, companyId),
-      eq(heartbeatRunEvents.runId, runId),
-      isNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
-    ))
-    .orderBy(desc(heartbeatRunEvents.seq))
-    .limit(1);
+  const event = await readNativeProcessEvidence(db, companyId, runId);
   return event?.eventType === LOCAL_PROCESS_STOPPED;
 }
 
@@ -67,19 +59,16 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
 export async function hasHistoricalSuspendedNativeSession(db: Db, run: typeof heartbeatRuns.$inferSelect) {
   if (run.runtimeMode !== "native" || run.processPid || run.processGroupId ||
       !run.nativeSessionId || !run.runnerInstanceId || !run.nativeIssueId) return false;
-  const [modernProcessEvidence] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    isNull(heartbeatRunEvents.sourceEventId),
-    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
-  )).limit(1);
+  const modernProcessEvidence = await readNativeProcessEvidence(db, run.companyId, run.id);
   // A newer launch invalidates an old stop receipt. Never bypass that fence
   // with a suspended file that could belong to the earlier process generation.
-  if (modernProcessEvidence) return false;
+  if (modernProcessEvidence?.eventType) return false;
   const checkpoint = run.runnerProfileJson?.sessionCheckpoint as Record<string, unknown> | undefined;
   if (checkpoint?.providerSessionId != null && (typeof checkpoint.providerSessionId !== "string" ||
       !checkpoint.providerSessionId.trim())) return false;
   const { nativeFailedRunRetryStateIsSafe } = await import("./native-runtime/native-session-executor.js");
   return (await nativeFailedRunRetryStateIsSafe({
+    db,
     execution: run.runnerProfileJson?.nativeExecutionInput,
     companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, runId: run.id,
     nativeSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId,
@@ -92,14 +81,9 @@ export async function hasHistoricalSuspendedNativeSession(db: Db, run: typeof he
 
 /** Recover the exact stopped identity after the mutable run fields were cleared. */
 export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
-  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
-    .from(heartbeatRunEvents)
-    .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId),
-      isNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED])))
-    .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  const pid = event?.payload?.processPid;
-  const group = event?.payload?.processGroupId;
+  const event = await readNativeProcessEvidence(db, companyId, runId);
+  const pid = event?.processPid;
+  const group = event?.processGroupId;
   if (event?.eventType !== LOCAL_PROCESS_STOPPED || typeof pid !== "number" ||
       !Number.isSafeInteger(pid) || pid <= 1 || group !== pid || !absent(pid) || !absent(-pid)) return null;
   return { processPid: pid, processGroupId: pid };

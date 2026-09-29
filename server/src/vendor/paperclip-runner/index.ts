@@ -10,6 +10,16 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  EventEpochTransition,
+  SourceCursor,
+  AuthorityCommit,
+  AuthorityPage,
+  AuthorityRecord,
+  AuthoritySnapshot,
+  AuthorityWorkRecord,
+  AuthorityWorkChange,
+  AuthorityWorkPage,
+  DurableAuthorityStore,
   PaperclipJsonValue,
   PaperclipQuestionResponse,
   PaperclipSemanticActionBinding,
@@ -66,6 +76,16 @@ const sourceUrl = new URL(
   import.meta.url,
 );
 const runner = (await import(sourceUrl.href)) as RunnerModule;
+
+export const authorityInteger = runner.authorityInteger;
+export const authorityGeneration = runner.authorityGeneration;
+export const authorityDirectlyFollows = runner.authorityDirectlyFollows;
+export const authorityJson = runner.authorityJson;
+export const validateAuthorityCommit = runner.validateAuthorityCommit;
+export const validateAuthorityPage = runner.validateAuthorityPage;
+export const validateAuthorityWorkKey = runner.validateAuthorityWorkKey;
+export const validateAuthorityWorkPage = runner.validateAuthorityWorkPage;
+export const DurableAuthorityStoreError = runner.DurableAuthorityStoreError;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES =
@@ -128,3 +148,18 @@ export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailur
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+
+export { readDurableControlPlaneState, parseAuthorityLocator, type AuthorityLocation, type AuthorityLocator, type ExternalAuthorityReader } from "@paperclipai/paperclip-runner";
+export { materializeCurrentAuthority } from "@paperclipai/paperclip-runner";
+
+export { readIndexedLocalState, suspendIndexedRunnerState } from "@paperclipai/paperclip-runner";
+export type { IndexedLocalSnapshot } from "@paperclipai/paperclip-runner";
+export { IndexedInspectionDecoder } from "@paperclipai/paperclip-runner";
+export { migrateLegacySessionAuthority, assertNoPendingLegacyMigration, type LegacySessionMigrationOptions, type PreparedLocalSession } from "@paperclipai/paperclip-runner";
+export type { DurableRecoveryIdentity } from "@paperclipai/paperclip-runner";
+
+export const isEventEpochTransition = runner.isEventEpochTransition;
+export const normalizedEventId = runner.normalizedEventId;
+export const advanceSourceCursor = runner.advanceSourceCursor;
+
+export const isProviderProcessGeneration = runner.isProviderProcessGeneration;

@@ -1,8 +1,6 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-
 import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents } from "@paperclipai/db";
 import type { HarnessRuntimeRequestKind } from "../../vendor/paperclip-runner/index.js";
+import { readRunEventLane, runEventLane } from "../run-event-history.js";
 
 const TERMINAL_RUNTIME_REQUEST_EVENTS = [
   "runtime_request.resolved",
@@ -120,24 +118,18 @@ export async function readPendingNativeRuntimeRequest(
   },
 ): Promise<PendingNativeRuntimeRequest | null> {
   if (!REQUEST_ID_PATTERN.test(input.requestId)) return null;
-  const [latest] = await db
-    .select({
-      eventType: heartbeatRunEvents.eventType,
-      payload: heartbeatRunEvents.payload,
-    })
-    .from(heartbeatRunEvents)
-    .where(and(
-      eq(heartbeatRunEvents.companyId, input.companyId),
-      eq(heartbeatRunEvents.runId, input.runId),
-      inArray(heartbeatRunEvents.eventType, [...RUNTIME_REQUEST_EVENTS]),
-      sql`coalesce(
-        ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,request,requestId}',
-        ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,requestId}'
-      ) = ${input.requestId}`,
-    ))
-    .orderBy(desc(heartbeatRunEvents.seq))
-    .limit(1);
-  if (!latest || latest.eventType !== "runtime_request.created") return null;
+  const [latest] = await readRunEventLane(
+    db,
+    input.runId,
+    runEventLane("request", input.requestId),
+    1,
+  );
+  if (
+    !latest
+    || latest.companyId !== input.companyId
+    || !RUNTIME_REQUEST_EVENTS.includes(latest.eventType as typeof RUNTIME_REQUEST_EVENTS[number])
+    || latest.eventType !== "runtime_request.created"
+  ) return null;
   return canonicalPendingRequest({ ...input, payload: latest.payload });
 }
 

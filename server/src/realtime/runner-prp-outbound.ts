@@ -30,18 +30,29 @@ export class WsJsonWireConnection implements PrpWireConnection {
   #onJson: ((value: unknown) => void) | null = null;
   #onClose = new Set<(reason: TransportCloseReason) => void>();
   #pendingJson: unknown[] = [];
+  #pendingBytes = 0;
+  #readPaused = false;
   #closeReason: TransportCloseReason | null = null;
 
   constructor(readonly socket: WebSocket) {
     socket.on("message", (data, isBinary) => {
+      if (this.#closeReason) return;
       if (isBinary) {
         this.close(1003);
         return;
       }
       try {
-        const value = JSON.parse(data.toString()) as unknown;
-        if (this.#onJson === null) {
+        const text = data.toString();
+        const size = Buffer.byteLength(text);
+        if (size > MAX_FRAME_BYTES) { this.close(1009); return; }
+        const value = JSON.parse(text) as unknown;
+        if (this.#onJson === null || this.#readPaused) {
+          // ws can still emit the rest of its current socket chunk after
+          // pause(). Hold a bounded suffix until authority admission resumes.
+          if (this.#pendingJson.length >= 256 || this.#pendingBytes + size > MAX_FRAME_BYTES) { this.close(1013); return; }
           this.#pendingJson.push(value);
+          this.#pendingBytes += size;
+          this.socket.pause();
         } else {
           this.#onJson(value);
         }
@@ -59,7 +70,9 @@ export class WsJsonWireConnection implements PrpWireConnection {
 
   sendJson(value: unknown): void {
     if (this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(value));
+      const text = JSON.stringify(value);
+      if (this.socket.bufferedAmount + Buffer.byteLength(text) > MAX_FRAME_BYTES) { this.close(1013); return; }
+      this.socket.send(text);
     }
   }
 
@@ -74,7 +87,18 @@ export class WsJsonWireConnection implements PrpWireConnection {
 
   onJson(listener: (value: unknown) => void): void {
     this.#onJson = listener;
-    for (const value of this.#pendingJson.splice(0)) listener(value);
+    this.#drainPending();
+  }
+
+  pauseRead(): void { this.#readPaused = true; this.socket.pause(); }
+  resumeRead(): void { this.#readPaused = false; this.#drainPending(); }
+  #drainPending(): void {
+    while (!this.#closeReason && !this.#readPaused && this.#onJson && this.#pendingJson.length) {
+      const value = this.#pendingJson.shift();
+      this.#pendingBytes -= Buffer.byteLength(JSON.stringify(value));
+      this.#onJson(value);
+    }
+    if (!this.#closeReason && !this.#readPaused && this.#onJson) this.socket.resume();
   }
 
   onClose(listener: (reason: TransportCloseReason) => void): void {
@@ -85,6 +109,7 @@ export class WsJsonWireConnection implements PrpWireConnection {
   #notifyClose(reason: TransportCloseReason): void {
     if (this.#closeReason) return;
     this.#closeReason = reason;
+    this.#pendingJson = []; this.#pendingBytes = 0;
     for (const listener of this.#onClose) listener(reason);
     this.#onClose.clear();
   }

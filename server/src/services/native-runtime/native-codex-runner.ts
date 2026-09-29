@@ -347,22 +347,22 @@ export async function executeNativeCodexRunner(input: {
     runnerDigest,
   });
 
-  prepared.queueCommand("run.prepare", buildNativeRunnerPreparePayload({
+  (await prepared.queueCommand("run.prepare", buildNativeRunnerPreparePayload({
     cwd: input.cwd,
     model: input.model,
     resumeProviderSessionId: input.resumeProviderSessionId,
     completionContract: input.completionContract,
     semanticTools: prepared.semanticTools,
     ...(input.providerLaunch ? { providerLaunch: input.providerLaunch } : {}),
-  }), `prepare_${input.runId}`);
-  prepared.queueCommand("session.open", {}, `open_${input.runId}`);
+  }), `prepare_${input.runId}`));
+  (await prepared.queueCommand("session.open", {}, `open_${input.runId}`));
   const recoveryGoalRequestId = input.resumeSessionGoalHeartbeat
     ? `recovery_${input.runId}`
     : null;
   if (goalControl) {
     const commandKey = createHash("sha256").update(goalControl.requestId).digest("hex").slice(0, 20);
-    nativeGoalCommands(goalControl).forEach((command, index) => {
-      prepared.queueCommand(command.type, command.payload, `goal_${commandKey}_${index + 1}`);
+    nativeGoalCommands(goalControl).forEach(async (command, index) => {
+      (await prepared.queueCommand(command.type, command.payload, `goal_${commandKey}_${index + 1}`));
     });
     await input.db.update(agentSessionGoalActions).set({
       status: "delivering",
@@ -372,13 +372,13 @@ export async function executeNativeCodexRunner(input: {
       eq(agentSessionGoalActions.requestId, goalControl.requestId),
     ));
   } else if (recoveryGoalRequestId) {
-    prepared.queueCommand(
+    (await prepared.queueCommand(
       "session.goal.set",
       { requestId: recoveryGoalRequestId, status: "active" },
       `goal_${recoveryGoalRequestId}`,
-    );
+    ));
   } else {
-    prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`);
+    (await prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`));
   }
 
   const child = spawn(binary, buildNativeRunnerArguments({
@@ -449,8 +449,8 @@ export async function executeNativeCodexRunner(input: {
         );
       }),
     ]);
-    prepared.queueCommand("session.close", {}, `close_${input.runId}`);
-    prepared.queueCommand("runner.shutdown", {}, `shutdown_${input.runId}`);
+    (await prepared.queueCommand("session.close", {}, `close_${input.runId}`));
+    (await prepared.queueCommand("runner.shutdown", {}, `shutdown_${input.runId}`));
     await stopChild(child, exit, true);
 
     const succeeded = completed === null || completed.terminal.runTerminalState === "succeeded";

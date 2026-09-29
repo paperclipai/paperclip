@@ -1,3 +1,4 @@
+import { resolveRunnerCargoTestBinary } from "./cargo-test-binary.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -43,19 +44,8 @@ const runnerWorkspace = resolve(
   import.meta.dirname,
   "../../../../packages/paperclip-runner/runner",
 );
-const executableSuffix = process.platform === "win32" ? ".exe" : "";
-const runnerBinary = resolve(
-  runnerWorkspace,
-  "target",
-  "release",
-  `paperclip-runnerd${executableSuffix}`,
-);
-const fakeCodexBinary = resolve(
-  runnerWorkspace,
-  "target",
-  "release",
-  `fake-codex-app-server${executableSuffix}`,
-);
+const runnerBinary = resolveRunnerCargoTestBinary(runnerWorkspace, "release", "paperclip-runnerd");
+const fakeCodexBinary = resolveRunnerCargoTestBinary(runnerWorkspace, "release", "fake-codex-app-server");
 
 function ensureRunnerTestBinaries(): void {
   // Cargo's freshness check is necessary even when the files exist: an older

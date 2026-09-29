@@ -8,6 +8,20 @@ import {
 } from "./native-restart-recovery.js";
 
 describe("native restart recovery classification", () => {
+  it("requires indexed process-tree retirement even when all recorded PIDs are gone", () => {
+    const evidence = {
+      runnerPidAlive: false, runnerGroupAlive: false, processStartMatches: false,
+      knownProviderProcessAlive: false, knownProviderProcessIdentityAmbiguous: false,
+      unretiredIndexedProcessOwner: true, hasCheckpoint: true,
+      checkpointIdentityMatches: true, hasProviderEvidence: true,
+    };
+    expect(classifyNativeRunnerRecoveryEvidence(evidence)).toEqual({
+      claimKind: null, reason: "provider_process_tree_retirement_unproven",
+    });
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, runnerPidAlive: true, processStartMatches: true }).claimKind).toBe("reattach_existing_runner");
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, remoteSandbox: true }).claimKind).toBe("reattach_remote_runner");
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, unretiredIndexedProcessOwner: false }).claimKind).toBe("resume_dead_runner");
+  });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
     const evidence = {
       runnerPidAlive: false,

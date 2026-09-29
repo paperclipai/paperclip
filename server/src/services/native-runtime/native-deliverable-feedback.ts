@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { assets, issueAttachments, issueWorkProducts, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
+import { findNativeToolReceiptReference, type NativeToolReceiptBinding } from "./native-tool-receipts.js";
 
 function evidenceRefs(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -16,10 +17,13 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown> : {};
 }
 
-async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts: unknown, attachment: {
+async function hasCurrentPublicationReceipt(db: Db, binding: NativeToolReceiptBinding, receipts: unknown, attachment: {
   id: string; filename: string | null; byteSize: number; sha256: string;
 }): Promise<boolean> {
-  for (const value of Object.values(record(receipts))) {
+  const indexed = await findNativeToolReceiptReference(db, binding, "publication", attachment.id);
+  // Retained old rows remain readable while migration is admitted separately.
+  // Fresh writes use one indexed lookup, independent of earlier tool count.
+  for (const value of indexed ? [indexed] : Object.values(record(receipts))) {
     const receipt = record(value);
     const input = record(receipt.input);
     const result = record(receipt.result);
@@ -49,8 +53,8 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
     if (typeof source.attachmentId !== "string" || !uuid.test(source.attachmentId) ||
         typeof source.commentId !== "string" || !uuid.test(source.commentId)) continue;
     const [original] = await db.select({ filename: assets.originalFilename, byteSize: assets.byteSize, sha256: assets.sha256 })
-      .from(issueAttachments).innerJoin(assets, and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, companyId)))
-      .where(and(eq(issueAttachments.id, source.attachmentId), eq(issueAttachments.companyId, companyId),
+      .from(issueAttachments).innerJoin(assets, and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, binding.companyId)))
+      .where(and(eq(issueAttachments.id, source.attachmentId), eq(issueAttachments.companyId, binding.companyId),
         eq(issueAttachments.issueCommentId, source.commentId))).limit(1);
     if (original?.filename === attachment.filename && original.byteSize === attachment.byteSize &&
         original.sha256.toLowerCase() === attachment.sha256.toLowerCase()) return true;
@@ -123,7 +127,7 @@ export async function validateNativeDeliverableEvidence(
       // controller restart of this run; a replacement can re-register preserved
       // workspace bytes internally rather than asking the user to confirm them.
       if (fileRequested && attachment.originatingRunId !== binding.runId) continue;
-      if (fileRequested && !await hasCurrentPublicationReceipt(db, binding.companyId, binding.semanticToolReceipts, attachment)) {
+      if (fileRequested && !await hasCurrentPublicationReceipt(db, binding, binding.semanticToolReceipts, attachment)) {
         throw new Error("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
       }
       registeredAttachment = true;

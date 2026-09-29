@@ -1,3 +1,14 @@
+import { normalizedEventId } from "../../vendor/paperclip-runner/index.js";
+import { snapshotCleanupProviderHome, copyCleanupProviderHomeTree, findCleanupRollout, readCleanupRolloutHeader } from "./native-cleanup-tree.js";
+import { startNativeMaintenanceLeaseRenewal } from "./native-maintenance-lease.js";
+import { checkpointExclusions, checkpointTar, downloadCheckpointDirectory, uploadCheckpointArchive } from "./native-checkpoint-transfer.js";
+import { digestNativeHarnessBackupDirectory, readNativeHarnessBackupManifestBytes, syncNativeHarnessDirectory } from "./native-harness-tree.js";
+import { useIndexedNativeAuthority } from "./native-indexed-activation.js";
+import { inspectRemoteIndexedState } from "./native-indexed-inspection.js";
+import { createRemoteIndexedSessionCheckpoint } from "./native-indexed-checkpoint.js";
+import { readNativeIndexedCheckpointProof, type NativeCheckpointBindings } from "./native-indexed-checkpoint-proof.js";
+import { createNativePostgresAuthorityStore, readPostgresAuthority, type AuthorityTransaction } from "./postgres-authority-store.js";
+import { readIndexedAuthorityProof, withNativeAuthorityReadContext } from "./native-authority-read-context.js";
 import { readNativeJournalProjection, scanNativeStateFile, nativeStateFileIncludes, nativeStateBase64Fingerprint } from "./native-journal-projection-async.js";
 import {
   isSupportedRemoteCodexVersion,
@@ -13,7 +24,7 @@ import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
-import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
+import { inspectStoppedCodexRollout } from "./stopped-codex-rollout.js";
 import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -45,6 +56,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { open as openAsync } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type {
@@ -176,6 +188,7 @@ import {
 } from "./native-runner-ownership.js";
 import {
   currentNativeControllerIdentity,
+  nextNativeControllerGeneration,
   nextNativeProviderAttempt,
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
@@ -275,9 +288,6 @@ export async function detachNativeSessionsForRestart(
   }
   return { detachedRunIds, inactiveRunIds, unsupportedRunIds };
 }
-const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
-const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
-const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
@@ -516,6 +526,11 @@ function readBoundedNativeFile(
   }
 }
 
+async function readCurrentNativeFile(path: string, maximum: number, errorCode: string): Promise<Buffer> {
+  const indexed = await readIndexedAuthorityProof(path);
+  return indexed?.bytes ?? readBoundedNativeFile(path, maximum, errorCode);
+}
+
 const NATIVE_PROVIDER_HOST_ENV_KEYS = [
   "PATH",
   "HOME",
@@ -729,6 +744,8 @@ export async function materializeRuntimeQuestionFallback(input: {
   fallback: RuntimeQuestionFallback;
   interaction: { id: string };
 } | null> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   const fallback = runtimeQuestionFallbackFromEvent(input.event);
   if (!fallback) return null;
   const interaction = await issueThreadInteractionService(input.db).create(
@@ -744,6 +761,8 @@ export async function materializeRuntimeQuestionFallback(input: {
     },
   );
   return { fallback, interaction };
+
+  });
 }
 
 export function runtimeInputLifecycleMetric(
@@ -1174,6 +1193,8 @@ export async function synchronizeCompletedProviderPlan(input: {
     payload: Record<string, unknown>;
   };
 }): Promise<PlanSynchronization | null> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   if (
     input.event.eventType !== "plan.updated" ||
     input.event.payload.complete !== true
@@ -1411,6 +1432,8 @@ export async function synchronizeCompletedProviderPlan(input: {
     currentRevisionId: revision.id,
     confirmationId,
   };
+
+  });
 }
 
 class SessionToolAuthorityEpoch {
@@ -1652,10 +1675,10 @@ async function migrateLegacyRunnerdStateRoot(input: {
     exactRun &&
     legacyIdentity &&
     ["absent", "indeterminate"].includes(
-      runnerdAuthorityLifecycle(
+      (await runnerdAuthorityLifecycle(
         input.legacy,
         legacyIdentity as RunnerdDurableIdentity,
-      ),
+      )),
     )
   ) {
     quarantineRunnerdStateRoot(input.legacy, "identity_indeterminate");
@@ -1689,10 +1712,10 @@ async function migrateLegacyRunnerdStateRoot(input: {
   return input.scoped;
 }
 
-function runnerdAuthorityLifecycle(
+async function runnerdAuthorityLifecycle(
   root: string,
   identity: RunnerdDurableIdentity,
-): "absent" | "suspended" | "not_suspended" | "indeterminate" {
+): Promise<"absent" | "suspended" | "not_suspended" | "indeterminate"> {
   const runnerRoot = resolve(root, "runner");
   if (!existsSync(runnerRoot)) return "absent";
   if (!isSafeNativeStateDirectory(runnerRoot)) return "indeterminate";
@@ -1703,7 +1726,7 @@ function runnerdAuthorityLifecycle(
       // though runner state was owned by the sandbox. It carries no authority,
       // so a verified failover backup may be consulted. Any non-empty direct
       // directory remains indeterminate and therefore blocks fallback.
-      return readdirSync(runnerRoot).length === 0 ? "absent" : "indeterminate";
+      return nativeDirectoryIsEmpty(runnerRoot) ? "absent" : "indeterminate";
     } catch {
       return "indeterminate";
     }
@@ -1711,11 +1734,11 @@ function runnerdAuthorityLifecycle(
   try {
     const state = record(
       JSON.parse(
-        readBoundedNativeFile(
+        (await readCurrentNativeFile(
           statePath,
           NATIVE_RUNNER_STATE_MAX_BYTES,
           "runner_state_too_large",
-        ).toString("utf8"),
+        )).toString("utf8"),
       ),
     );
     if (
@@ -1731,6 +1754,9 @@ function runnerdAuthorityLifecycle(
       state.runId === identity.runId &&
       state.normalizedSessionId === identity.normalizedSessionId
     ) {
+      // Suspension is committed by the runner's existing provider shutdown
+      // protocol. Reading that checkpoint is different from inferring a new
+      // suspension from PID absence in recoverQuiescentRunnerdState below.
       if (state.lifecycle === "suspended") return "suspended";
       return "not_suspended";
     }
@@ -1740,25 +1766,25 @@ function runnerdAuthorityLifecycle(
   }
 }
 
-function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
+async function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
   root: string;
   identity: RunnerdDurableIdentity;
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
-}): "suspended" | "not_suspended" | "indeterminate" {
-  const direct = runnerdAuthorityLifecycle(input.root, input.identity);
+}): Promise<"suspended" | "not_suspended" | "indeterminate"> {
+  const direct = (await runnerdAuthorityLifecycle(input.root, input.identity));
   if (direct !== "absent") return direct;
   if (!input.allowVerifiedBackup) return "indeterminate";
-  const backup = verifyNativeHarnessBackup({
+  const backup = await verifyNativeHarnessBackup({
     root: input.root,
     execution: input.execution,
     runnerInstanceId: input.identity.runnerInstanceId,
   });
   if (!backup) return "indeterminate";
-  const backupLifecycle = runnerdAuthorityLifecycle(
+  const backupLifecycle = (await runnerdAuthorityLifecycle(
     backup.root,
     input.identity,
-  );
+  ));
   return backupLifecycle === "absent" ? "indeterminate" : backupLifecycle;
 }
 
@@ -1797,11 +1823,17 @@ async function cleanupStateSnapshot(root: string, providerFile = "codex-provider
   const files = [...CLEANUP_CANONICAL_FILES.slice(0, 2), `runner/${providerFile}`];
   const controlProof = (await readNativeJournalProjection(resolve(root, files[0]!)));
   for (const directory of directoryIdentities) assertNativeStateDirectoryIdentity(directory.path, directory.identity);
-  const bytes = files.slice(1).map((file) =>
-    readBoundedNativeFile(resolve(root, file), NATIVE_RUNNER_STATE_MAX_BYTES, "native_cleanup_maintenance_unproven"),
-  );
+  const bytes = await Promise.all(files.slice(1).map((file) =>
+    readCurrentNativeFile(resolve(root, file), NATIVE_RUNNER_STATE_MAX_BYTES, "native_cleanup_maintenance_unproven"),
+  ));
   const control = record(controlProof.value);
   const [runner, provider] = bytes.map(value => record(JSON.parse(value.toString("utf8"))));
+  // Materialized current projections are read evidence, not permission to
+  // retire an indexed lifetime. PID/group absence cannot prove that escaped
+  // provider descendants have stopped. Require the indexed recovery admission.
+  if ([control, runner, provider].some(value => typeof value?.indexedGeneration === "string")) {
+    throw new Error("native_cleanup_indexed_process_fence_required");
+  }
   const fileSha256 = [controlProof.sha256, ...bytes.map(value => createHash("sha256").update(value).digest("hex"))] as [string, string, string];
   return {
     control: control!,
@@ -1831,10 +1863,19 @@ function cleanupProcessAbsent(pid: unknown): pid is number {
   });
 }
 
+function nativeDirectoryIsEmpty(path: string): boolean {
+  const directory = opendirSync(path);
+  try {
+    return directory.readSync() === null;
+  } finally {
+    directory.closeSync();
+  }
+}
+
 function cleanupCanonicalVacancy(root: string) {
   const stat = lstatSync(root, { throwIfNoEntry: false });
   if (!stat) return null;
-  if (!isSafeNativeStateDirectory(root) || readdirSync(root).length !== 0) {
+  if (!isSafeNativeStateDirectory(root) || !nativeDirectoryIsEmpty(root)) {
     throw new Error("native_cleanup_maintenance_unproven");
   }
   return {
@@ -1940,7 +1981,7 @@ export function retainedNativeCleanupJournalMatches(input: {
     identityEvent.sourceKind !== "runner" ||
     identityEvent.eventType !== identities[0]!.eventType ||
     identityEvent.sourceEventId !==
-      `${run.runnerInstanceId}:${run.id}:${identityEvent.sourceSeq}`
+      normalizedEventId(run.runnerInstanceId!, run.id, Number(identityEvent.sourceSeq), typeof identityEvent.sourceEpoch === "string" ? identityEvent.sourceEpoch : undefined)
   )
     return false;
   const boundDigest = validPersisted.some((row) => {
@@ -2102,6 +2143,8 @@ export async function appendRetainedNativeCleanupEvent(
     event: PrpEvent;
   },
 ): Promise<void> {
+  return withNativeAuthorityReadContext(db, async () => {
+
   const parsed = validatePrpEvent(input.event);
   if (
     !parsed.ok ||
@@ -2139,139 +2182,17 @@ export async function appendRetainedNativeCleanupEvent(
       canonicalPayload: receipt,
     },
   });
+
+  });
 }
 
-function cleanupProviderHomeSnapshot(home: string, content: boolean) {
-  const entries: Array<{
-    path: string;
-    directory: boolean;
-    dev: number;
-    ino: number;
-    size: number;
-    mtimeMs: number;
-    ctimeMs: number;
-    sha256?: string;
-  }> = [];
-  let bytes = 0;
-  const visit = (relative: string, depth: number) => {
-    if (depth > 32 || entries.length >= MAX_REMOTE_CHECKPOINT_ENTRIES)
-      throw new Error("native_cleanup_maintenance_unproven");
-    const path = resolve(home, relative);
-    const metadata = lstatSync(path);
-    if (
-      metadata.isSymbolicLink() ||
-      (!metadata.isFile() && !metadata.isDirectory())
-    )
-      throw new Error("native_cleanup_maintenance_unproven");
-    const entry = {
-      path: relative,
-      directory: metadata.isDirectory(),
-      dev: metadata.dev,
-      ino: metadata.ino,
-      size: metadata.isDirectory() ? 0 : metadata.size,
-      mtimeMs: metadata.mtimeMs,
-      ctimeMs: metadata.ctimeMs,
-    };
-    entries.push(entry);
-    if (entry.directory) {
-      const directory = opendirSync(path);
-      const children: string[] = [];
-      try {
-        for (
-          let child = directory.readSync();
-          child !== null;
-          child = directory.readSync()
-        ) {
-          if (
-            !relative &&
-            (CODEX_HOME_NON_PERSISTENT_ENTRIES as readonly string[]).includes(
-              child.name,
-            )
-          )
-            continue;
-          if (children.length + entries.length >= MAX_REMOTE_CHECKPOINT_ENTRIES)
-            throw new Error("native_cleanup_maintenance_unproven");
-          children.push(child.name);
-        }
-      } finally {
-        directory.closeSync();
-      }
-      for (const name of children.sort())
-        visit(relative ? `${relative}/${name}` : name, depth + 1);
-    } else {
-      bytes += metadata.size;
-      if (bytes > MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES)
-        throw new Error("native_cleanup_maintenance_unproven");
-      if (content) {
-        const value = readBoundedNativeFile(
-          path,
-          metadata.size,
-          "native_cleanup_maintenance_unproven",
-        );
-        (entry as (typeof entries)[number]).sha256 = createHash("sha256")
-          .update(value)
-          .digest("hex");
-      }
-    }
-    const after = lstatSync(path);
-    if (
-      after.dev !== metadata.dev ||
-      after.ino !== metadata.ino ||
-      after.mtimeMs !== metadata.mtimeMs ||
-      after.ctimeMs !== metadata.ctimeMs ||
-      after.size !== metadata.size
-    )
-      throw new Error("native_cleanup_maintenance_unproven");
-  };
-  visit("", 0);
-  return {
-    entries,
-    bytes,
-    metadataFingerprint: nativeSha256(
-      entries.map(({ sha256: _sha, ...entry }) => entry),
-    ),
-    fingerprint: content
-      ? nativeSha256(
-          entries.map(({ path, directory, size, sha256 }) => ({
-            path,
-            directory,
-            size,
-            ...(sha256 ? { sha256 } : {}),
-          })),
-        )
-      : null,
-  };
-}
+const cleanupProviderHomeSnapshot = (home: string, content: boolean) =>
+  snapshotCleanupProviderHome(home, content, CODEX_HOME_NON_PERSISTENT_ENTRIES);
 
-function copyCleanupProviderHome(
-  source: string,
-  destination: string,
-  snapshot: ReturnType<typeof cleanupProviderHomeSnapshot>,
-) {
-  for (const entry of snapshot.entries) {
-    const target = resolve(destination, entry.path);
-    if (entry.directory) mkdirSync(target, { mode: 0o700 });
-    else {
-      const value = readBoundedNativeFile(
-        resolve(source, entry.path),
-        entry.size,
-        "native_cleanup_maintenance_unproven",
-      );
-      if (createHash("sha256").update(value).digest("hex") !== entry.sha256)
-        throw new Error("native_cleanup_maintenance_unproven");
-      writeFileSync(target, value, { flag: "wx", mode: 0o600 });
-    }
-  }
-  if (
-    cleanupProviderHomeSnapshot(source, false).metadataFingerprint !==
-      snapshot.metadataFingerprint ||
-    cleanupProviderHomeSnapshot(destination, true).fingerprint !==
-      snapshot.fingerprint
-  )
-    throw new Error("native_cleanup_maintenance_unproven");
-}
+const copyCleanupProviderHome = (source: string, destination: string, snapshot: Awaited<ReturnType<typeof cleanupProviderHomeSnapshot>>) =>
+  copyCleanupProviderHomeTree(source, destination, snapshot, CODEX_HOME_NON_PERSISTENT_ENTRIES);
 
-export function rebaseRetainedNativeCleanupProviderHome(
+export async function rebaseRetainedNativeCleanupProviderHome(
   home: string,
   canonicalHome: string,
   threadId: string,
@@ -2279,25 +2200,8 @@ export function rebaseRetainedNativeCleanupProviderHome(
 ) {
   if (resolve(home) === resolve(canonicalHome))
     throw new Error("native_cleanup_maintenance_unproven");
-  const snapshot = cleanupProviderHomeSnapshot(home, true);
-  const rollouts = snapshot.entries.filter(
-    (entry) =>
-      !entry.directory &&
-      entry.path.startsWith("sessions/") &&
-      entry.path.endsWith(`-${threadId}.jsonl`),
-  );
-  if (rollouts.length !== 1)
-    throw new Error("native_cleanup_maintenance_unproven");
-  const rollout = rollouts[0]!;
-  const bytes = readBoundedNativeFile(
-    resolve(home, rollout.path),
-    rollout.size,
-    "native_cleanup_maintenance_unproven",
-  );
-  const newline = bytes.indexOf(10);
-  if (newline < 0 || newline > 64 * 1024)
-    throw new Error("native_cleanup_maintenance_unproven");
-  const first = record(JSON.parse(bytes.subarray(0, newline).toString("utf8")));
+  const rollout = await findCleanupRollout(home, threadId, CODEX_HOME_NON_PERSISTENT_ENTRIES);
+  const first = record(JSON.parse((await readCleanupRolloutHeader(home, rollout)).toString("utf8")));
   if (first.type !== "session_meta" || record(first.payload).id !== threadId)
     throw new Error("native_cleanup_maintenance_unproven");
   // Only open the NEW private copy. Codex 0.153.4 deliberately does not fall
@@ -2305,14 +2209,6 @@ export function rebaseRetainedNativeCleanupProviderHome(
   // immutable rollout, which can differ after thread/revert. Relocate only
   // that already-proven path, never choose another rollout or change its mode.
   const sqlite = resolve(home, "state_5.sqlite");
-  if (
-    snapshot.entries.some(
-      (entry) =>
-        /^state_\d+\.sqlite$/.test(entry.path) &&
-        entry.path !== "state_5.sqlite",
-    )
-  )
-    throw new Error("native_cleanup_maintenance_unproven");
   if (!existsSync(sqlite)) return;
   const database = new DatabaseSync(sqlite);
   try {
@@ -2398,6 +2294,8 @@ export async function verifyStoppedNativeSessionForContinuation(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,
 ): Promise<{ evidence: Record<string, unknown>; retire: () => Promise<boolean> } | null> {
+  return withNativeAuthorityReadContext(db, async () => {
+
   try {
     if (run.runtimeMode !== "native" || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
         !run.finishedAt || !run.nativeIssueId || !run.nativeSessionId || !run.runnerInstanceId) return null;
@@ -2449,14 +2347,20 @@ export async function verifyStoppedNativeSessionForContinuation(
           !cleanupProcessAbsent(provider.processId) || provider.processId === stopped.processPid) return null;
       if (event.eventType === "session.reconciled" &&
           (!providerPids.has(Number(provider.previousProcessId)) || !cleanupProcessAbsent(provider.previousProcessId))) return null;
-      const receipt = receipts.find(row => row.sourceEventId === `${run.runnerInstanceId}:${run.id}:${event.sourceSeq}`);
+      const matchingReceipts = receipts.filter(row => {
+        const normalized = record(record(row.payload).prpEvent), payload = record(normalized.payload);
+        return normalized.eventType === event.eventType && (payload.driverSessionId ?? payload.providerSessionId) === provider.providerSessionId
+          && (payload.processId === undefined || payload.processId === provider.processId);
+      });
+      const receipt = matchingReceipts.length === 1 ? matchingReceipts[0] : undefined;
       const durable = record(record(receipt?.payload).prpEvent);
       const durableProvider = record(durable.payload);
       if (!receipt || !validatePrpEvent(durable).ok || durable.sourceInstanceId !== event.sourceInstanceId ||
           durable.runId !== run.id || durable.normalizedSessionId !== run.nativeSessionId ||
           // Normalized session-open receipts omit turn/item IDs. Those belong
           // to the durable runner identity checked above, not the open event.
-          durable.sourceSeq !== event.sourceSeq || durable.eventType !== event.eventType ||
+          receipt.sourceEventId !== normalizedEventId(run.runnerInstanceId!, run.id, Number(durable.sourceSeq), typeof durable.sourceEpoch === "string" ? durable.sourceEpoch : undefined)
+          || durable.eventType !== event.eventType ||
           receipt.sourcePayloadSha256 !== nativeSha256(durable) ||
           (durableProvider.processId !== undefined && durableProvider.processId !== provider.processId) ||
           (durableProvider.driverSessionId ?? durableProvider.providerSessionId) !== provider.providerSessionId) return null;
@@ -2497,6 +2401,8 @@ export async function verifyStoppedNativeSessionForContinuation(
       },
     };
   } catch { return null; }
+
+  });
 }
 
 /** Prove that a crashed local Codex turn ended without external effects. No provider
@@ -2506,6 +2412,8 @@ export async function verifyStoppedNativeSessionForReplacement(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,
 ): Promise<{ evidence: Record<string, unknown>; retire: () => Promise<boolean> } | null> {
+  return withNativeAuthorityReadContext(db, async () => {
+
   try {
     if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt ||
         !run.nativeIssueId || !run.nativeSessionId || !run.runnerInstanceId) return null;
@@ -2526,6 +2434,7 @@ export async function verifyStoppedNativeSessionForReplacement(
     if (!stopped) return null;
     const root = scopedRunnerdStateRoot(execution);
     const snapshot = (await cleanupStateSnapshot(root));
+    if (record(snapshot.control.indexedState).externalEffectEverAdmitted === true) return null;
     const identity = record(snapshot.control.identity);
     if (!durableIdentityMatchesExecution(identity, execution) || identity.runnerInstanceId !== run.runnerInstanceId ||
         !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"].every(key =>
@@ -2554,7 +2463,7 @@ export async function verifyStoppedNativeSessionForReplacement(
     const durableProvider = record(durableEvent.payload);
     if (!receipt || !validatePrpEvent(durableEvent).ok || durableEvent.runId !== run.id ||
         durableEvent.sourceInstanceId !== run.runnerInstanceId || durableEvent.normalizedSessionId !== run.nativeSessionId ||
-        receipt.sourceEventId !== `${run.runnerInstanceId}:${run.id}:${durableEvent.sourceSeq}` ||
+        receipt.sourceEventId !== normalizedEventId(run.runnerInstanceId!, run.id, Number(durableEvent.sourceSeq), typeof durableEvent.sourceEpoch === "string" ? durableEvent.sourceEpoch : undefined) ||
         receipt.sourcePayloadSha256 !== nativeSha256(durableEvent) ||
         (durableProvider.processId !== undefined && durableProvider.processId !== provider.processId) ||
         (durableProvider.driverSessionId ?? durableProvider.providerSessionId) !== provider.providerSessionId) return null;
@@ -2596,18 +2505,12 @@ export async function verifyStoppedNativeSessionForReplacement(
         events.some(event => ["mcp_app.tool_input", "runtime.input.requested", "runtime_request.created"].includes(String(event.eventType)))) return null;
     if (snapshot.control.commands.map(record).some(command => command.status === "pending" &&
         !["turn.stop", "runner.drain", "runner.suspend"].includes(String(command.type)))) return null;
-    const home = cleanupProviderHomeSnapshot(resolve(root, "codex-home"), false);
-    const rollouts = home.entries.filter(entry => !entry.directory && entry.path.startsWith("sessions/") &&
-      basename(entry.path).endsWith(`-${provider.providerSessionId}.jsonl`));
-    if (rollouts.length !== 1 || rollouts[0]!.size > 32 * 1024 * 1024) return null;
-    const rolloutPath = resolve(root, "codex-home", rollouts[0]!.path);
-    const bytes = readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven");
-    // A partial final write is not a closed transcript.
-    if (!bytes.toString("utf8").endsWith("\n")) return null;
-    const rows = bytes.toString("utf8").trimEnd().split("\n").map(line => JSON.parse(line));
-    if (!stoppedCodexTurnIsTextOnly({ rows, threadId: provider.providerSessionId, turnId, cwd: execution.workspace.cwd, completedTaskControlCalls })) return null;
-    const rolloutSha256 = nativeSha256(bytes.toString("utf8"));
-    const evidence = { schema: "paperclip.stopped_text_turn.v1", runId: run.id, nativeSessionId: run.nativeSessionId,
+    const rollout = await findCleanupRollout(resolve(root, "codex-home"), provider.providerSessionId, CODEX_HOME_NON_PERSISTENT_ENTRIES);
+    const rolloutPath = resolve(root, "codex-home", rollout.path);
+    const inventory = await inspectStoppedCodexRollout(rolloutPath, { threadId: provider.providerSessionId, turnId, cwd: execution.workspace.cwd, completedTaskControlCalls });
+    if (!inventory.safe) return null;
+    const rolloutSha256 = inventory.sha256;
+    const evidence = { schema: "paperclip.stopped_text_turn.v2", runId: run.id, nativeSessionId: run.nativeSessionId,
       runnerInstanceId: run.runnerInstanceId, processPid: stopped.processPid, providerPid: provider.processId,
       providerSessionId: provider.providerSessionId, providerTurnId: turnId,
       stateFingerprint: snapshot.fingerprint, rolloutSha256,
@@ -2616,10 +2519,12 @@ export async function verifyStoppedNativeSessionForReplacement(
       evidence,
       retire: async () => (await cleanupStateSnapshot(root)).fingerprint === snapshot.fingerprint &&
         idle() && cleanupProcessAbsent(stopped.processPid) && cleanupProcessAbsent(provider.processId) &&
-        nativeSha256(readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven").toString("utf8")) === rolloutSha256 &&
+        (await inspectStoppedCodexRollout(rolloutPath)).sha256 === rolloutSha256 &&
         completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId! }),
     };
   } catch { return null; }
+
+  });
 }
 
 /** Exact local cleanup only: the accepted result and original quarantine are
@@ -2635,6 +2540,8 @@ export async function reconcileRetainedNativeSessionCleanup(
   status: "settled" | "not_eligible" | "operator_required";
   runId: string;
 }> {
+  return withNativeAuthorityReadContext(db, async () => {
+
   const denied = () => new Error("native_cleanup_maintenance_unproven");
   const leaseOwner = `native-cleanup:${randomUUID()}`;
   let reservedScope: string | null = null;
@@ -2653,7 +2560,7 @@ export async function reconcileRetainedNativeSessionCleanup(
     root: string;
     emptyRoot: ReturnType<typeof cleanupCanonicalVacancy>;
     source: Awaited<ReturnType<typeof cleanupStateSnapshot>>;
-    providerHome: ReturnType<typeof cleanupProviderHomeSnapshot>;
+    providerHome: Awaited<ReturnType<typeof cleanupProviderHomeSnapshot>>;
     sourceArchive: {
       intent: Record<string, unknown>;
       fromCanonical: boolean;
@@ -2859,7 +2766,7 @@ export async function reconcileRetainedNativeSessionCleanup(
           fromCanonical: rootExists,
           completed: !!archived,
         };
-      } else if (rootExists && readdirSync(root).length) {
+      } else if (rootExists && !nativeDirectoryIsEmpty(root)) {
         if (maintenanceHistory.length || candidates.length) return null;
         sourceDirectory = root;
         quarantine = resolve(
@@ -2983,10 +2890,10 @@ export async function reconcileRetainedNativeSessionCleanup(
         snapshot: Awaited<ReturnType<typeof cleanupStateSnapshot>>;
         requestId: string;
       } | null = null;
-      const providerHome = cleanupProviderHomeSnapshot(
+      const providerHome = (await cleanupProviderHomeSnapshot(
         resolve(sourceDirectory, "codex-home"),
         true,
-      );
+      ));
       if (sourceArchive) {
         if (archiveHistory.length) {
           if (
@@ -3152,8 +3059,24 @@ export async function reconcileRetainedNativeSessionCleanup(
   const archiveReference = owned.sourceArchive
     ? { sourceArchiveRequestId: owned.sourceArchive.intent.requestId }
     : {};
+  let maintenanceDb: Db | AuthorityTransaction = db;
+  const renewMaintenanceLease = async () => {
+    if (!reservedScope || executingRunnerdSessionScopes.get(reservedScope) !== leaseOwner) throw denied();
+    const renewed = await maintenanceDb.update(nativeRunFinalizations)
+      .set({ leaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`, updatedAt: new Date() })
+      .where(and(
+        eq(nativeRunFinalizations.runId, owned.run.id),
+        eq(nativeRunFinalizations.companyId, owned.run.companyId),
+        eq(nativeRunFinalizations.phase, "committed"),
+        eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+        gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+      )).returning({ runId: nativeRunFinalizations.runId });
+    if (renewed.length !== 1) throw denied();
+  };
+  let maintenanceLease = startNativeMaintenanceLeaseRenewal(renewMaintenanceLease);
   const assertLease = async () => {
-    const lease = await db
+    await maintenanceLease.assert();
+    const lease = await maintenanceDb
       .select({ runId: nativeRunFinalizations.runId })
       .from(nativeRunFinalizations)
       .where(
@@ -3162,7 +3085,7 @@ export async function reconcileRetainedNativeSessionCleanup(
           eq(nativeRunFinalizations.companyId, owned.run.companyId),
           eq(nativeRunFinalizations.phase, "committed"),
           eq(nativeRunFinalizations.leaseOwner, leaseOwner),
-          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
         ),
       )
       .limit(1);
@@ -3180,10 +3103,10 @@ export async function reconcileRetainedNativeSessionCleanup(
     if (
       (await cleanupStateSnapshot(owned.quarantine)).fingerprint !==
         owned.source.fingerprint ||
-      cleanupProviderHomeSnapshot(
+      (await cleanupProviderHomeSnapshot(
         resolve(owned.quarantine, "codex-home"),
         false,
-      ).metadataFingerprint !== owned.providerHome.metadataFingerprint ||
+      )).metadataFingerprint !== owned.providerHome.metadataFingerprint ||
       (owned.copySource &&
         (!retainedRunnerdMaintenanceIsIdle(owned.copySource.directory) ||
           (await cleanupStateSnapshot(owned.copySource.directory)).fingerprint !==
@@ -3245,10 +3168,10 @@ export async function reconcileRetainedNativeSessionCleanup(
           canonicalJson(archive.intent.rootIdentity) ||
         (await cleanupStateSnapshot(sourceDirectory)).fingerprint !==
           owned.source.fingerprint ||
-        cleanupProviderHomeSnapshot(
+        (await cleanupProviderHomeSnapshot(
           resolve(sourceDirectory, "codex-home"),
           true,
-        ).fingerprint !== owned.providerHome.fingerprint ||
+        )).fingerprint !== owned.providerHome.fingerprint ||
         (archive.fromCanonical
           ? existsSync(owned.quarantine)
           : existsSync(owned.root))
@@ -3264,10 +3187,10 @@ export async function reconcileRetainedNativeSessionCleanup(
         renameSync(owned.root, owned.quarantine);
         archive.fromCanonical = false;
       }
-      const archivedHome = cleanupProviderHomeSnapshot(
+      const archivedHome = (await cleanupProviderHomeSnapshot(
         resolve(owned.quarantine, "codex-home"),
         true,
-      );
+      ));
       if (
         (await cleanupStateSnapshot(owned.quarantine)).fingerprint !==
           owned.source.fingerprint ||
@@ -3312,12 +3235,12 @@ export async function reconcileRetainedNativeSessionCleanup(
       );
       chmodSync(resolve(copy, file), 0o600);
     }
-    copyCleanupProviderHome(
+    await copyCleanupProviderHome(
       resolve(owned.quarantine, "codex-home"),
       resolve(copy, "codex-home"),
       owned.providerHome,
     );
-    rebaseRetainedNativeCleanupProviderHome(
+    await rebaseRetainedNativeCleanupProviderHome(
       resolve(copy, "codex-home"),
       resolve(owned.root, "codex-home"),
       owned.providerSessionId,
@@ -3334,10 +3257,10 @@ export async function reconcileRetainedNativeSessionCleanup(
       stagingName: basename(copy),
       providerHomeFingerprint: owned.providerHome.fingerprint,
       providerHomeBytes: owned.providerHome.bytes,
-      stagedProviderHomeFingerprint: cleanupProviderHomeSnapshot(
+      stagedProviderHomeFingerprint: (await cleanupProviderHomeSnapshot(
         resolve(copy, "codex-home"),
         true,
-      ).fingerprint,
+      )).fingerprint,
     });
     const proof = await settleRetainedRunnerdSession({
       requestId: leaseOwner,
@@ -3389,20 +3312,20 @@ export async function reconcileRetainedNativeSessionCleanup(
     // Commit intent before the filesystem handoff. A crash can then be
     // distinguished from an unattempted quarantine; never replay its source.
     if (
-      cleanupProviderHomeSnapshot(resolve(owned.quarantine, "codex-home"), true)
+      (await cleanupProviderHomeSnapshot(resolve(owned.quarantine, "codex-home"), true))
         .fingerprint !== owned.providerHome.fingerprint
     )
       throw denied();
-    rebaseRetainedNativeCleanupProviderHome(
+    await rebaseRetainedNativeCleanupProviderHome(
       resolve(copy, "codex-home"),
       resolve(owned.root, "codex-home"),
       owned.providerSessionId,
       "canonical",
     );
-    const settledHome = cleanupProviderHomeSnapshot(
+    const settledHome = (await cleanupProviderHomeSnapshot(
       resolve(copy, "codex-home"),
       true,
-    );
+    ));
     const emptyRootArchive = owned.emptyRoot
       ? `${basename(owned.root)}.empty-before-cleanup.${leaseOwner}`
       : null;
@@ -3453,6 +3376,11 @@ export async function reconcileRetainedNativeSessionCleanup(
       .returning({ runId: nativeRunFinalizations.runId });
     if (!prepared.length) throw denied();
     owned.history = preparedHistory;
+    // Drain the outside connection before taking the row lock. Renewals during
+    // the final history check must use this transaction, or wait on our own
+    // row lock and deadlock the authority check.
+    await maintenanceLease.stop();
+    await maintenanceLease.assert();
     await db.transaction(async (tx) => {
       const current = await tx
         .select()
@@ -3468,9 +3396,12 @@ export async function reconcileRetainedNativeSessionCleanup(
         .limit(1)
         .then((rows) => rows[0]);
       if (!current || current.phase !== "committed") throw denied();
+      maintenanceDb = tx;
+      maintenanceLease = startNativeMaintenanceLeaseRenewal(renewMaintenanceLease);
+      try {
       await authorize();
       if (
-        cleanupProviderHomeSnapshot(resolve(copy, "codex-home"), false)
+        (await cleanupProviderHomeSnapshot(resolve(copy, "codex-home"), false))
           .metadataFingerprint !== settledHome.metadataFingerprint
       )
         throw denied();
@@ -3507,9 +3438,13 @@ export async function reconcileRetainedNativeSessionCleanup(
           updatedAt: new Date(),
         })
         .where(eq(nativeRunFinalizations.runId, owned.run.id));
+      } finally {
+        await maintenanceLease.stop();
+        maintenanceDb = db;
+      }
     });
     if (
-      cleanupProviderHomeSnapshot(resolve(owned.root, "codex-home"), true)
+      (await cleanupProviderHomeSnapshot(resolve(owned.root, "codex-home"), true))
         .fingerprint !== settledHome.fingerprint
     )
       throw denied();
@@ -3570,8 +3505,11 @@ export async function reconcileRetainedNativeSessionCleanup(
     });
     return { status: "operator_required", runId: input.runId };
   } finally {
+    await maintenanceLease.stop();
     releaseScope();
   }
+
+  });
 }
 
 /** Read-only scoped admission fence; never grants provider or recovery authority. */
@@ -3579,6 +3517,8 @@ export async function assertRetainedNativeSourceArchiveSettled(
   db: Db,
   input: { companyId: string; issueId: string; stateKey: string },
 ): Promise<void> {
+  return withNativeAuthorityReadContext(db, async () => {
+
   if (!/^[a-f0-9]{64}$/.test(input.stateKey))
     throw new NativeSessionCleanupQuarantinedError();
   const owners = await db
@@ -3649,6 +3589,8 @@ export async function assertRetainedNativeSourceArchiveSettled(
     )
       throw new NativeSessionCleanupQuarantinedError();
   }
+
+  });
 }
 async function assertCleanupActivationCommitted(
   db: Db,
@@ -3702,7 +3644,7 @@ async function assertCleanupActivationCommitted(
       !/^[0-9a-f]{64}$/.test(marker.settledProviderHomeFingerprint) ||
       receipt?.settledProviderHomeFingerprint !==
         marker.settledProviderHomeFingerprint ||
-      cleanupProviderHomeSnapshot(resolve(root, "codex-home"), true)
+      (await cleanupProviderHomeSnapshot(resolve(root, "codex-home"), true))
         .fingerprint !== marker.settledProviderHomeFingerprint
     )
       throw new NativeSessionCleanupQuarantinedError();
@@ -3760,6 +3702,7 @@ function failedNativeRetryOwnersStopped(execution: NativeExecutionInput, process
  * run. Never migrate/archive state, release an owner, or contact a provider.
  * Normal executor admission independently verifies the state again. */
 export async function nativeFailedRunRetryStateIsSafe(input: {
+  db?: Db;
   execution: unknown;
   companyId: string;
   issueId: string;
@@ -3774,6 +3717,10 @@ export async function nativeFailedRunRetryStateIsSafe(input: {
   recoveryMode: "bootstrap_retry" | "exact_checkpoint_resume";
   allowVerifiedBackup: boolean;
 }): Promise<boolean> {
+  if (input.db) {
+    const { db, ...bound } = input;
+    return withNativeAuthorityReadContext(db, () => nativeFailedRunRetryStateIsSafe(bound));
+  }
   try {
     const execution = parseNativeExecutionInput(input.execution);
     if (
@@ -3834,9 +3781,9 @@ export async function nativeFailedRunRetryStateIsSafe(input: {
     )
       return false;
     let stateRoot = root;
-    const direct = runnerdAuthorityLifecycle(root, identity);
+    const direct = (await runnerdAuthorityLifecycle(root, identity));
     if (direct === "absent" && input.allowVerifiedBackup) {
-      const backup = verifyNativeHarnessBackup({
+      const backup = await verifyNativeHarnessBackup({
         root,
         execution,
         runnerInstanceId: input.runnerInstanceId,
@@ -3844,15 +3791,15 @@ export async function nativeFailedRunRetryStateIsSafe(input: {
       if (!backup) return false;
       stateRoot = backup.root;
     }
-    if (runnerdAuthorityLifecycle(stateRoot, identity) !== "suspended")
+    if ((await runnerdAuthorityLifecycle(stateRoot, identity)) !== "suspended")
       return false;
     const runnerState = record(
       JSON.parse(
-        readBoundedNativeFile(
+        (await readCurrentNativeFile(
           resolve(stateRoot, "runner", "runner-state.json"),
           NATIVE_RUNNER_STATE_MAX_BYTES,
           "runner_state_too_large",
-        ).toString("utf8"),
+        )).toString("utf8"),
       ),
     );
     if (
@@ -3874,11 +3821,11 @@ export async function nativeFailedRunRetryStateIsSafe(input: {
     if (input.recoveryMode === "bootstrap_retry") return false;
     const providerState = record(
       JSON.parse(
-        readBoundedNativeFile(
+        (await readCurrentNativeFile(
           providerFile,
           NATIVE_RUNNER_STATE_MAX_BYTES,
           "runner_provider_state_too_large",
-        ).toString("utf8"),
+        )).toString("utf8"),
       ),
     );
     if (
@@ -3910,6 +3857,7 @@ export async function nativeFailedRunRetryStateIsSafe(input: {
  * The caller separately proves the failed receipt/coordinator has no native
  * events or result and selects exactly one committed cleanup owner. */
 export async function nativePreProviderRetryAfterCleanupStateIsSafe(input: {
+  db?: Db;
   failedExecution: unknown;
   retiredExecution: unknown;
   companyId: string;
@@ -3925,6 +3873,10 @@ export async function nativePreProviderRetryAfterCleanupStateIsSafe(input: {
   processGroupId: number;
   receipt: Record<string, unknown>;
 }): Promise<boolean> {
+  if (input.db) {
+    const { db, ...bound } = input;
+    return withNativeAuthorityReadContext(db, () => nativePreProviderRetryAfterCleanupStateIsSafe(bound));
+  }
   try {
     const failed = parseNativeExecutionInput(input.failedExecution);
     const retired = parseNativeExecutionInput(input.retiredExecution);
@@ -4047,12 +3999,12 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
       nativeSessionScopeKey(priorExecution) ===
         nativeSessionScopeKey(input.execution);
     if (!sameScope) return "scope_mismatch";
-    const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
+    const lifecycle = (await runnerdAuthorityLifecycleWithVerifiedBackup(input));
     if (lifecycle === "suspended") return "verified";
-    const directLifecycle = runnerdAuthorityLifecycle(
+    const directLifecycle = (await runnerdAuthorityLifecycle(
       input.root,
       input.identity,
-    );
+    ));
     if (
       input.allowRetainedWarmRunner &&
       (lifecycle === "not_suspended" ||
@@ -4081,7 +4033,7 @@ async function hasRetainedWarmTransitionEvidence(root: string): Promise<boolean>
     try {
       const state = record(directory === "control-plane"
         ? (await readNativeJournalProjection(path)).value
-        : JSON.parse(readBoundedNativeFile(path, maximum, "runner_state_too_large").toString("utf8")));
+        : JSON.parse((await readCurrentNativeFile(path, maximum, "runner_state_too_large")).toString("utf8")));
       if (Object.prototype.hasOwnProperty.call(state, "warmTransition")
         || state.schema === "paperclip.runner.durable.control-plane-state.warm-transition.v1"
         || state.schema === "paperclip.runner.durable.state.warm-transition.v1") return true;
@@ -4121,7 +4073,7 @@ async function readWarmTransitionSnapshot(root: string) {
     const corePath = resolve(root, "control-plane", "control-plane-state.json");
     const runnerPath = resolve(root, "runner", "runner-state.json");
     const core = (await readNativeJournalProjection(corePath));
-    const runner = readBoundedNativeFile(runnerPath, NATIVE_RUNNER_STATE_MAX_BYTES, "native_runner_warm_transition_recovery_unproven");
+    const runner = (await readCurrentNativeFile(runnerPath, NATIVE_RUNNER_STATE_MAX_BYTES, "native_runner_warm_transition_recovery_unproven"));
     // The worker preserves the original canonical JSON [base64(core), base64(runner)] hash.
     const fingerprint = await nativeStateBase64Fingerprint([
       { path: corePath, maximum: DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES },
@@ -4160,6 +4112,9 @@ async function verifyWarmTransitionRestart(input: {
     return deny();
   const root = scopedRunnerdStateRoot(input.execution);
   const snapshot = (await readWarmTransitionSnapshot(root));
+  if ([snapshot.controlPlaneState, snapshot.runnerState].some(value => typeof record(value).indexedGeneration === "string")) {
+    return deny();
+  }
   const artifact = readRunnerdArtifactBinding(resolvePaperclipRunnerBinary());
   const controller = await currentNativeControllerIdentity();
   const binding = input.execution.binding;
@@ -4574,12 +4529,12 @@ async function migrateRunnerdStateRootForExecution(input: {
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
       if (
-        runnerdAuthorityLifecycleWithVerifiedBackup({
+        (await runnerdAuthorityLifecycleWithVerifiedBackup({
           root: scoped,
           identity,
           execution: input.execution,
           allowVerifiedBackup: input.allowVerifiedBackup,
-        }) === "indeterminate"
+        })) === "indeterminate"
       ) {
         if (input.restartRecovery?.kind !== "reattach_existing_runner") {
           quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
@@ -4681,7 +4636,7 @@ async function recoverQuiescentRunnerdState(input: {
   if (scopedExists && !isSafeNativeStateDirectory(input.scoped)) return;
   // Never hide corrupt or contradictory current authority behind an older
   // checkpoint. Only an absent/empty root may recover from quarantine.
-  const currentEmpty = !scopedExists || readdirSync(input.scoped).length === 0;
+  const currentEmpty = !scopedExists || nativeDirectoryIsEmpty(input.scoped);
   const candidates = currentEmpty
     ? isSafeNativeStateDirectory(quarantine)
       ? readdirSync(quarantine)
@@ -4697,7 +4652,7 @@ async function recoverQuiescentRunnerdState(input: {
     currentEmpty &&
     candidates.filter(
       (root) =>
-        isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+        isSafeNativeStateDirectory(root) && !nativeDirectoryIsEmpty(root),
     ).length > 1
   ) {
     // Do not roll back to an older valid checkpoint when a newer quarantined
@@ -4724,22 +4679,27 @@ async function recoverQuiescentRunnerdState(input: {
     try {
       const directoryIdentities = [root, resolve(root, "runner"), resolve(root, "control-plane")]
         .map(path => ({ path, identity: nativeStateDirectoryIdentity(path) }));
-      const readState = (directory: string, name: string) => {
+      const readState = async (directory: string, name: string) => {
         if (!isSafeNativeStateDirectory(resolve(root, directory)))
           throw new Error("unsafe_recovery_state");
-        return readBoundedNativeFile(
+        return (await readCurrentNativeFile(
           resolve(root, directory, name),
           nativeStateFileMaxBytes(`${directory}/${name}`),
           "recovery_state_too_large",
-        ).toString("utf8");
+        )).toString("utf8");
       };
-      const runnerBytes = readState("runner", "runner-state.json");
+      const runnerBytes = (await readState("runner", "runner-state.json"));
       const controlProof = (await readNativeJournalProjection(resolve(root, "control-plane", "control-plane-state.json")));
       const controlSha256 = controlProof.sha256;
-      const providerBytes = readState("runner", "codex-provider-state.json");
+      const providerBytes = (await readState("runner", "codex-provider-state.json"));
       const runner = record(JSON.parse(runnerBytes));
       const control = record(controlProof.value);
       const provider = record(JSON.parse(providerBytes));
+      if ([runner, control, provider].some(value => typeof value.indexedGeneration === "string")) {
+        // This legacy recovery path proves individual PIDs only. It cannot
+        // authorize mutation or replacement of an indexed process lifetime.
+        continue;
+      }
       const commands = control.commands;
       const events = control.committedEvents;
       const terminalEnvelope = record(
@@ -4859,9 +4819,9 @@ async function recoverQuiescentRunnerdState(input: {
       if (processIds.some((pid) => !localProcessDefinitelyGone(pid))) continue;
       // No mutation if any evidence changed while the database was read.
       if (
-        runnerBytes !== readState("runner", "runner-state.json") ||
+        runnerBytes !== (await readState("runner", "runner-state.json")) ||
         controlSha256 !== (await scanNativeStateFile(resolve(root, "control-plane", "control-plane-state.json"), DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES)).sha256 ||
-        providerBytes !== readState("runner", "codex-provider-state.json")
+        providerBytes !== (await readState("runner", "codex-provider-state.json"))
       )
         continue;
       for (const directory of directoryIdentities) assertNativeStateDirectoryIdentity(directory.path, directory.identity);
@@ -4888,7 +4848,7 @@ async function recoverQuiescentRunnerdState(input: {
       currentEmpty &&
       candidates.some(
         (root) =>
-          isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+          isSafeNativeStateDirectory(root) && !nativeDirectoryIsEmpty(root),
       )
     ) {
       // Known provider history is not permission to start a replacement when
@@ -4908,7 +4868,7 @@ async function recoverQuiescentRunnerdState(input: {
     if (
       (relativePath === "control-plane/control-plane-state.json"
         ? (await scanNativeStateFile(resolve(candidate.root, relativePath), DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES)).sha256
-        : readBoundedNativeFile(resolve(candidate.root, relativePath!), NATIVE_RUNNER_STATE_MAX_BYTES, "recovery_state_too_large").toString("utf8")) !== expected
+        : (await readCurrentNativeFile(resolve(candidate.root, relativePath!), NATIVE_RUNNER_STATE_MAX_BYTES, "recovery_state_too_large")).toString("utf8")) !== expected
     ) {
       throw new Error("runner_state_identity_mismatch");
     }
@@ -4925,7 +4885,7 @@ async function recoverQuiescentRunnerdState(input: {
     if (existsSync(input.scoped)) {
       if (
         !isSafeNativeStateDirectory(input.scoped) ||
-        readdirSync(input.scoped).length !== 0
+        !nativeDirectoryIsEmpty(input.scoped)
       )
         return;
       quarantineRunnerdStateRoot(input.scoped, "identity_indeterminate");
@@ -4937,11 +4897,8 @@ async function recoverQuiescentRunnerdState(input: {
   // next run, retaining the provider's history and exact thread identity.
   const statePath = resolve(input.scoped, "runner", "runner-state.json");
   const temporary = `${statePath}.${randomUUID()}.tmp`;
-  writeFileSync(
-    temporary,
-    JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
-    { encoding: "utf8", mode: 0o600, flag: "wx" },
-  );
+  writeFileSync(temporary, JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
+    { encoding: "utf8", mode: 0o600, flag: "wx" });
   renameSync(temporary, statePath);
   await input.onLog?.(
     "stdout",
@@ -4983,6 +4940,8 @@ export async function runnerdStateProvesIncompleteBootstrap(root: string): Promi
       state.schema === RUNNERD_CONTROL_PLANE_STATE_SCHEMA &&
       state.connectionCount === 0 &&
       committedEvents.length === 0 &&
+      record(state.indexedState).providerEverStarted !== true &&
+      record(state.indexedState).externalEffectEverAdmitted !== true &&
       onlyUnconsumedBootstrapCommands
     );
   } catch (error) {
@@ -4993,6 +4952,10 @@ export async function runnerdStateProvesIncompleteBootstrap(root: string): Promi
 
 function nativeJournalProofUnavailable(error: unknown): boolean {
   return error instanceof Error && (error.message.startsWith("native_journal_worker_")
+    || error.message.startsWith("indexed_state_")
+    || error.message.startsWith("native_indexed_")
+    || error.message.startsWith("native_legacy_migration_")
+    || error.name === "DurableAuthorityStoreError"
     || error.message === "native_state_file_changed"
     || error.message === "native_journal_projection_budget_exceeded");
 }
@@ -5238,6 +5201,7 @@ export interface NativeHarnessPersistenceProfile {
 
 export interface NativeHarnessBackupManifest {
   schema: "paperclip.native-harness-backup.v1";
+  nativeState?: NativeCheckpointBindings;
   normalizedSessionId: string;
   runnerInstanceId: string;
   providerKind: NativeProviderKind;
@@ -5523,43 +5487,6 @@ export function providerSessionIdentityTransitionIsAllowed(input: {
   );
 }
 
-function digestBackupDirectory(directory: string): {
-  sha256: string;
-  bytes: number;
-} {
-  const hash = createHash("sha256");
-  let bytes = 0;
-  const visit = (current: string, relative: string) => {
-    const entries = readdirSync(current, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name),
-    );
-    if (entries.length === 0) hash.update(`directory:${relative}\0`);
-    for (const entry of entries) {
-      const entryPath = resolve(current, entry.name);
-      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
-      const stats = lstatSync(entryPath);
-      if (entry.isDirectory()) {
-        hash.update(`directory:${entryRelative}:${stats.mode & 0o777}\0`);
-        visit(entryPath, entryRelative);
-      } else if (entry.isSymbolicLink()) {
-        hash.update(`symlink:${entryRelative}:${readlinkSync(entryPath)}\0`);
-      } else if (entry.isFile()) {
-        const contents = readFileSync(entryPath);
-        bytes += contents.byteLength;
-        hash.update(
-          `file:${entryRelative}:${stats.mode & 0o777}:${contents.byteLength}\0`,
-        );
-        hash.update(contents);
-      } else {
-        throw new Error(
-          `runner_harness_backup_unsupported_entry:${entryRelative}`,
-        );
-      }
-    }
-  };
-  visit(directory, "");
-  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
-}
 
 function harnessBackupRoot(root: string): string {
   return resolve(root, "failover-backups");
@@ -5607,7 +5534,7 @@ function compatibleNativeHarnessBackupManifests(input: {
     let manifest: NativeHarnessBackupManifest;
     try {
       manifest = JSON.parse(
-        readFileSync(manifestPath, "utf8"),
+        readNativeHarnessBackupManifestBytes(manifestPath).toString("utf8"),
       ) as NativeHarnessBackupManifest;
     } catch {
       continue;
@@ -5622,7 +5549,7 @@ function compatibleNativeHarnessBackupManifests(input: {
         nativeHarnessEnvironmentFingerprint(input.execution) ||
       manifest.runnerContractVersion !== RUNNERD_BINARY_CONTRACT_VERSION ||
       !providerSessionIdentityIsPresent(manifest.providerSessionIdentity) ||
-      !Array.isArray(manifest.directories)
+      !Array.isArray(manifest.directories) || manifest.directories.length > 4
     )
       continue;
     const manifestNames = manifest.directories
@@ -5634,25 +5561,32 @@ function compatibleNativeHarnessBackupManifests(input: {
   return compatible;
 }
 
-export function buildNativeHarnessBackupManifest(input: {
+export async function buildNativeHarnessBackupManifest(input: {
   backupRoot: string;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
   providerSessionIdentity: unknown;
   sourceProviderLeaseId: string;
   completedAt?: string;
-}): NativeHarnessBackupManifest {
+}): Promise<NativeHarnessBackupManifest> {
   if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
     throw new Error("runner_harness_state_mismatch");
   }
+  const native = await readNativeIndexedCheckpointProof(resolve(input.backupRoot, "runner"));
+  if (native && (native.runner.state.runnerInstanceId !== input.runnerInstanceId ||
+    native.runner.state.normalizedSessionId !== nativeSessionKey(input.execution) || native.bindings.runId !== input.execution.binding.runId ||
+    canonicalJson(providerSessionIdentityFromDurableProviderState({ execution: input.execution, providerState: native.provider.state })) !== canonicalJson(input.providerSessionIdentity))) {
+    throw new Error("runner_harness_state_mismatch: indexed_snapshot_identity");
+  }
   const profile = resolveNativeHarnessPersistenceProfile(input.execution);
-  const directories = profile.directories.map((directory) => {
+  const directories = await Promise.all(profile.directories.map(async (directory) => {
     const path = resolve(input.backupRoot, directory.name);
     if (!existsSync(path)) throw new Error("runner_harness_state_mismatch");
-    return { name: directory.name, ...digestBackupDirectory(path) };
-  });
+    return { name: directory.name, ...await digestNativeHarnessBackupDirectory(path, { sync: true }) };
+  }));
   return {
     schema: "paperclip.native-harness-backup.v1",
+    ...(native ? { nativeState: native.bindings } : {}),
     normalizedSessionId: nativeSessionKey(input.execution),
     runnerInstanceId: input.runnerInstanceId,
     providerKind: profile.providerKind,
@@ -5668,15 +5602,21 @@ export function buildNativeHarnessBackupManifest(input: {
   };
 }
 
-export function verifyNativeHarnessBackup(input: {
+export async function verifyNativeHarnessBackup(input: {
   root: string;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
-}): VerifiedHarnessBackup | null {
+}): Promise<VerifiedHarnessBackup | null> {
   for (const {
     root: candidateRoot,
     manifest,
   } of compatibleNativeHarnessBackupManifests(input)) {
+    try {
+      const native = await readNativeIndexedCheckpointProof(resolve(candidateRoot, "runner"));
+      if (canonicalJson(native?.bindings ?? null) !== canonicalJson(manifest.nativeState ?? null) ||
+        (native && (native.runner.state.runnerInstanceId !== input.runnerInstanceId || native.runner.state.normalizedSessionId !== nativeSessionKey(input.execution) ||
+          canonicalJson(providerSessionIdentityFromDurableProviderState({ execution: input.execution, providerState: native.provider.state })) !== canonicalJson(manifest.providerSessionIdentity)))) continue;
+    } catch { continue; }
     let bytes = 0;
     let valid = true;
     for (const declared of manifest.directories) {
@@ -5686,7 +5626,7 @@ export function verifyNativeHarnessBackup(input: {
         break;
       }
       try {
-        const digest = digestBackupDirectory(directoryPath);
+        const digest = await digestNativeHarnessBackupDirectory(directoryPath);
         if (
           digest.sha256 !== declared.sha256 ||
           digest.bytes !== declared.bytes
@@ -5700,7 +5640,11 @@ export function verifyNativeHarnessBackup(input: {
         break;
       }
     }
-    if (valid) return { root: candidateRoot, manifest, bytes };
+    try {
+      if (valid && canonicalJson(manifest) === canonicalJson(JSON.parse(readNativeHarnessBackupManifestBytes(resolve(candidateRoot, "manifest.json")).toString("utf8")))) return { root: candidateRoot, manifest, bytes };
+    } catch {
+      // An asynchronously replaced manifest invalidates this candidate.
+    }
   }
   return null;
 }
@@ -6089,6 +6033,8 @@ export async function nativeProviderRecoveryEvidence(input: {
   providerEventsExist: boolean;
   checkpointExists: boolean;
 }> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
@@ -6158,6 +6104,8 @@ export async function nativeProviderRecoveryEvidence(input: {
     providerEventsExist,
     checkpointExists,
   };
+
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -7036,6 +6984,8 @@ export async function renewNativeSessionExecutionLease(input: {
   controller?: NativeControllerIdentity;
   leaseTtlMs?: number;
 }): Promise<void> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   const controller =
     input.controller ?? (await currentNativeControllerIdentity());
   const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
@@ -7070,6 +7020,8 @@ export async function renewNativeSessionExecutionLease(input: {
     )
     .returning({ runId: nativeRunFinalizations.runId });
   if (!updated) throw new Error("native_session_lease_lost");
+
+  });
 }
 
 function startNativeSessionExecutionLeaseRenewal(input: {
@@ -7173,6 +7125,8 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   const runId = input.execution.binding.runId;
   if (nativeSessionStartups.has(runId)) {
     throw new Error("native_session_supervisor_busy");
@@ -7293,6 +7247,8 @@ export async function executePaperclipNativeSession(input: {
         .catch(() => undefined);
     }
   }
+
+  });
 }
 
 async function executePaperclipNativeSessionWithinScope(
@@ -7558,7 +7514,7 @@ async function executePaperclipNativeSessionWithinScope(
             ? recovering.controllerGeneration
             : coordinator.controllerBootId === controller.bootId
               ? Math.max(1, coordinator.controllerGeneration)
-              : coordinator.controllerGeneration + 1;
+              : nextNativeControllerGeneration(coordinator.controllerGeneration);
           const claimed = await tx
             .update(nativeRunFinalizations)
             .set({
@@ -7613,6 +7569,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   const controlPlaneInstanceId = `${effectiveRunnerInstanceId}:control`;
   const planSynchronizations: PlanSynchronization[] = [];
+  let planSynchronizationsTruncated = false;
   const upsertPlanSynchronization = (
     synchronization: PlanSynchronization,
   ): void => {
@@ -7624,6 +7581,13 @@ async function executePaperclipNativeSessionWithinScope(
       return;
     }
     planSynchronizations.push(synchronization);
+    // Every synchronization already has an immutable activity/document receipt.
+    // The final run result carries a recent display excerpt, never lifetime
+    // history from a multi-day active turn.
+    if (planSynchronizations.length > 128) {
+      planSynchronizations.shift();
+      planSynchronizationsTruncated = true;
+    }
   };
   const recordPlanSynchronization = async (event: {
     sourceEventId: string;
@@ -7690,6 +7654,7 @@ async function executePaperclipNativeSessionWithinScope(
         eventType: event.eventType,
         sourceInstanceId: event.sourceInstanceId,
         sourceRunId: event.runId,
+        sourceEpoch: event.sourceEpoch,
         sourceSeq: event.sourceSeq,
         payload: event.payload,
       },
@@ -9035,6 +9000,7 @@ async function executePaperclipNativeSessionWithinScope(
       nativeTerminal: native.terminal as unknown as Record<string, unknown>,
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
+      ...(planSynchronizationsTruncated ? { planSynchronizationsTruncated: true } : {}),
     },
     summary: native.result.summary,
     sessionId: native.normalizedSessionId,
@@ -9488,25 +9454,7 @@ async function stageRemoteRunnerFile(input: {
   }
 }
 
-function archiveExcludeArgs(entries: readonly string[]): string[] {
-  for (const entry of entries) {
-    const segments = entry.split("/");
-    if (
-      entry.length === 0 ||
-      entry.startsWith("/") ||
-      segments.some(
-        (segment) =>
-          segment === "" ||
-          segment === "." ||
-          segment === ".." ||
-          !/^[A-Za-z0-9._-]+$/.test(segment),
-      )
-    ) {
-      throw new Error("runner_remote_checkpoint_exclusion_invalid");
-    }
-  }
-  return entries.map((entry) => `--exclude=./${entry}`);
-}
+const archiveExcludeArgs = checkpointExclusions;
 
 export async function stageRemoteRunnerDirectory(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
@@ -9517,22 +9465,20 @@ export async function stageRemoteRunnerDirectory(input: {
   excludeEntries?: readonly string[];
 }): Promise<void> {
   const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
-  if (input.runner.syncIn) {
+  // Native bulk sync can impose a lifetime-sized archive cap or RPC deadline.
+  // The owned command channel keeps archive work separate from bounded chunks.
+  if (input.runner.syncIn && !input.runner.openDuplexChannel) {
     let stagingRoot: string | null = null;
     let sourcePath = input.sourcePath;
     try {
       if (excludeArgs.length > 0) {
         stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-restore-"));
-        const archive = execFileSync(
-          "tar",
-          [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-          { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
-        );
-        execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
-          input: archive,
-          maxBuffer: 64 * 1024 * 1024,
-        });
-        sourcePath = stagingRoot;
+        const archive = join(stagingRoot, "payload.tar.gz");
+        const payload = join(stagingRoot, "payload");
+        mkdirSync(payload, { mode: input.mode });
+        await checkpointTar([...excludeArgs, "-czf", archive, "-C", input.sourcePath, "."]);
+        await checkpointTar(["-xzf", archive, "-C", payload]);
+        sourcePath = payload;
       }
       await input.runner.syncIn([
         {
@@ -9552,25 +9498,12 @@ export async function stageRemoteRunnerDirectory(input: {
     }
     return;
   }
-  const archive = execFileSync(
-    "tar",
-    [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
-  );
-  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
-  const script =
-    `umask 077; mkdir -p '${escapedTarget}' && ` +
-    `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
-    `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
-  const result = await input.runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: archive.toString("base64"),
-    bypassSession: true,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_directory_staging_failed");
-  }
+  const stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-upload-"));
+  try {
+    const archive = join(stagingRoot, "payload.tar.gz");
+    await checkpointTar([...excludeArgs, "-czf", archive, "-C", input.sourcePath, "."]);
+    await uploadCheckpointArchive({ runner: input.runner, archive, targetPath: input.targetPath, mode: input.mode });
+  } finally { rmSync(stagingRoot, { recursive: true, force: true }); }
 }
 
 async function remoteRunnerPathExists(input: {
@@ -9586,98 +9519,6 @@ async function remoteRunnerPathExists(input: {
     timeoutMs: 10_000,
   });
   return result.exitCode === 0 && !result.timedOut;
-}
-
-function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
-  if (archive.length > MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES) {
-    throw new Error("runner_remote_checkpoint_archive_too_large");
-  }
-  let names: string[];
-  let verboseEntries: string[];
-  try {
-    names = execFileSync("tar", ["-tzf", "-"], {
-      input: archive,
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: 30_000,
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    verboseEntries = execFileSync("tar", ["-tvzf", "-"], {
-      input: archive,
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: 30_000,
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-  } catch {
-    throw new Error("runner_remote_checkpoint_archive_invalid");
-  }
-  if (
-    names.length === 0 ||
-    names.length > MAX_REMOTE_CHECKPOINT_ENTRIES ||
-    verboseEntries.length !== names.length
-  ) {
-    throw new Error("runner_remote_checkpoint_archive_invalid");
-  }
-  for (const name of names) {
-    const normalized = name.replace(/^\.\//, "");
-    if (
-      name.includes("\0") ||
-      name.startsWith("/") ||
-      normalized.split("/").some((part) => part === "..")
-    ) {
-      throw new Error("runner_remote_checkpoint_archive_unsafe_path");
-    }
-  }
-  for (const entry of verboseEntries) {
-    const type = entry.trimStart()[0];
-    if (type !== "-" && type !== "d") {
-      throw new Error("runner_remote_checkpoint_archive_unsafe_entry");
-    }
-  }
-  try {
-    execFileSync("tar", ["-xOzf", "-"], {
-      input: archive,
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES,
-      timeout: 60_000,
-    });
-  } catch {
-    throw new Error("runner_remote_checkpoint_archive_expanded_too_large");
-  }
-}
-
-function assertSafeExtractedCheckpoint(root: string): void {
-  const pending = [root];
-  let entries = 0;
-  let totalBytes = 0;
-  while (pending.length > 0) {
-    const directory = pending.pop()!;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      entries += 1;
-      if (entries > MAX_REMOTE_CHECKPOINT_ENTRIES) {
-        throw new Error("runner_remote_checkpoint_too_many_entries");
-      }
-      const path = join(directory, entry.name);
-      const metadata = lstatSync(path);
-      if (
-        metadata.isSymbolicLink() ||
-        (!metadata.isDirectory() && !metadata.isFile())
-      ) {
-        throw new Error("runner_remote_checkpoint_unsafe_entry");
-      }
-      if (metadata.isDirectory()) {
-        pending.push(path);
-      } else {
-        totalBytes += metadata.size;
-        if (totalBytes > MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES) {
-          throw new Error("runner_remote_checkpoint_expanded_too_large");
-        }
-      }
-    }
-  }
 }
 
 /**
@@ -9710,7 +9551,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   const excludeArgs = archiveExcludeArgs(excluded)
     .map((argument) => `'${argument}'`)
     .join(" ");
-  if (input.runner.syncOut) {
+  if (input.runner.syncOut && !input.runner.openDuplexChannel) {
     let syncSourcePath = input.sourcePath;
     let snapshotPath: string | null = null;
     if (excluded.length > 0) {
@@ -9769,79 +9610,13 @@ export async function syncRemoteRunnerDirectoryOut(input: {
     }
     return;
   }
-  const escapedSource = input.sourcePath.replaceAll("'", "'\\''");
-  const result = await input.runner.execute({
-    command: "sh",
-    args: ["-c", `tar ${excludeArgs} -czf - -C '${escapedSource}' . | base64`],
-    bypassSession: true,
-    timeoutMs: 120_000,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_checkpoint_failed");
-  }
-  const archive = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
-  assertSafeRemoteCheckpointArchive(archive);
-  const parent = resolve(input.targetPath, "..");
-  const stagingRoot = mkdtempSync(join(parent, ".paperclip-checkpoint-"));
-  const stagedTarget = join(stagingRoot, "payload");
-  const previousTarget = join(
-    parent,
-    `.paperclip-checkpoint-previous-${randomUUID()}`,
-  );
-  let previousMoved = false;
-  let replacementInstalled = false;
-  try {
-    mkdirSync(stagedTarget, { recursive: true, mode: input.mode });
-    execFileSync(
-      "tar",
-      [
-        "--no-same-owner",
-        "--no-same-permissions",
-        "-xzf",
-        "-",
-        "-C",
-        stagedTarget,
-      ],
-      { input: archive, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 },
-    );
-    assertSafeExtractedCheckpoint(stagedTarget);
-    chmodSync(stagedTarget, input.mode);
-    if (existsSync(input.targetPath)) {
-      renameSync(input.targetPath, previousTarget);
-      previousMoved = true;
-    }
-    renameSync(stagedTarget, input.targetPath);
-    replacementInstalled = true;
-    if (previousMoved) {
-      rmSync(previousTarget, { recursive: true, force: true });
-      previousMoved = false;
-    }
-  } catch (error) {
-    if (
-      previousMoved &&
-      !replacementInstalled &&
-      !existsSync(input.targetPath)
-    ) {
-      try {
-        renameSync(previousTarget, input.targetPath);
-        previousMoved = false;
-      } catch {
-        // Leave the last durable checkpoint at previousTarget. Deleting it in
-        // finally would turn a failed replacement into irreversible data loss.
-      }
-    }
-    throw error;
-  } finally {
-    if (previousMoved && replacementInstalled) {
-      rmSync(previousTarget, { recursive: true, force: true });
-    }
-    rmSync(stagingRoot, { recursive: true, force: true });
-  }
+  await downloadCheckpointDirectory(input);
 }
 
 async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
+  runnerBinary?: string;
 }): Promise<Record<string, unknown>> {
   const statePath = posix.join(input.stateDirectory, "runner-state.json");
   const escapedPath = statePath.replaceAll("'", "'\\''");
@@ -9856,17 +9631,27 @@ async function readRemoteRunnerState(input: {
       `runner_remote_state_unavailable: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`,
     );
   }
-  return record(
+  const state = record(
     JSON.parse(
       Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
     ),
   );
+  return resolveRemoteIndexedLocator(state, input, statePath);
+}
+
+async function resolveRemoteIndexedLocator(state: Record<string, unknown>, input: {
+  runner: CommandManagedRuntimeRunner; runnerBinary?: string;
+}, path: string): Promise<Record<string, unknown>> {
+  if (state.schema !== "paperclip.runner.durable.state.indexed.v1" && state.schema !== "paperclip.runner.codex-provider-state.indexed.v1") return state;
+  if (!input.runnerBinary) throw new Error("native_indexed_inspection_binary_unavailable");
+  return (await inspectRemoteIndexedState({ runner: input.runner, runnerBinary: input.runnerBinary, path })).state;
 }
 
 async function readRemoteRunnerProviderState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
   execution: NativeExecutionInput;
+  runnerBinary?: string;
 }): Promise<Record<string, unknown>> {
   const statePath = posix.join(
     input.stateDirectory,
@@ -9882,11 +9667,12 @@ async function readRemoteRunnerProviderState(input: {
   if (result.exitCode !== 0 || result.timedOut) {
     throw new Error("runner_remote_provider_state_unavailable");
   }
-  return record(
+  const state = record(
     JSON.parse(
       Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
     ),
   );
+  return resolveRemoteIndexedLocator(state, input, statePath);
 }
 
 const REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS = 20_000;
@@ -9941,6 +9727,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   identity: Record<string, unknown>;
   runId: string;
   normalizedSessionId: string;
+  runnerBinary?: string;
 }) {
   const { claim, target, identity } = input;
   if (
@@ -9966,7 +9753,7 @@ export async function verifyRemoteRunnerReattachment(input: {
     createHash("sha256").update(input.normalizedSessionId).digest("hex"),
     "runner",
   );
-  const runnerState = await readRemoteRunnerState({ runner, stateDirectory });
+  const runnerState = await readRemoteRunnerState({ runner, stateDirectory, runnerBinary: input.runnerBinary });
   for (const field of [
     "runId",
     "normalizedSessionId",
@@ -10319,6 +10106,7 @@ export function createRemoteRunnerProcessLauncher(input: {
         const durableState = await readRemoteRunnerState({
           runner,
           stateDirectory: input.stateDirectory,
+          runnerBinary: input.remoteBinary,
         }).catch(() => null);
         const lifecycle =
           typeof durableState?.lifecycle === "string"
@@ -10432,6 +10220,8 @@ export async function createRunnerdBackend(input: {
     },
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend & { bindManagedSession(session: NativeSession): NativeSession }> {
+  return withNativeAuthorityReadContext(input.db, async () => {
+
   const sessionScopeId = nativeSessionScopeKey(input.execution);
   const scopeOwner = executingRunnerdSessionScopes.get(sessionScopeId);
   if (scopeOwner && scopeOwner !== input.execution.binding.runId) {
@@ -10474,6 +10264,8 @@ export async function createRunnerdBackend(input: {
   } finally {
     initializingSessionToolAuthorities.delete(sessionScopeId);
   }
+
+  });
 }
 
 async function createRunnerdBackendWithinSessionClaim(
@@ -11261,6 +11053,7 @@ async function createRunnerdBackendWithinSessionClaim(
 
   const inspectRemoteHarnessState = async (): Promise<{
     complete: boolean;
+    indexed?: boolean;
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
     incompleteReason: "unavailable" | "not_suspended" | null;
@@ -11305,6 +11098,7 @@ async function createRunnerdBackendWithinSessionClaim(
       };
     }
     let runnerState: Record<string, unknown>;
+    let indexed = false;
     try {
       runnerState = record(
         JSON.parse(
@@ -11313,6 +11107,10 @@ async function createRunnerdBackendWithinSessionClaim(
           ),
         ),
       );
+      indexed = runnerState.schema === "paperclip.runner.durable.state.indexed.v1";
+      runnerState = await resolveRemoteIndexedLocator(runnerState, {
+        runner: remoteCommandRunner, runnerBinary: remoteBinary ?? undefined,
+      }, posix.join(remoteStateDirectory, "runner-state.json"));
     } catch {
       throw new Error("runner_harness_state_mismatch: runner_state_invalid_json");
     }
@@ -11336,6 +11134,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runner: remoteCommandRunner,
         stateDirectory: remoteStateDirectory,
         execution: input.execution,
+        runnerBinary: remoteBinary ?? undefined,
       });
     } catch {
       throw new Error("runner_harness_state_mismatch: provider_state_unreadable");
@@ -11365,6 +11164,7 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     return {
       complete: true,
+      indexed,
       runnerState,
       providerSessionIdentity,
       incompleteReason: null,
@@ -11476,7 +11276,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!remoteTarget || !remoteCommandRunner) {
       throw new Error("runner_harness_backup_unavailable");
     }
-    const backup = verifyNativeHarnessBackup({
+    const backup = await verifyNativeHarnessBackup({
       root,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
@@ -11906,9 +11706,14 @@ async function createRunnerdBackendWithinSessionClaim(
                 `.pending-${randomUUID()}`,
               );
               mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
+              let nativeSnapshot: Awaited<ReturnType<typeof createRemoteIndexedSessionCheckpoint>> | undefined;
               try {
+                if (verified.indexed) {
+                  if (!remoteBinary) throw new Error("native_indexed_checkpoint_binary_missing");
+                  nativeSnapshot = await createRemoteIndexedSessionCheckpoint({ runner: remoteCommandRunner, runnerBinary: remoteBinary, directory: remoteStateDirectory });
+                }
                 for (const directory of persistenceProfile.directories) {
-                  const sourcePath = remotePersistencePath(directory);
+                  const sourcePath = directory.name === "runner" && nativeSnapshot ? nativeSnapshot.directory : remotePersistencePath(directory);
                   if (!sourcePath)
                     throw new Error("runner_harness_state_mismatch");
                   const targetPath = resolve(pendingRoot, directory.name);
@@ -11923,7 +11728,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     throw new Error("runner_harness_state_mismatch");
                   }
                 }
-                const manifest = buildNativeHarnessBackupManifest({
+                const manifest = await buildNativeHarnessBackupManifest({
                   backupRoot: pendingRoot,
                   execution: input.execution,
                   runnerInstanceId: input.runnerInstanceId,
@@ -11944,15 +11749,19 @@ async function createRunnerdBackendWithinSessionClaim(
                   "manifest.json.tmp",
                 );
                 const manifestPath = resolve(pendingRoot, "manifest.json");
-                writeFileSync(temporaryManifest, JSON.stringify(manifest), {
-                  encoding: "utf8",
-                  mode: 0o600,
-                });
+                const manifestFile = await openAsync(temporaryManifest, "wx", 0o600);
+                try {
+                  await manifestFile.writeFile(JSON.stringify(manifest), "utf8");
+                  await manifestFile.sync();
+                } finally { await manifestFile.close(); }
                 renameSync(temporaryManifest, manifestPath);
+                await syncNativeHarnessDirectory(pendingRoot);
+                await syncNativeHarnessDirectory(backupRoot);
+                await syncNativeHarnessDirectory(root);
 
                 const currentRoot = resolve(backupRoot, "current");
                 const previousRoot = resolve(backupRoot, "previous");
-                removeNativeHarnessBackup(previousRoot);
+                await removeNativeHarnessBackup(previousRoot);
                 let movedCurrent = false;
                 if (existsSync(currentRoot)) {
                   renameSync(currentRoot, previousRoot);
@@ -11960,6 +11769,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 }
                 try {
                   renameSync(pendingRoot, currentRoot);
+                  await syncNativeHarnessDirectory(backupRoot);
                   if (
                     remoteTarget?.transport === "sandbox" &&
                     remoteTarget.leaseId
@@ -11972,7 +11782,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   }
                 } catch (error) {
                   if (existsSync(currentRoot)) {
-                    removeNativeHarnessBackup(currentRoot);
+                    await removeNativeHarnessBackup(currentRoot);
                   }
                   if (
                     movedCurrent &&
@@ -11983,9 +11793,14 @@ async function createRunnerdBackendWithinSessionClaim(
                   }
                   throw error;
                 }
-                removeNativeHarnessBackup(previousRoot);
+                await removeNativeHarnessBackup(previousRoot);
+                if (nativeSnapshot) {
+                  await nativeSnapshot.dispose().catch(async () => {
+                    await input.onLog?.("stderr", "[paperclip-runner] verified checkpoint published; remote snapshot cleanup will need a retry\n");
+                  });
+                }
               } finally {
-                removeNativeHarnessBackup(pendingRoot);
+                await removeNativeHarnessBackup(pendingRoot);
               }
             },
             {
@@ -12179,6 +11994,7 @@ async function createRunnerdBackendWithinSessionClaim(
           identity: durableIdentity ?? {},
           runId: input.execution.binding.runId,
           normalizedSessionId: nativeSessionKey(input.execution),
+          runnerBinary: remoteBinary ?? undefined,
         })
       : target.kind === "local" && localRecoveryProcess
         ? {
@@ -12230,6 +12046,23 @@ async function createRunnerdBackendWithinSessionClaim(
     ),
     codexTransportFactory: (recoveryContext) =>
       createRunnerdCodexTransport({
+        // Indexed activation is explicit until the migration and all provider
+        // recovery lanes have completed qualification. Existing legacy state
+        // remains readable and is never silently reinterpreted as a locator.
+        ...(!remoteTarget && input.execution.provider.kind === "codex" ? {
+          authorityStoreFactory: async (identity, directory) => {
+            if (!useIndexedNativeAuthority(directory, process.env.PAPERCLIP_NATIVE_INDEXED_STATE === "1")) return undefined;
+            return createNativePostgresAuthorityStore(input.db, {
+              companyId: input.execution.binding.companyId,
+              issueId: input.execution.binding.issueId,
+              normalizedSessionId: identity.normalizedSessionId,
+              runId: identity.runId,
+              runnerInstanceId: identity.runnerInstanceId,
+              environmentLeaseId: identity.environmentLeaseId,
+            }, input.execution.binding.agentId);
+          },
+          readAuthorityState: (location) => readPostgresAuthority(input.db, location),
+        } : {}),
         onSpawn: input.onSpawn,
         provider:
           input.execution.provider.kind === "codex"
@@ -12334,6 +12167,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 readRemoteRunnerState({
                   runner: remoteCommandRunner,
                   stateDirectory: remoteStateDirectory,
+                  runnerBinary: remoteBinary ?? undefined,
                 })
             : undefined,
         prepareExternalRunnerState,

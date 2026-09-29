@@ -1,3 +1,4 @@
+import { parseRunEventCursor } from "../run-event-history.js";
 import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -107,10 +108,13 @@ async function classifyEvidenceRef(input: {
   runId: string;
   ref: string;
 }): Promise<NativeEvidenceRefAssessment> {
-  const eventMatch = /^event:(\d+)$/.exec(input.ref);
+  const eventMatch = /^event:((?:e:[0-9a-f-]+:)?[0-9]+)$/.exec(input.ref);
   if (eventMatch) {
-    const cursor = Number(eventMatch[1]);
-    const event = await input.db.select({
+    let position: ReturnType<typeof parseRunEventCursor>;
+    try { position = parseRunEventCursor(eventMatch[1]); } catch {
+      return { ref: input.ref, kind: "event", outcome: "missing", reasonCode: "durable_run_event_missing", durableRecordId: null };
+    }
+    const matches = await input.db.select({
       id: heartbeatRunEvents.id,
       eventType: heartbeatRunEvents.eventType,
       payload: heartbeatRunEvents.payload,
@@ -119,8 +123,16 @@ async function classifyEvidenceRef(input: {
       .where(and(
         eq(heartbeatRunEvents.companyId, input.companyId),
         eq(heartbeatRunEvents.runId, input.runId),
-        or(eq(heartbeatRunEvents.seq, cursor), eq(heartbeatRunEvents.sourceSeq, cursor)),
-      )).limit(1).then((rows) => rows[0] ?? null);
+        or(
+          and(eq(heartbeatRunEvents.eventEpoch, position.eventEpoch), eq(heartbeatRunEvents.seq, position.seq)),
+          // Retained numeric references also allowed normalized ordinals. They
+          // remain legacy-only; a repeated ordinal in a new namespace cannot
+          // take over the authority of the original evidence reference.
+          position.eventEpoch === "" ? and(eq(heartbeatRunEvents.sourceEpoch, ""), eq(heartbeatRunEvents.sourceSeq, position.seq)) : undefined,
+        ),
+      )).limit(2);
+    if (matches.length > 1) return { ref: input.ref, kind: "event", outcome: "unverifiable", reasonCode: "durable_run_event_reference_ambiguous", durableRecordId: null };
+    const event = matches[0];
     if (!event) {
       return { ref: input.ref, kind: "event", outcome: "missing", reasonCode: "durable_run_event_missing", durableRecordId: null };
     }

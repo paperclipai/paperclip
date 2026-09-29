@@ -1,5 +1,6 @@
+import { resolveRunnerCargoTestBinary, resolveRunnerCargoTestBinaryOrDefault } from "./cargo-test-binary.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rename, rm } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -17,12 +18,13 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeSessionAuthorities,
 } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary,
 } from "../../vendor/paperclip-runner/index.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -55,12 +57,20 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-const fakeCodexAppServer = resolve(
-  import.meta.dirname,
-  "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server",
+const runnerWorkspace = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner");
+const runnerBinary = () => resolveRunnerCargoTestBinaryOrDefault(
+  runnerWorkspace,
+  "debug",
+  "paperclip-runnerd",
+  qualifiedCapabilityRunnerdBinary,
+);
+const fakeCodexAppServer = resolveRunnerCargoTestBinary(
+  runnerWorkspace,
+  "debug",
+  "fake-codex-app-server",
 );
 const binariesAvailable =
-  existsSync(defaultCapabilityRunnerdBinary()) && existsSync(fakeCodexAppServer);
+  existsSync(runnerBinary()) && existsSync(fakeCodexAppServer);
 const realProcessIt = binariesAvailable ? it : it.skip;
 
 async function closeServer(server: Server | null): Promise<void> {
@@ -244,7 +254,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     stateDirectory: string,
   ) {
     return {
-      runnerBinary: defaultCapabilityRunnerdBinary(),
+      runnerBinary: runnerBinary(),
       codexCommand: fakeCodexAppServer,
       codexArgs: [
         "--state-file",
@@ -885,6 +895,49 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ]);
   });
 
+  it("reattaches an exact surviving runner without reading historical process owners", async () => {
+    const fixture = await seedRun("INDEXED-LIVE-OWNERS");
+    const stateDirectory = resolve(runtimeRoot, fixture.runId);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", stateDirectory], {
+      detached: process.platform !== "win32", stdio: "ignore",
+    });
+    child.unref();
+    const pid = child.pid;
+    if (!pid) throw new Error("Failed to launch indexed runner sentinel");
+    try {
+      await waitForCondition("indexed runner sentinel startup", () => processAlive(pid));
+      const startedAt = await readProcessStartedAt(pid);
+      if (!startedAt) throw new Error("Sentinel fingerprint unavailable");
+      await fixture.db.update(heartbeatRuns).set({
+        processPid: pid, processGroupId: process.platform === "win32" ? null : pid,
+        processStartedAt: new Date(startedAt),
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      const state = JSON.stringify({
+        identity: { runId: fixture.runId, normalizedSessionId: fixture.native.normalizedSessionId },
+        indexedState: { processOwnerIndexVersion: 1, providerEverStarted: true },
+      });
+      await fixture.db.insert(nativeSessionAuthorities).values({
+        companyId, issueId: fixture.issueId, runId: fixture.runId,
+        normalizedSessionId: fixture.native.normalizedSessionId,
+        binding: JSON.stringify({ companyId, issueId: fixture.issueId, normalizedSessionId: fixture.native.normalizedSessionId }),
+        generation: "1", state, stateSha256: createHash("sha256").update(state).digest("hex"),
+      });
+      // Make the entire historical owner relation unavailable. A continuation
+      // that consults it hits the production one-second lock timeout; a claim
+      // for the exact live runner needs only its bounded current authority.
+      await fixture.db.transaction(async blocker => {
+        await blocker.execute(sql`lock table native_authority_work in access exclusive mode`);
+        const [claim] = await claimNativeRestartRecoveries({
+          db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+        });
+        expect(claim).toMatchObject({ kind: "reattach_existing_runner", runId: fixture.runId, process: { pid } });
+        expect(processAlive(pid)).toBe(true);
+      });
+    } finally {
+      await stopOwnedProcessGroup(pid, stateDirectory);
+    }
+  });
+
   it("fails closed for a live recycled PID without signalling or spawning", async () => {
     const fixture = await seedRun("MISMATCH");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
@@ -945,8 +998,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   });
 
-  it("allows only one of two concurrent successor controllers to claim a dead session", async () => {
-    const fixture = await seedRun("CONCURRENT");
+  it.each([4, 2_147_483_646, 2_147_483_647])("allows only one of two concurrent successor controllers to claim a dead session at generation %i", async (controllerGeneration) => {
+    const fixture = await seedRun(`CONCURRENT-${controllerGeneration}`);
     const now = new Date();
     await fixture.db
       .update(heartbeatRuns)
@@ -978,7 +1031,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         controllerBootId: "dead-controller-boot",
         controllerPid: 2_000_000_002,
         controllerProcessStartedAt: new Date("2026-09-04T10:00:00.000Z"),
-        controllerGeneration: 4,
+        controllerGeneration,
       })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
 
@@ -1014,7 +1067,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         .from(nativeRunFinalizations)
         .where(eq(nativeRunFinalizations.runId, fixture.runId)),
     ).resolves.toEqual([
-      { controllerGeneration: 5, providerAttempt: 0 },
+      { controllerGeneration: Math.min(controllerGeneration + 1, 2_147_483_647), providerAttempt: 0 },
     ]);
   });
 

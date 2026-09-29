@@ -1,3 +1,4 @@
+import { isProviderProcessGeneration } from "../../vendor/paperclip-runner/index.js";
 import { createHash } from "node:crypto";
 import { validatePrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
@@ -214,7 +215,7 @@ export function verifyRetainedMaintenanceNoLaunch(
     );
     requireProof(
       original.provider.lifecycle === "turn_active" &&
-        Number.isSafeInteger(original.provider.providerProcessGeneration),
+        isProviderProcessGeneration(original.provider.providerProcessGeneration),
     );
     requireProof(
       typeof original.provider.threadId === "string" &&

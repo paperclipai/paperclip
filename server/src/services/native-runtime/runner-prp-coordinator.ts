@@ -55,7 +55,7 @@ export interface PreparedRunnerPrpSession {
     type: string,
     payload?: Record<string, unknown>,
     commandId?: string,
-  ): { readonly commandId: string; readonly controllerSeq: number };
+  ): Promise<{ readonly commandId: string; readonly controllerSeq: number }>;
   completeRun(input: {
     readonly result: PrpStructuredRunResult;
     readonly terminal: PrpTerminalState;
@@ -321,8 +321,8 @@ export function runnerPrpCoordinator(
       try {
         releaseQuestionTarget = registerNativeQuestionCommandTarget({
           binding: storeBinding,
-          queueCommand: (type, payload = {}, commandId) => {
-            const command = authority.queueCommand(type, payload, commandId, true);
+          queueCommand: async (type, payload = {}, commandId) => {
+            const command = (await authority.queueCommand(type, payload, commandId, true));
             return { commandId: command.commandId, controllerSeq: command.controllerSeq };
           },
         });
@@ -335,7 +335,7 @@ export function runnerPrpCoordinator(
       }
       let bootstrapTicket: string;
       try {
-        bootstrapTicket = authority.issueBootstrapTicket(bootstrapTtlMs);
+        bootstrapTicket = (await authority.issueBootstrapTicket(bootstrapTtlMs));
       } catch (error) {
         releaseQuestionTarget();
         authority.disconnectActiveRunner();
@@ -347,14 +347,14 @@ export function runnerPrpCoordinator(
         connectUrl: registration.connectUrl,
         bootstrapTicket,
         semanticTools,
-        queueCommand: (type, payload = {}, commandId) => {
+        queueCommand: async (type, payload = {}, commandId) => {
           if (released) throw new Error("runner_prp_session_released");
-          const command = authority.queueCommand(
+          const command = (await authority.queueCommand(
             type,
             payload,
             commandId,
             true,
-          );
+          ));
           return {
             commandId: command.commandId,
             controllerSeq: command.controllerSeq,
@@ -399,7 +399,7 @@ export function runnerPrpCoordinator(
           if (released) throw new Error("runner_prp_session_released");
           const deadline = Date.now() + timeoutMs;
           while (Date.now() < deadline) {
-            const outcome = authority.commandOutcome(commandId);
+            const outcome = (await authority.commandOutcome(commandId));
             if (!outcome) throw new Error(`runner_prp_command_missing:${commandId}`);
             if (outcome.status === "completed") return outcome.result;
             if (outcome.status === "failed" || outcome.status === "rejected") {

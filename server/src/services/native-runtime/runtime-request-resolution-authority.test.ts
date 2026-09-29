@@ -1,6 +1,12 @@
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 
+const { readRunEventLane, runEventLane } = vi.hoisted(() => ({
+  readRunEventLane: vi.fn(),
+  runEventLane: vi.fn((_kind: string, key: string) => `request:${key}`),
+}));
+vi.mock("../run-event-history.js", () => ({ readRunEventLane, runEventLane }));
+
 import {
   assertNativeRuntimeRequestResolverAuthorized,
   NativeRuntimeRequestResolutionAuthorizationError,
@@ -8,16 +14,7 @@ import {
   type PendingNativeRuntimeRequest,
 } from "./runtime-request-resolution-authority.js";
 
-function dbReturning(row: Record<string, unknown> | null): Db {
-  const limit = vi.fn(async () => row ? [row] : []);
-  const query = {
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    orderBy: vi.fn().mockReturnThis(),
-    limit,
-  };
-  return { select: vi.fn(() => query) } as unknown as Db;
-}
+function dbReturning(_row: Record<string, unknown> | null): Db { return {} as Db; }
 
 const binding = {
   companyId: "company-1",
@@ -49,10 +46,20 @@ function createdEvent(requestKind: string) {
 }
 
 describe("native runtime request resolution authority", () => {
+  it("reads only the request lane and enforces company binding", async () => {
+    readRunEventLane.mockResolvedValueOnce([{ ...createdEvent("command_approval"), companyId: binding.companyId }]);
+    await expect(readPendingNativeRuntimeRequest(dbReturning(null), binding)).resolves.toMatchObject({ requestKind: "command_approval" });
+    expect(readRunEventLane).toHaveBeenLastCalledWith(expect.anything(), binding.runId, expect.stringMatching(/^request:/), 1);
+
+    readRunEventLane.mockResolvedValueOnce([{ ...createdEvent("command_approval"), companyId: "other-company" }]);
+    await expect(readPendingNativeRuntimeRequest(dbReturning(null), binding)).resolves.toBeNull();
+  });
+
   it("derives privileged approval policy from the durable canonical request", async () => {
+    readRunEventLane.mockResolvedValueOnce([{ ...createdEvent("command_approval"), companyId: binding.companyId }]);
     await expect(
       readPendingNativeRuntimeRequest(
-        dbReturning(createdEvent("command_approval")),
+        dbReturning(null),
         binding,
       ),
     ).resolves.toEqual({
@@ -64,11 +71,13 @@ describe("native runtime request resolution authority", () => {
   });
 
   it("treats a terminal latest event as no longer pending", async () => {
+    readRunEventLane.mockResolvedValueOnce([{
+      companyId: binding.companyId,
+      eventType: "runtime_request.resolved",
+      payload: { prpEvent: { payload: { requestId: binding.requestId } } },
+    }]);
     await expect(
-      readPendingNativeRuntimeRequest(dbReturning({
-        eventType: "runtime_request.resolved",
-        payload: { prpEvent: { payload: { requestId: binding.requestId } } },
-      }), binding),
+      readPendingNativeRuntimeRequest(dbReturning(null), binding),
     ).resolves.toBeNull();
   });
 

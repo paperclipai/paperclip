@@ -3,7 +3,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -25,6 +25,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
+  nativeToolReceipts,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
@@ -503,66 +504,85 @@ describe("native same-conversation chat attachment reuse", () => {
         reusedFromCommentId: sourceCommentId,
       }),
     });
-    const [run] = await db
-      .select({ resultJson: heartbeatRuns.resultJson })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId));
-    const receipts = (
-      run.resultJson as {
-        semanticToolReceipts: Record<
-          string,
-          {
-            operationId: string;
-            input: unknown;
-            result: unknown;
-          }
-        >;
+    const receiptBinding = { companyId, issueId, runId };
+    const receiptKeys = ["reuse-earlier-v1", "reuse-earlier-v2"];
+    type StoredReceiptRow = { idempotencyKey: string; receipt: unknown };
+    const readReceiptRows = () => db.select({
+      idempotencyKey: nativeToolReceipts.idempotencyKey,
+      receipt: nativeToolReceipts.receipt,
+    }).from(nativeToolReceipts).where(and(
+      eq(nativeToolReceipts.companyId, companyId),
+      eq(nativeToolReceipts.runId, runId),
+      inArray(nativeToolReceipts.idempotencyKey, receiptKeys),
+    ));
+    const writeReceiptRows = async (rows: StoredReceiptRow[]) => {
+      for (const row of rows) {
+        await db.update(nativeToolReceipts).set({ receipt: row.receipt }).where(and(
+          eq(nativeToolReceipts.companyId, companyId),
+          eq(nativeToolReceipts.runId, runId),
+          eq(nativeToolReceipts.idempotencyKey, row.idempotencyKey),
+        ));
       }
-    ).semanticToolReceipts;
+    };
+    const receiptRows = await readReceiptRows();
+    expect(receiptRows.map(({ idempotencyKey }) => idempotencyKey).sort()).toEqual(receiptKeys);
+    const receipts = Object.fromEntries(receiptRows.map(row => [row.idempotencyKey, row.receipt])) as Record<
+      string,
+      { operationId: string; input: unknown; result: unknown }
+    >;
     expect(receipts["reuse-earlier-v1"]).toMatchObject({
       operationId: "reuse_chat_attachment",
       input: call.arguments,
     });
     expect(receipts["reuse-earlier-v1"]?.result).toEqual(first);
     expect(receipts["reuse-earlier-v2"]?.result).toEqual(duplicate);
-    const verifyReceipt = (semanticToolReceipts: unknown) => validateNativeDeliverableEvidence(db, {
-      companyId, issueId, runId, objective: "Send me that file again.", semanticToolReceipts,
+    const verifyReceipt = () => validateNativeDeliverableEvidence(db, {
+      ...receiptBinding, objective: "Send me that file again.", semanticToolReceipts: null,
     }, {
       schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Prepared the requested existing file.",
       completionClaim: { contractRevision: "test", objectiveSatisfied: true, criteria: [], remainingWork: [] },
       evidence: [{ ref: `deliverable:${preparedId}` }], verification: [], attentionRequests: [], artifacts: [],
     });
-    await expect(verifyReceipt(receipts)).resolves.toBeUndefined();
+    await expect(verifyReceipt()).resolves.toBeUndefined();
     for (const field of ["filename", "byteSize"]) {
-      const corrupted = structuredClone(receipts);
-      for (const receipt of Object.values(corrupted)) {
-        const prepared = (receipt.result as { prepared?: Record<string, unknown> }).prepared;
+      const corrupted = structuredClone(receiptRows);
+      for (const row of corrupted) {
+        const receipt = row.receipt as { result?: Record<string, unknown> };
+        const prepared = (receipt.result?.prepared as Record<string, unknown> | undefined);
         if (prepared) prepared[field] = field === "filename" ? "different.txt" : sourceBody.length + 1;
       }
-      await expect(verifyReceipt(corrupted)).rejects.toThrow("this run's requested output");
+      await writeReceiptRows(corrupted);
+      await expect(verifyReceipt()).rejects.toThrow("this run's requested output");
+      await writeReceiptRows(receiptRows);
     }
-    const legacy = structuredClone(receipts);
-    for (const receipt of Object.values(legacy)) {
-      const prepared = (receipt.result as { prepared?: Record<string, unknown> }).prepared;
+    const legacyRows = structuredClone(receiptRows);
+    for (const row of legacyRows) {
+      const receipt = row.receipt as { result?: Record<string, unknown> };
+      const prepared = receipt.result?.prepared as Record<string, unknown> | undefined;
       if (prepared) { delete prepared.filename; delete prepared.byteSize; }
     }
-    await expect(verifyReceipt(legacy)).resolves.toBeUndefined();
+    await writeReceiptRows(legacyRows);
+    await expect(verifyReceipt()).resolves.toBeUndefined();
+    await writeReceiptRows(receiptRows);
     const [sourceRow] = await db.select({ attachment: issueAttachments, asset: assets }).from(issueAttachments)
       .innerJoin(assets, eq(assets.id, issueAttachments.assetId)).where(eq(issueAttachments.id, sourceAttachmentId));
     const foreignCompanyId = randomUUID();
     await db.insert(companies).values({ id: foreignCompanyId, name: "Unrelated receipt source" });
     try {
       for (const mutation of ["missing", "filename", "size", "hash", "foreign company"]) {
+        await writeReceiptRows(legacyRows);
         if (mutation === "missing") await db.delete(issueAttachments).where(eq(issueAttachments.id, sourceAttachmentId));
         if (mutation === "filename") await db.update(assets).set({ originalFilename: "different.txt" }).where(eq(assets.id, sourceRow.asset.id));
         if (mutation === "size") await db.update(assets).set({ byteSize: sourceBody.length + 1 }).where(eq(assets.id, sourceRow.asset.id));
         if (mutation === "hash") await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, sourceRow.asset.id));
         if (mutation === "foreign company") await db.update(issueAttachments).set({ companyId: foreignCompanyId }).where(eq(issueAttachments.id, sourceAttachmentId));
         try {
-          await expect(verifyReceipt(legacy)).rejects.toThrow("this run's requested output");
+          await expect(verifyReceipt()).rejects.toThrow("this run's requested output");
           // New receipts preserve the verified tuple even after the source is removed.
-          await expect(verifyReceipt(receipts)).resolves.toBeUndefined();
+          await writeReceiptRows(receiptRows);
+          await expect(verifyReceipt()).resolves.toBeUndefined();
         } finally {
+          await writeReceiptRows(receiptRows);
           if (mutation === "missing") await db.insert(issueAttachments).values(sourceRow.attachment);
           else await db.update(issueAttachments).set({ companyId }).where(eq(issueAttachments.id, sourceAttachmentId));
           await db.update(assets).set({ originalFilename: sourceRow.asset.originalFilename,
@@ -572,6 +592,8 @@ describe("native same-conversation chat attachment reuse", () => {
     } finally {
       await db.delete(companies).where(eq(companies.id, foreignCompanyId));
     }
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const completedResult = mergeHeartbeatRunResultJson(
       {
         ...(run.resultJson ?? {}),
@@ -591,14 +613,10 @@ describe("native same-conversation chat attachment reuse", () => {
         .select({ resultJson: heartbeatRuns.resultJson })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
-    )[0]?.resultJson as {
-      semanticToolReceipts: typeof receipts;
-      nativeResult: { summary: string };
-    };
-    expect(persistedCompletion.semanticToolReceipts).toEqual(receipts);
-    expect(persistedCompletion.nativeResult.summary).toBe(
-      "Prepared the earlier file again.",
-    );
+    )[0]?.resultJson as Record<string, unknown>;
+    expect(persistedCompletion).not.toHaveProperty("semanticToolReceipts");
+    expect(persistedCompletion.nativeResult).toMatchObject({ summary: "Prepared the earlier file again." });
+    expect(await readReceiptRows()).toEqual(receiptRows);
     const reuseActivity = (
       await db.select().from(activityLog).where(eq(activityLog.runId, runId))
     ).find(

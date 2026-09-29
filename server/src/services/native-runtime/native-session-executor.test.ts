@@ -1,3 +1,4 @@
+import { loopbackCheckpointRunner, loopbackCheckpointDuplexRunner } from "./native-checkpoint-transfer.test-support.js";
 import * as nativeJournalProof from "./native-journal-projection-async.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1377,7 +1378,7 @@ describe("verified native harness backups", () => {
         join(current, "codex-home", "sessions", "thread.jsonl"),
         "thread-state",
       );
-      const manifest = buildNativeHarnessBackupManifest({
+      const manifest = await buildNativeHarnessBackupManifest({
         backupRoot: current,
         execution: backupExecution,
         runnerInstanceId: "runner-1",
@@ -1392,7 +1393,7 @@ describe("verified native harness backups", () => {
       await writeFile(join(current, "manifest.json"), JSON.stringify(manifest));
 
       expect(
-        verifyNativeHarnessBackup({
+        await verifyNativeHarnessBackup({
           root,
           execution: backupExecution,
           runnerInstanceId: "runner-1",
@@ -1417,7 +1418,7 @@ describe("verified native harness backups", () => {
         },
       } as NativeExecutionInputV1;
       expect(
-        verifyNativeHarnessBackup({
+        await verifyNativeHarnessBackup({
           root,
           execution: continuationExecution,
           runnerInstanceId: "runner-1",
@@ -1429,7 +1430,7 @@ describe("verified native harness backups", () => {
         "corrupt",
       );
       expect(
-        verifyNativeHarnessBackup({
+        await verifyNativeHarnessBackup({
           root,
           execution: backupExecution,
           runnerInstanceId: "runner-1",
@@ -1452,7 +1453,7 @@ describe("verified native harness backups", () => {
         join(current, "runner", "runner-state.json"),
         "runner-state",
       );
-      expect(() =>
+      await expect(
         buildNativeHarnessBackupManifest({
           backupRoot: current,
           execution: backupExecution,
@@ -1464,7 +1465,7 @@ describe("verified native harness backups", () => {
           },
           sourceProviderLeaseId: "sandbox-1",
         }),
-      ).toThrow("runner_harness_state_mismatch");
+      ).rejects.toThrow("runner_harness_state_mismatch");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1491,7 +1492,7 @@ describe("verified native harness backups", () => {
         join(current, "codex-home", "sessions", "thread.jsonl"),
         "thread-state",
       );
-      const manifest = buildNativeHarnessBackupManifest({
+      const manifest = await buildNativeHarnessBackupManifest({
         backupRoot: current,
         execution: backupExecution,
         runnerInstanceId: "runner-1",
@@ -1513,8 +1514,8 @@ describe("verified native harness backups", () => {
         completedAt: manifest.completedAt,
       });
 
-      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
-      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
+      expect(await verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
+      expect(await verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
       const reboundStamp = createNativeHarnessBackupStamp({
         manifestPath,
         sessionScopeId,
@@ -1523,11 +1524,11 @@ describe("verified native harness backups", () => {
         runnerInstanceId: "runner-1",
         completedAt: manifest.completedAt,
       });
-      expect(verifyNativeHarnessBackupStamp(reboundStamp, "sandbox-2")).toBe(
+      expect(await verifyNativeHarnessBackupStamp(reboundStamp, "sandbox-2")).toBe(
         true,
       );
       await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
-      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
+      expect(await verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -1563,7 +1564,7 @@ describe("verified native harness backups", () => {
         join(legacyRoot, "codex-home", "sessions", "thread.jsonl"),
         "thread-state",
       );
-      const manifest = buildNativeHarnessBackupManifest({
+      const manifest = await buildNativeHarnessBackupManifest({
         backupRoot: legacyRoot,
         execution: backupExecution,
         runnerInstanceId: "runner-1",
@@ -1578,7 +1579,7 @@ describe("verified native harness backups", () => {
       await writeFile(join(legacyRoot, "manifest.json"), manifestBytes);
 
       expect(
-        verifyNativeHarnessBackupStamp(
+        await verifyNativeHarnessBackupStamp(
           {
             schema: "paperclip.native-harness-backup-stamp.v1",
             normalizedSessionId: "native-session",
@@ -1804,6 +1805,37 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
+  it("uses bounded checkpoint chunks instead of capped provider bulk sync when a command channel exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-checkpoint-duplex-"));
+    const sourcePath = join(root, "source"), targetPath = join(root, "checkpoint"), restored = join(root, "restored");
+    const runner = loopbackCheckpointDuplexRunner();
+    const syncIn = vi.fn().mockRejectedValue(new Error("provider bulk archive limit"));
+    const syncOut = vi.fn().mockRejectedValue(new Error("provider bulk archive limit"));
+    runner.syncIn = syncIn; runner.syncOut = syncOut;
+    const execute = vi.spyOn(runner, "execute");
+    const channel = vi.spyOn(runner, "openDuplexChannel");
+    try {
+      await mkdir(join(sourcePath, "sessions"), { recursive: true });
+      await mkdir(join(sourcePath, "tmp"));
+      await writeFile(join(sourcePath, "sessions", "history.jsonl"), "retained history\n".repeat(100_000));
+      await writeFile(join(sourcePath, "auth.json"), "private credential");
+      await symlink("/etc/passwd", join(sourcePath, "tmp", "scratch-link"));
+      await syncRemoteRunnerDirectoryOut({ runner, sourcePath, targetPath, mode: 0o700, excludeEntries: ["tmp", "auth.json"] });
+      await stageRemoteRunnerDirectory({ target: { kind: "remote" } as never, runner, sourcePath: targetPath, targetPath: restored, mode: 0o700 });
+      expect(await readFile(join(restored, "sessions", "history.jsonl"))).toEqual(await readFile(join(sourcePath, "sessions", "history.jsonl")));
+      await expect(access(join(restored, "auth.json"))).rejects.toThrow();
+      await expect(access(join(restored, "tmp"))).rejects.toThrow();
+      await expect(lstat(join(sourcePath, "tmp", "scratch-link"))).resolves.toMatchObject({});
+      expect(syncIn).not.toHaveBeenCalled(); expect(syncOut).not.toHaveBeenCalled();
+      expect(channel).toHaveBeenCalled();
+      expect(execute.mock.calls.every(([input]) => input.timeoutMs! > 0)).toBe(true);
+      // A corrupt/unsafe subsequent snapshot cannot replace the good checkpoint.
+      await symlink("/etc/passwd", join(sourcePath, "unsafe-link"));
+      await expect(syncRemoteRunnerDirectoryOut({ runner, sourcePath, targetPath, mode: 0o700, excludeEntries: ["tmp", "auth.json"] })).rejects.toThrow("archive_unsafe_entry");
+      expect(await readFile(join(targetPath, "sessions", "history.jsonl"))).toEqual(await readFile(join(restored, "sessions", "history.jsonl")));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("excludes Codex scratch and credential state without mutating the live provider home", async () => {
     const execute = vi
       .fn()
@@ -1938,30 +1970,12 @@ describe("remote provider checkpoint snapshots", () => {
       await mkdir(targetPath, { recursive: true });
       await writeFile(join(targetPath, "preserved.txt"), "preserved");
       await symlink("/etc/passwd", join(archiveSource, "host-secret"));
-      const archive = execFileSync(
-        "tar",
-        ["-czf", "-", "-C", archiveSource, "."],
-        { maxBuffer: 8 * 1024 * 1024 },
-      );
-      const execute = vi
-        .fn()
-        .mockResolvedValueOnce({
-          exitCode: 0,
-          timedOut: false,
-          stdout: "",
-          stderr: "",
-        })
-        .mockResolvedValueOnce({
-          exitCode: 0,
-          timedOut: false,
-          stdout: archive.toString("base64"),
-          stderr: "",
-        });
+
 
       await expect(
         syncRemoteRunnerDirectoryOut({
-          runner: { execute } as never,
-          sourcePath: "/remote/codex-home",
+          runner: loopbackCheckpointRunner(),
+          sourcePath: archiveSource,
           targetPath,
           mode: 0o700,
         }),
@@ -2815,6 +2829,7 @@ describe("retained native cleanup activation", () => {
       resultId: "result",
       assessmentId: "assessment",
       decisionId: "decision",
+      controllerGeneration: 0,
       leaseOwner: null,
       leaseExpiresAt: null,
       nextAttemptAt: null,
@@ -3670,7 +3685,6 @@ describe("retained native cleanup activation", () => {
         "canonical_prepared_bad_hash",
         "canonical_prepared_bad_inode",
         "home_symlink",
-        "home_oversized",
         "legacy_busy_copy",
         "legacy_bad_proof",
         "legacy_extra_attempt",
@@ -3688,6 +3702,7 @@ describe("retained native cleanup activation", () => {
         "wrong_provider_account",
       ].includes(mode);
       const succeeds = [
+        "home_oversized",
         "home_paginated",
         "canonical_source",
         "canonical_claim_commit_stalled",
@@ -3966,7 +3981,7 @@ describe("retained native cleanup activation", () => {
 
 describe("stopped native conversation physical cleanup", () => {
   it.each(["codex", "acpx"].flatMap(provider => [
-    "stopped", "provider_alive", "worker_alive", "missing_receipt", "wrong_receipt", "new_launch",
+    "stopped", "indexed_authority", "provider_alive", "worker_alive", "missing_receipt", "wrong_receipt", "new_launch",
     "foreign_run", "foreign_company", "foreign_runner", "remote", "unreleased", "changed_state", "changed_pid", "symlink", "startup_intent", "pending_identity", "wrong_schema", "replacement", "replacement_alive", "agent_alive", "checkpoint_owner_alive", "diagnostic_owner_alive", "normalized_session_receipt",
   ].map(mode => ({ provider, mode }))))("$provider $mode", async ({ provider, mode }) => {
     const base = await mkdtemp(join(tmpdir(), "native-conversation-cleanup-"));
@@ -4000,6 +4015,7 @@ describe("stopped native conversation physical cleanup", () => {
     if (mode === "diagnostic_owner_alive") providerEvents.push({ ...event, eventType: "harness.diagnostic",
       payload: { providerMethod: "acpx/process", role: "acp_agent", pid: process.pid } } as unknown as typeof event);
     const providerState = { schema: mode === "wrong_schema" ? "unknown" : `paperclip.runner.${provider}-provider-state.${provider === "codex" ? "v1" : "v3"}`, lifecycle: "turn_active",
+      ...(mode === "indexed_authority" ? { indexedGeneration: "1" } : {}),
       ...(mode === "startup_intent" ? { startupAttempt: { phase: "intent" } } : {}),
       ...(mode === "pending_identity" ? { pendingEvents: [{ eventType: "session.started" }] } : {}),
     };
@@ -4007,7 +4023,8 @@ describe("stopped native conversation physical cleanup", () => {
     const receipt = { sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`,
       sourcePayloadSha256: mode === "wrong_receipt" ? "wrong" : hash(normalizedEvent), payload: { prpEvent: normalizedEvent } };
     const stop = { eventType: mode === "new_launch" ? "native.process_start_requested" : "native.local_process_stopped",
-      payload: { processPid: mode === "worker_alive" ? process.pid : 99_999_999, processGroupId: mode === "worker_alive" ? process.pid : 99_999_999 } };
+      companyId: input.binding.companyId, runId: input.binding.runId, seq: 1,
+      processPid: mode === "worker_alive" ? process.pid : 99_999_999, processGroupId: mode === "worker_alive" ? process.pid : 99_999_999 };
     let queryIndex = 0;
     const db = { select() { const rows = [
       [{ provider: mode === "remote" ? "daytona" : "local", releasedAt: mode === "unreleased" ? null : new Date() }],
@@ -4046,6 +4063,8 @@ describe("stopped native conversation physical cleanup", () => {
 describe("explicit failed native retry physical evidence", () => {
   it.each([
     "suspended",
+    "indexed_runner",
+    "indexed_provider",
     "distinct_account",
     "null_account",
     "wrong_account",
@@ -4117,6 +4136,8 @@ describe("explicit failed native retry physical evidence", () => {
       "suspended",
       "distinct_account",
       "null_account",
+      "indexed_runner",
+      "indexed_provider",
     ].includes(kind);
     let restoreRead: (() => void) | undefined;
     let restoreKill: (() => void) | undefined;
@@ -4143,6 +4164,7 @@ describe("explicit failed native retry physical evidence", () => {
             },
             kind === "ready" ? "ready" : "suspended",
           ),
+          ...(kind === "indexed_runner" ? { indexedGeneration: "1" } : {}),
           outbox: kind === "unacknowledged_output" ? [{}] : [],
         };
         if (kind === "symlink") {
@@ -4157,6 +4179,7 @@ describe("explicit failed native retry physical evidence", () => {
           JSON.stringify({
             schema: "paperclip.runner.codex-provider-state.v1",
             lifecycle: "prepared",
+            ...(kind === "indexed_provider" ? { indexedGeneration: "1" } : {}),
             threadId: "exact-thread",
             providerSessionId: providerAccount,
             activeProviderTurnId:
@@ -4268,7 +4291,7 @@ describe("explicit failed native retry physical evidence", () => {
           receipt,
         };
         expect((await nativePreProviderRetryAfterCleanupStateIsSafe(input))).toBe(
-          retryable,
+          retryable && !kind.startsWith("indexed_"),
         );
         expect(
           (await nativePreProviderRetryAfterCleanupStateIsSafe({
@@ -4668,6 +4691,7 @@ type LeaseCoordinator = {
   issueId: string;
   phase: string;
   attempt: number;
+  controllerGeneration: number;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
   resultId: string | null;
@@ -4687,6 +4711,7 @@ function leaseDb(
     issueId: boundExecution.binding.issueId,
     phase: "observed",
     attempt: 0,
+    controllerGeneration: 0,
     leaseOwner: null,
     leaseExpiresAt: null,
     resultId: null,
@@ -4725,6 +4750,9 @@ function leaseDb(
                   runnerProfileJson,
                   runtimeMode: "native",
                   status: runStatus,
+                  eventEpoch: "",
+                  seq: 1,
+                  nextEventSeq: 1,
                 },
               ]
             : table === issues
@@ -4752,7 +4780,9 @@ function leaseDb(
   const insert = (table: unknown) => ({
     values: (values: Record<string, unknown>) => {
       updates.push({ table, values });
-      return { returning: async () => [values] };
+      const query = { returning: async () => [values], onConflictDoUpdate: () => query,
+        then: Promise.resolve([values]).then.bind(Promise.resolve([values])) };
+      return query;
     },
   });
   const tx = {
@@ -4803,10 +4833,9 @@ function cancellationDb(options?: {
     statusVersion: 3,
     lastStatusDecisionId: null,
   };
-  const coordinator =
-    options && "coordinator" in options
-      ? options.coordinator
-      : { runId: execution.binding.runId, assessmentId: null };
+  const coordinator = options && "coordinator" in options
+    ? options.coordinator && { controllerGeneration: 0, ...options.coordinator }
+    : { runId: execution.binding.runId, assessmentId: null, controllerGeneration: 0 };
   let forUpdateCount = 0;
   let resultJsonUpdateCount = 0;
   const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
@@ -8708,7 +8737,7 @@ describe("runnerd provider runtime wiring", () => {
           join(backupRoot, "runner", "runner-state.json"),
           JSON.stringify(durableRunnerState(identity, backupLifecycle)),
         );
-        const manifest = buildNativeHarnessBackupManifest({
+        const manifest = await buildNativeHarnessBackupManifest({
           backupRoot,
           execution: priorExecution,
           runnerInstanceId: identity.runnerInstanceId,
@@ -8826,10 +8855,10 @@ describe("runnerd provider runtime wiring", () => {
         // Accumulated history must not invalidate an otherwise identical session.
         const core = new DurablePrpControlPlane(options);
         for (let index = 0; index < commandCount; index += 1) {
-          core.queueCommand("turn.start", { text: "x".repeat(768 * 1024) }, `large-command-${index}`);
+          (await core.queueCommand("turn.start", { text: "x".repeat(768 * 1024) }, `large-command-${index}`));
         }
         for (const command of core.store.state.commands) command.status = "completed";
-        core.issueBootstrapTicket();
+        (await core.issueBootstrapTicket());
         expect(new DurablePrpControlPlane(options).store.state.commands).toHaveLength(commandCount);
         const controlPath = join(root, "control-plane", "control-plane-state.json");
         const controlBytes = await readFile(controlPath);
@@ -9087,6 +9116,7 @@ describe("runnerd provider runtime wiring", () => {
     "quarantined",
     "empty retry shell",
     "unsuspended current",
+    "indexed authority",
     "large control journal",
     "live runner",
     "live group",
@@ -9255,6 +9285,7 @@ describe("runnerd provider runtime wiring", () => {
             join(root, "runner", "runner-state.json"),
             JSON.stringify({
               ...durableRunnerState(identity, "ready"),
+              ...(scenario === "indexed authority" ? { indexedGeneration: "1" } : {}),
               outbox:
                 scenario === "unacknowledged events" ? [{ sourceSeq: 10 }] : [],
               pendingTerminalDelivery: null,

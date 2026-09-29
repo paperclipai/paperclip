@@ -1,3 +1,7 @@
+import { readIndexedAuthorityProof } from "./native-authority-read-context.js";
+import { createHash } from "node:crypto";
+import { open } from "node:fs/promises";
+import { constants } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 import type { readNativeJournalProjection as readProjection } from "./native-journal-projection.js";
@@ -153,6 +157,8 @@ export async function readNativeJournalProjection(
   path: string,
   purpose: "identity" | "evidence" = "evidence",
 ) {
+  const indexed = await readIndexedAuthorityProof(path);
+  if (indexed) return indexed;
   return (await reader.read({
     kind: "projection",
     path,
@@ -160,6 +166,8 @@ export async function readNativeJournalProjection(
   })) as ReturnType<typeof readProjection>;
 }
 export async function scanNativeStateFile(path: string, maximum: number) {
+  const indexed = await readIndexedAuthorityProof(path);
+  if (indexed) return { sha256: indexed.sha256, byteSize: indexed.byteSize };
   return (await reader.read({ kind: "scan", path, maximum })) as {
     sha256: string;
     byteSize: number;
@@ -170,6 +178,8 @@ export async function nativeStateFileIncludes(
   maximum: number,
   needles: string[],
 ) {
+  const indexed = await readIndexedAuthorityProof(path);
+  if (indexed) return needles.some((needle) => indexed.bytes.includes(needle));
   return (await reader.read({
     kind: "includes",
     path,
@@ -178,6 +188,25 @@ export async function nativeStateFileIncludes(
   })) as boolean;
 }
 export async function nativeStateBase64Fingerprint(files: File[]) {
+  const indexed = await Promise.all(files.map((file) => readIndexedAuthorityProof(file.path)));
+  if (indexed.some(Boolean)) {
+    const bytes = await Promise.all(files.map(async (file, index) => {
+      if (indexed[index]) return indexed[index]!.bytes;
+      const proof = await scanNativeStateFile(file.path, file.maximum);
+      const fd = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let value: Buffer;
+      try {
+        const stat = await fd.stat();
+        if (!stat.isFile() || stat.size > file.maximum) throw new Error("native_state_file_changed");
+        value = Buffer.alloc(stat.size);
+        let offset = 0;
+        while (offset < value.length) { const { bytesRead } = await fd.read(value, offset, value.length - offset, offset); if (!bytesRead) throw new Error("native_state_file_changed"); offset += bytesRead; }
+      } finally { await fd.close(); }
+      if (value.length > file.maximum || createHash("sha256").update(value).digest("hex") !== proof.sha256) throw new Error("native_state_file_changed");
+      return value;
+    }));
+    return { sha256: createHash("sha256").update(JSON.stringify(bytes.map((value) => value.toString("base64")))).digest("hex"), fileSha256: bytes.map((value) => createHash("sha256").update(value).digest("hex")) };
+  }
   return (await reader.read({ kind: "fingerprint", files })) as {
     sha256: string;
     fileSha256: string[];

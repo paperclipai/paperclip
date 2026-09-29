@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -29,6 +29,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
+  nativeToolReceipts,
 } from "@paperclipai/db";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -42,6 +43,7 @@ import {
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { insertNativeToolReceipt, readNativeToolReceipt } from "./native-tool-receipts.js";
 
 describe("native runner file handoff", () => {
   let temporary: Awaited<
@@ -992,16 +994,13 @@ describe("native runner file handoff", () => {
       CREATE OR REPLACE FUNCTION paperclip_test_fail_native_receipt()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.result_json IS DISTINCT FROM OLD.result_json THEN
-          RAISE EXCEPTION 'forced_native_receipt_failure';
-        END IF;
-        RETURN NEW;
+        RAISE EXCEPTION 'forced_native_receipt_failure';
       END;
       $$
     `);
     await db.execute(sql`
       CREATE TRIGGER paperclip_test_fail_native_receipt
-      BEFORE UPDATE ON heartbeat_runs
+      BEFORE INSERT ON native_tool_receipts
       FOR EACH ROW EXECUTE FUNCTION paperclip_test_fail_native_receipt()
     `);
     try {
@@ -1028,7 +1027,7 @@ describe("native runner file handoff", () => {
       }
       expect(receiptFailure).toMatchObject({
         message: expect.stringContaining(
-          'Failed query: update "heartbeat_runs"',
+          'Failed query: insert into "native_tool_receipts"',
         ),
         cause: {
           message: expect.stringContaining("forced_native_receipt_failure"),
@@ -1036,7 +1035,7 @@ describe("native runner file handoff", () => {
       });
     } finally {
       await db.execute(
-        sql`DROP TRIGGER IF EXISTS paperclip_test_fail_native_receipt ON heartbeat_runs`,
+        sql`DROP TRIGGER IF EXISTS paperclip_test_fail_native_receipt ON native_tool_receipts`,
       );
       await db.execute(
         sql`DROP FUNCTION IF EXISTS paperclip_test_fail_native_receipt()`,
@@ -1133,24 +1132,16 @@ describe("native runner file handoff", () => {
           preparationState: "prepared",
           providerDeliveryConfirmed: false,
         });
-        const [persisted] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runId));
-        const result = structuredClone(persisted.resultJson) as Record<
-          string,
-          unknown
-        >;
-        const receipts = result.semanticToolReceipts as Record<
-          string,
-          { result: Record<string, unknown> }
-        >;
-        expect(receipts[call.arguments.idempotencyKey]?.result).toEqual(first);
-        delete receipts[call.arguments.idempotencyKey]!.result.fileDelivery;
-        await db
-          .update(heartbeatRuns)
-          .set({ resultJson: result })
-          .where(eq(heartbeatRuns.id, runId));
+        const receiptBinding = { companyId, issueId, runId };
+        const persistedReceipt = await readNativeToolReceipt(db, receiptBinding, call.arguments.idempotencyKey);
+        expect(persistedReceipt?.result).toEqual(first);
+        const legacyReceipt = structuredClone(persistedReceipt!);
+        delete (legacyReceipt.result as Record<string, unknown>).fileDelivery;
+        await db.update(nativeToolReceipts).set({ receipt: legacyReceipt }).where(and(
+          eq(nativeToolReceipts.companyId, companyId),
+          eq(nativeToolReceipts.runId, runId),
+          eq(nativeToolReceipts.idempotencyKey, call.arguments.idempotencyKey),
+        ));
         const replay = await authority().execute({
           ...call,
           callId: `${call.callId}-replay`,
@@ -1161,11 +1152,7 @@ describe("native runner file handoff", () => {
           },
         });
         expect(replay).toEqual(first);
-        const [afterReplay] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runId));
-        expect(afterReplay.resultJson).toEqual(result);
+        expect(await readNativeToolReceipt(db, receiptBinding, call.arguments.idempotencyKey)).toEqual(legacyReceipt);
       }
     } finally {
       await db
@@ -1224,25 +1211,32 @@ describe("native runner file handoff", () => {
     const result = await authority().execute(callFor(`${key}.txt`, body, key)) as { entityRefs: string[] };
     const [attachment] = await db.select().from(issueAttachments).where(eq(issueAttachments.id, result.entityRefs[0]));
     const [asset] = await db.select().from(assets).where(eq(assets.id, attachment.assetId));
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const receiptBinding = { companyId, issueId, runId };
+    const originalReceipt = await readNativeToolReceipt(db, receiptBinding, key);
+    expect(originalReceipt).not.toBeNull();
     if (mutation === "filename") await db.update(assets).set({ originalFilename: "different.txt" }).where(eq(assets.id, asset.id));
     if (mutation === "size") await db.update(assets).set({ byteSize: asset.byteSize + 1 }).where(eq(assets.id, asset.id));
     if (mutation === "hash") await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, asset.id));
     if (mutation === "origin") await db.update(issueAttachments).set({ originatingRunId: null }).where(eq(issueAttachments.id, attachment.id));
-    if (mutation === "missing receipt" || mutation === "wrong operation") {
-      const changed = structuredClone(run.resultJson!);
-      const receipts = changed.semanticToolReceipts as Record<string, { operationId: string }>;
-      if (mutation === "missing receipt") delete receipts[key];
-      else receipts[key]!.operationId = "report_progress";
-      await db.update(heartbeatRuns).set({ resultJson: changed }).where(eq(heartbeatRuns.id, runId));
-    }
+    if (mutation === "missing receipt") await db.delete(nativeToolReceipts).where(and(
+      eq(nativeToolReceipts.companyId, companyId), eq(nativeToolReceipts.runId, runId),
+      eq(nativeToolReceipts.idempotencyKey, key),
+    ));
+    if (mutation === "wrong operation") await db.update(nativeToolReceipts)
+      .set({ receipt: { ...originalReceipt!, operationId: "report_progress" } })
+      .where(and(eq(nativeToolReceipts.companyId, companyId), eq(nativeToolReceipts.runId, runId),
+        eq(nativeToolReceipts.idempotencyKey, key)));
     try {
       await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${attachment.id}`])))
-        .rejects.toThrow(/current run|this run/);
+        .rejects.toThrow(/current run|this run|native_tool_receipt_reference_mismatch/);
     } finally {
       await db.update(assets).set({ originalFilename: asset.originalFilename, byteSize: asset.byteSize, sha256: asset.sha256 }).where(eq(assets.id, asset.id));
       await db.update(issueAttachments).set({ originatingRunId: attachment.originatingRunId }).where(eq(issueAttachments.id, attachment.id));
-      await db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, runId));
+      if (mutation === "missing receipt") await insertNativeToolReceipt(db, receiptBinding, key, originalReceipt!);
+      else if (mutation === "wrong operation") await db.update(nativeToolReceipts)
+        .set({ receipt: originalReceipt! })
+        .where(and(eq(nativeToolReceipts.companyId, companyId), eq(nativeToolReceipts.runId, runId),
+          eq(nativeToolReceipts.idempotencyKey, key)));
     }
   });
 });

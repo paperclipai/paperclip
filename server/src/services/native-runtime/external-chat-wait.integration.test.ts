@@ -3604,6 +3604,7 @@ describe("native external-chat response wait", () => {
           agentId: fixture.agentId,
           issueId: fixture.issueId,
           eventType: "run.presentation.resolved",
+          commitHint: true,
         }]);
         await expect(Promise.all(visibilityChecks)).resolves.toEqual([
           [{ runId: fixture.runId }],

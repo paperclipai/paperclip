@@ -1,5 +1,6 @@
+import { digestNativeHarnessBackupDirectory, readNativeHarnessBackupManifestBytes } from "./native-harness-tree.js";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 
@@ -51,40 +52,6 @@ function isRealFile(path: string): boolean {
   }
 }
 
-function digestDirectory(directory: string): { sha256: string; bytes: number } {
-  const hash = createHash("sha256");
-  let bytes = 0;
-  const visit = (current: string, relative: string) => {
-    const entries = readdirSync(current, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name),
-    );
-    if (entries.length === 0) hash.update(`directory:${relative}\0`);
-    for (const entry of entries) {
-      const path = resolve(current, entry.name);
-      const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
-      const stats = lstatSync(path);
-      if (entry.isDirectory()) {
-        hash.update(`directory:${relativePath}:${stats.mode & 0o777}\0`);
-        visit(path, relativePath);
-      } else if (entry.isSymbolicLink()) {
-        hash.update(`symlink:${relativePath}:${readlinkSync(path)}\0`);
-      } else if (entry.isFile()) {
-        const contents = readFileSync(path);
-        bytes += contents.byteLength;
-        hash.update(
-          `file:${relativePath}:${stats.mode & 0o777}:${contents.byteLength}\0`,
-        );
-        hash.update(contents);
-      } else {
-        throw new Error(
-          `runner_harness_backup_unsupported_entry:${relativePath}`,
-        );
-      }
-    }
-  };
-  visit(directory, "");
-  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
-}
 
 export function createNativeHarnessBackupStamp(input: {
   manifestPath: string;
@@ -115,7 +82,7 @@ export function createNativeHarnessBackupStamp(input: {
   ) {
     throw new Error("runner_harness_backup_scope_invalid");
   }
-  const manifestBytes = readFileSync(input.manifestPath);
+  const manifestBytes = readNativeHarnessBackupManifestBytes(input.manifestPath);
   const manifest = JSON.parse(manifestBytes.toString("utf8")) as Record<
     string,
     unknown
@@ -142,10 +109,10 @@ export function createNativeHarnessBackupStamp(input: {
   };
 }
 
-export function verifyNativeHarnessBackupStamp(
+export async function verifyNativeHarnessBackupStamp(
   value: unknown,
   expectedProviderLeaseId: string,
-): boolean {
+): Promise<boolean> {
   if (!expectedProviderLeaseId) return false;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const stamp = value as Record<string, unknown>;
@@ -173,7 +140,7 @@ export function verifyNativeHarnessBackupStamp(
     const manifestPath = resolve(candidate, "manifest.json");
     if (!isRealDirectory(candidate) || !isRealFile(manifestPath)) continue;
     try {
-      const bytes = readFileSync(manifestPath);
+      const bytes = readNativeHarnessBackupManifestBytes(manifestPath);
       const manifestSha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
       if (manifestSha256 !== stamp.manifestSha256) continue;
       const manifest = JSON.parse(bytes.toString("utf8")) as Record<
@@ -186,10 +153,11 @@ export function verifyNativeHarnessBackupStamp(
         manifest.runnerInstanceId !== stamp.runnerInstanceId ||
         manifest.sourceProviderLeaseId !== stamp.sourceProviderLeaseId ||
         !Array.isArray(manifest.directories) ||
-        manifest.directories.length === 0
+        manifest.directories.length === 0 || manifest.directories.length > 4
       )
         continue;
       let valid = true;
+      const names = new Set<string>();
       for (const entry of manifest.directories) {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
           valid = false;
@@ -198,19 +166,20 @@ export function verifyNativeHarnessBackupStamp(
         const declared = entry as Record<string, unknown>;
         if (
           typeof declared.name !== "string" ||
-          !/^[A-Za-z0-9._-]+$/.test(declared.name) ||
+          !["runner", "codex-home", "opencode", "acpx"].includes(declared.name) || names.has(declared.name) ||
           typeof declared.sha256 !== "string" ||
           typeof declared.bytes !== "number"
         ) {
           valid = false;
           break;
         }
+        names.add(declared.name);
         const directory = resolve(candidate, declared.name);
         if (!isRealDirectory(directory)) {
           valid = false;
           break;
         }
-        const actual = digestDirectory(directory);
+        const actual = await digestNativeHarnessBackupDirectory(directory);
         if (
           actual.sha256 !== declared.sha256 ||
           actual.bytes !== declared.bytes
@@ -219,7 +188,9 @@ export function verifyNativeHarnessBackupStamp(
           break;
         }
       }
-      if (valid) return true;
+      // Async streaming yields to other owners; replacement cannot rely on a
+      // manifest that changed while its historical files were being verified.
+      if (valid && bytes.equals(readNativeHarnessBackupManifestBytes(manifestPath))) return true;
     } catch {
       // Try the previous atomically-published backup.
     }

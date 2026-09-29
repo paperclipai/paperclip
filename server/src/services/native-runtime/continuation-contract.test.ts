@@ -159,10 +159,10 @@ const support = await getEmbeddedPostgresTestSupport();
         },
       });
     });
-    it("incorporates later direction under the matching fenced recovery claim", async () => {
+    it.each([2, 2_147_483_647])("incorporates later direction only under the matching fenced recovery claim at generation %i", async (controllerGeneration) => {
       const s = await setup();
-      await db.update(nativeRunFinalizations).set({ leaseOwner: "recovery-owner", controllerGeneration: 2, phase: "observed", recoveryState: "resuming_session" }).where(eq(nativeRunFinalizations.runId, s.runId));
-      const claim = { kind: "resume_dead_runner" as const, runId: s.runId, leaseOwner: "recovery-owner", controllerGeneration: 2, providerAttempt: 2, restartKind: "hard" as const, recoveryRequestId: null };
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "recovery-owner", controllerGeneration, phase: "observed", recoveryState: "resuming_session" }).where(eq(nativeRunFinalizations.runId, s.runId));
+      const claim = { kind: "resume_dead_runner" as const, runId: s.runId, leaseOwner: "recovery-owner", controllerGeneration, providerAttempt: 2, restartKind: "hard" as const, recoveryRequestId: null };
       await expect(rebindContinuationContract(db, s.oldInput, s.nextInput, { ...claim, leaseOwner: "other-owner" })).rejects.toThrow("requires_fenced_uncompleted_run");
       await rebindContinuationContract(db, s.oldInput, s.nextInput, claim);
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, s.runId));

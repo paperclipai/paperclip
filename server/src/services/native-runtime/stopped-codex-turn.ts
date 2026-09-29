@@ -59,32 +59,40 @@ function completionScriptInput(source: unknown): unknown {
  * This is deliberately a closed inventory, not a search for known bad tools.
  * The caller must independently authenticate the session and contain its processes.
  */
-export function stoppedCodexTurnIsTextOnly(input: {
-  rows: unknown[];
+interface StoppedTurnInput {
   threadId: string;
   turnId: string;
   cwd: string;
   completedTaskControlCalls?: CompletedTaskControlCall[];
-}): boolean {
-  const rows = input.rows.map(record);
-  const meta = rows[0];
-  if (!input.threadId || !input.turnId || meta?.type !== "session_meta" ||
-      record(meta.payload).id !== input.threadId || record(meta.payload).cwd !== input.cwd)
-    return false;
-  const starts = rows.flatMap((row, index) => row.type === "event_msg" &&
-    record(row.payload).type === "task_started" && record(row.payload).turn_id === input.turnId
-    ? [index] : []);
-  if (starts.length !== 1) return false;
-  const turn = rows.slice(starts[0]!);
+}
+
+export function stoppedCodexTurnIsTextOnly(input: StoppedTurnInput & { rows: unknown[] }): boolean {
+  const inventory = createStoppedCodexTurnInventory(input);
+  for (const row of input.rows) if (!inventory.push(row)) return false;
+  return inventory.finish();
+}
+
+/** Streaming equivalent of the closed turn inventory. Historical rows before
+ * the exact turn are discarded; accepted completion IDs bound every set. */
+export function createStoppedCodexTurnInventory(input: StoppedTurnInput) {
+  let metaSeen = false, started = false, valid = true;
   let contextSeen = false;
   let aborted = false;
   const completedCalls = input.completedTaskControlCalls ?? [];
   const scripts = new Set<string>();
   const seenCalls = new Set<string>();
   const outputs = new Set<string>();
-  for (let index = 0; index < turn.length; index++) {
-    const row = turn[index]!;
-    const payload = record(row.payload);
+  const accept = (value: unknown): boolean => {
+    const row = record(value), payload = record(row.payload);
+    if (!metaSeen) {
+      metaSeen = true;
+      return Boolean(input.threadId && input.turnId && row.type === "session_meta" && payload.id === input.threadId && payload.cwd === input.cwd);
+    }
+    let first = false;
+    if (!started) {
+      if (row.type !== "event_msg" || payload.type !== "task_started" || payload.turn_id !== input.turnId) return true;
+      started = true; first = true;
+    }
     if (aborted) return false;
     switch (row.type) {
       case "turn_context":
@@ -94,7 +102,7 @@ export function stoppedCodexTurnIsTextOnly(input: {
       case "response_item":
         if (payload.type === "custom_tool_call") {
           try {
-            if (payload.name !== "exec" || typeof payload.call_id !== "string" || scripts.has(payload.call_id) ||
+            if (payload.name !== "exec" || typeof payload.call_id !== "string" || scripts.has(payload.call_id) || scripts.size >= completedCalls.length ||
                 !completedCalls.some(call => canonicalNativeJson(call.input) === canonicalNativeJson(completionScriptInput(payload.input)))) return false;
           } catch { return false; }
           scripts.add(payload.call_id as string);
@@ -113,7 +121,7 @@ export function stoppedCodexTurnIsTextOnly(input: {
       case "event_msg":
         switch (payload.type) {
           case "task_started":
-            if (index !== 0 || payload.turn_id !== input.turnId) return false;
+            if (!first || payload.turn_id !== input.turnId) return false;
             break;
           case "turn_aborted":
             if (payload.turn_id !== input.turnId || payload.reason !== "interrupted") return false;
@@ -136,6 +144,10 @@ export function stoppedCodexTurnIsTextOnly(input: {
         break;
       default: return false;
     }
-  }
-  return contextSeen && aborted && scripts.size === outputs.size && scripts.size === completedCalls.length && seenCalls.size === completedCalls.length;
+    return true;
+  };
+  return {
+    push(value: unknown): boolean { valid = valid && accept(value); return valid; },
+    finish(): boolean { return valid && metaSeen && started && contextSeen && aborted && scripts.size === outputs.size && scripts.size === completedCalls.length && seenCalls.size === completedCalls.length; },
+  };
 }

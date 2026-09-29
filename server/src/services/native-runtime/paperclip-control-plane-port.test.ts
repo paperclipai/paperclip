@@ -415,7 +415,9 @@ describe("PaperclipControlPlanePort conformance", () => {
     const observerDb = createDb(temporary!.connectionString);
     const observed: Array<Record<string, unknown>> = [];
     const committedCallbacks: string[] = [];
-    let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
+    const observation: {
+      visibilityCheck: Promise<Array<{ id: string | number; eventType: string }>> | null;
+    } = { visibilityCheck: null };
     const unsubscribe = subscribeAllCompanyLiveEvents((event) => {
       if (
         event.companyId !== identity.companyId ||
@@ -423,8 +425,8 @@ describe("PaperclipControlPlanePort conformance", () => {
         event.payload.runId !== runId
       ) return;
       observed.push(event.payload);
-      visibilityCheck = observerDb
-        .select({ eventType: heartbeatRunEvents.eventType })
+      observation.visibilityCheck = observerDb
+        .select({ id: heartbeatRunEvents.id, eventType: heartbeatRunEvents.eventType })
         .from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, runId));
     });
@@ -484,14 +486,19 @@ describe("PaperclipControlPlanePort conformance", () => {
       await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
         disposition: "committed",
       });
-      await expect(visibilityCheck).resolves.toEqual([
-        { eventType: "tool.execution.started" },
+      const visibleRows = await observation.visibilityCheck;
+      expect(visibleRows).toEqual([
+        { id: expect.any(String), eventType: "tool.execution.started" },
       ]);
       expect(observed).toEqual([{
         runId,
         agentId: identity.agentId,
         issueId,
+        id: visibleRows![0].id,
         seq: 1,
+        eventEpoch: "",
+        cursor: "1",
+        commitHint: true,
         eventType: "tool.execution.started",
       }]);
       expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");

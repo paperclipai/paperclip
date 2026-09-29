@@ -1,3 +1,4 @@
+import { readRunEventLane, runEventLane, runEventCursor, runEventSettlementLane } from "../run-event-history.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
@@ -9,6 +10,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeOutputBodyChunks,
 } from "@paperclipai/db";
 import {
   NativeSessionProtocolIntegrityError,
@@ -18,6 +20,7 @@ import {
   validatePrpEvent,
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
+import { appendHeartbeatRunEventInTransaction, HeartbeatRunEventConflictError } from "../heartbeat-run-events.js";
 
 export interface NativeRunStoreBinding {
   readonly companyId: string;
@@ -160,20 +163,7 @@ export class NativeRunCoordinatorStore {
   }
 
   async readProviderSessionId(): Promise<string | null> {
-    const rows = await this.#db
-      .select({ payload: heartbeatRunEvents.payload })
-      .from(heartbeatRunEvents)
-      .where(and(
-        eq(heartbeatRunEvents.runId, this.#binding.runId),
-        eq(heartbeatRunEvents.sourceInstanceId, this.#binding.runnerSourceInstanceId),
-        inArray(heartbeatRunEvents.eventType, [
-          "session.started",
-          "session.resumed",
-          "session.reconciled",
-        ]),
-      ))
-      .orderBy(desc(heartbeatRunEvents.sourceSeq))
-      .limit(3);
+    const rows = await readRunEventLane(this.#db, this.#binding.runId, runEventLane("provider-session", this.#binding.runnerSourceInstanceId), 3);
     for (const row of rows) {
       const event = (row.payload as Record<string, unknown> | null)?.prpEvent;
       const payload = typeof event === "object" && event !== null && !Array.isArray(event)
@@ -198,9 +188,18 @@ export class NativeRunCoordinatorStore {
 
   async appendEvent(value: PrpEvent): Promise<{
     readonly disposition: "committed" | "duplicate";
-    readonly cursor: number;
+    readonly cursor: number | string;
     readonly highestContiguousSourceSeq: number;
+    readonly highestContiguousSourceEpoch?: string;
   }> {
+    return this.#db.transaction((tx) => this.appendEventInTransaction(tx, value));
+  }
+
+  /** Used by the authority store: event, receipt and delivery cursor have one commit. */
+  async appendEventInTransaction(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    value: PrpEvent,
+  ): Promise<{ disposition: "committed" | "duplicate"; cursor: number | string; highestContiguousSourceSeq: number; highestContiguousSourceEpoch?: string }> {
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error("native_event_schema_invalid");
     const event = validated.event;
@@ -215,7 +214,6 @@ export class NativeRunCoordinatorStore {
     const canonicalPayload = event as unknown as Record<string, unknown>;
     const payloadDigest = sha256(canonicalPayload);
 
-    return this.#db.transaction(async (tx) => {
       const [run] = await tx
         .select()
         .from(heartbeatRuns)
@@ -246,80 +244,35 @@ export class NativeRunCoordinatorStore {
           ),
         )
         .limit(1);
-      if (existing) {
-        if (
-          existing.sourcePayloadSha256 !== payloadDigest ||
-          existing.sourceInstanceId !== event.sourceInstanceId ||
-          existing.sourceSeq !== event.sourceSeq
-        ) {
-          throw new NativeSessionProtocolIntegrityError(
-            "source_event_replay_conflict",
-          );
-        }
-        const [latest] = await tx
-          .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
-          .from(heartbeatRunEvents)
-          .where(
-            and(
-              eq(heartbeatRunEvents.runId, this.#binding.runId),
-              eq(heartbeatRunEvents.sourceInstanceId, event.sourceInstanceId),
-            ),
-          )
-          .orderBy(desc(heartbeatRunEvents.sourceSeq))
-          .limit(1);
-        return {
-          disposition: "duplicate" as const,
-          cursor: existing.seq,
-          highestContiguousSourceSeq: latest?.sourceSeq ?? event.sourceSeq,
-        };
+      if (existing && (existing.sourcePayloadSha256 !== payloadDigest ||
+        existing.sourceInstanceId !== event.sourceInstanceId || existing.sourceSeq !== event.sourceSeq ||
+        existing.sourceEpoch !== (event.sourceEpoch ?? ""))) {
+        throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
       }
-
-      const [previous] = await tx
-        .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
-        .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, this.#binding.runId),
-            eq(heartbeatRunEvents.sourceInstanceId, event.sourceInstanceId),
-          ),
-        )
-        .orderBy(desc(heartbeatRunEvents.sourceSeq))
-        .limit(1);
-      const expectedSourceSeq = (previous?.sourceSeq ?? 0) + 1;
-      if (event.sourceSeq !== expectedSourceSeq) {
-        throw new Error("native_event_source_gap");
+      if (!existing && !event.sourceEpochTransition) {
+        const [previous] = await tx.select({ sourceSeq: heartbeatRunEvents.sourceSeq }).from(heartbeatRunEvents)
+          .where(and(eq(heartbeatRunEvents.runId, this.#binding.runId), eq(heartbeatRunEvents.sourceInstanceId, event.sourceInstanceId),
+            eq(heartbeatRunEvents.sourceEpoch, event.sourceEpoch ?? "")))
+          .orderBy(desc(heartbeatRunEvents.sourceSeq)).limit(1);
+        if (event.sourceSeq !== (previous?.sourceSeq ?? 0) + 1) throw new Error("native_event_source_gap");
       }
-
-      const cursor = run.nextEventSeq;
-      const [inserted] = await tx
-        .insert(heartbeatRunEvents)
-        .values({
-          companyId: this.#binding.companyId,
-          runId: this.#binding.runId,
-          agentId: this.#binding.agentId,
-          seq: cursor,
-          eventType: event.eventType,
-          stream: "system",
-          level: event.eventType.includes("failed") ? "error" : "info",
-          payload: { prpEvent: canonicalPayload },
-          sourceInstanceId: event.sourceInstanceId,
-          sourceEventId: event.sourceEventId,
-          sourceSeq: event.sourceSeq,
-          sourcePayloadSha256: payloadDigest,
-          protocolSchemaVersion: event.schemaVersion,
-        })
-        .returning({ seq: heartbeatRunEvents.seq });
-      if (!inserted) throw new Error("native_event_not_persisted");
-      await tx
-        .update(heartbeatRuns)
-        .set({ nextEventSeq: cursor + 1, updatedAt: new Date() })
-        .where(eq(heartbeatRuns.id, this.#binding.runId));
-      return {
-        disposition: "committed" as const,
-        cursor: inserted.seq,
-        highestContiguousSourceSeq: event.sourceSeq,
-      };
-    });
+      try {
+        const receipt = await appendHeartbeatRunEventInTransaction(tx, {
+          companyId: this.#binding.companyId, runId: this.#binding.runId, agentId: this.#binding.agentId,
+          eventType: event.eventType, stream: "system", level: event.eventType.includes("failed") ? "error" : "info",
+          payload: { prpEvent: canonicalPayload }, nativeSource: {
+            sourceInstanceId: event.sourceInstanceId, sourceEventId: event.sourceEventId, sourceSeq: event.sourceSeq,
+            sourceEpoch: event.sourceEpoch, sourceEpochTransition: event.sourceEpochTransition,
+            protocolSchemaVersion: event.schemaVersion, canonicalPayload, hashEncoding: "sha256",
+          },
+        });
+        return { disposition: receipt.disposition, cursor: receipt.row.eventEpoch ? runEventCursor(receipt.row) : receipt.row.seq,
+          highestContiguousSourceSeq: receipt.highestContiguousSourceSeq,
+          ...(receipt.highestContiguousSourceEpoch ? { highestContiguousSourceEpoch: receipt.highestContiguousSourceEpoch } : {}) };
+      } catch (error) {
+        if (error instanceof HeartbeatRunEventConflictError) throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        throw error;
+      }
   }
 
   async completeRun(input: CompleteNativeRunInput): Promise<{
@@ -444,22 +397,14 @@ export class NativeRunCoordinatorStore {
     }
     const terminal = event.payload as PrpTerminalState;
     assertTerminal(terminal);
-    const [proposed] = await this.#db
-      .select({ payload: heartbeatRunEvents.payload })
-      .from(heartbeatRunEvents)
-      .where(
-        and(
-          eq(heartbeatRunEvents.runId, this.#binding.runId),
-          eq(
-            heartbeatRunEvents.sourceInstanceId,
-            this.#binding.runnerSourceInstanceId,
-          ),
-          eq(heartbeatRunEvents.eventType, "run.result.proposed"),
-          lt(heartbeatRunEvents.sourceSeq, event.sourceSeq),
-        ),
-      )
-      .orderBy(desc(heartbeatRunEvents.sourceSeq))
-      .limit(1);
+    const [terminalRow] = await this.#db.select().from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.runId, this.#binding.runId), eq(heartbeatRunEvents.sourceEventId, event.sourceEventId),
+      eq(heartbeatRunEvents.sourceInstanceId, this.#binding.runnerSourceInstanceId),
+    )).limit(1);
+    if (!terminalRow || terminalRow.sourcePayloadSha256 !== sha256(event)) throw new Error("native_terminal_not_committed");
+    const [proposed] = await readRunEventLane(this.#db, this.#binding.runId,
+      runEventSettlementLane(event.sourceInstanceId, event.turnId), 1, terminalRow.id);
+    if (proposed?.eventType !== "run.result.proposed") throw new Error("native_terminal_result_missing");
     const proposedEnvelope = (
       proposed?.payload as Record<string, unknown> | undefined
     )?.prpEvent as Record<string, unknown> | undefined;

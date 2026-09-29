@@ -17,6 +17,7 @@ import {
   normalizePaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
+import { findNativeToolReceiptReference, insertNativeToolReceipt, readNativeToolReceipt } from "./native-tool-receipts.js";
 import { openRunnerApiWorkspaceFile } from "./runner-api-files.js";
 import { basename } from "node:path";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
@@ -1252,6 +1253,10 @@ export class PaperclipRunnerToolAuthority {
           throw new Error("paperclip_runner_tool_mode_denied");
         }
         await authorize(tx, context.run.contextSnapshot);
+        const indexed = await findNativeToolReceiptReference(tx, this.binding, "attachment-reuse", `${sourceCommentId}/${attachmentId}`);
+        if (indexed) return { ...record(indexed.result), disposition: "duplicate" };
+        // Compatibility for retained pre-migration rows only. New receipts
+        // never accumulate in the run's JSON checkpoint.
         const resultJson = record(context.run.resultJson);
         for (const receipt of Object.values(record(resultJson.semanticToolReceipts))) {
           const candidate = receipt as ToolReceipt | undefined;
@@ -1457,8 +1462,8 @@ export class PaperclipRunnerToolAuthority {
         };
         const resultJson = record(context.run.resultJson);
         const receipts = record(resultJson.semanticToolReceipts);
-        const prior = receipts[idempotencyKey] as ToolReceipt | undefined;
-        if (prior !== undefined) {
+        const prior = await readNativeToolReceipt(tx as unknown as Db, this.binding, idempotencyKey, receipts);
+        if (prior != null) {
           if (
             prior.operationId !== operationId ||
             canonicalJson(prior.input) !== canonicalJson(input)
@@ -1473,15 +1478,14 @@ export class PaperclipRunnerToolAuthority {
             describeResult(await effect(tx as unknown as Db, context)),
           ),
         ) as unknown;
-        receipts[idempotencyKey] = {
+        await insertNativeToolReceipt(tx as unknown as Db, this.binding, idempotencyKey, {
           operationId,
           input,
           result,
-        } satisfies ToolReceipt;
+        });
         await tx
           .update(heartbeatRuns)
           .set({
-            resultJson: { ...resultJson, semanticToolReceipts: receipts },
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, this.binding.runId));
