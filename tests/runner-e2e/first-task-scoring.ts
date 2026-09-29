@@ -1,4 +1,5 @@
-import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
+import { firstTaskRejection, firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { sanitizeJson } from "./redaction.js";
 import { createHash } from "node:crypto";
@@ -220,7 +221,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const last = e.checkpoints.at(-1);
   const approval = e.checkpoints.find((c) => c.phase === "accepted");
   const rejection =
-    e.caseId === "reject-no-execution"
+    firstTaskRejection(e)
       ? e.checkpoints.find((c) => c.phase === "rejected")
       : undefined;
   const extras = (c: FirstTaskCheckpoint) =>
@@ -444,11 +445,12 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (e.caseId === "reject-no-execution")
     add(
       "rejection-respected",
-      extras(last).length === 0 &&
+      firstTaskRejectionReplyRecorded(e, last.comments, last.runs) &&
+        extras(last).length === 0 &&
         last.documents.every(isPlanningDocument) &&
         (last.attachments ?? []).every(isPlanningAttachment) &&
         activeRuns(last.runs).length === 0,
-      "Rejected work never executes",
+      "Persisted refusal receives a response without execution tasks, finished output, or remaining runs",
       [last.id],
       rejection
         ? undefined
@@ -457,8 +459,10 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   add(
     "provider-runs-succeeded",
     last.runs.length > 0 && last.runs.every((r) => r.status === "succeeded" || isBlockedUnstartedWake(r) ||
+      isTerminalUnstartedWake(r, last.tasks) ||
+      (isFirstTaskRejectionCancellation(r, e, last.tasks) && firstTaskRejectionReplyRecorded(e, last.comments, [r])) ||
       (scenario.firstResponseOnly && r.status === "running" && answerableRuntimeRunIds(last.interactions).has(r.id))),
-    "Provider runs succeeded, or a first-response run is paused on its recorded answerable native question",
+    "Runs succeeded, were suppressed before execution, stopped with a recorded refusal response, or paused on an answerable first-response native question",
     [last.id],
   );
   if (e.runtimeSettings?.adapterType === "paperclip_runner" &&

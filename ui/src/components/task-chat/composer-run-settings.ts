@@ -35,7 +35,7 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
 
 export function composerEfforts(agent: Agent | undefined, model: string, catalogIds: readonly string[]): readonly string[] {
   if (!agent || !model) return [];
-  if (agent.adapterType === "codex_local") {
+  if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
     return isCodexLocalKnownModel(model) ? codexLocalReasoningEffortsForModel(model) : [];
   }
   if (!catalogIds.includes(model)) return [];
@@ -53,7 +53,7 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
   const config = overrides?.adapterConfig ?? {};
   const effortKey = composerEffortKey(adapterType);
   const effortValue = effortKey && (config[effortKey]
-    ?? (adapterType === "codex_local" ? config.reasoningEffort ?? config.effort : undefined));
+    ?? (adapterType === "codex_local" || adapterType === "paperclip_runner" ? config.reasoningEffort ?? config.effort : undefined));
   return {
     model: typeof config.model === "string" ? config.model : null,
     effort: typeof effortValue === "string" ? effortValue : null,
@@ -62,7 +62,7 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
 }
 
 function composerEffortKey(adapterType: string | undefined): string | null {
-  if (adapterType === "codex_local") return "modelReasoningEffort";
+  if (adapterType === "codex_local" || adapterType === "paperclip_runner") return "modelReasoningEffort";
   if (adapterType === "claude_local" || adapterType === "kimi_local") return "effort";
   if (adapterType === "pi_local") return "thinking";
   if (adapterType === "opencode_local") return "variant";

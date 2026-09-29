@@ -81,6 +81,43 @@ describe("chat acceptance contracts", () => {
     ).toBe(false);
   });
 
+  it("recognizes the retained clarification list without treating empty requests or execution plans as clarification", () => {
+    // Reduced public reply from gha-36307603818-1 / agent-chat.legacy-codex.local.clarify-reuse.
+    expect(isChatClarificationReply(`Absolutely. Before I assign the writing, I need:
+
+- Club name and what the club is about
+- Who the note welcomes (new members, event guests, website visitors, etc.)
+- Where the note will appear and your preferred length
+- Tone (warm, formal, playful, energetic, or another style)
+- Any must-include details: benefits, meeting information, values, next step, or signatory
+
+If you only have the club name, audience, and tone, that is enough to begin; I can make sensible assumptions about the rest.`)).toBe(true);
+    expect(isChatClarificationReply("We need:\n1. Intended readers\n2. Delivery date")).toBe(true);
+    for (const body of ["I need:", "I need:\n- .\n- ...", "I needed:\n- Audience\n- Tone",
+      "I need:\n- to create the task\n- to write the note", "I need to create the task and write the note.",
+      "I need:\n- Create the task\n- Write the note", "We need:\n1. **Build** the page\n2. **Publish** the site",
+      "I need:\n- Plan the note\n- Draft it", "I need:\n- [ ] Create task\n- [ ] Write note"]) {
+      expect(isChatClarificationReply(body), body).toBe(false);
+    }
+  });
+
+  it("checks the requested information list separately from a later plan", () => {
+    expect(isChatClarificationReply("I need:\n- Audience\n- Tone\n\nOnce you answer, the plan is:\n- Create the task\n- Write the note")).toBe(true);
+  });
+
+  it("requires information fields or questions rather than arbitrary non-blacklisted bullets", () => {
+    expect(isChatClarificationReply("I need:\n- Set up the project\n- Install dependencies")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- Gather the audience details\n- Decide the tone")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- Audience\n- Install dependencies")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- **Audience**: intended readers\n\n- [ ] Preferred format\n- When this is due")).toBe(true);
+  });
+
+  it("accepts logistical brief fields and wrapped information items", () => {
+    expect(isChatClarificationReply("I need:\n- Budget\n- Location")).toBe(true);
+    expect(isChatClarificationReply("I need:\n- Audience, including age range\nand whether these are new or existing members\n- Tone\n\nOnce you answer, I can:\n- Draft the note\n- Publish it")).toBe(true);
+    expect(isChatClarificationReply("I need:\n- Audience, including age range\n  and whether these are new or existing members\n- Tone")).toBe(true);
+  });
+
   it("rejects superseded plan requirements in executed output, independently of plan history", () => {
     expect(() => assertChatExecutionOutput("Welcome CHAT123.", "CHAT123", "DRAFT123")).not.toThrow();
     expect(() => assertChatExecutionOutput("Welcome DRAFT123 and CHAT123.", "CHAT123", "DRAFT123")).toThrow();
@@ -148,6 +185,10 @@ describe("chat acceptance contracts", () => {
     expect(() =>
       assertChatTaskHandoff({ ...task, projectId: null }, [run], source),
     ).toThrow();
+  });
+  it("still rejects completed chat work that has lost its assignee", () => {
+    expect(() => assertChatTaskHandoff({ ...task, status: "done" }, [run], source)).not.toThrow();
+    expect(() => assertChatTaskHandoff({ ...task, status: "done", assigneeAgentId: null }, [run], source)).toThrow();
   });
   it.each(["project-description", "welcome-note", "output"])("finds committed %s output without accepting a copied plan or a claim", async (key) => {
     const output = {

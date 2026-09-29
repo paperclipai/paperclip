@@ -6,6 +6,10 @@ import {
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
+  codexLocalReasoningEffortsForModel,
+  isCodexLocalKnownModel,
+} from "@paperclipai/adapter-codex-local";
+import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
@@ -63,6 +67,7 @@ export type PaperclipRunnerNativeProviderInput =
       provider: "codex";
       model: string | null;
       codexApprovalPolicy: "never" | "on-request" | "untrusted";
+      codexReasoningEffort?: string;
     }
   | {
       provider: "opencode";
@@ -136,6 +141,29 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+/** A task may change a local Runner model (and Codex effort), but not provider identity. */
+export function projectPaperclipRunnerTaskConfig(
+  backend: "codex_app_server" | "opencode_server",
+  agentConfig: unknown,
+  taskOverrides: unknown,
+): Record<string, unknown> {
+  const base = asRecord(agentConfig);
+  const task = asRecord(taskOverrides);
+  const config = { ...base };
+  const model = optionalString(task.model);
+  const effortKey = backend === "codex_app_server"
+    ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
+    : undefined;
+  if (backend === "codex_app_server" && ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined)) {
+    delete config.modelReasoningEffort;
+    delete config.reasoningEffort;
+    delete config.effort;
+  }
+  if (model !== null) config.model = model;
+  if (effortKey !== undefined) config.modelReasoningEffort = task[effortKey];
+  return config;
 }
 
 function positiveNumberOrNull(
@@ -650,6 +678,18 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       },
     };
   }
+  const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
+  const allowedEfforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  if (effort !== undefined && effort !== null && effort !== "" && (
+    typeof effort !== "string" || !allowedEfforts.includes(effort)
+    || (profile.model && isCodexLocalKnownModel(profile.model)
+      && !codexLocalReasoningEffortsForModel(profile.model).includes(effort as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+  )) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_codex_effort_invalid",
+      "Paperclip Runner Codex reasoning effort is not supported for this model.",
+    );
+  }
   return {
     provider: "codex",
     model: profile.model,
@@ -657,5 +697,6 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "codex",
       config.codexPermissionMode,
     ) as "never" | "on-request" | "untrusted",
+    ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
   };
 }

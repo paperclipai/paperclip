@@ -1436,6 +1436,18 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("sends the selected reasoning effort with the Codex turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({
+      runId: "run-effort",
+      normalizedSessionId: "session-effort",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue" } });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ effort: "ultra" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("fails closed when the installed app-server does not confirm plan mode", async () => {
     const transport = new FakeCodexTransport();
     transport.confirmCollaborationMode = false;

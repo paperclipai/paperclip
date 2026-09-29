@@ -120,6 +120,21 @@ describe("NativeExecutionInputV1", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
+    const withEffort = parseNativeExecutionInput({
+      ...current,
+      schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    });
+    expect(withEffort.provider).toMatchObject({ kind: "codex", reasoningEffort: "ultra" });
+    expect(parseNativeExecutionInput(withEffort)).toEqual(withEffort);
+    expect(() => parseNativeExecutionInput({
+      ...withEffort,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "impossible" },
+    })).toThrow("reasoningEffort");
+    expect(() => parseNativeExecutionInput({
+      ...current,
+      provider: { kind: "codex", model: null, approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    })).toThrow("input.provider");
     expect(() => parseNativeExecutionInput({
       ...parsed,
       schema: "paperclip.native-execution-input.v4",

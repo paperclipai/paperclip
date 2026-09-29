@@ -90,7 +90,7 @@ export function effortChoices(agent: ComposerAgent, model: string): readonly str
 }
 
 export function fastModeAvailable(agent: ComposerAgent, model: string): boolean {
-  return (agent.adapterType === "codex_local" || agent.id === "runner")
+  return agent.adapterType === "codex_local"
     && isCodexLocalKnownModel(model)
     && isCodexLocalFastModeSupported(model);
 }

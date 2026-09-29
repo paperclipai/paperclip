@@ -978,6 +978,14 @@ Core authorization follows these rules:
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
+Failed-run rows in Mine and the inbox badge use the run's `responsibleUserId`.
+Another user's run does not appear there, even for a shared agent. Select the
+latest run per agent before checking ownership so older failures do not resurface.
+Unattributed runs appear only for `local-board` in Mine; an unresolved viewer
+identity shows no failed runs. All retains company-wide failed-run visibility.
+Company health alerts do not contribute to the personal inbox badge.
+Run list responses, including summaries, retain `responsibleUserId`.
+
 Ownership split:
 
 - **Core / Free:** permission key and scoped-grant enforcement; responsible-user resolution; default-open, disabled, and allowlist policy modes; archive/unarchive APIs; per-user archive persistence; resurfacing behavior; activity audit records; and stable denial codes.

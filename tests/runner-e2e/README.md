@@ -874,6 +874,26 @@ an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an
 infrastructure timeout.
 
+The refusal checkpoint records the persisted user decision before waiting for
+the run to settle. A refusal that closes the task may end its responding run as
+cancelled; this is allowed only with the exact saved user decision, the matching
+issue/agent/comment wake, control-plane cancellation after the decision, a
+Cancelled task, and a persisted response attributed to that run. The waiter
+allows the response to arrive after cancellation. Missing responses, operator
+cleanup cancellations, provider errors, unauthorized outputs, and active runs
+still fail.
+The response check proves persistence and attribution. It does not grade the
+reply's wording; the saved task, output, and run state prove non-execution.
+
+An obsolete queued wake with `issue_terminal_status` is not a provider failure
+when `startedAt` is explicitly null and its issue is durably Done or Cancelled.
+All other run and outcome checks still apply. Run rows and billing are retained.
+Chat clarification accepts concrete information lists introduced by "I need:"
+without requiring a question mark, while work checklists, empty requests, and
+lost task ownership remain failures. These grading rules are versioned in each
+affected suite's definition metadata; they do not retroactively qualify aborted
+historical attempts.
+
 `question-choice-options` fails any recorded single-select or multi-select
 question with fewer than two distinct, nonempty options, including one-option
 "I'll describe it" forms. It checks every captured card presentation, including

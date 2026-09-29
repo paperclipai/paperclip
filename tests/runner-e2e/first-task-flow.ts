@@ -1,5 +1,6 @@
 import { firstTaskUserRequest } from "./first-task-transcript.js";
-import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
+import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
@@ -261,7 +262,7 @@ export async function runFirstTaskFlow(input: {
     return checkpoint;
   };
   let pausedRuntimeRunIds = new Set<string>();
-  const settle = async (priorRunIds: Set<string>, completion = false) => {
+  const settle = async (priorRunIds: Set<string>, completion = false, rejection = false) => {
     const previousPaused = pausedRuntimeRunIds;
     let stable = 0;
     await pollUntil({
@@ -272,16 +273,18 @@ export async function runFirstTaskFlow(input: {
         runs: await allRuns(),
         tasks: await api.get<Row[]>(tasksPath),
         interactions: await api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+        comments: rejection ? await api.get<Row[]>(`/api/issues/${issue.id}/comments?order=asc`) : [],
       }),
-      reject: ({ runs }) => {
+      reject: ({ runs, tasks }) => {
         const bad = runs.find((r) =>
-          ["failed", "timed_out", "cancelled"].includes(r.status) && !isBlockedUnstartedWake(r),
+          ["failed", "timed_out", "cancelled"].includes(r.status) && !isBlockedUnstartedWake(r) &&
+          !isTerminalUnstartedWake(r, tasks) && !(rejection && isFirstTaskRejectionCancellation(r, e, tasks)),
         );
         if (bad)
           return `run status ${bad.status}: ${bad.errorCode ?? ""} ${bad.error ?? ""}`;
         if (runs.length > 12) return "first-task run count exceeded 12";
       },
-      accept: ({ runs, tasks, interactions }) => {
+      accept: ({ runs, tasks, interactions, comments }) => {
         const paused = answerableRuntimeRunIds(interactions);
         const active = activeRuns(runs);
         const waitingForAnswer = !completion && active.length > 0 && active.every((r) => paused.has(r.id));
@@ -295,7 +298,8 @@ export async function runFirstTaskFlow(input: {
             e.initialTaskIds,
             e.onboardingIssueId,
           );
-        stable = settled && done ? stable + 1 : 0;
+        const replied = !rejection || firstTaskRejectionReplyRecorded(e, comments, runs);
+        stable = settled && done && replied ? stable + 1 : 0;
         return stable >= 3;
       },
     });
@@ -319,9 +323,10 @@ export async function runFirstTaskFlow(input: {
       message,
       deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
     });
-    if (phase === "accepted") await snapshot("accepted", at);
-    await settle(before, complete);
-    return snapshot(phase === "accepted" ? "finished" : phase);
+    const decision = phase === "accepted" || phase === "rejected";
+    if (decision) await snapshot(phase, at);
+    await settle(before, complete, phase === "rejected");
+    return snapshot(decision ? "finished" : phase);
   };
   let failure: unknown;
   try {
