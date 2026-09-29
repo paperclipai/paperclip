@@ -14372,7 +14372,7 @@ export function issueRoutes(
             goalProjection?.goal?.status === "active" &&
             goalProjection.workingNow
           ) {
-            const steer = queueLiveRunnerPrpCommand({
+            const steer = await queueLiveRunnerPrpCommand({
               companyId: issue.companyId,
               issueId: issue.id,
               agentId: issue.assigneeAgentId,
@@ -17863,7 +17863,7 @@ export function issueRoutes(
           goalProjection?.goal?.status === "active" &&
           goalProjection.workingNow
         ) {
-          const steer = queueLiveRunnerPrpCommand({
+          const steer = await queueLiveRunnerPrpCommand({
             companyId: currentIssue.companyId,
             issueId: currentIssue.id,
             agentId: currentIssue.assigneeAgentId,

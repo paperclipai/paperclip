@@ -169,6 +169,34 @@ describe("RunnerInspector", () => {
     expect(rerun).toHaveBeenCalledOnce();
   });
 
+  it("loads additional event pages by opaque cursor without comparing epoch-local sequences", async () => {
+    const firstPage = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `event-a-${index + 1}`, companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      seq: index + 1, eventEpoch: "epoch-a", cursor: `e:epoch-a:${index + 1}`,
+      eventType: "session.notice", stream: null, level: null, color: null, message: null,
+      payload: null, createdAt: new Date(0),
+    }));
+    const secondPage = [{
+      ...firstPage[0]!, id: "event-b-1", seq: 1, eventEpoch: "epoch-b", cursor: "e:epoch-b:1",
+    }];
+    eventsMock.mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage);
+    flushSync(() => root.render(
+      <RunnerInspector runId="run-1" run={{ status: "succeeded", resultJson: null }} open onOpenChange={vi.fn()} />,
+    ));
+    await flush();
+    expect(eventsMock).toHaveBeenCalledTimes(1);
+    expect(eventsMock).toHaveBeenNthCalledWith(1, "run-1", 0, 1_000);
+    flushSync(() => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Load more events"))
+        ?.click();
+    });
+    await flush();
+    expect(eventsMock).toHaveBeenCalledTimes(2);
+    expect(eventsMock).toHaveBeenNthCalledWith(2, "run-1", "e:epoch-a:1000", 1_000);
+    expect(container.textContent).toContain("seq 1");
+  });
+
   it("shows redacted frames by default and warns before exact reveal", async () => {
     traceMock.mockResolvedValue({
       trace: {

@@ -1,3 +1,5 @@
+import { parseRunEventCursor } from "../services/run-event-history.js";
+import { readRunOutputBody } from "../services/run-output-body.js";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
@@ -6999,7 +7001,7 @@ export function agentRoutes(
             }
             throw error;
           }
-          queued = queueRunnerPrpRuntimeRequestResolution({
+          queued = await queueRunnerPrpRuntimeRequestResolution({
             companyId: existing.companyId,
             runId,
             pendingRequest: currentPendingRequest,
@@ -7266,9 +7268,12 @@ export function agentRoutes(
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
-    const afterSeq = Number(req.query.afterSeq ?? 0);
+    const afterSeq = typeof req.query.afterSeq === "string" ? req.query.afterSeq : "0";
+    if (afterSeq !== "tail") {
+      try { parseRunEventCursor(afterSeq); } catch { throw badRequest("Invalid run event cursor"); }
+    }
     const limit = Number(req.query.limit ?? 200);
-    const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
+    const events = await heartbeat.listEvents(runId, afterSeq, Number.isFinite(limit) ? limit : 200);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactedEvents = events.map((event) =>
       redactCurrentUserValue({
@@ -7279,6 +7284,21 @@ export function agentRoutes(
     res.json(await runRedactions.redactForRun(run.companyId, run.id, redactedEvents));
   });
 
+  router.get("/heartbeat-runs/:runId/output-bodies/:bodyId", async (req, res) => {
+    const runId = readHeartbeatRunId(req);
+    const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
+    if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    const bodyId = String(req.params.bodyId);
+    if (!/^[a-f0-9]{64}$/.test(bodyId)) throw notFound("Output not found");
+    const text = await readRunOutputBody(db, run.companyId, run.id, bodyId);
+    const redacted = await runRedactions.redactForRun(run.companyId, run.id,
+      redactCurrentUserValue(redactEventPayload({ text })!, await getCurrentUserRedactionOptions()));
+    res.set("Cache-Control", "no-cache, no-store");
+    res.set("Content-Disposition", `attachment; filename="output-${bodyId.slice(0, 12)}.txt"`);
+    res.type("text/plain").send(redacted.text);
+  });
+
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
@@ -7287,8 +7307,13 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    const cursor = req.query.cursor;
+    if (cursor !== undefined && (typeof cursor !== "string" || (cursor !== "tail" && !/^(0|[1-9][0-9]{0,1023})$/.test(cursor)))) {
+      throw badRequest("Invalid run log cursor");
+    }
     const result = await heartbeat.readLog(run, {
       offset: Number.isFinite(offset) ? offset : 0,
+      ...(typeof cursor === "string" ? { cursor } : {}),
       limitBytes,
     });
 

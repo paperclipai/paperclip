@@ -67,6 +67,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         adapterType: activeRun.adapterType,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
+        logStore: activeRun.logStore,
         issueId,
       });
     }

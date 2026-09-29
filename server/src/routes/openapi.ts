@@ -7073,8 +7073,49 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Returns a bounded page of redacted events. Preserve each returned cursor as text; " +
+    "use it as afterSeq for the next page. The last row's historyAfter flag indicates " +
+    "more output, including when the byte budget returns fewer rows than limit. " +
+    "A tail page can mark omitted earlier history with historyBefore on its first row.",
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: z.object({
+      afterSeq: z.string().optional().describe("Returned event cursor, legacy decimal sequence, or tail for the latest page. Defaults to 0."),
+      limit: z.coerce.number().int().min(1).max(1000).optional().describe("Maximum events, also subject to a byte budget. Defaults to 200."),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/output-bodies/{bodyId}",
+  tags: ["runs"],
+  summary: "Download a heartbeat run output body",
+  description:
+    "Returns one complete output frame as a redacted UTF-8 text attachment, after " +
+    "checking run access and output-read permission. The body is bounded to 4 MiB; " +
+    "this is not a limit on accumulated run output. The body ID identifies the " +
+    "original content; redaction may change the downloaded bytes. Incomplete or " +
+    "unverifiable stored output returns 409.",
+  request: {
+    params: z.object({
+      runId: heartbeatRunIdParamSchema,
+      bodyId: z.string().regex(/^[a-f0-9]{64}$/),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Redacted output text; Content-Disposition: attachment; Cache-Control: no-cache, no-store",
+      content: { "text/plain": { schema: { type: "string" } } },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 registry.registerPath({
@@ -7082,8 +7123,20 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/log",
   tags: ["runs"],
   summary: "Get log for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Returns a bounded page of redacted log data. Preserve byte cursors as text " +
+    "to avoid rounding large history positions. Use the returned cursor for the " +
+    "next page while hasMore is true; legacy responses use nextOffset. A page " +
+    "may be shorter than limitBytes.",
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: z.object({
+      cursor: z.string().regex(/^(tail|0|[1-9][0-9]{0,1023})$/).optional().describe("Exact decimal byte cursor, or tail for the latest log data."),
+      offset: z.coerce.number().int().min(0).optional().describe("Legacy numeric offset; prefer the exact cursor when available."),
+      limitBytes: z.coerce.number().int().min(1).max(1024 * 1024).optional().describe("Maximum page bytes. Defaults to 256000."),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

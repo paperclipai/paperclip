@@ -1,6 +1,7 @@
 import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readTranscriptRequest } from "./read-transcript-request";
+import { nextRunLogPosition, runLogHasMore } from "../../lib/run-log-position";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -13,6 +14,7 @@ import { tryCreateWebSocket } from "../../lib/websocket";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
+  readChunkCursor,
   readChunkSeq,
   type ChunkRetentionBudget,
 } from "../../lib/run-log-chunks";
@@ -25,6 +27,11 @@ const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+// Segmented-log append records are capped at 32 MiB. A terminal tail that
+// starts at an oversized final record may need a bounded sequence of pages to
+// finish that one row before the NDJSON parser can emit it.
+const MAX_SEGMENTED_LOG_RECORD_BYTES = 32 * 1024 * 1024;
+const MAX_SEGMENTED_TAIL_CONTINUATION_PAGES = 1_024;
 // When realtime websocket updates are enabled, the frequent log poll is
 // redundant with the live stream; keep only a slow safety-net poll to cover
 // gaps and reconnects instead of polling every couple of seconds.
@@ -53,6 +60,7 @@ export interface RunTranscriptSource {
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  logStore?: string | null;
 }
 
 interface UseLiveRunTranscriptsOptions {
@@ -74,6 +82,24 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function readRunEventDedupeKey(runId: string, payload: Record<string, unknown>, fallback: string): string {
+  const id = payload["id"];
+  if ((typeof id === "string" && id.length > 0) || (typeof id === "number" && Number.isSafeInteger(id))) {
+    return `socket:event:${runId}:id:${String(id)}`;
+  }
+  const cursor = readString(payload["cursor"]);
+  if (cursor) return `socket:event:${runId}:cursor:${cursor}`;
+  const eventEpoch = readString(payload["eventEpoch"]);
+  const seq = payload["seq"];
+  if (eventEpoch && typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
+    return `socket:event:${runId}:epoch:${eventEpoch}:${seq}`;
+  }
+  if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
+    return `socket:event:${runId}:legacy-seq:${seq}`;
+  }
+  return `socket:event:${runId}:fallback:${fallback}`;
+}
+
 function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
@@ -87,6 +113,13 @@ function runKnownLogBytes(run: RunTranscriptSource): number | null {
     ? run.logBytes
     : run.lastOutputBytes ?? run.logBytes;
   return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+}
+
+function exactLogPosition(value: number | string): bigint | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  }
+  return /^(?:0|[1-9]\d*)$/.test(value) ? BigInt(value) : null;
 }
 
 export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
@@ -120,7 +153,7 @@ export function useLiveRunTranscripts({
         .map((run) => {
           const logBytes = typeof run.logBytes === "number" ? run.logBytes : "";
           const lastOutputBytes = typeof run.lastOutputBytes === "number" ? run.lastOutputBytes : "";
-          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}`;
+          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}:${run.logStore ?? ""}`;
         })
         .sort((a, b) => a.localeCompare(b))
         .join(","),
@@ -140,8 +173,10 @@ export function useLiveRunTranscripts({
   // records re-delivered by the other transport are dropped instead of being
   // re-inserted ahead of newer output.
   const trimmedSeqFloorByRunRef = useRef(new Map<string, number>());
+  const trimmedCursorFloorByRunRef = useRef(new Map<string, string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
-  const logOffsetByRunRef = useRef(new Map<string, number>());
+  const logOffsetByRunRef = useRef(new Map<string, number | string>());
+  const segmentedTailContinuationRunIdsRef = useRef(new Set<string>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
   // PAP-462 B3: buffered runs that dropped out of the `runs` list, mapped to the
   // wall-clock deadline (ms) after which their buffer may be pruned. A run still
@@ -192,6 +227,7 @@ export function useLiveRunTranscripts({
         chunks,
         {
           seenChunkKeys: seenChunkKeysRef.current,
+          trimmedCursorFloorByRun: trimmedCursorFloorByRunRef.current,
           trimmedSeqFloorByRun: trimmedSeqFloorByRunRef.current,
         },
         retentionBudget,
@@ -270,10 +306,16 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of segmentedTailContinuationRunIdsRef.current) {
+      if (!retainedRunIds.has(runId)) segmentedTailContinuationRunIdsRef.current.delete(runId);
+    }
     for (const runId of trimmedSeqFloorByRunRef.current.keys()) {
       if (!retainedRunIds.has(runId)) {
         trimmedSeqFloorByRunRef.current.delete(runId);
       }
+    }
+    for (const runId of trimmedCursorFloorByRunRef.current.keys()) {
+      if (!retainedRunIds.has(runId)) trimmedCursorFloorByRunRef.current.delete(runId);
     }
     for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
       if (!retainedRunIds.has(runId)) {
@@ -311,28 +353,72 @@ export function useLiveRunTranscripts({
         return;
       }
       inFlightRunIds.add(run.id);
-      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      const offset = logOffsetByRunRef.current.get(run.id)
+        ?? (run.logStore === "local_segments" ? "tail" : resolveInitialLogOffset(run, logReadLimitBytes));
       try {
-        const result = await readTranscriptRequest(
-          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }),
+        const canContinueSegmentedTail = run.logStore === "local_segments" && isTerminalStatus(run.status);
+        const pageLimit = Math.max(1, logReadLimitBytes);
+        const maxPages = Math.min(
+          MAX_SEGMENTED_TAIL_CONTINUATION_PAGES,
+          Math.ceil(MAX_SEGMENTED_LOG_RECORD_BYTES / pageLimit) + 2,
+        );
+        let pageOffset = offset;
+        let pagesRead = 0;
+        let result = await readTranscriptRequest(
+          (signal) => heartbeatsApi.log(run.id, pageOffset, logReadLimitBytes, { signal }),
           controller.signal,
         );
-        if (cancelled) return;
+        while (true) {
+          if (cancelled) return;
+          const nextOffset = nextRunLogPosition(pageOffset, result);
+          const previousPosition = exactLogPosition(pageOffset);
+          const nextPosition = exactLogPosition(nextOffset);
+          const stalled = nextPosition !== null && previousPosition !== null && nextPosition === previousPosition;
+          const regressed = nextPosition !== null && previousPosition !== null && nextPosition < previousPosition;
+          if (canContinueSegmentedTail && (regressed || (stalled && runLogHasMore(result)))) {
+            setErrorsByRun((previous) => new Map(previous).set(
+              run.id,
+              new Error(regressed
+                ? "Run history cursor moved backwards before the final output record was complete."
+                : "Run history cursor stopped advancing before the final output record was complete."),
+            ));
+            break;
+          }
+          setErrorsByRun((previous) => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.delete(run.id);
+            return next;
+          });
+          appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
-        setErrorsByRun((previous) => {
-          if (!previous.has(run.id)) return previous;
-          const next = new Map(previous);
-          next.delete(run.id);
-          return next;
-        });
-        appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
+          logOffsetByRunRef.current.set(run.id, nextOffset);
+          if (run.logStore === "local_segments") {
+            if (
+              runLogHasMore(result) &&
+              (pageOffset === "tail" || segmentedTailContinuationRunIdsRef.current.has(run.id))
+            ) {
+              segmentedTailContinuationRunIdsRef.current.add(run.id);
+            } else if (!runLogHasMore(result)) {
+              segmentedTailContinuationRunIdsRef.current.delete(run.id);
+            }
+          }
 
-        if (result.nextOffset !== undefined) {
-          logOffsetByRunRef.current.set(run.id, result.nextOffset);
-          return;
-        }
-        if (result.content.length > 0) {
-          logOffsetByRunRef.current.set(run.id, offset + result.content.length);
+          if (!canContinueSegmentedTail || !segmentedTailContinuationRunIdsRef.current.has(run.id)) break;
+          if (pagesRead >= maxPages) {
+            setErrorsByRun((previous) => new Map(previous).set(
+              run.id,
+              new Error("The final output record exceeded the bounded page limit. Retry to continue loading it."),
+            ));
+            break;
+          }
+
+          pageOffset = nextOffset;
+          pagesRead += 1;
+          result = await readTranscriptRequest(
+            (signal) => heartbeatsApi.log(run.id, pageOffset, logReadLimitBytes, { signal }),
+            controller.signal,
+          );
         }
       } catch (error) {
         if (cancelled) return;
@@ -466,20 +552,25 @@ export function useLiveRunTranscripts({
             stream,
             chunk,
             seq: readChunkSeq(payload["seq"]),
+            cursor: readChunkCursor(payload["cursor"]),
             dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
           }]);
           return;
         }
 
         if (event.type === "heartbeat.run.event") {
-          const seq = typeof payload["seq"] === "number" ? payload["seq"] : null;
+          if (payload["commitHint"] === true) return;
           const eventType = readString(payload["eventType"]) ?? "event";
           const messageText = readString(payload["message"]) ?? eventType;
           appendChunks(runId, [{
             ts: event.createdAt,
             stream: eventType === "error" ? "stderr" : "system",
             chunk: messageText,
-            dedupeKey: `socket:event:${runId}:${seq ?? `${eventType}:${messageText}:${event.createdAt}`}`,
+            dedupeKey: readRunEventDedupeKey(
+              runId,
+              payload,
+              `${eventType}:${messageText}:${event.createdAt}`,
+            ),
           }]);
           return;
         }

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
@@ -15,6 +15,7 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { readRunEventLane } from "./run-event-history.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -228,15 +229,7 @@ export function workProductService(
     },
 
     latestRunDiffSummary: async (runId: string): Promise<WorkProductDiffSummary | null> => {
-      const rows = await db
-        .select({ payload: heartbeatRunEvents.payload })
-        .from(heartbeatRunEvents)
-        .where(and(
-          eq(heartbeatRunEvents.runId, runId),
-          inArray(heartbeatRunEvents.eventType, ["workspace.change.updated", "workspace.diff.recorded"]),
-        ))
-        .orderBy(desc(heartbeatRunEvents.seq))
-        .limit(20);
+      const rows = await readRunEventLane(db, runId, "workspace-diff", 20);
       for (const row of rows) {
         const summary = workProductDiffSummaryFromEventPayload(row.payload);
         if (summary) return summary;

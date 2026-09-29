@@ -5,6 +5,7 @@ import type {
   RunnerGoalAction,
   RunnerGoalActionRequest,
   RunnerGoalProjection,
+  RunnerGoalRevision,
 } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
@@ -49,7 +50,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
   const [dialog, setDialog] = useState<{
     action: "edit" | "replace";
     objective: string;
-    revision: number;
+    revision: RunnerGoalRevision;
   } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => {
@@ -79,18 +80,27 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     const next = event.payload as unknown as RunnerGoalProjection;
     if (next.issueId !== issueId || (agentId && next.agentId !== agentId)) return;
     const current = queryClient.getQueryData<RunnerGoalProjection>(key);
-    if (current && next.revision > current.revision + 1) {
+    if (!current) {
+      queryClient.setQueryData(key, next);
+      return;
+    }
+    if (typeof current.revision === "string" || typeof next.revision === "string") {
+      if (next.revision !== current.revision) void query.refetch();
+      else queryClient.setQueryData(key, next);
+      return;
+    }
+    if (next.revision > current.revision + 1) {
       void query.refetch();
       return;
     }
-    if (!current || next.revision >= current.revision) queryClient.setQueryData(key, next);
+    if (next.revision >= current.revision) queryClient.setQueryData(key, next);
   });
 
   const executeAction = useCallback(async (
     action: RunnerGoalAction,
     objective?: string,
     confirmReplace = false,
-    expectedRevision?: number,
+    expectedRevision?: RunnerGoalRevision,
   ) => {
     setActionError(null);
     try {

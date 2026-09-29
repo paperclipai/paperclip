@@ -1,12 +1,13 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { constants, createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import { createSegmentedRunLogStore } from "./segmented-run-log-store.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "local_segments";
 
 export interface RunLogHandle {
   store: RunLogStoreType;
@@ -15,26 +16,36 @@ export interface RunLogHandle {
 
 export interface RunLogReadOptions {
   offset?: number;
+  /** Exact decimal byte offset, or `tail` for a bounded recent page. */
+  cursor?: string;
   limitBytes?: number;
 }
 
 export interface RunLogReadResult {
   content: string;
   nextOffset?: number;
+  cursor?: string;
+  hasMore?: boolean;
 }
 
 export interface RunLogFinalizeSummary {
-  bytes: number;
+  bytes: number | null;
+  bytesExact?: string;
   sha256?: string;
   compressed: boolean;
 }
+
+export interface RunLogEvent { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number }
+export interface RunLogAppendReceipt { bytes: number; cursor: string; nextCursor: string }
 
 export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
+    event: RunLogEvent,
   ): Promise<number>;
+  /** Durable byte position is the chunk identity; no lifetime event counter. */
+  appendPositioned?(handle: RunLogHandle, event: RunLogEvent): Promise<RunLogAppendReceipt>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
@@ -63,6 +74,8 @@ function normalizeKeyPrefix(prefix: string | undefined): string {
 
 export interface DurableRunLogStoreOptions {
   basePath: string;
+  /** Fresh-format selection only; retained segmented logs remain readable. */
+  segmented?: boolean;
   // When provided, completed logs are mirrored to object storage on finalize and
   // served from there on read whenever the local file is missing (e.g. the pod
   // rolled and wiped the emptyDir). When omitted, the store is local-only (the
@@ -98,6 +111,7 @@ export interface DurableRunLogStoreOptions {
 export function createDurableRunLogStore(options: DurableRunLogStoreOptions): RunLogStore {
   const { basePath } = options;
   const s3 = options.s3;
+  const segmented = createSegmentedRunLogStore(options);
   const s3Prefix = normalizeKeyPrefix(s3?.keyPrefix);
   const inflightMirrorMs = s3?.inflightMirrorMs && s3.inflightMirrorMs > 0 ? s3.inflightMirrorMs : 0;
 
@@ -203,17 +217,18 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 
   async function readLocalRange(
     filePath: string,
-    offset: number,
+    offset: number | "tail",
     limitBytes: number,
   ): Promise<RunLogReadResult | null> {
     const stat = await fs.stat(filePath).catch(() => null);
     if (!stat) return null;
-    const start = Math.max(0, Math.min(offset, stat.size));
+    const start = offset === "tail" ? Math.max(0, stat.size - limitBytes) : Math.max(0, Math.min(offset, stat.size));
     // No lower clamp to `start`: when the reader is fully caught up
     // (offset === size) that clamp made end === start and produced a
     // 1-byte-past-EOF range instead of an empty read.
     const end = Math.min(start + limitBytes - 1, stat.size - 1);
-    if (start > end) return { content: "", nextOffset: start < stat.size ? start : undefined };
+    if (start > end) return { content: "", nextOffset: start < stat.size ? start : undefined,
+      ...(offset === "tail" ? { cursor: String(start), hasMore: false } : {}) };
 
     const chunks: Buffer[] = [];
     try {
@@ -232,12 +247,12 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     }
     const content = Buffer.concat(chunks).toString("utf8");
     const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
-    return { content, nextOffset };
+    return { content, nextOffset, ...(offset === "tail" ? { cursor: String(end + 1), hasMore: end + 1 < stat.size } : {}) };
   }
 
   async function readS3Range(
     logRef: string,
-    offset: number,
+    offset: number | "tail",
     limitBytes: number,
   ): Promise<RunLogReadResult> {
     if (!s3) throw notFound("Run log not found");
@@ -245,13 +260,14 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     const head = await s3.provider.headObject({ objectKey: key });
     if (!head.exists) throw notFound("Run log not found");
     const total = head.contentLength ?? 0;
-    const start = Math.max(0, Math.min(offset, total));
+    const start = offset === "tail" ? Math.max(0, total - limitBytes) : Math.max(0, Math.min(offset, total));
     // Unlike local file streams, S3 rejects a range that starts at or past
     // EOF with 416 InvalidRange, so a caught-up reader (offset === total)
     // must short-circuit to an empty read instead of clamping end up to
     // start and requesting `bytes=total-total`.
     const end = Math.min(start + limitBytes - 1, total - 1);
-    if (total === 0 || start > end) return { content: "", nextOffset: start < total ? start : undefined };
+    if (total === 0 || start > end) return { content: "", nextOffset: start < total ? start : undefined,
+      ...(offset === "tail" ? { cursor: String(start), hasMore: false } : {}) };
 
     const result = await s3.provider.getObject({ objectKey: key, range: { start, end } });
     const chunks: Buffer[] = [];
@@ -262,7 +278,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     });
     const content = Buffer.concat(chunks).toString("utf8");
     const nextOffset = end + 1 < total ? end + 1 : undefined;
-    return { content, nextOffset };
+    return { content, nextOffset, ...(offset === "tail" ? { cursor: String(end + 1), hasMore: end + 1 < total } : {}) };
   }
 
   async function sha256File(filePath: string): Promise<string> {
@@ -275,12 +291,48 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     });
   }
 
+  const appendChains = new Map<string, Promise<unknown>>();
+  function appendLegacy(handle: RunLogHandle, event: RunLogEvent, positioned: boolean): Promise<RunLogAppendReceipt> {
+    const before = appendChains.get(handle.logRef) ?? Promise.resolve();
+    const pending = before.then(async () => {
+      if (handle.store !== "local_file") throw new Error("run_log_store_unsupported");
+      const fd = await fs.open(resolveWithin(basePath, handle.logRef), constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const stat = await fd.stat({ bigint: true });
+        if (!stat.isFile()) throw new Error("run_log_file_unsafe");
+        const cursor = String(stat.size);
+        const bytes = Buffer.from(`${JSON.stringify({ ts: event.ts, stream: event.stream, chunk: event.chunk,
+          ...(typeof event.seq === "number" && Number.isSafeInteger(event.seq) ? { seq: event.seq } : {}),
+          ...(positioned ? { cursor } : {}) })}\n`);
+        await fd.writeFile(bytes);
+        if (positioned) await fd.sync();
+        noteInflightAppend(handle.logRef);
+        return { bytes: bytes.length, cursor, nextCursor: String(stat.size + BigInt(bytes.length)) };
+      } finally { await fd.close(); }
+    });
+    appendChains.set(handle.logRef, pending);
+    // Retain a failed chain: a partial legacy append has no recoverable head
+    // and must not be followed by another acknowledged record in this owner.
+    void pending.then(() => { if (appendChains.get(handle.logRef) === pending) appendChains.delete(handle.logRef); }, () => {});
+    return pending;
+  }
+
   return {
     async begin(input) {
       const [companyId, agentId] = safeSegments(input.companyId, input.agentId);
       const runId = safeSegments(input.runId)[0]!;
       const relDir = path.join(companyId, agentId);
       const relPath = path.join(relDir, `${runId}.ndjson`);
+      const segmentedRef = `${input.companyId}/${input.agentId}/${input.runId}.segments`;
+      if (await fs.lstat(resolveWithin(basePath, `${segmentedRef}/head.json`)).catch(() => null)) return segmented.begin(input);
+      const existing = await fs.lstat(resolveWithin(basePath, relPath)).catch(() => null);
+      if (existing) {
+        if (!existing.isFile() || existing.isSymbolicLink()) throw new Error("run_log_file_unsafe");
+        await appendChains.get(relPath);
+        return { store: "local_file", logRef: relPath };
+      }
+      if (s3 && (await s3.provider.headObject({ objectKey: s3Key(`${segmentedRef}/head.json`) })).exists) return segmented.begin(input);
+      if (options.segmented) return segmented.begin(input);
       await ensureDir(relDir);
       const absPath = resolveWithin(basePath, relPath);
       await fs.writeFile(absPath, "", "utf8");
@@ -289,25 +341,18 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     },
 
     async append(handle, event) {
-      if (handle.store !== "local_file") return 0;
-      const absPath = resolveWithin(basePath, handle.logRef);
-      const line = JSON.stringify({
-        ts: event.ts,
-        stream: event.stream,
-        chunk: event.chunk,
-        // Monotonic per-run sequence so readers can dedupe and order records
-        // even when several identical chunks share the same millisecond ts
-        // (common for ACP-style token deltas).
-        ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
-      });
-      const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
-      noteInflightAppend(handle.logRef);
-      return Buffer.byteLength(persisted, "utf8");
+      if (handle.store === "local_segments") return segmented.append(handle, event);
+      return (await appendLegacy(handle, event, false)).bytes;
+    },
+    async appendPositioned(handle, event) {
+      if (handle.store === "local_segments") return segmented.appendPositioned!(handle, event);
+      return appendLegacy(handle, event, true);
     },
 
     async finalize(handle) {
+      if (handle.store === "local_segments") return segmented.finalize(handle);
       if (handle.store !== "local_file") return { bytes: 0, compressed: false };
+      await appendChains.get(handle.logRef);
       await retireInflightMirror(handle.logRef);
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
@@ -344,10 +389,13 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     },
 
     async read(handle, opts) {
+      if (handle.store === "local_segments") return segmented.read(handle, opts);
       if (handle.store !== "local_file") throw notFound("Run log not found");
       const absPath = resolveWithin(basePath, handle.logRef);
-      const offset = opts?.offset ?? 0;
+      const offset = opts?.cursor === "tail" ? "tail" : opts?.cursor !== undefined ? Number(opts.cursor) : opts?.offset ?? 0;
+      if (offset !== "tail" && (!Number.isSafeInteger(offset) || offset < 0)) throw new Error("run_log_cursor_invalid");
       const limitBytes = opts?.limitBytes ?? 256_000;
+      if (!Number.isSafeInteger(limitBytes) || limitBytes < 4 || limitBytes > 4 * 1024 * 1024) throw new Error("run_log_page_size_invalid");
       const local = await readLocalRange(absPath, offset, limitBytes);
       if (local) return local;
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
@@ -355,6 +403,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     },
 
     async flushInflightMirrors() {
+      await segmented.flushInflightMirrors?.();
       if (!s3 || inflightMirrorMs <= 0) return;
       const flushEntry = async (logRef: string, entry: InflightMirrorEntry) => {
         // Loop until the entry is clean: an append that lands while an
@@ -423,7 +472,7 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3(), segmented: process.env.PAPERCLIP_NATIVE_INDEXED_STATE === "1" });
   return cachedStore;
 }
 

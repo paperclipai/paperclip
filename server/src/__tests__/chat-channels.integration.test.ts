@@ -7,6 +7,7 @@ import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession } from "../services/chat-github-tools.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
+import { allocateRunEventPosition, runEventCursor } from "../services/run-event-history.js";
 import { chatGitHubRegistrations, chatGitHubReviews, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
@@ -59100,6 +59101,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("publishes current native progress through an event epoch boundary", async () => {
+    const context = await safeNativeProgressFixture("telegram", "803");
+    try {
+      const run = await context.createRun("history epoch");
+      await context.addEvent(run, "item.completed", 100);
+      await db.update(heartbeatRuns).set({ nextEventSeq: 101 }).where(eq(heartbeatRuns.id, run.runId));
+      const position = await db.transaction(async tx => {
+        const allocated = await allocateRunEventPosition(tx as unknown as typeof db, run.runId, 100);
+        await tx.insert(heartbeatRunEvents).values({
+          companyId: context.fixture.companyId, agentId: context.fixture.assignedAgentId,
+          runId: run.runId, ...allocated, eventType: "tool.execution.completed",
+          createdAt: new Date(run.baseCreatedAt.getTime() + 40_000),
+        });
+        return allocated;
+      });
+      expect(position.seq).toBe(1);
+      expect(position.eventEpoch).not.toBe("");
+      await expect(enqueueChatRunMilestones(db, { since: new Date(0) })).resolves.toBe(1);
+      const rows = await db.select({ key: chatPublications.idempotencyKey }).from(chatPublications)
+        .where(like(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}:native:%`));
+      expect(rows).toEqual([{ key: `run:${run.runId}:working:${context.endpoint.id}:native:using_tools:${runEventCursor(position)}` }]);
+      await expect(enqueueChatRunMilestones(db, { since: new Date(0) })).resolves.toBe(0);
+    } finally { await context.service.shutdown(); }
+  });
 
   it("enforces the native progress cadence boundary and one publication per phase", async () => {
     const context = await safeNativeProgressFixture("telegram", "8");

@@ -2039,7 +2039,7 @@ function createSandboxEnvironmentDriver(
           if (!providerLease) {
             if (
               input.adapterType === "paperclip_runner" &&
-              !verifyNativeHarnessBackupStamp(
+              !await verifyNativeHarnessBackupStamp(
                 reusableLease.metadata?.nativeHarnessBackup,
                 reusableLease.providerLeaseId,
               )
@@ -3906,7 +3906,7 @@ export function environmentRuntimeService(
               "paperclip_runner" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
             (!leaseSnapshot.providerLeaseId ||
-              !verifyNativeHarnessBackupStamp(
+              !await verifyNativeHarnessBackupStamp(
                 leaseSnapshot.metadata.nativeHarnessBackup,
                 leaseSnapshot.providerLeaseId,
               ))

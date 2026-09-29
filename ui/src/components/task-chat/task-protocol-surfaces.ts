@@ -107,6 +107,7 @@ export const TASK_PROTOCOL_EVENT_SURFACE_REGISTRY: Readonly<Record<string, TaskP
   ...Object.fromEntries(runnerLifecycleEvents.map((eventType) => [eventType, folded("turn", "Routine lifecycle transitions are summarized by the run turn and composer state.")])),
   ...Object.fromEntries(diagnosticEvents.map((eventType) => [eventType, folded("system_notice", "Actionable failure text is folded into the run or system notice.")])),
   ...Object.fromEntries(itemEvents.map((eventType) => [eventType, folded("conversation_or_tool", "Item payloads normalize into messages, reasoning, tools, diffs, or usage." )])),
+  "output.body.chunk": debugOnly("run_debug", "Body chunks carry immutable output bytes; messages and tools render their normalized content."),
   "sandbox.metric": debugOnly("run_debug", "Sandbox telemetry is available in run details, not the primary task thread."),
   ...Object.fromEntries(mcpLifecycleEvents.map((eventType) => [eventType, debugOnly("run_debug", "MCP application transport lifecycle remains in run details unless it produces an actionable failure.")])),
   ...Object.fromEntries(governanceEvents.map((eventType) => [eventType, folded("governance", "Authoritative task status, attention, and interaction records own this state." )])),

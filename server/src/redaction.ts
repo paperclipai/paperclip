@@ -101,6 +101,8 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-model-envelope.v2",
   "paperclip.native-session-scope.v2",
   "paperclip.native-session-supervisor.v1",
+  "paperclip.output.body.v1",
+  "paperclip.output.body.chunk.v1",
   "paperclip.plan.updated.v1",
   "paperclip.provider.native.v1",
   "paperclip.provider.notice.v1",
@@ -259,6 +261,7 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "turn.failed",
   "turn.interrupted",
   "turn.cancelled",
+  "output.body.chunk",
   "item.started",
   "item.delta",
   "item.completed",
@@ -879,6 +882,15 @@ function isPaperclipSchemaDiscriminator(
 export function sanitizeRecord(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (record.schema === "paperclip.output.body.chunk.v1") {
+    // Transport fragments are not independently redactable: a registered
+    // secret may cross their boundary. Public event views expose the reference
+    // only; the authorized download verifies/reassembles/redacts the full frame.
+    const body = isPlainObject(record.body) ? record.body : {};
+    return { schema: record.schema, body: sanitizeRecord({ schema: body.schema,
+      bodyId: body.bodyId, sha256: body.sha256, byteLength: body.byteLength, mediaType: body.mediaType }),
+      offset: sanitizeValue(record.offset), sha256: sanitizeValue(record.sha256) };
+  }
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     if (COMMAND_ARGS_PAYLOAD_KEY_RE.test(key) && Array.isArray(value)) {

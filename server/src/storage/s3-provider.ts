@@ -88,8 +88,26 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           Body: input.body,
           ContentType: input.contentType,
           ContentLength: input.contentLength,
+          ChecksumSHA256: input.sha256 ? Buffer.from(input.sha256, "hex").toString("base64") : undefined,
         }),
       );
+    },
+
+    async putObjectConditional(input, expectedEtag) {
+      const output = await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: buildKey(prefix, input.objectKey),
+        Body: input.body,
+        ContentType: input.contentType,
+        ContentLength: input.contentLength,
+        ChecksumSHA256: input.sha256 ? Buffer.from(input.sha256, "hex").toString("base64") : undefined,
+        IfMatch: expectedEtag ?? undefined,
+        IfNoneMatch: expectedEtag === null ? "*" : undefined,
+      }));
+      // An unknown commit result fences the caller; never retry it as a blind
+      // overwrite. A fresh owner must inspect the actual published object.
+      if (!output.ETag) throw new Error("storage_conditional_publication_indeterminate");
+      return { etag: output.ETag };
     },
 
     async getObject(input): Promise<GetObjectResult> {

@@ -61,6 +61,7 @@ import type {
   TaskChatRuntimeRequestDecision,
   TaskChatRuntimeRequestItem,
   TaskChatTurnItem,
+  TaskChatMarkerItem,
 } from "@/components/task-chat/task-chat-model";
 import {
   latestPendingRuntimeRequest,
@@ -242,6 +243,24 @@ export function shouldRepeatTaskChatBlockers(items: TaskChatItem[]): boolean {
       (item.kind === "message" && !item.interstitial),
   );
   return conversationItems.length >= LONG_THREAD_BLOCKER_REPEAT_COUNT;
+}
+
+function collapsedNativeHistoryMarker(
+  runId: string,
+  agentId: string | null | undefined,
+  agentUrlKey: string | undefined,
+): TaskChatMarkerItem {
+  return {
+    id: `${runId}:history-collapsed`,
+    kind: "marker",
+    variant: "turn_boundary",
+    tone: "neutral",
+    collapsible: true,
+    label: "Earlier run activity collapsed",
+    detail: "This transcript keeps the newest 1,000 run events or about 2 MiB in memory. Older events remain available in the run’s durable inspector.",
+    runId,
+    ...(agentId ? { runHref: `/agents/${encodeURIComponent(agentUrlKey ?? agentId)}/runs/${encodeURIComponent(runId)}` } : {}),
+  };
 }
 
 function isNativePaperclipRunnerRun(
@@ -846,6 +865,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         runtimeMode: r.runtimeMode,
         hasStoredOutput: r.hasStoredOutput,
         logBytes: r.logBytes,
+        logStore: r.logStore,
       });
     }
     for (const r of liveRuns ?? []) {
@@ -857,6 +877,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         hasStoredOutput: map.get(r.id)?.hasStoredOutput,
         logBytes: r.logBytes,
         lastOutputBytes: r.lastOutputBytes,
+        logStore: r.logStore,
       });
     }
     if (activeRun) {
@@ -867,6 +888,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         runtimeMode: activeRun.runtimeMode,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
+        logStore: activeRun.logStore,
       });
     }
     return [...map.values()];
@@ -894,6 +916,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     errorsByRun: nativeTranscriptErrorsByRun,
     isInitialHydrating: nativeEventsAreInitiallyHydrating,
     hydratedRunIds: hydratedNativeRunIds,
+    historyCollapsedRunIds: collapsedNativeHistoryRunIds,
     retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
   const fallbackByRunRef = useRef(
@@ -1439,6 +1462,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      if (source.runtimeMode === "native" && collapsedNativeHistoryRunIds.has(source.id)) {
+        const id = `${source.id}:history-collapsed`;
+        entriesWithFailures.push({
+          ms: toMs(meta?.startedAt ?? meta?.createdAt ?? entries[0]?.ts),
+          order: 2,
+          id,
+          item: collapsedNativeHistoryMarker(
+            source.id,
+            meta?.agentId,
+            meta?.agentId ? agentMap?.get(meta.agentId)?.urlKey : undefined,
+          ),
+        });
+      }
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
       if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
@@ -2057,6 +2093,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     runs,
     liveRun,
     transcriptByRun,
+    collapsedNativeHistoryRunIds,
     linkedRunMetaById,
     lastCommentIdByRun,
     comments,
@@ -2259,6 +2296,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     linkedRunMetaById.get(tailRunId ?? "")?.agentId ??
     issueAssigneeAgentId;
   const tailAgent = tailAgentId ? agentMap?.get(tailAgentId) : undefined;
+  const tailHistoryCollapsed = Boolean(tailRunId && collapsedNativeHistoryRunIds.has(tailRunId));
   const visibleTailAgentName = tailAgentName ?? tailAgent?.name ?? null;
   const visibleTailAgentIcon = tailAgent?.icon ?? null;
   const tailItems = useMemo(
@@ -2269,9 +2307,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentName: tailAgentName,
         running: tailStreaming,
       });
-      return tailPlanItem
+      const visibleItems = tailPlanItem
         ? embedPlanDocumentAtWriteBoundary(parsed, tailPlanItem)
         : parsed;
+      return tailHistoryCollapsed
+        ? [collapsedNativeHistoryMarker(tailRunId, tailAgentId, tailAgent?.urlKey), ...visibleItems]
+        : visibleItems;
     },
     // tailEntries is a fresh array each render; tailContentKey tracks its content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2281,6 +2322,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       tailStreaming,
       tailAgentName,
       tailPlanContentKey,
+      tailHistoryCollapsed,
+      tailAgentId,
+      tailAgent?.urlKey,
     ],
   );
   const tailTurnStatus = useMemo(

@@ -6,6 +6,7 @@ import {
   isTrimmedOutputMarkerChunk,
   mergeRunLogChunks,
   parsePersistedLogContent,
+  readChunkCursor,
   readChunkSeq,
   TRIMMED_OUTPUT_MARKER_TEXT,
   type ChunkMergeRefs,
@@ -13,11 +14,19 @@ import {
 } from "./run-log-chunks";
 
 function freshRefs(): ChunkMergeRefs {
-  return { seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() };
+  return {
+    seenChunkKeys: new Set<string>(),
+    trimmedSeqFloorByRun: new Map<string, number>(),
+    trimmedCursorFloorByRun: new Map<string, string>(),
+  };
 }
 
 function seqChunk(seq: number, chunk: string): IncomingRunLogChunk {
   return { ts: `t${seq}`, stream: "stdout", chunk, seq, dedupeKey: `k${seq}` };
+}
+
+function cursorChunk(cursor: string, seq: number, chunk: string): IncomingRunLogChunk {
+  return { ts: `t${cursor}`, stream: "stdout", chunk, cursor, seq, dedupeKey: `cursor:${cursor}` };
 }
 
 describe("readChunkSeq", () => {
@@ -27,6 +36,16 @@ describe("readChunkSeq", () => {
     expect(readChunkSeq("3")).toBeUndefined();
     expect(readChunkSeq(Number.NaN)).toBeUndefined();
     expect(readChunkSeq(undefined)).toBeUndefined();
+  });
+});
+
+describe("readChunkCursor", () => {
+  it("accepts exact canonical decimal byte positions without number conversion", () => {
+    expect(readChunkCursor("900719925474099312345")).toBe("900719925474099312345");
+    expect(readChunkCursor("0")).toBe("0");
+    expect(readChunkCursor("01")).toBeUndefined();
+    expect(readChunkCursor(1)).toBeUndefined();
+    expect(readChunkCursor("1.5")).toBeUndefined();
   });
 });
 
@@ -44,18 +63,20 @@ describe("parsePersistedLogContent", () => {
     const pending = new Map<string, string>();
     const first = parsePersistedLogContent(
       "run-1",
-      '{"ts":"a","stream":"stdout","chunk":"one","seq":1}\n{"ts":"b","stream":"std',
+      '{"ts":"a","stream":"stdout","chunk":"one","seq":1,"cursor":"42"}\n{"ts":"b","stream":"std',
       pending,
     );
     expect(first).toHaveLength(1);
     expect(first[0]!.chunk).toBe("one");
     expect(first[0]!.seq).toBe(1);
+    expect(first[0]!.cursor).toBe("42");
 
     // Second read completes the partial row from the first.
-    const second = parsePersistedLogContent("run-1", 'out","chunk":"two","seq":2}\n', pending);
+    const second = parsePersistedLogContent("run-1", 'out","chunk":"two","seq":2,"cursor":"99"}\n', pending);
     expect(second).toHaveLength(1);
     expect(second[0]!.chunk).toBe("two");
     expect(second[0]!.seq).toBe(2);
+    expect(second[0]!.cursor).toBe("99");
   });
 
   it("skips blank and malformed rows", () => {
@@ -69,6 +90,41 @@ describe("parsePersistedLogContent", () => {
 });
 
 describe("mergeRunLogChunks", () => {
+  it("orders and deduplicates by exact large byte cursor, preferring persisted full chunks", () => {
+    const refs = freshRefs();
+    let state: RunLogChunk[] = [];
+    ({ chunks: state } = mergeRunLogChunks("r", state, [
+      cursorChunk("900719925474099300010", 1, "next"),
+    ], refs, 100));
+    ({ chunks: state } = mergeRunLogChunks("r", state, [
+      cursorChunk("900719925474099300000", 2, "first"),
+      cursorChunk("900719925474099300010", 3, "next persisted full payload"),
+    ], refs, 100));
+    expect(state.map((chunk) => [chunk.cursor, chunk.chunk])).toEqual([
+      ["900719925474099300000", "first"],
+      ["900719925474099300010", "next persisted full payload"],
+    ]);
+  });
+
+  it("does not use seq identity or ordering when byte cursors are present", () => {
+    const refs = freshRefs();
+    let state: RunLogChunk[] = [];
+    ({ chunks: state } = mergeRunLogChunks("r", state, [
+      cursorChunk("100", 7, "later cursor"),
+      cursorChunk("90", 7, "earlier cursor"),
+    ], refs, 100));
+    expect(state.map((chunk) => chunk.chunk)).toEqual(["earlier cursor", "later cursor"]);
+  });
+
+  it("drops cursor replays at or below the per-run trimmed byte floor", () => {
+    const refs = freshRefs();
+    const rows = [cursorChunk("10", 1, "a"), cursorChunk("20", 2, "b"), cursorChunk("30", 3, "c")];
+    const trimmed = mergeRunLogChunks("r", [], rows, refs, 2);
+    expect(trimmed.chunks.map((chunk) => chunk.cursor)).toEqual(["20", "30"]);
+    expect(refs.trimmedCursorFloorByRun.get("r")).toBe("10");
+    expect(mergeRunLogChunks("r", trimmed.chunks, [cursorChunk("10", 99, "replay")], refs, 2).changed).toBe(false);
+  });
+
   it("orders sequenced chunks by seq regardless of arrival order", () => {
     const refs = freshRefs();
     let state: RunLogChunk[] = [];

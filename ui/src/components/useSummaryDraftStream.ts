@@ -5,12 +5,14 @@ import type { LiveEvent, SummarySlotIssueRef } from "@paperclipai/shared";
 
 import type { RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { nextRunLogPosition } from "@/lib/run-log-position";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
   readChunkSeq,
+  readChunkCursor,
   type ChunkMergeRefs,
   type IncomingRunLogChunk,
 } from "@/lib/run-log-chunks";
@@ -38,7 +40,11 @@ export interface SummaryDraftStream {
 }
 
 function freshMergeRefs(): ChunkMergeRefs {
-  return { seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() };
+  return {
+    seenChunkKeys: new Set<string>(),
+    trimmedSeqFloorByRun: new Map<string, number>(),
+    trimmedCursorFloorByRun: new Map<string, string>(),
+  };
 }
 
 function readPayloadString(value: unknown): string | null {
@@ -70,7 +76,7 @@ export function useSummaryDraftStream(
 
   const mergeRefs = useRef<ChunkMergeRefs>(freshMergeRefs());
   const pendingLogRowsRef = useRef(new Map<string, string>());
-  const logOffsetRef = useRef(0);
+  const logOffsetRef = useRef<number | string>(0);
 
   // Reset all stream state whenever the tracked generation changes — including
   // a superseded generation (new issue id) or generation ending (null).
@@ -121,9 +127,9 @@ export function useSummaryDraftStream(
   }, [fallbackRunId]);
 
   useEffect(() => {
-    logOffsetRef.current = 0;
+    logOffsetRef.current = activeRunQuery.data?.logStore === "local_segments" ? "tail" : 0;
     pendingLogRowsRef.current = new Map();
-  }, [runId]);
+  }, [runId, activeRunQuery.data?.logStore]);
 
   // Live token deltas over the shared company-events socket.
   useCompanyLiveEvent((event: LiveEvent) => {
@@ -137,7 +143,7 @@ export function useSummaryDraftStream(
     const stream =
       payload.stream === "stderr" ? "stderr" : payload.stream === "system" ? "system" : "stdout";
     appendChunks([
-      { ts, stream, chunk, seq: readChunkSeq(payload.seq), dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}` },
+      { ts, stream, chunk, seq: readChunkSeq(payload.seq), cursor: readChunkCursor(payload.cursor), dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}` },
     ]);
   });
 
@@ -153,11 +159,7 @@ export function useSummaryDraftStream(
         const result = await heartbeatsApi.log(runId, logOffsetRef.current, LOG_READ_LIMIT_BYTES);
         if (cancelled) return;
         appendChunks(parsePersistedLogContent(runId, result.content, pendingLogRowsRef.current));
-        if (result.nextOffset !== undefined) {
-          logOffsetRef.current = result.nextOffset;
-        } else if (result.content.length > 0) {
-          logOffsetRef.current += result.content.length;
-        }
+        logOffsetRef.current = nextRunLogPosition(logOffsetRef.current, result);
       } catch {
         // Ignore transient/404 reads (log not yet flushed, run just started).
       } finally {

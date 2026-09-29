@@ -36,6 +36,9 @@ export function publishChatPublicationCommitSignal(input: {
   agentId: string;
   eventType: string;
   seq?: number;
+  id?: number | string;
+  eventEpoch?: string;
+  cursor?: string;
 }): boolean {
   if (!isChatPublicationCommitEventType(input.eventType)) return false;
   try {
@@ -47,6 +50,10 @@ export function publishChatPublicationCommitSignal(input: {
         agentId: input.agentId,
         issueId: input.issueId,
         ...(input.seq === undefined ? {} : { seq: input.seq }),
+        ...(input.id === undefined ? {} : { id: input.id }),
+        ...(input.eventEpoch === undefined ? {} : { eventEpoch: input.eventEpoch }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        commitHint: true,
         eventType: input.eventType,
       },
     });

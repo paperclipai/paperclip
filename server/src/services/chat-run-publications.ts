@@ -1,3 +1,5 @@
+import { heartbeatRunEventHeads } from "@paperclipai/db";
+import { runEventCursor } from "./run-event-history.js";
 import {
   and,
   asc,
@@ -109,7 +111,7 @@ type ChatRunMilestoneCandidate = {
 };
 
 type SafeNativeChatProgressCandidate = {
-  eventId: number;
+  eventId: number | string;
   eventSeq: number;
   eventType: string;
   eventCreatedAt: Date;
@@ -186,10 +188,6 @@ async function enqueueSafeNativeChatProgress(
   const basePublication = alias(
     chatPublications,
     "safe_native_progress_base_publication",
-  );
-  const laterEvent = alias(
-    heartbeatRunEvents,
-    "safe_native_progress_later_event",
   );
   const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
   let inserted = 0;
@@ -268,21 +266,10 @@ async function enqueueSafeNativeChatProgress(
           ]),
           gte(heartbeatRunEvents.createdAt, input.since),
           sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`,
-          notExists(
-            db
-              .select({ id: laterEvent.id })
-              .from(laterEvent)
-              .where(
-                and(
-                  eq(laterEvent.companyId, heartbeatRunEvents.companyId),
-                  eq(laterEvent.runId, heartbeatRunEvents.runId),
-                  gt(laterEvent.seq, heartbeatRunEvents.seq),
-                  inArray(laterEvent.eventType, [
-                    ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
-                  ]),
-                ),
-              ),
-          ),
+          sql`${heartbeatRunEvents.id} = (select ${heartbeatRunEventHeads.eventId} from ${heartbeatRunEventHeads}
+            where ${heartbeatRunEventHeads.companyId} = ${heartbeatRunEvents.companyId}
+              and ${heartbeatRunEventHeads.runId} = ${heartbeatRunEvents.runId}
+              and ${heartbeatRunEventHeads.lane} = 'safe-native-progress')`,
           pageCursor
             ? or(
                 gt(heartbeatRunEvents.createdAt, pageCursor.eventCreatedAt),
@@ -381,6 +368,7 @@ async function enqueueSafeNativeChatProgress(
         const [currentEvent] = await tx
           .select({
             id: heartbeatRunEvents.id,
+            eventEpoch: heartbeatRunEvents.eventEpoch,
             seq: heartbeatRunEvents.seq,
             eventType: heartbeatRunEvents.eventType,
             createdAt: heartbeatRunEvents.createdAt,
@@ -390,12 +378,10 @@ async function enqueueSafeNativeChatProgress(
             and(
               eq(heartbeatRunEvents.companyId, row.companyId),
               eq(heartbeatRunEvents.runId, row.runId),
-              inArray(heartbeatRunEvents.eventType, [
-                ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
-              ]),
+              sql`${heartbeatRunEvents.id} = (select ${heartbeatRunEventHeads.eventId} from ${heartbeatRunEventHeads}
+                where ${heartbeatRunEventHeads.runId} = ${row.runId} and ${heartbeatRunEventHeads.lane} = 'safe-native-progress')`,
             ),
           )
-          .orderBy(desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
           .limit(1);
         if (
           !currentEvent ||
@@ -529,7 +515,7 @@ async function enqueueSafeNativeChatProgress(
             endpointId: row.endpointId,
             conversationId: row.conversationId,
             issueId: row.issueId,
-            idempotencyKey: `${progressKeyPrefix}${progress.phase}:${currentEvent.seq}`,
+            idempotencyKey: `${progressKeyPrefix}${progress.phase}:${runEventCursor(currentEvent)}`,
             payload: projectSafeChatPublication({
               classification: "external",
               source: "safe_milestone",

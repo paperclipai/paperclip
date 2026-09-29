@@ -3,6 +3,7 @@ import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
+  HeartbeatRunLogPage,
   WorkspaceOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
@@ -37,6 +38,7 @@ export interface ActiveRunForIssue {
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  logStore?: HeartbeatRun["logStore"];
   issueId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
@@ -70,6 +72,7 @@ export interface LiveRunForIssue {
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  logStore?: HeartbeatRun["logStore"];
   issueId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
@@ -133,20 +136,14 @@ export const heartbeatsApi = {
     );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
-  events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
+  events: (runId: string, afterSeq: number | string = 0, limit = 200, options?: RequestOptions) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
       options,
     ),
-  log: (runId: string, offset = 0, limitBytes = 256000, options?: RequestOptions) =>
-    api.get<{
-      runId: string;
-      store: string;
-      logRef: string;
-      content: string;
-      nextOffset?: number;
-    }>(
-      `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
+  log: (runId: string, offset: number | string = 0, limitBytes = 256000, options?: RequestOptions) =>
+    api.get<HeartbeatRunLogPage>(
+      `/heartbeat-runs/${runId}/log?${typeof offset === "string" ? "cursor" : "offset"}=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
       options,
     ),
   workspaceOperations: (runId: string) =>

@@ -5,7 +5,6 @@ import { eq, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -37,18 +36,36 @@ describe("P6-18 / MIG-01..04 native finalization migration", () => {
           native_run_finalizations, native_run_results, completion_contracts CASCADE;
         DROP TRIGGER IF EXISTS paperclip_issue_status_version_trigger ON issues;
         DROP FUNCTION IF EXISTS paperclip_bump_issue_status_version();
-        DROP INDEX IF EXISTS heartbeat_run_events_run_seq_uq;
-        CREATE INDEX IF NOT EXISTS heartbeat_run_events_run_seq_idx
+        -- Recreate the original 0001 table shape. Downgrading columns in place
+        -- would leave later AFTER INSERT triggers installed against fields that
+        -- did not exist before 0227.
+        DROP TABLE heartbeat_run_events CASCADE;
+        CREATE TABLE heartbeat_run_events (
+          id bigserial PRIMARY KEY NOT NULL,
+          company_id uuid NOT NULL,
+          run_id uuid NOT NULL,
+          agent_id uuid NOT NULL,
+          seq integer NOT NULL,
+          event_type text NOT NULL,
+          stream text,
+          level text,
+          color text,
+          message text,
+          payload jsonb,
+          created_at timestamptz DEFAULT now() NOT NULL,
+          CONSTRAINT heartbeat_run_events_company_id_companies_id_fk
+            FOREIGN KEY (company_id) REFERENCES companies(id),
+          CONSTRAINT heartbeat_run_events_run_id_heartbeat_runs_id_fk
+            FOREIGN KEY (run_id) REFERENCES heartbeat_runs(id),
+          CONSTRAINT heartbeat_run_events_agent_id_agents_id_fk
+            FOREIGN KEY (agent_id) REFERENCES agents(id)
+        );
+        CREATE INDEX heartbeat_run_events_run_seq_idx
           ON heartbeat_run_events (run_id, seq);
-        DROP INDEX IF EXISTS heartbeat_run_events_run_source_event_uq;
-        DROP INDEX IF EXISTS heartbeat_run_events_run_source_seq_uq;
-        ALTER TABLE heartbeat_run_events
-          DROP COLUMN IF EXISTS source_instance_id,
-          DROP COLUMN IF EXISTS source_event_id,
-          DROP COLUMN IF EXISTS source_seq,
-          DROP COLUMN IF EXISTS source_payload_sha256,
-          DROP COLUMN IF EXISTS protocol_schema_version;
-        ALTER TABLE heartbeat_run_events ALTER COLUMN seq TYPE integer;
+        CREATE INDEX heartbeat_run_events_company_run_idx
+          ON heartbeat_run_events (company_id, run_id);
+        CREATE INDEX heartbeat_run_events_company_created_idx
+          ON heartbeat_run_events (company_id, created_at);
         ALTER TABLE heartbeat_runs
           DROP COLUMN IF EXISTS runtime_mode,
           DROP COLUMN IF EXISTS runtime_mode_resolver_version,
@@ -99,32 +116,40 @@ describe("P6-18 / MIG-01..04 native finalization migration", () => {
       await applyPendingMigrations(temporary.connectionString);
       const db = createDb(temporary.connectionString);
 
-      const after = await db.select().from(heartbeatRunEvents)
-        .where(eq(heartbeatRunEvents.runId, runId)).orderBy(heartbeatRunEvents.id);
-      expect(after.map((row) => row.seq)).toEqual([1, 5, 10, 9]);
+      // The fixture deliberately stops at migration 0235 while the generated
+      // Drizzle schema includes later columns, so inspect this historical shape
+      // with SQL instead of selecting through the current schema definition.
+      const afterResult = await rawDb.execute(sql`
+        SELECT id::text AS id, company_id, run_id, agent_id, seq::integer AS seq,
+          event_type, stream, level, color, message, payload, created_at
+        FROM heartbeat_run_events WHERE run_id = ${runId} ORDER BY id
+      `);
+      const after = [...afterResult] as unknown as Record<string, unknown>[];
+      expect(after.map((row) => Number(row.seq))).toEqual([1, 5, 10, 9]);
       expect((await db.select({ nextEventSeq: heartbeatRuns.nextEventSeq }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId)))[0]?.nextEventSeq).toBe(11);
 
       // The repaired duplicate's cursor is the only changed byte-equivalent read field.
       const legacyColumns = (row: Record<string, unknown>) => ({
         id: String(row.id),
-        companyId: row.companyId ?? row.company_id,
-        runId: row.runId ?? row.run_id,
-        agentId: row.agentId ?? row.agent_id,
-        eventType: row.eventType ?? row.event_type,
+        companyId: row.company_id,
+        runId: row.run_id,
+        agentId: row.agent_id,
+        eventType: row.event_type,
         stream: row.stream,
         level: row.level,
         message: row.message,
         payload: row.payload,
-        createdAt: new Date(String(row.createdAt ?? row.created_at)).toISOString(),
+        createdAt: new Date(String(row.created_at)).toISOString(),
       });
       expect(after.map((row) => legacyColumns(row))).toEqual(before.map(legacyColumns));
-      expect(after[0]?.seq).toBe(Number(before[0]?.seq));
-      expect(after[1]?.seq).toBe(Number(before[1]?.seq));
-      expect(after[3]?.seq).toBe(Number(before[3]?.seq));
-      await expect(db.insert(heartbeatRunEvents).values({
-        companyId, runId, agentId, seq: 5, eventType: "must-conflict",
-      })).rejects.toThrow();
+      expect(Number(after[0]?.seq)).toBe(Number(before[0]?.seq));
+      expect(Number(after[1]?.seq)).toBe(Number(before[1]?.seq));
+      expect(Number(after[3]?.seq)).toBe(Number(before[3]?.seq));
+      await expect(rawDb.execute(sql`
+        INSERT INTO heartbeat_run_events (company_id, run_id, agent_id, seq, event_type)
+        VALUES (${companyId}, ${runId}, ${agentId}, 5, 'must-conflict')
+      `)).rejects.toThrow();
     } finally {
       await temporary.cleanup();
     }

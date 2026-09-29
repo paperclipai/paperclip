@@ -38,6 +38,27 @@ describe("heartbeatsApi.list", () => {
   });
 });
 
+describe("heartbeatsApi.events", () => {
+  beforeEach(() => {
+    mockApi.get.mockReset();
+    mockApi.get.mockResolvedValue([]);
+  });
+
+  it("passes opaque epoch cursors and the tail sentinel without numeric coercion", async () => {
+    await heartbeatsApi.events("run-1", "e:123e4567-e89b-42d3-a456-426614174000:8", 100);
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/heartbeat-runs/run-1/events?afterSeq=e%3A123e4567-e89b-42d3-a456-426614174000%3A8&limit=100",
+      undefined,
+    );
+    mockApi.get.mockClear();
+    await heartbeatsApi.events("run-1", "tail", 1_000);
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/heartbeat-runs/run-1/events?afterSeq=tail&limit=1000",
+      undefined,
+    );
+  });
+});
+
 describe("heartbeatsApi.liveRunsForCompany", () => {
   beforeEach(() => {
     mockApi.get.mockReset();

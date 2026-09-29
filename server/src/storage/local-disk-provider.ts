@@ -1,5 +1,6 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { constants, createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, badRequest } from "../errors.js";
 
@@ -44,11 +45,42 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
     async putObject(input) {
       const targetPath = resolveWithin(root, input.objectKey);
       const dir = path.dirname(targetPath);
-      await fs.mkdir(dir, { recursive: true });
+      const firstCreated = await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
-      const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await fs.writeFile(tempPath, input.body);
-      await fs.rename(tempPath, targetPath);
+      const tempPath = `${targetPath}.tmp-${randomUUID()}`;
+      const file = await fs.open(tempPath, "wx", 0o600);
+      try {
+        const hash = createHash("sha256");
+        let length = 0;
+        const chunks = Buffer.isBuffer(input.body) ? [input.body] : input.body;
+        for await (const value of chunks) {
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+          length += chunk.length;
+          if (length > input.contentLength) throw new Error("storage_object_length_mismatch");
+          hash.update(chunk);
+          await file.writeFile(chunk);
+        }
+        if (length !== input.contentLength || (input.sha256 && input.sha256 !== hash.digest("hex"))) throw new Error("storage_object_integrity_mismatch");
+        await file.sync();
+        await file.close();
+        await fs.rename(tempPath, targetPath);
+        if (process.platform !== "win32") {
+          // A leaf fsync alone does not make newly created ancestor directory
+          // entries durable. Flush through the first pre-existing parent before
+          // allowing a database reference to these bytes to commit.
+          const stop = firstCreated ? path.dirname(firstCreated) : dir;
+          let current = dir;
+          for (;;) {
+            const directory = await fs.open(current, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+            try { await directory.sync(); } finally { await directory.close(); }
+            if (current === stop) break;
+            current = path.dirname(current);
+          }
+        }
+      } finally {
+        await file.close();
+        await fs.rm(tempPath, { force: true });
+      }
     },
 
     async getObject(input): Promise<GetObjectResult> {

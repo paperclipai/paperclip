@@ -21,6 +21,8 @@ export type IncomingRunLogChunk = RunLogChunk & { dedupeKey: string };
  */
 export interface ChunkMergeRefs {
   seenChunkKeys: Set<string>;
+  trimmedCursorFloorByRun: Map<string, string>;
+  /** Legacy-only ceiling for records that do not carry byte cursors. */
   trimmedSeqFloorByRun: Map<string, number>;
 }
 
@@ -59,7 +61,8 @@ export function isTrimmedOutputMarkerChunk(chunk: RunLogChunk): boolean {
   return (
     chunk.stream === "system" &&
     chunk.chunk === TRIMMED_OUTPUT_MARKER_TEXT &&
-    chunk.seq === undefined
+    chunk.seq === undefined &&
+    chunk.cursor === undefined
   );
 }
 
@@ -85,7 +88,7 @@ function normalizeRetentionBudget(budget: number | ChunkRetentionBudget): ChunkR
 export function applyRetentionBudget(
   chunks: RunLogChunk[],
   budget: ChunkRetentionBudget,
-): { chunks: RunLogChunk[]; trimmedSeq: number | null } {
+): { chunks: RunLogChunk[]; trimmedSeq: number | null; trimmedCursor: string | null } {
   const { maxChunks, maxBytes, collapseTrimmed } = budget;
 
   // Peel off any existing marker so it is never counted or duplicated; a single
@@ -113,29 +116,38 @@ export function applyRetentionBudget(
     // Nothing new to trim. Preserve an existing marker so an earlier collapse
     // keeps its trace; otherwise return the marker-stripped array only if we
     // actually stripped one (we never had a real trim to justify keeping it).
-    if (hadMarker) return { chunks, trimmedSeq: null };
-    return { chunks: real, trimmedSeq: null };
+    if (hadMarker) return { chunks, trimmedSeq: null, trimmedCursor: null };
+    return { chunks: real, trimmedSeq: null, trimmedCursor: null };
   }
 
   const removed = real.slice(0, removeCount);
   const kept = real.slice(removeCount);
 
   let trimmedSeq: number | null = null;
+  let trimmedCursor: string | null = null;
   for (const item of removed) {
-    if (typeof item.seq === "number" && (trimmedSeq === null || item.seq > trimmedSeq)) {
+    if (item.cursor === undefined && typeof item.seq === "number" && (trimmedSeq === null || item.seq > trimmedSeq)) {
       trimmedSeq = item.seq;
+    }
+    if (item.cursor && (trimmedCursor === null || BigInt(item.cursor) > BigInt(trimmedCursor))) {
+      trimmedCursor = item.cursor;
     }
   }
 
   if (collapseTrimmed || hadMarker) {
     const markerTs = kept[0]?.ts ?? removed[removed.length - 1]!.ts;
-    return { chunks: [makeTrimmedOutputMarkerChunk(markerTs), ...kept], trimmedSeq };
+    return { chunks: [makeTrimmedOutputMarkerChunk(markerTs), ...kept], trimmedSeq, trimmedCursor };
   }
-  return { chunks: kept, trimmedSeq };
+  return { chunks: kept, trimmedSeq, trimmedCursor };
 }
 
 export function readChunkSeq(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Byte-position cursors are canonical non-negative decimal strings. */
+export function readChunkCursor(value: unknown): string | undefined {
+  return typeof value === "string" && /^(?:0|[1-9]\d*)$/.test(value) ? value : undefined;
 }
 
 export function isStructuredStreamingTextDelta(chunk: string): boolean {
@@ -164,7 +176,7 @@ export function parsePersistedLogContent(
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
+      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown; cursor?: unknown };
       const stream = raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
       const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
       const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
@@ -174,6 +186,7 @@ export function parsePersistedLogContent(
         stream,
         chunk,
         seq: readChunkSeq(raw.seq),
+        cursor: readChunkCursor(raw.cursor),
         dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
       });
     } catch {
@@ -191,10 +204,10 @@ export function parsePersistedLogContent(
  *
  * Ordering rules (unchanged from the original `useLiveRunTranscripts`
  * implementation):
- * - Sequenced chunks dedupe/order by the server-assigned monotonic `seq`. When
- *   the same `seq` arrives from both transports the longer payload wins (the
- *   websocket copy may be tail-truncated). Records at or below the trimmed
- *   floor are dropped.
+ * - Cursor-bearing chunks use exact decimal byte positions for identity and
+ *   ordering. When a cursor arrives from both transports the longer payload
+ *   wins (the websocket copy may be tail-truncated). Records at or below the
+ *   trimmed cursor floor are dropped. Legacy records retain seq behavior.
  * - Unsequenced chunks dedupe by content key (skipping structured streaming
  *   text deltas, which legitimately repeat) and act as an ordering barrier for
  *   subsequent sequenced inserts.
@@ -212,10 +225,33 @@ export function mergeRunLogChunks(
   let changed = false;
 
   for (const chunk of incoming) {
+    if (chunk.cursor !== undefined) {
+      const cursor = readChunkCursor(chunk.cursor);
+      if (cursor === undefined) continue;
+      const cursorFloor = refs.trimmedCursorFloorByRun.get(runId);
+      if (cursorFloor !== undefined && BigInt(cursor) <= BigInt(cursorFloor)) continue;
+      const duplicateAt = existing.findIndex((item) => item.cursor === cursor);
+      if (duplicateAt !== -1) {
+        if (chunk.chunk.length > existing[duplicateAt]!.chunk.length) {
+          existing[duplicateAt] = { ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk, seq: chunk.seq, cursor };
+          changed = true;
+        }
+        continue;
+      }
+      let insertAt = existing.length;
+      while (insertAt > 0) {
+        const prior = existing[insertAt - 1]!;
+        if (prior.cursor === undefined || BigInt(prior.cursor) < BigInt(cursor)) break;
+        insertAt -= 1;
+      }
+      existing.splice(insertAt, 0, { ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk, seq: chunk.seq, cursor });
+      changed = true;
+      continue;
+    }
     if (typeof chunk.seq === "number") {
       const seqFloor = refs.trimmedSeqFloorByRun.get(runId) ?? 0;
       if (chunk.seq <= seqFloor) continue;
-      const duplicateAt = existing.findIndex((item) => item.seq === chunk.seq);
+      const duplicateAt = existing.findIndex((item) => item.cursor === undefined && item.seq === chunk.seq);
       if (duplicateAt !== -1) {
         // Same record arrived via the other delivery path. Prefer the longer
         // payload: websocket chunks may be tail-truncated while the persisted
@@ -253,10 +289,16 @@ export function mergeRunLogChunks(
     refs.seenChunkKeys.clear();
   }
 
-  const { chunks: retained, trimmedSeq } = applyRetentionBudget(existing, normalizeRetentionBudget(budget));
+  const { chunks: retained, trimmedSeq, trimmedCursor } = applyRetentionBudget(existing, normalizeRetentionBudget(budget));
   if (trimmedSeq !== null) {
     const seqFloor = refs.trimmedSeqFloorByRun.get(runId) ?? 0;
     if (trimmedSeq > seqFloor) refs.trimmedSeqFloorByRun.set(runId, trimmedSeq);
+  }
+  if (trimmedCursor !== null) {
+    const cursorFloor = refs.trimmedCursorFloorByRun.get(runId);
+    if (cursorFloor === undefined || BigInt(trimmedCursor) > BigInt(cursorFloor)) {
+      refs.trimmedCursorFloorByRun.set(runId, trimmedCursor);
+    }
   }
 
   return { chunks: retained, changed: true };

@@ -254,7 +254,7 @@ describe("useSummaryDraftStream", () => {
   it("rehydrates the draft from the persisted run log after a refresh", async () => {
     // Simulate a page refresh mid-generation: no live event has run id yet, so
     // the hook resolves it from the active-run endpoint and reads the log.
-    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({ id: "run-1", adapterType: "claude-local" });
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({ id: "run-1", adapterType: "claude-local", logStore: "local_segments" });
     const persistedRows =
       [
         "STATUS: writing the summary…",
@@ -268,6 +268,7 @@ describe("useSummaryDraftStream", () => {
             ts: `t${index}`,
             stream: "stdout",
             seq: index + 1,
+            cursor: String(900719925474099312300n + BigInt(index)),
             chunk: JSON.stringify({ type: "acpx.text_delta", text: `${line}\n`, channel: "output" }),
           }),
         )
@@ -277,7 +278,7 @@ describe("useSummaryDraftStream", () => {
       store: "s",
       logRef: "r",
       content: persistedRows,
-      nextOffset: persistedRows.length,
+      cursor: "900719925474099312399",
     });
 
     const subscribers = new Set<CompanyLiveEventHandler>();
@@ -287,5 +288,6 @@ describe("useSummaryDraftStream", () => {
     expect(captured.current?.runId).toBe("run-1");
     expect(captured.current?.draft).toBe("## Needs you\nRecovered after refresh.");
     expect(captured.current?.draftClosed).toBe(true);
+    expect(mockHeartbeatsApi.log).toHaveBeenCalledWith("run-1", "tail", 256_000);
   });
 });

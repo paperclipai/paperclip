@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerGoalProjection } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
 import { RunnerGoalWidget, useRunnerGoalControl } from "./RunnerGoalWidget";
 
@@ -18,7 +19,7 @@ const projection: RunnerGoalProjection = {
   goal: { objective: "Original objective", status: "active", tokenBudget: null, tokensUsed: 20, elapsedSeconds: 2,
     iterations: 1, lastReason: null, createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:02Z",
     completedAt: null, workingNow: false },
-  workingNow: false, activeRunId: null, pendingAction: null, revision: 7, observedAt: "2026-09-08T00:00:02Z",
+  workingNow: false, activeRunId: null, pendingAction: null, revision: "r:123e4567-e89b-42d3-a456-426614174000", observedAt: "2026-09-08T00:00:02Z",
 };
 
 function Harness({ agentId = "agent-goal" }: { agentId?: string }) {
@@ -35,6 +36,7 @@ function Harness({ agentId = "agent-goal" }: { agentId?: string }) {
 let root: Root;
 let container: HTMLDivElement;
 let client: QueryClient;
+let liveEventHandler: ((event: unknown) => void) | null = null;
 function button(name: string) {
   const element = [...document.querySelectorAll<HTMLButtonElement>("button")].find((node) =>
     (node.getAttribute("aria-label") ?? node.textContent?.trim()) === name);
@@ -57,6 +59,10 @@ async function render(agentId = "agent-goal") {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  liveEventHandler = null;
+  vi.mocked(useCompanyLiveEvent).mockImplementation(((handler: (event: unknown) => void) => {
+    liveEventHandler = handler;
+  }) as never);
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), projection);
   vi.mocked(issuesApi.getRunnerGoal).mockResolvedValue(projection);
@@ -76,7 +82,7 @@ describe("session goal dialogs", () => {
   it("hides the widget after an expanded goal is cleared", async () => {
     await click("Focus goal");
     vi.mocked(issuesApi.actOnRunnerGoal).mockResolvedValue({
-      accepted: true, projection: { ...projection, goal: null, revision: 8 },
+      accepted: true, projection: { ...projection, goal: null, revision: "r:123e4567-e89b-42d3-a456-426614174001" },
     } as never);
     await click("Clear goal");
     await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
@@ -119,9 +125,25 @@ describe("session goal dialogs", () => {
     await objective("Revised objective");
     await click("Save goal");
     expect(issuesApi.actOnRunnerGoal).toHaveBeenCalledWith("issue-goal", expect.objectContaining({
-      action: "edit", objective: "Revised objective", expectedRevision: 7, agentId: "agent-goal",
+      action: "edit", objective: "Revised objective", expectedRevision: projection.revision, agentId: "agent-goal",
     }));
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+  });
+
+  it("refetches instead of ordering unequal opaque live revisions", async () => {
+    const currentRevision = "r:123e4567-e89b-42d3-a456-426614174000";
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), { ...projection, revision: currentRevision });
+    });
+    vi.mocked(issuesApi.getRunnerGoal).mockResolvedValue({ ...projection, revision: currentRevision });
+    vi.mocked(issuesApi.getRunnerGoal).mockClear();
+    const handler = liveEventHandler;
+    expect(handler).toBeTypeOf("function");
+    await act(async () => {
+      handler!({ type: "agent.session.goal.changed", payload: { ...projection, revision: "r:123e4567-e89b-42d3-a456-426614174001" } });
+    });
+    await vi.waitFor(() => expect(issuesApi.getRunnerGoal).toHaveBeenCalledTimes(1));
+    expect(client.getQueryData<RunnerGoalProjection>(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"))?.revision).toBe(currentRevision);
   });
 
   it("requires explicit replacement confirmation and lets cancellation preserve the goal", async () => {
@@ -134,7 +156,7 @@ describe("session goal dialogs", () => {
     await click("Request replacement");
     await click("Replace goal");
     expect(issuesApi.actOnRunnerGoal).toHaveBeenCalledWith("issue-goal", expect.objectContaining({
-      action: "replace", objective: "Replacement objective", confirmReplace: true, expectedRevision: 7,
+      action: "replace", objective: "Replacement objective", confirmReplace: true, expectedRevision: projection.revision,
     }));
   });
 

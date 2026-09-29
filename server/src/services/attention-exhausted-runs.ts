@@ -1,3 +1,4 @@
+import { heartbeatRunEventHeads } from "@paperclipai/db";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 
@@ -5,18 +6,19 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
   // Recovery can revisit an exhausted run. Deduplicate its historical events
   // before joining run data so duplicate events never multiply the wire payload.
   const latestExhaustion = db
-    .selectDistinctOn([heartbeatRunEvents.runId], {
+    .select({
       runId: heartbeatRunEvents.runId,
       eventId: heartbeatRunEvents.id,
       message: heartbeatRunEvents.message,
     })
-    .from(heartbeatRunEvents)
+    .from(heartbeatRunEventHeads)
+    .innerJoin(heartbeatRunEvents, eq(heartbeatRunEventHeads.eventId, heartbeatRunEvents.id))
     .where(and(
+      eq(heartbeatRunEventHeads.lane, "exhaustion"),
       eq(heartbeatRunEvents.companyId, companyId),
       eq(heartbeatRunEvents.eventType, "lifecycle"),
       sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
     ))
-    .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id))
     .as("latest_exhaustion");
 
   return db

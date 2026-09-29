@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  runnerGoalActionRequestSchema,
+  runnerGoalRevisionSchema,
+} from "@paperclipai/shared";
+import {
   agentSessionGoalActions,
   agentTaskSessions,
   agents,
@@ -118,11 +122,82 @@ describeEmbeddedPostgres("runner goal service", () => {
       ...binding, adapterType: "paperclip_runner",
     }, requestId, "provider_start_failed");
     expect(failed?.pendingAction).toBeNull();
-    expect(failed?.revision).toBe(accepted.projection.revision + 1);
+    expect(failed?.revision).not.toBe(accepted.projection.revision);
+    expect(failed?.revision).toMatch(/^r:[0-9a-f-]{36}$/i);
     expect(await failRunnerGoalAction(db, {
       ...binding, adapterType: "paperclip_runner",
     }, requestId, "duplicate_failure")).toBeNull();
     expect((await service.projection(binding.companyId, binding.issueId))?.revision).toBe(failed?.revision);
+  });
+
+  it("activates an opaque revision from the legacy integer maximum and replays the accepted result", async () => {
+    const binding = await seed();
+    await db.insert(agentTaskSessions).values({
+      ...binding,
+      adapterType: "paperclip_runner",
+      taskKey: binding.issueId,
+      goalRevision: 2_147_483_647,
+    });
+    const service = runnerGoalService(db, {
+      dispatchLiveControl: () => ({ runId: "run-live", completion: Promise.resolve() }),
+      queueLiveCommand: () => null,
+    });
+    expect((await service.projection(binding.companyId, binding.issueId))?.revision).toBe(2_147_483_647);
+    const request = {
+      requestId: randomUUID(), agentId: binding.agentId, expectedRevision: 2_147_483_647,
+      action: "create" as const, objective: "Activate the opaque revision",
+    };
+    const accepted = await service.act(binding.companyId, binding.issueId, request);
+    expect(accepted.projection.revision).toMatch(/^r:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    const [sessionAfterFirstMutation] = await db.select().from(agentTaskSessions);
+    expect(sessionAfterFirstMutation).toMatchObject({ goalRevision: 2_147_483_647, goalRevisionToken: accepted.projection.revision });
+
+    await expect(service.act(binding.companyId, binding.issueId, {
+      ...request, requestId: randomUUID(), action: "pause", objective: undefined,
+    })).rejects.toMatchObject({ code: "stale_revision" });
+    const replay = await service.act(binding.companyId, binding.issueId, request);
+    expect(replay.projection).toEqual(accepted.projection);
+    expect(replay.status).toBe("pending");
+    const [sessionAfterReplay] = await db.select().from(agentTaskSessions);
+    expect(sessionAfterReplay?.goalRevisionToken).toBe(accepted.projection.revision);
+  });
+
+  it("accepts only safe legacy numbers or exact opaque UUIDv4 revisions", () => {
+    expect(runnerGoalRevisionSchema.safeParse(Number.MAX_SAFE_INTEGER).success).toBe(true);
+    expect(runnerGoalRevisionSchema.safeParse(Number.MAX_SAFE_INTEGER + 1).success).toBe(false);
+    expect(runnerGoalRevisionSchema.safeParse("r:123e4567-e89b-42d3-a456-426614174000").success).toBe(true);
+    expect(runnerGoalRevisionSchema.safeParse("r:123e4567-e89b-12d3-a456-426614174000").success).toBe(false);
+    expect(runnerGoalRevisionSchema.safeParse("r:not-a-uuid").success).toBe(false);
+    expect(runnerGoalActionRequestSchema.safeParse({
+      requestId: "request", agentId: randomUUID(), expectedRevision: -1, action: "clear",
+    }).success).toBe(false);
+  });
+
+  it("serializes concurrent compare-and-set actions against one revision", async () => {
+    const binding = await seed();
+    const service = runnerGoalService(db, { enqueueOfflineControl: async () => {} });
+    const [first, second] = await Promise.allSettled([
+      service.act(binding.companyId, binding.issueId, {
+        requestId: randomUUID(), agentId: binding.agentId, expectedRevision: 0,
+        action: "create", objective: "First concurrent goal",
+      }),
+      service.act(binding.companyId, binding.issueId, {
+        requestId: randomUUID(), agentId: binding.agentId, expectedRevision: 0,
+        action: "create", objective: "Second concurrent goal",
+      }),
+    ]);
+    expect([first.status, second.status].filter((status) => status === "fulfilled")).toHaveLength(1);
+    const rejected = [first, second].find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: { code: "stale_revision" } });
+  });
+
+  it("fails closed when a persisted revision token is malformed", async () => {
+    const binding = await seed();
+    await db.insert(agentTaskSessions).values({
+      companyId: binding.companyId, agentId: binding.agentId, adapterType: "paperclip_runner",
+      taskKey: binding.issueId, goalRevisionToken: "r:broken",
+    });
+    await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).rejects.toThrow(/revision token is malformed/);
   });
 
   it("enforces revisions, correlates acknowledgements, and fences cleared goals", async () => {
@@ -166,7 +241,7 @@ describeEmbeddedPostgres("runner goal service", () => {
       tokenBudget: 2_000,
     })).rejects.toMatchObject({
       code: "idempotency_key_conflict",
-      projection: { revision: 1 },
+      projection: { revision: accepted.projection.revision },
     });
 
     await expect(service.act(binding.companyId, binding.issueId, {
@@ -330,7 +405,7 @@ describeEmbeddedPostgres("runner goal service", () => {
       binding.companyId,
       binding.issueId,
       binding.agentId,
-    )).resolves.toMatchObject({ revision: 1, goal: { status: "complete" } });
+    )).resolves.toMatchObject({ revision: expect.stringMatching(/^r:/), goal: { status: "complete" } });
 
     const successorEvent = {
       eventType: "session.goal.updated",
@@ -383,7 +458,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     // The predecessor cannot erase the successor's active goal.
     await expect(applyRunnerGoalPrpEvent(db, eventBinding, delayed("session.goal.cleared", 100))).resolves.toBeNull();
     await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).resolves.toMatchObject({
-      revision: 2, goal: { objective: "Successor heartbeat objective" },
+      revision: expect.stringMatching(/^r:/), goal: { objective: "Successor heartbeat objective" },
     });
     await applyRunnerGoalPrpEvent(db, eventBinding, {
       eventType: "session.goal.cleared", sourceInstanceId: runnerId, sourceRunId: nextRunId, sourceSeq: 2, payload: { goal: null },
@@ -394,7 +469,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     await expect(applyRunnerGoalPrpEvent(db, eventBinding, {
       eventType: "session.goal.updated", sourceSeq: 102, payload: delayed("", 0).payload,
     })).resolves.toBeNull();
-    await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).resolves.toMatchObject({ revision: 3, goal: null });
+    await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).resolves.toMatchObject({ revision: expect.stringMatching(/^r:/), goal: null });
     const [session] = await db.select().from(agentTaskSessions);
     expect(session).toMatchObject({ goalSourceId: `${runnerId}:${nextRunId}`, goalSourceCursor: 2 });
   });
@@ -419,7 +494,7 @@ describeEmbeddedPostgres("runner goal service", () => {
       payload: { goal: null },
     });
     expect(blocked).toMatchObject({
-      revision: 2,
+      revision: expect.stringMatching(/^r:/),
       goal: {
         objective: "Recover the durable provider goal",
         status: "blocked",
@@ -434,12 +509,14 @@ describeEmbeddedPostgres("runner goal service", () => {
     })).resolves.toBeNull();
     const [session] = await db.select({
       revision: agentTaskSessions.goalRevision,
+      revisionToken: agentTaskSessions.goalRevisionToken,
       sourceCursor: agentTaskSessions.goalSourceCursor,
       desiredState: agentTaskSessions.goalDesiredState,
       goal: agentTaskSessions.goalJson,
     }).from(agentTaskSessions);
     expect(session).toMatchObject({
-      revision: 2,
+      revision: 0,
+      revisionToken: expect.stringMatching(/^r:/),
       sourceCursor: 3,
       desiredState: "paused",
       goal: {
@@ -496,7 +573,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     const capability = await applyRunnerGoalPrpEvent(db, eventBinding, capabilityEvent);
     expect(capability).toMatchObject({
       capability: { availability: "available", verified: true },
-      revision: 1,
+      revision: expect.stringMatching(/^r:/),
     });
     await expect(
       applyRunnerGoalPrpEvent(db, eventBinding, capabilityEvent),
@@ -509,7 +586,7 @@ describeEmbeddedPostgres("runner goal service", () => {
         status: "active",
         workingNow: true,
       },
-      revision: 2,
+      revision: expect.stringMatching(/^r:/),
     });
     await expect(
       applyRunnerGoalPrpEvent(db, eventBinding, goalEvent),
@@ -523,12 +600,14 @@ describeEmbeddedPostgres("runner goal service", () => {
 
     const [session] = await db.select({
       revision: agentTaskSessions.goalRevision,
+      revisionToken: agentTaskSessions.goalRevisionToken,
       sourceCursor: agentTaskSessions.goalSourceCursor,
       capability: agentTaskSessions.goalCapabilityJson,
       goal: agentTaskSessions.goalJson,
     }).from(agentTaskSessions);
     expect(session).toMatchObject({
-      revision: 2,
+      revision: 0,
+      revisionToken: expect.stringMatching(/^r:/),
       sourceCursor: 3,
       capability: { availability: "available" },
       goal: {

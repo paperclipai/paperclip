@@ -7,6 +7,7 @@ import {
   agentSessionGoalActions,
   agentTaskSessions,
   heartbeatRuns,
+  nativeSourceCursors,
   issues,
 } from "@paperclipai/db";
 import type {
@@ -15,8 +16,10 @@ import type {
   RunnerGoalCapability,
   RunnerGoalPendingAction,
   RunnerGoalProjection,
+  RunnerGoalRevision,
   RunnerGoalSnapshot,
 } from "@paperclipai/shared";
+import { runnerGoalRevisionTokenSchema } from "@paperclipai/shared";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { dispatchLiveRunnerGoalControl } from "./runner-goal-control-broker.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -26,6 +29,17 @@ const OPEN_ACTION_STATUSES = ["pending", "delivering", "delivered"] as const;
 
 type AgentBinding = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig">;
 type TaskSession = typeof agentTaskSessions.$inferSelect;
+
+function sessionGoalRevision(session: TaskSession): RunnerGoalRevision {
+  if (session.goalRevisionToken === null) return session.goalRevision;
+  const parsed = runnerGoalRevisionTokenSchema.safeParse(session.goalRevisionToken);
+  if (!parsed.success) throw new Error("Stored runner goal revision token is malformed.");
+  return parsed.data;
+}
+
+function nextGoalRevisionToken(): string {
+  return `r:${randomUUID()}`;
+}
 
 export class RunnerGoalConflictError extends Error {
   constructor(
@@ -237,7 +251,7 @@ function commandSequence(request: RunnerGoalActionRequest) {
 export function runnerGoalService(
   db: Db,
   options: {
-    queueLiveCommand?: typeof queueLiveRunnerPrpCommand;
+    queueLiveCommand?: (...args: Parameters<typeof queueLiveRunnerPrpCommand>) => ReturnType<typeof queueLiveRunnerPrpCommand> | Awaited<ReturnType<typeof queueLiveRunnerPrpCommand>>;
     dispatchLiveControl?: typeof dispatchLiveRunnerGoalControl;
     enqueueOfflineControl?: (input: {
       companyId: string;
@@ -343,7 +357,7 @@ export function runnerGoalService(
       workingNow: goal?.workingNow ?? false,
       activeRunId: activeRun?.id ?? null,
       pendingAction: projectedPendingAction,
-      revision: session?.goalRevision ?? 0,
+      revision: session ? sessionGoalRevision(session) : 0,
       observedAt: session?.goalObservedAt?.toISOString() ?? null,
     };
   }
@@ -391,7 +405,7 @@ export function runnerGoalService(
         capability: storedCapability(session, fallbackCapability),
         goal: currentGoal,
         workingNow: currentGoal?.workingNow ?? false,
-        revision: session.goalRevision,
+        revision: sessionGoalRevision(session),
         observedAt: session.goalObservedAt?.toISOString() ?? null,
       };
 
@@ -410,7 +424,8 @@ export function runnerGoalService(
           result: asRecord(existingAction.resultJson),
         };
       }
-      if (session.goalRevision !== request.expectedRevision) {
+      const currentRevision = sessionGoalRevision(session);
+      if (currentRevision !== request.expectedRevision) {
         throw new RunnerGoalConflictError("stale_revision", currentProjection);
       }
       const capability = storedCapability(session, fallbackCapability);
@@ -440,7 +455,7 @@ export function runnerGoalService(
         throw new RunnerGoalActionError("goal_not_found", "There is no current session goal.");
       }
 
-      const nextRevision = session.goalRevision + 1;
+      const nextRevision = nextGoalRevisionToken();
       const desiredState = request.action === "pause"
         ? "paused"
         : request.action === "clear"
@@ -448,7 +463,7 @@ export function runnerGoalService(
           : "active";
       await tx.update(agentTaskSessions).set({
         goalDesiredState: desiredState,
-        goalRevision: nextRevision,
+        goalRevisionToken: nextRevision,
         updatedAt: new Date(),
       }).where(eq(agentTaskSessions.id, session.id));
       const pendingProjection: RunnerGoalProjection = {
@@ -466,7 +481,7 @@ export function runnerGoalService(
       }).returning();
       return {
         repeated: false,
-        session: { ...session, goalRevision: nextRevision },
+        session: { ...session, goalRevisionToken: nextRevision },
         status: action!.status,
         result: { projection: pendingProjection },
       };
@@ -509,14 +524,14 @@ export function runnerGoalService(
         live = true;
         liveCompletions.push(adapterControl.completion);
       } else if (hasActiveRun) {
-        const queuedCommands = commands.map((command, index) => queueLiveCommand({
+        const queuedCommands = await Promise.all(commands.map((command, index) => queueLiveCommand({
           companyId,
           issueId,
           agentId: request.agentId,
           type: command.type,
           payload: command.payload,
           commandId: `goal_${request.requestId}_${index + 1}`,
-        }));
+        })));
         live = queuedCommands.every((queued) => queued !== null);
         for (const queued of queuedCommands) {
           if (queued) liveCompletions.push(queued.completion);
@@ -642,6 +657,7 @@ export async function applyRunnerGoalPrpEvent(
     sourceInstanceId?: string;
     sourceRunId?: string;
     sourceSeq: number;
+    sourceEpoch?: string;
     payload: unknown;
   },
 ): Promise<RunnerGoalProjection | null> {
@@ -717,11 +733,17 @@ export async function applyRunnerGoalPrpEvent(
     }
     if (
       !session ||
-      (sameSource && session.goalSourceCursor !== null && event.sourceSeq <= session.goalSourceCursor)
+      (sameSource && (session.goalSourceEpoch ?? undefined) === event.sourceEpoch && session.goalSourceCursor !== null && event.sourceSeq <= session.goalSourceCursor)
     ) {
       return false;
     }
 
+    if (sameSource && (session.goalSourceEpoch ?? undefined) !== event.sourceEpoch) {
+      if (!event.sourceRunId || !event.sourceInstanceId) return false;
+      const [head] = await tx.select().from(nativeSourceCursors).where(and(eq(nativeSourceCursors.companyId, binding.companyId),
+        eq(nativeSourceCursors.runId, event.sourceRunId), eq(nativeSourceCursors.sourceInstanceId, event.sourceInstanceId))).limit(1);
+      if (!head || (head.sourceEpoch || undefined) !== event.sourceEpoch || head.cursor < event.sourceSeq) return false;
+    }
     const capability = asRecord(payload.sessionGoals);
     const providerError = typeof payload.error === "string" && payload.error.length > 0;
     const turnLifecycleEvent = event.eventType.startsWith("turn.");
@@ -802,6 +824,7 @@ export async function applyRunnerGoalPrpEvent(
     const observedAt = new Date();
     const update: Partial<typeof agentTaskSessions.$inferInsert> = {
       goalSourceCursor: event.sourceSeq,
+      goalSourceEpoch: event.sourceEpoch ?? null,
       ...(sourceId ? { goalSourceId: sourceId } : {}),
       goalObservedAt: observedAt,
       updatedAt: observedAt,
@@ -810,7 +833,7 @@ export async function applyRunnerGoalPrpEvent(
       await tx.update(agentTaskSessions).set(update).where(eq(agentTaskSessions.id, session.id));
       return false;
     }
-    update.goalRevision = session.goalRevision + 1;
+    update.goalRevisionToken = nextGoalRevisionToken();
     if (capability) {
       update.goalCapabilityJson = capability;
     }
@@ -876,7 +899,7 @@ export async function failRunnerGoalAction(
     // Pending-action transitions are part of the same revisioned projection as
     // provider snapshots. Clients must not discard a failed start as a replay.
     await tx.update(agentTaskSessions).set({
-      goalRevision: session.goalRevision + 1,
+      goalRevisionToken: nextGoalRevisionToken(),
       goalObservedAt: now,
       updatedAt: now,
     }).where(eq(agentTaskSessions.id, session.id));
@@ -923,7 +946,7 @@ export async function blockRunnerGoalRecovery(
       },
       goalStatus: "blocked",
       goalDesiredState: "paused",
-      goalRevision: session.goalRevision + 1,
+      goalRevisionToken: nextGoalRevisionToken(),
       goalObservedAt: now,
       updatedAt: now,
     }).where(eq(agentTaskSessions.id, session.id));
@@ -975,7 +998,7 @@ export async function settleLiveRunnerGoalBeforeInterrupt(
   const adapterControl = dispatchLiveRunnerGoalControl(binding, { requestId, action });
   const nativeControl = adapterControl
     ? null
-    : queueLiveRunnerPrpCommand({
+    : await queueLiveRunnerPrpCommand({
         ...binding,
         type: action === "pause" ? "session.goal.set" : "session.goal.clear",
         payload: action === "pause"

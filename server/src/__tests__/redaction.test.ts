@@ -11,6 +11,17 @@ import {
 } from "../redaction.js";
 
 describe("redaction", () => {
+  it("keeps full-output references public but withholds fragments until whole-body redaction", () => {
+    const body = { schema: "paperclip.output.body.v1", bodyId: "a".repeat(64), sha256: "a".repeat(64), byteLength: "100", mediaType: "text/plain; charset=utf-8" };
+    const preview = { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "item.completed", payload: { outputBody: body } } };
+    expect(redactEventPayload(preview)).toEqual(preview);
+    const chunk = { schema: "paperclip.output.body.chunk.v1", body, offset: "0", sha256: "b".repeat(64), text: "fragment of a registered credential" };
+    const event = { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "output.body.chunk", payload: chunk } };
+    const sanitized = redactEventPayload(event);
+    expect(sanitized).toEqual({ prpEvent: { ...event.prpEvent, payload: { schema: chunk.schema, body, offset: "0", sha256: chunk.sha256 } } });
+    expect(event.prpEvent.payload.text).toBe("fragment of a registered credential");
+    expect(JSON.stringify(sanitized)).not.toContain("fragment");
+  });
   it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {
     const schema = JSON.parse(
       readFileSync(

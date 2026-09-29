@@ -5101,7 +5101,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         },
       } as never;
-      const manifest = buildNativeHarnessBackupManifest({
+      const manifest = await buildNativeHarnessBackupManifest({
         backupRoot: current,
         execution,
         runnerInstanceId,

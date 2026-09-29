@@ -1,3 +1,4 @@
+import { heartbeatRunEventHeads } from "@paperclipai/db";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -455,15 +456,17 @@ export function activityService(db: Db) {
           runId: heartbeatRunEvents.runId,
           message: heartbeatRunEvents.message,
         })
-        .from(heartbeatRunEvents)
+        .from(heartbeatRunEventHeads)
+        .innerJoin(heartbeatRunEvents, eq(heartbeatRunEventHeads.eventId, heartbeatRunEvents.id))
         .where(
           and(
-            inArray(heartbeatRunEvents.runId, runIds),
+            inArray(heartbeatRunEventHeads.runId, runIds),
+            eq(heartbeatRunEventHeads.lane, "exhaustion"),
             eq(heartbeatRunEvents.eventType, "lifecycle"),
             sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
           ),
         )
-        .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id));
+        ;
 
       const retryExhaustedReasonByRunId = new Map<string, string>();
       for (const row of exhaustionRows) {

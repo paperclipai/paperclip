@@ -164,6 +164,7 @@ describe("nativeRunEventsToTranscript", () => {
       "terminal_other_session",
       "terminal_other_turn",
       "terminal_earlier",
+      "terminal_different_epoch",
       "terminal_failed",
       "terminal_interrupted",
       "terminal_other_disposition",
@@ -179,7 +180,9 @@ describe("nativeRunEventsToTranscript", () => {
         string,
         unknown
       >;
-      const events = [accepted, terminal];
+      const events = mode === "terminal_earlier"
+        ? [terminal, accepted]
+        : [accepted, terminal];
       if (mode === "provider_acceptance")
         acceptedEnvelope.sourceKind = "runner";
       if (mode === "provider_terminal") terminalEnvelope.sourceKind = "runner";
@@ -215,7 +218,11 @@ describe("nativeRunEventsToTranscript", () => {
         terminalEnvelope.normalizedSessionId = "other-session";
       if (mode === "terminal_other_turn")
         terminalEnvelope.turnId = "other-turn";
-      if (mode === "terminal_earlier") terminal.seq = 1;
+      if (mode === "terminal_different_epoch") {
+        accepted.eventEpoch = "epoch-a";
+        terminal.eventEpoch = "epoch-b";
+        terminal.seq = 4;
+      }
       if (mode === "terminal_failed")
         terminalPayload.runTerminalState = "failed";
       if (mode === "terminal_interrupted")
@@ -225,6 +232,7 @@ describe("nativeRunEventsToTranscript", () => {
       if (mode === "missing_terminal") events.pop();
       if (mode === "conflicting_acceptance") {
         const other = structuredClone(accepted);
+        other.id = 4;
         other.seq = 4;
         (other.payload!.prpEvent as Record<string, unknown>).sourceEventId =
           "other-accepted-result";
@@ -284,7 +292,6 @@ describe("nativeRunEventsToTranscript", () => {
 
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
     const transcript = nativeRunEventsToTranscript([
-      event(6, "run.result.proposed", runResult("Done safely.")),
       event(1, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "Done " }),
       event(2, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "safely." }),
       event(3, "item.completed", { itemId: "message-1", kind: "agentMessage", text: "Done safely." }),
@@ -312,6 +319,7 @@ describe("nativeRunEventsToTranscript", () => {
         outputTruncated: false,
         outputDigest: null,
       }),
+      event(6, "run.result.proposed", runResult("Done safely.")),
       event(7, "usage.reported", {
         runDeltaAvailable: true,
         runDelta: {

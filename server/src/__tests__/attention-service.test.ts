@@ -951,11 +951,16 @@ describeEmbeddedPostgres("attention service", () => {
       { companyId, agentId: workerId, runId: succeededId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted success" },
       { companyId, agentId: reviewerId, runId: terminatedId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted terminated" },
       { companyId: other.companyId, agentId: other.workerId, runId: foreignId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted other company" },
-      // A newer event must not replace the latest matching, company-scoped receipt.
-      { companyId: other.companyId, agentId: other.workerId, runId: failedId, seq: 2501, eventType: "lifecycle", message: "Bounded retry exhausted foreign receipt" },
+      // A newer nonmatching event must not replace the exhaustion receipt.
       { companyId, agentId: workerId, runId: failedId, seq: 2502, eventType: "stdout", message: "Bounded retry exhausted quoted output" },
       { companyId, agentId: workerId, runId: failedId, seq: 2503, eventType: "lifecycle", message: "Unrelated lifecycle event" },
     ]);
+    // Run-event binding is now enforced at insertion as well as by the reader.
+    // An attempted foreign receipt cannot replace the company-scoped receipt.
+    await expect(db.insert(heartbeatRunEvents).values({
+      companyId: other.companyId, agentId: other.workerId, runId: failedId,
+      seq: 2501, eventType: "lifecycle", message: "Bounded retry exhausted foreign receipt",
+    })).rejects.toMatchObject({ cause: { message: "heartbeat_run_event_binding_mismatch" } });
 
     // Assert the database result itself: JavaScript feed deduplication used to
     // hide the thousands of full run contexts already loaded into memory.

@@ -1,6 +1,9 @@
+import { RunOutputDownload } from "@/components/RunOutputDownload";
+import { nextRunLogPosition, runLogHasMore } from "@/lib/run-log-position";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
-import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { mergeRunLogChunks, readChunkCursor, readChunkSeq } from "../lib/run-log-chunks";
+import { mergeRunEvents, nextRunEventCursor, retainRunEventTail, type RunEventCursor } from "../lib/run-event-pagination";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
@@ -52,6 +55,7 @@ import { Identity } from "../components/Identity";
 import { AuditFeed } from "./audit/AuditFeed.production";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
+import { RunnerInspector } from "../components/RunnerInspector";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
@@ -104,6 +108,7 @@ import {
   MAX_LIVE_EVENTS,
   MAX_LIVE_LOG_LINES,
 } from "../lib/live-log-buffer";
+
 import {
   isUuidLike,
   type Agent,
@@ -360,6 +365,8 @@ function setsEqual<T>(left: Set<T>, right: Set<T>) {
   return true;
 }
 
+const MAX_RETAINED_RUN_LOG_BYTES = 2 * 1024 * 1024;
+
 function runMetrics(run: HeartbeatRun) {
   const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
   const result = (run.resultJson ?? null) as Record<string, unknown> | null;
@@ -388,6 +395,7 @@ function runMetrics(run: HeartbeatRun) {
 
 export type RunLogChunk = {
   seq?: number;
+  cursor?: string;
   ts: string;
   stream: "stdout" | "stderr" | "system";
   chunk: string;
@@ -529,13 +537,13 @@ function parseStoredLogContent(content: string): RunLogChunk[] {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown; cursor?: unknown };
       const stream =
         raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
       const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
       const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
       if (!chunk) continue;
-      parsed.push({ ts, stream, chunk });
+      parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq), cursor: readChunkCursor(raw.cursor) });
     } catch {
       // Ignore malformed log lines.
     }
@@ -3262,6 +3270,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
@@ -3710,29 +3719,33 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       })()}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={run} adapterType={adapterType} onViewHistory={() => setInspectorOpen(true)} />
       <ScrollToBottom />
+      <RunnerInspector runId={run.id} run={run} open={inspectorOpen} onOpenChange={setInspectorOpen} />
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType, onViewHistory }: { run: HeartbeatRun; adapterType: string; onViewHistory?: () => void }) {
   const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [eventHistoryCollapsed, setEventHistoryCollapsed] = useState(false);
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffsetState] = useState(0);
-  const logOffsetRef = useRef(0);
-  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
-    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
+  const initialLogOffset = run.logStore === "local_segments" ? "tail" : 0;
+  const [logOffset, setLogOffsetState] = useState<number | string>(initialLogOffset);
+  const logOffsetRef = useRef<number | string>(initialLogOffset);
+  const setLogOffset = useCallback((next: number | string) => {
+    logOffsetRef.current = next;
     setLogOffsetState(logOffsetRef.current);
   }, []);
-  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
+  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>(), trimmedCursorFloorByRun: new Map<string, string>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
+  const [hasEarlierOutput, setHasEarlierOutput] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
@@ -3761,7 +3774,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   function appendLogLines(incoming: RunLogChunk[]) {
     setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
       ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
-    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+    })), logMergeRefs.current, {
+      maxChunks: MAX_LIVE_LOG_LINES,
+      maxBytes: MAX_RETAINED_RUN_LOG_BYTES,
+      collapseTrimmed: true,
+    }).chunks);
   }
 
   function appendLogContent(content: string, finalize = false) {
@@ -3779,21 +3796,20 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
+        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown; cursor?: unknown };
         const stream =
           raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
+        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq), cursor: readChunkCursor(raw.cursor) });
       } catch {
         // ignore malformed lines
       }
     }
 
     if (parsed.length > 0) {
-      // Live runs stream forever, so cap the retained tail. Terminated runs are
-      // paginated by the user via "Load more log" and keep their full history.
+      if (parsed[0]?.cursor && BigInt(parsed[0].cursor) > 0n) setHasEarlierOutput(true);
       appendLogLines(parsed);
     }
   }
@@ -3801,12 +3817,24 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   // Fetch events
   const { data: initialEvents } = useQuery({
     queryKey: ["run-events", run.id],
-    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    queryFn: () => heartbeatsApi.events(run.id, "tail", 200),
   });
+
+  const durableEventCursorRef = useRef<RunEventCursor>(0);
+
+  useEffect(() => {
+    durableEventCursorRef.current = 0;
+    setEvents([]);
+    setEventHistoryCollapsed(false);
+  }, [run.id]);
 
   useEffect(() => {
     if (initialEvents) {
-      setEvents(initialEvents);
+      const last = initialEvents.at(-1);
+      if (last) durableEventCursorRef.current = last.cursor ?? last.seq;
+      const retained = retainRunEventTail(initialEvents);
+      if (initialEvents[0]?.historyBefore || retained.collapsed) setEventHistoryCollapsed(true);
+      setEvents((previous) => retainRunEventTail(mergeRunEvents(previous, retained.events, MAX_LIVE_EVENTS)).events);
       setLoading(false);
     }
   }, [initialEvents]);
@@ -3895,14 +3923,15 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   // Reset only when the log source changes, never when visibility changes.
   useEffect(() => {
     pendingLogLineRef.current = "";
-    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map(), trimmedCursorFloorByRun: new Map() };
     seenProgressLogLineKeysRef.current = new Set();
     setLogLines([]);
-    setLogOffset(0);
+    setHasEarlierOutput(false);
+    setLogOffset(run.logStore === "local_segments" ? "tail" : 0);
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
-  }, [run.id, run.logRef, setLogOffset]);
+  }, [run.id, run.logRef, run.logStore, setLogOffset]);
 
   // Fetch persisted shell log, retaining partial rows and offsets across hides.
   useEffect(() => {
@@ -3921,10 +3950,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       try {
         const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
         if (cancelled) return;
-        appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? offset + result.content.length;
+        appendLogContent(result.content, !runLogHasMore(result));
+        const next = nextRunLogPosition(offset, result);
         setLogOffset(next);
-        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
+        setHasMoreLog(!shouldPollShellLog && runLogHasMore(result));
       } catch (err) {
         if (!cancelled) {
           if (shouldPollShellLog && isRunLogUnavailable(err)) {
@@ -3942,7 +3971,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     return () => {
       cancelled = true;
     };
-  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+  }, [visible, run.id, run.logRef, run.logBytes, run.logStore, shouldPollShellLog]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -3950,10 +3979,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     setLogError(null);
     try {
       const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
-      appendLogContent(result.content, result.nextOffset === undefined);
-      const next = result.nextOffset ?? logOffset + result.content.length;
+      appendLogContent(result.content, !runLogHasMore(result));
+      const next = nextRunLogPosition(logOffset, result);
       setLogOffset(next);
-      setHasMoreLog(result.nextOffset !== undefined);
+      setHasMoreLog(runLogHasMore(result));
     } catch (err) {
       setLogError(err instanceof Error ? err.message : "Failed to load more run log");
     } finally {
@@ -3963,18 +3992,24 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
 
   // Poll for live updates
   useEffect(() => {
-    if (!visible || !isLive || isStreamingConnected) return;
+    if (!visible || !isLive) return;
     let pending = false;
     let cancelled = false;
     const interval = setInterval(async () => {
       if (pending || cancelled || !getPageVisibility().visible) return;
       pending = true;
-      const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
-        const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
+        const cursor = durableEventCursorRef.current;
+        const newEvents = await heartbeatsApi.events(run.id, cursor, 100);
         if (cancelled) return;
         if (newEvents.length > 0) {
-          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
+          const nextCursor = nextRunEventCursor(cursor, newEvents);
+          if (nextCursor !== cursor) durableEventCursorRef.current = nextCursor;
+          setEvents((prev) => {
+            const retained = retainRunEventTail(mergeRunEvents(prev, newEvents, MAX_LIVE_EVENTS));
+            if (newEvents[0]?.historyBefore || retained.collapsed) setEventHistoryCollapsed(true);
+            return retained.events;
+          });
         }
       } catch {
         // ignore polling errors
@@ -3986,7 +4021,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       cancelled = true;
       clearInterval(interval);
     };
-  }, [visible, run.id, isLive, isStreamingConnected, events]);
+  }, [visible, run.id, isLive]);
 
   // Poll shell log for running runs
   useEffect(() => {
@@ -4000,13 +4035,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
         if (cancelled) return;
         if (result.content) {
-          appendLogContent(result.content, result.nextOffset === undefined);
+          appendLogContent(result.content, !runLogHasMore(result));
         }
-        if (result.nextOffset !== undefined) {
-          setLogOffset(result.nextOffset);
-        } else if (result.content.length > 0) {
-          setLogOffset((prev) => prev + result.content.length);
-        }
+        setLogOffset(nextRunLogPosition(logOffset, result));
       } catch (err) {
         if (isRunLogUnavailable(err)) return;
         // ignore polling errors
@@ -4070,7 +4101,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
+          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq), cursor: readChunkCursor(payload.cursor) }]);
           return;
         }
 
@@ -4084,41 +4115,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           return;
         }
 
-        if (event.type !== "heartbeat.run.event") return;
-
-        const seq = typeof payload.seq === "number" ? payload.seq : null;
-        if (seq === null || !Number.isFinite(seq)) return;
-
-        const streamRaw = asNonEmptyString(payload.stream);
-        const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" || streamRaw === "system"
-            ? streamRaw
-            : null;
-        const levelRaw = asNonEmptyString(payload.level);
-        const level =
-          levelRaw === "info" || levelRaw === "warn" || levelRaw === "error"
-            ? levelRaw
-            : null;
-
-        const liveEvent: HeartbeatRunEvent = {
-          id: seq,
-          companyId: run.companyId,
-          runId: run.id,
-          agentId: run.agentId,
-          seq,
-          eventType: asNonEmptyString(payload.eventType) ?? "event",
-          stream,
-          level,
-          color: asNonEmptyString(payload.color),
-          message: asNonEmptyString(payload.message),
-          payload: asRecord(payload.payload),
-          createdAt: new Date(event.createdAt),
-        };
-
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
-        });
+        if (event.type === "heartbeat.run.event") return;
       };
 
       socket.onerror = () => {
@@ -4271,6 +4268,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
+        {hasEarlierOutput && (
+          <p className="mt-2 text-xs text-muted-foreground">Showing recent output; older output is available.</p>
+        )}
         {hasMoreLog && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
             <Button
@@ -4283,7 +4283,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
               {loadingMoreLog ? "Loading..." : "Load more log"}
             </Button>
             <span className="text-xs text-muted-foreground">
-              Showing the first {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
+              Showing the first {((BigInt(logOffset) + 512n) / 1024n).toLocaleString("en-US")} KB
               {typeof run.logBytes === "number" && run.logBytes > 0
                 ? ` of ${Math.round(run.logBytes / 1024).toLocaleString("en-US")} KB`
                 : ""}
@@ -4336,6 +4336,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
 
       {events.length > 0 && (
         <div>
+          {eventHistoryCollapsed && (
+            <div role="status" className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>Showing recent events. Earlier events are available in run history.</span>
+              <Button type="button" variant="link" size="sm" className="h-auto shrink-0 p-0" onClick={onViewHistory}>View earlier events</Button>
+            </div>
+          )}
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
@@ -4359,6 +4365,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                         ? JSON.stringify(redactPathValue(evt.payload, censorUsernameInLogs))
                         : ""}
                   </span>
+                  <RunOutputDownload runId={run.id} payload={evt.payload} />
                 </div>
               );
             })}

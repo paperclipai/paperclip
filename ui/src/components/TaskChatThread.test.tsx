@@ -26,6 +26,7 @@ const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
   hydratedRunIds: undefined as Set<string> | undefined,
+  historyCollapsedRunIds: new Set<string>(),
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -60,6 +61,7 @@ vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
       hydratedRunIds: nativeTranscriptState.hydratedRunIds,
+      historyCollapsedRunIds: new Set(nativeTranscriptState.historyCollapsedRunIds),
     };
   },
 }));
@@ -114,6 +116,7 @@ beforeEach(() => {
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
+  nativeTranscriptState.historyCollapsedRunIds.clear();
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -565,6 +568,34 @@ describe("TaskChatThread draft pass-through", () => {
 });
 
 describe("TaskChatThread runtime transcript selection", () => {
+  it("shows the durable-history banner for a collapsed native run", () => {
+    nativeTranscriptState.historyCollapsedRunIds.add("collapsed-native-history");
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        linkedRuns={[{
+          runId: "collapsed-native-history",
+          runtimeMode: "native",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+        }]}
+      />,
+    );
+
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Earlier run activity collapsed");
+    const toggle = marker?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+    expect(toggle).not.toBeNull();
+    flushSync(() => toggle!.click());
+    expect(marker?.textContent).toContain("durable inspector");
+  });
+
   it("selects persisted runtime facts while retaining the log parser as native fallback", () => {
     render(
       <TaskChatThread

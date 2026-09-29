@@ -12270,6 +12270,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (retiredOwner) {
       if (
         !(await nativePreProviderRetryAfterCleanupStateIsSafe({
+          db: tx as Db,
           failedExecution: run.runnerProfileJson?.nativeExecutionInput,
           retiredExecution:
             retiredOwner.predecessor.runnerProfileJson?.nativeExecutionInput,
@@ -12300,6 +12301,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (typeof checkpoint.providerSessionId !== "string" ||
           checkpoint.providerSessionId.trim().length === 0)) ||
       !(await nativeFailedRunRetryStateIsSafe({
+        db: tx as Db,
         execution: run.runnerProfileJson?.nativeExecutionInput,
         companyId,
         issueId: source.issueId,

@@ -1,3 +1,4 @@
+import { allocateRunEventPosition, readRunEventPage, readRunEventLane, runEventCursor, runEventLane } from "./run-event-history.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -185,7 +186,6 @@ import {
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import {
-  allocateHeartbeatRunEventSeq,
   appendHeartbeatRunEvent,
   type AppendHeartbeatRunEventInput,
 } from "./heartbeat-run-events.js";
@@ -255,7 +255,7 @@ import {
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
-import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { getRunLogStore, type RunLogHandle, type RunLogReadOptions, type RunLogFinalizeSummary } from "./run-log-store.js";
 import {
   providerTraceStore,
   PROVIDER_TRACE_MAX_BYTES,
@@ -13766,6 +13766,9 @@ export function heartbeatService(
         runId: run.id,
         agentId: run.agentId,
         issueId,
+        id: persistedEvent.row.id,
+        eventEpoch: persistedEvent.row.eventEpoch,
+        cursor: runEventCursor(persistedEvent.row),
         seq,
         eventType: event.eventType,
         stream: event.stream ?? null,
@@ -13856,7 +13859,7 @@ export function heartbeatService(
     issueId: string,
     resultJson?: Record<string, unknown> | null,
   ) {
-    const comments = await db
+    const query = db
       .select({
         id: issueComments.id,
         body: issueComments.body,
@@ -13867,9 +13870,13 @@ export function heartbeatService(
           eq(issueComments.companyId, companyId),
           eq(issueComments.issueId, issueId),
           eq(issueComments.createdByRunId, runId),
+          eq(issueComments.nativeToolGenerated, false),
         ),
       )
       .orderBy(desc(issueComments.createdAt), desc(issueComments.id));
+    // Legacy checkpoints keep their original compatibility behavior; migrated
+    // and fresh runs exclude generated comments in the indexed query itself.
+    const comments = resultJson?.semanticToolReceipts ? await query : await query.limit(1);
     return findHeartbeatRunCompletionComment(comments, resultJson);
   }
 
@@ -13877,58 +13884,22 @@ export function heartbeatService(
     runId: string,
     companyId: string,
   ) {
-    const rows = await db
-      .select({
-        seq: heartbeatRunEvents.seq,
-        payload: heartbeatRunEvents.payload,
-      })
-      .from(heartbeatRunEvents)
-      .where(
-        and(
-          eq(heartbeatRunEvents.companyId, companyId),
-          eq(heartbeatRunEvents.runId, runId),
-          eq(heartbeatRunEvents.eventType, "item.completed"),
-        ),
-      )
-      .orderBy(desc(heartbeatRunEvents.seq))
-      .limit(200);
-    const candidates: Array<{
-      seq: number;
-      text: string;
-      sourceEventId: string | null;
-      channel: "final" | "unknown";
-    }> = [];
-    for (const row of rows) {
-      const prpEvent = parseObject(parseObject(row.payload).prpEvent);
-      const candidate = readCompletedAssistantMessageCandidate({
-        seq: row.seq,
-        prpEvent,
-      });
+    // This lane includes both completed items and semantic-recovery boundaries.
+    // Relative ranks exist only within this bounded projection, never as durable
+    // identities or counters spanning epochs.
+    const rows = (await readRunEventLane(db, runId, "presentation", 400)).reverse();
+    const candidates: Array<{ seq: number; text: string; sourceEventId: string | null; channel: "final" | "unknown" }> = [];
+    let recoveryBoundary: number | null = null;
+    for (const [index, row] of rows.entries()) {
+      if (row.companyId !== companyId) throw new Error("heartbeat_run_event_binding_mismatch");
+      const rank = index + 1;
+      if (row.eventType === "lifecycle" && parseObject(row.payload).retryReasonCode === "semantic_result_missing") {
+        recoveryBoundary = rank;
+        continue;
+      }
+      const candidate = readCompletedAssistantMessageCandidate({ seq: rank, prpEvent: parseObject(parseObject(row.payload).prpEvent) });
       if (candidate) candidates.push(candidate);
     }
-    const recoveryBoundary = await db
-      .select({
-        seq: heartbeatRunEvents.seq,
-        payload: heartbeatRunEvents.payload,
-      })
-      .from(heartbeatRunEvents)
-      .where(
-        and(
-          eq(heartbeatRunEvents.companyId, companyId),
-          eq(heartbeatRunEvents.runId, runId),
-          eq(heartbeatRunEvents.eventType, "lifecycle"),
-        ),
-      )
-      .orderBy(heartbeatRunEvents.seq)
-      .limit(200)
-      .then(
-        (lifecycleRows) =>
-          lifecycleRows.find(
-            (row) =>
-              parseObject(row.payload).retryReasonCode ===
-              "semantic_result_missing",
-          )?.seq ?? null,
-      );
     return selectHeartbeatRunFinalAgentMessage({
       candidates,
       semanticResultRecoveryAfterSeq: recoveryBoundary,
@@ -22713,10 +22684,10 @@ export function heartbeatService(
           at: Date;
           seq: number;
           stream: "stdout" | "stderr";
-          bytes: number;
+          bytes: number | null;
         } | null;
       } = { pending: null };
-      let persistedLogBytes = Number(run.logBytes ?? 0);
+      let persistedLogBytes: number | null = run.logBytes === null ? null : Number(run.logBytes);
       const flushOutputProgress = async (opts?: { force?: boolean }) => {
         const pendingOutputProgress = outputProgressState.pending;
         if (!pendingOutputProgress) return;
@@ -22843,17 +22814,23 @@ export function heartbeatService(
             stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
           const ts = new Date().toISOString();
 
-          outputSeq += 1;
+          // Retained progress counters are diagnostic only. The committed byte
+          // position, carried by both transports, is the exact chunk identity.
+          outputSeq = Math.min(Number.MAX_SAFE_INTEGER, outputSeq + 1);
           const chunkSeq = outputSeq;
-          let appendedBytes = 0;
+          let chunkCursor: string | undefined;
           if (handle) {
-            appendedBytes = await runLogStore.append(handle, {
-              stream,
-              chunk: sanitizedChunk,
-              ts,
-              seq: chunkSeq,
-            });
-            persistedLogBytes += appendedBytes;
+            const logEvent = { stream, chunk: sanitizedChunk, ts, seq: chunkSeq };
+            if (runLogStore.appendPositioned) {
+              const receipt = await runLogStore.appendPositioned(handle, logEvent);
+              chunkCursor = receipt.cursor;
+              const exact = BigInt(receipt.nextCursor);
+              persistedLogBytes = exact <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(exact) : null;
+            } else {
+              const bytes = await runLogStore.append(handle, logEvent);
+              const total = (persistedLogBytes ?? 0) + bytes;
+              persistedLogBytes = Number.isSafeInteger(total) ? total : null;
+            }
           }
           outputProgressState.pending = {
             at: new Date(ts),
@@ -22902,6 +22879,7 @@ export function heartbeatService(
               issueId,
               ts,
               seq: chunkSeq,
+              ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }),
               stream,
               chunk: payloadChunk,
               truncated: payloadChunk.length !== sanitizedChunk.length,
@@ -24787,11 +24765,7 @@ export function heartbeatService(
                   "adapter_failed")
                 : null;
 
-        let logSummary: {
-          bytes: number;
-          sha256?: string;
-          compressed: boolean;
-        } | null = null;
+        let logSummary: RunLogFinalizeSummary | null = null;
         if (handle) {
           logSummary = await runLogStore.finalize(handle);
         }
@@ -25496,11 +25470,7 @@ export function heartbeatService(
           "adapter_failed";
         logger.error({ err, runId }, "heartbeat execution failed");
 
-        let logSummary: {
-          bytes: number;
-          sha256?: string;
-          compressed: boolean;
-        } | null = null;
+        let logSummary: RunLogFinalizeSummary | null = null;
         if (handle) {
           try {
             logSummary = await runLogStore.finalize(handle);
@@ -27305,7 +27275,7 @@ export function heartbeatService(
                 );
             }
 
-            const eventSeq = await allocateHeartbeatRunEventSeq(
+            const eventPosition = await allocateRunEventPosition(
               tx as unknown as Db,
               cancelled.id,
             );
@@ -27314,7 +27284,7 @@ export function heartbeatService(
               companyId: cancelled.companyId,
               runId: cancelled.id,
               agentId: cancelled.agentId,
-              seq: eventSeq,
+              ...eventPosition,
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
@@ -27333,10 +27303,6 @@ export function heartbeatService(
                 currentAssigneeAgentId: issue.assigneeAgentId,
               },
             });
-            await tx
-              .update(heartbeatRuns)
-              .set({ nextEventSeq: eventSeq + 1, updatedAt: now })
-              .where(eq(heartbeatRuns.id, cancelled.id));
 
             cancelledRunsToEmit.push(cancelled);
 
@@ -29460,35 +29426,10 @@ export function heartbeatService(
       };
     },
 
-    listEvents: (runId: string, afterSeq = 0, limit = 200) =>
-      db
-        .select()
-        .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, runId),
-            gt(heartbeatRunEvents.seq, afterSeq),
-          ),
-        )
-        .orderBy(asc(heartbeatRunEvents.seq))
-        .limit(Math.max(1, Math.min(limit, 1000))),
+    listEvents: (runId: string, afterSeq: number | string = 0, limit = 200) => readRunEventPage(db, runId, afterSeq, limit),
 
     getRetryExhaustedReason: async (runId: string) => {
-      const row = await db
-        .select({
-          message: heartbeatRunEvents.message,
-        })
-        .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, runId),
-            eq(heartbeatRunEvents.eventType, "lifecycle"),
-            sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
-          ),
-        )
-        .orderBy(desc(heartbeatRunEvents.id))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const [row] = await readRunEventLane(db, runId, "exhaustion", 1);
       return row?.message ?? null;
     },
 
@@ -29501,7 +29442,7 @@ export function heartbeatService(
             logStore: string | null;
             logRef: string | null;
           },
-      opts?: { offset?: number; limitBytes?: number },
+      opts?: RunLogReadOptions,
     ) => {
       const run =
         typeof runOrLookup === "string"
@@ -29514,7 +29455,7 @@ export function heartbeatService(
 
       const result = await runLogStore.read(
         {
-          store: run.logStore as "local_file",
+          store: run.logStore as RunLogHandle["store"],
           logRef: run.logRef,
         },
         opts,

@@ -8,6 +8,8 @@ export interface PutObjectInput {
   body: Buffer | Readable;
   contentType: string;
   contentLength: number;
+  /** Optional exact digest required by durable history chunks. */
+  sha256?: string;
 }
 
 export interface GetObjectInput {
@@ -37,6 +39,9 @@ export interface HeadObjectResult {
 export interface StorageProvider {
   id: StorageProviderId;
   putObject(input: PutObjectInput): Promise<void>;
+  /** Atomic publication, not a separate HEAD/PUT check. null creates only;
+   * otherwise the backend must match the exact opaque prior ETag. */
+  putObjectConditional?(input: PutObjectInput, expectedEtag: string | null): Promise<{ etag: string }>;
   getObject(input: GetObjectInput): Promise<GetObjectResult>;
   headObject(input: GetObjectInput): Promise<HeadObjectResult>;
   deleteObject(input: GetObjectInput): Promise<void>;

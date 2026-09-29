@@ -23,6 +23,41 @@ vi.mock("../components/transcript/RunTranscriptView", () => ({
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); });
 
+it.each([LogViewer, ProductionLogViewer])("keeps an exact segmented-log cursor across visibility recovery (%#)", async Viewer => {
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const cursor = "9007199254740999";
+  log.mockResolvedValue({ content: JSON.stringify({ ts: "t", stream: "stdout", chunk: "🐙 retained" }) + "\n", cursor, hasMore: false });
+  const run = { id: "run-cursor", companyId: "company", agentId: "agent", status: "succeeded", logRef: "log" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    await act(async () => { visibility.mockReturnValue("hidden"); document.dispatchEvent(new Event("visibilitychange")); });
+    log.mockResolvedValue({ content: "", cursor, hasMore: false });
+    await act(async () => { visibility.mockReturnValue("visible"); document.dispatchEvent(new Event("visibilitychange")); });
+    expect(log).toHaveBeenLastCalledWith("run-cursor", cursor, expect.any(Number));
+    expect(container.textContent).toContain("🐙 retained");
+  } finally { await act(async () => root.unmount()); }
+});
+
+it.each([LogViewer, ProductionLogViewer])("marks a segmented tail that begins after earlier output (%#)", async Viewer => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({
+    content: JSON.stringify({ ts: "t", stream: "stdout", chunk: "recent output", cursor: "120" }) + "\n",
+    cursor: "160",
+    hasMore: false,
+  });
+  const run = { id: "run-tail", companyId: "company", agentId: "agent", status: "succeeded", logRef: "log", logStore: "local_segments" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    expect(log).toHaveBeenCalledWith("run-tail", "tail", expect.any(Number));
+    expect(container.textContent).toContain("recent output");
+    expect(container.textContent).toContain("Showing recent output; older output is available.");
+  } finally { await act(async () => root.unmount()); }
+});
+
 it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: `2026-09-10T12:00:0${seq}Z`, stream: "stdout", chunk }) + "\n";
@@ -91,4 +126,46 @@ it.each([LogViewer, ProductionLogViewer])("polls logs when WebSocket constructio
     await act(async () => root.unmount());
   }
   expect(sockets[0].close).toHaveBeenCalled();
+});
+
+it.each([LogViewer, ProductionLogViewer])("renders durable events after ignoring websocket commit hints (%#)", async (Viewer) => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const sockets: Array<{
+    onopen: (() => void) | null;
+    onmessage: ((message: { data: string }) => void) | null;
+    close: () => void;
+  }> = [];
+  vi.stubGlobal("WebSocket", class {
+    onopen: (() => void) | null = null;
+    onmessage: ((message: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    close() { this.onclose?.(); }
+    constructor() { sockets.push(this); }
+  });
+  const durableEvent = {
+    id: "durable-event", companyId: "company-1", runId: "run-1", agentId: "agent-1",
+    seq: 3, eventEpoch: "epoch", cursor: "e:epoch:3", eventType: "custom.event",
+    stream: null, level: null, color: null, message: "full durable row", payload: null,
+    createdAt: new Date(0),
+  };
+  events.mockResolvedValue([durableEvent] as never[]);
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    await act(async () => sockets[0]?.onopen?.());
+    await act(async () => sockets[0]?.onmessage?.({ data: JSON.stringify({
+      type: "heartbeat.run.event", companyId: run.companyId, createdAt: new Date(0).toISOString(),
+      payload: { runId: run.id, id: "durable-event", seq: 3, eventType: "custom.event", message: "commit hint only", commitHint: true },
+    }) }));
+    expect(container.textContent).not.toContain("commit hint only");
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(events).toHaveBeenCalledWith("run-1", 0, 100);
+    expect(container.textContent).toContain("full durable row");
+  } finally {
+    await act(async () => root.unmount());
+  }
 });

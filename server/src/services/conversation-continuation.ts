@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { readRunEventLane, runEventLane } from "./run-event-history.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -43,10 +44,8 @@ function conversationRunPredicate() {
 export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
   const selected = claimedAdapterType(run);
   if (selected) return selected;
-  const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
-    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-      eq(heartbeatRunEvents.eventType, "adapter.invoke")))
-    .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const [invocation] = await readRunEventLane(db, run.id, runEventLane("type", "adapter.invoke"), 1);
+  if (!invocation || invocation.companyId !== run.companyId || invocation.eventType !== "adapter.invoke") return null;
   const adapterType = invocation?.payload?.adapterType;
   return typeof adapterType === "string" ? adapterType : null;
 }

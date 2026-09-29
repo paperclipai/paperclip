@@ -5,6 +5,59 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Segmented stdout/stderr history
+
+The experimental `PAPERCLIP_NATIVE_INDEXED_STATE=1` lane also selects
+`local_segments` for fresh stdout/stderr logs. Each segment is at most 32 MiB;
+the current head contains exact decimal byte/revision counters and the current
+tail digest. It contains no list of old segments. Segment lookup is arithmetic,
+and append, reopen, mirroring and finalization never scan completed history.
+Completed segments have independently stored SHA-256 references. Finalization
+reports exact bytes and does not calculate a whole-history SHA-256.
+
+The existing authorized `GET /api/heartbeat-runs/:runId/log` accepts `cursor`
+as an exact decimal byte offset. Responses include `cursor` and `hasMore`.
+Clients retain that cursor verbatim, including when caught up; rendered string
+length is not a byte offset. `offset`/`nextOffset` remain compatible within the
+safe numeric range. Pages keep UTF-8 characters intact. The board's two log
+viewers support both formats; feedback captures its existing bounded excerpt.
+
+Completed segments reach configured object storage before local publication.
+Periodic mirroring uploads only a bounded tail and then its small head, using
+a distinct tail identity per writer and revision. The v2 head is published with
+an atomic S3 ETag condition; opening a replacement writer claims a new UUID so a
+late old publication is rejected. Completed remote bodies use content-addressed
+keys, with separately fenced per-segment references. An interrupted unpublished
+segment can be replaced without overwriting bytes referenced by a committed
+head. Existing v1 heads/references remain readable and upgrade when reopened for
+writing; older readers reject the v2 head explicitly.
+
+Routine mirroring retires its previous tail through one durable pending-deletion
+field. A reader whose old tail was removed retries once against newer content
+and verifies the exact original prefix before returning its page. A deletion
+failure fences further writes until recovery can finish it. Unreferenced objects
+from unknown prepublication failures still require orphan maintenance. Shared
+local paths continue to require exclusive run ownership; remote conditional
+writes do not provide an operating-system lock on a shared filesystem.
+
+The configured in-flight mirror interval
+still defines the unmirrored tail window on loss of the local volume. A failed
+write/upload fences the writer; it must be reopened under verified run ownership.
+Restoration reads the head and current tail, fetching older segments on demand.
+Reopening never truncates a retained legacy log. Turning the experiment off does
+not change the format of an existing segmented log.
+
+The local chunk path uses private files, sync and directory sync. Object uploads
+carry exact length and SHA-256 checksums. A historical page validates its
+segment reference and the complete bounded segment before returning bytes. The
+first read can fetch up to 32 MiB; at most two verified segments are cached and
+at most two distinct verification jobs run concurrently. Subsequent pages can
+reuse that cache. Current tails verify the exact prefix declared by the head.
+Storage qualification covers local files, fault fixtures, and a real local
+MinIO server, including volume loss, continuation, corruption and missing old
+history. Hosted object storage and remote runner lifecycles remain unqualified. These chunks hold historical output, not execution
+authority, and do not externalize large PRP inputs/results.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound
@@ -33,6 +86,37 @@ credential material are never written to the run log.
 
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
+
+## Native output bodies and current process evidence
+
+Indexed output uses authenticated `output.body.chunk` events followed by an
+immutable `paperclip.output.body.v1` reference on the message or tool event.
+Chunks are at most 32 KiB; one admitted provider frame is at most 4 MiB. These
+are per-frame limits, with no cumulative output limit. The small
+`native_output_body_chunks` catalog is committed with run-event insertion before
+ACK, enabling a company/run/body lookup without searching the transcript.
+New chunk events contain scoped immutable payload references, not the output
+text. The configured local/S3 provider must durably write and verify the bytes
+before the event transaction publishes the reference. Retained inline chunk
+events still work. Raw controller receipts larger than 16 KiB use the same
+payload store, with original byte sizes and hashes retained for replay and
+bounded page admission.
+`GET /api/heartbeat-runs/:runId/output-bodies/:bodyId` verifies every chunk,
+contiguous offsets, total bytes and SHA-256 before returning a download. It uses
+the existing run-telemetry access policy. Public event pages contain chunk
+metadata only; whole-body run-secret redaction happens before the authorized
+download so a secret split between chunks is not exposed. The board exposes a
+"Download full output" link beside the referenced event.
+
+Feedback captures a recent event excerpt bounded by both row count and encoded
+bytes, and reports truncation. It never collects the whole event history.
+
+The `native_run_process_evidence` table stores the latest server-authored launch,
+process-identity or stop observation per run, including a cached absence. It is
+updated in the same transaction as the event. Older runs receive a single
+backfill under the run lock. Repeated recovery checks use this current row;
+provider-authored events cannot update it. It preserves the existing process
+stop observation semantics and does not prove that escaped descendants stopped.
 
 ## Native Restart Recovery Run-Log Event
 

@@ -67,6 +67,32 @@ afterEach(async () => {
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
 
 describe("createDurableRunLogStore", () => {
+  it("returns durable exact UTF-8 byte positions for concurrent legacy appends and resumes after reopen", async () => {
+    let store = createDurableRunLogStore({ basePath: baseDir });
+    const handle = await store.begin(begin);
+    const events = ["🙂 café", "漢字", "e\u0301", "tail"].map(chunk => ({ stream: "stdout" as const, chunk, ts: "t" }));
+    const receipts = await Promise.all(events.map(event => store.appendPositioned!(handle, event)));
+    const ordered = receipts.map((receipt, index) => ({ receipt, event: events[index]! })).sort((a, b) => Number(BigInt(a.receipt.cursor) - BigInt(b.receipt.cursor)));
+    let expectedCursor = 0n;
+    for (const { receipt, event } of ordered) {
+      expect(receipt.cursor).toBe(String(expectedCursor));
+      const encoded = Buffer.from(`${JSON.stringify({ ...event, cursor: receipt.cursor })}\n`);
+      expect(receipt.bytes).toBe(encoded.length);
+      expectedCursor += BigInt(encoded.length);
+      expect(receipt.nextCursor).toBe(String(expectedCursor));
+    }
+    const content = await fs.readFile(path.join(baseDir, handle.logRef));
+    expect(content.length).toBe(Number(expectedCursor));
+    for (const { event } of ordered) expect(content.toString()).toContain(event.chunk);
+
+    store = createDurableRunLogStore({ basePath: baseDir });
+    const reopened = await store.begin(begin);
+    const next = { stream: "stderr" as const, chunk: "reopened 🦀", ts: "t2" };
+    const receipt = await store.appendPositioned!(reopened, next);
+    expect(receipt.cursor).toBe(String(expectedCursor));
+    expect(receipt.nextCursor).toBe(String(expectedCursor + BigInt(receipt.bytes)));
+  });
+
   it("keeps store id 'local_file' so downstream coupling (feedback, casts) is unchanged", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

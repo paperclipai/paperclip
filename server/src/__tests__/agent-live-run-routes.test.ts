@@ -3,6 +3,7 @@ import request from "supertest";
 import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runEventLane } from "../services/run-event-history.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -203,13 +204,29 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
 }
 
 function createRuntimeRequestDbStub(row: Record<string, unknown>) {
+  const executedStatements: SQL[] = [];
+  const execute = vi.fn(async (statement: SQL) => {
+    executedStatements.push(statement);
+    return [{ event_id: String(row.id) }];
+  });
   const query = {
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn(async () => [row]),
+    then: (resolve: (value: Array<Record<string, unknown>>) => unknown) =>
+      Promise.resolve([row]).then(resolve),
   };
-  return { select: vi.fn(() => query) };
+  return { select: vi.fn(() => query), execute, executedStatements };
+}
+
+function expectRuntimeRequestLaneBinding(db: ReturnType<typeof createRuntimeRequestDbStub>) {
+  expect(db.executedStatements.length).toBeGreaterThan(0);
+  for (const statement of db.executedStatements) {
+    const { params } = new PgDialect().sqlToQuery(statement);
+    expect(params).toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(params).toContain(runEventLane("request", "approval-1"));
+  }
 }
 
 function createFailedChatRetryDb(chatBound = true) {
@@ -1551,6 +1568,9 @@ describe("agent live run routes", () => {
       runtimeMode: "native",
     });
     const db = createRuntimeRequestDbStub({
+      id: "event-approval-1",
+      companyId: "company-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       eventType: "runtime_request.created",
       payload: {
         prpEvent: {
@@ -1587,6 +1607,7 @@ describe("agent live run routes", () => {
       }));
 
     expect(res.status).toBe(403);
+    expectRuntimeRequestLaneBinding(db);
     expect(mockQueueRuntimeRequestResolution).not.toHaveBeenCalled();
   });
 
@@ -1599,6 +1620,9 @@ describe("agent live run routes", () => {
       runtimeMode: "native",
     });
     const db = createRuntimeRequestDbStub({
+      id: "event-approval-1",
+      companyId: "company-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       eventType: "runtime_request.created",
       payload: {
         prpEvent: {
@@ -1635,6 +1659,7 @@ describe("agent live run routes", () => {
       }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expectRuntimeRequestLaneBinding(db);
     expect(mockQueueRuntimeRequestResolution).toHaveBeenCalledWith({
       companyId: "company-1",
       runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

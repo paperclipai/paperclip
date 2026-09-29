@@ -7,9 +7,11 @@ import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
+type MockLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset?: number; cursor?: string; hasMore?: boolean };
+type MockLogOptions = { signal?: AbortSignal };
 const { useQueryMock, logMock, buildTranscriptMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
-  logMock: vi.fn(async () => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
+  logMock: vi.fn(async (_runId?: string, _offset?: number | string, _limit?: number, _options?: { signal?: AbortSignal }): Promise<MockLogResult> => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
   buildTranscriptMock: vi.fn((chunks: unknown[]) => chunks),
 }));
 
@@ -398,6 +400,155 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("starts segmented logs at tail and preserves exact byte cursors across pages", async () => {
+    vi.useFakeTimers();
+    const endCursor = "900719925474099312345";
+    logMock
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: "", cursor: endCursor, hasMore: true })
+      .mockResolvedValue({ runId: "run-1", store: "local_segments", logRef: "log-1", content: "", cursor: endCursor, hasMore: false });
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", logStore: "local_segments" }],
+        enableRealtimeUpdates: false,
+        logPollIntervalMs: 2_000,
+      });
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => { root.render(<Harness />); await Promise.resolve(); });
+      expect(logMock).toHaveBeenNthCalledWith(1, "run-1", "tail", 256_000, expect.anything());
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(logMock).toHaveBeenLastCalledWith("run-1", endCursor, 256_000, expect.anything());
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it("finishes an oversized terminal segmented tail row over exact UTF-8 byte pages", async () => {
+    vi.useFakeTimers();
+    const limit = 256_000;
+    let padding = 255_000;
+    let bytes: Buffer;
+    let emojiStart: number;
+    const makeRecord = () => Buffer.from(`${JSON.stringify({
+      ts: "2026-09-29T15:00:00.000Z",
+      stream: "stdout",
+      chunk: `${"x".repeat(padding)}🐙${"y".repeat(2_000)}`,
+      seq: 7,
+      cursor: "1200",
+    })}\n`);
+    while (true) {
+      bytes = makeRecord();
+      emojiStart = bytes.indexOf(Buffer.from("🐙"));
+      if (emojiStart === limit - 2) break;
+      padding += limit - 2 - emojiStart;
+    }
+    const tailPrefix = bytes.subarray(0, emojiStart).toString("utf8");
+    const tailRemainder = bytes.subarray(emojiStart).toString("utf8");
+    logMock
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: tailPrefix, cursor: String(emojiStart), hasMore: true })
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: tailRemainder, cursor: String(bytes.length), hasMore: false });
+    const captured: { value: ReturnType<typeof useLiveRunTranscripts> | null } = { value: null };
+    function Harness() {
+      captured.value = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logStore: "local_segments" }],
+      });
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+      expect(logMock.mock.calls.map(([, cursor]) => cursor)).toEqual(["tail", String(emojiStart)]);
+      const rows = captured.value?.transcriptByRun.get("run-1") as Array<{ chunk: string }> | undefined;
+      expect(rows).toHaveLength(1);
+      expect(rows?.[0]?.chunk).toContain("🐙");
+      expect(rows?.[0]?.chunk).toContain("y".repeat(2_000));
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(logMock).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops terminal segmented continuation when the exact cursor stalls", async () => {
+    logMock
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: "partial row", cursor: "500", hasMore: true })
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: "", cursor: "500", hasMore: true });
+    const captured: { value: ReturnType<typeof useLiveRunTranscripts> | null } = { value: null };
+    function Harness() {
+      captured.value = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logStore: "local_segments" }],
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+      expect(logMock.mock.calls.map(([, cursor]) => cursor)).toEqual(["tail", "500"]);
+      expect(captured.value?.errorsByRun.get("run-1")?.message).toContain("cursor stopped advancing");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("rejects a terminal segmented continuation that returns a backwards cursor before merging it", async () => {
+    const row = (chunk: string, cursor: string) => `${JSON.stringify({
+      ts: "2026-09-29T15:00:00.000Z", stream: "stdout", chunk, cursor,
+    })}\n`;
+    logMock
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: row("retained", "400"), cursor: "500", hasMore: true })
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: row("stale page must not merge", "250"), cursor: "499", hasMore: true });
+    const captured: { value: ReturnType<typeof useLiveRunTranscripts> | null } = { value: null };
+    function Harness() {
+      captured.value = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logStore: "local_segments" }],
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+      expect(logMock.mock.calls.map(([, cursor]) => cursor)).toEqual(["tail", "500"]);
+      const rows = captured.value?.transcriptByRun.get("run-1") as Array<{ chunk: string }> | undefined;
+      expect(rows?.map((entry) => entry.chunk)).toEqual(["retained"]);
+      expect(captured.value?.errorsByRun.get("run-1")?.message).toContain("cursor moved backwards");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("aborts an in-flight terminal segmented continuation when the view unmounts", async () => {
+    let continuationSignal: AbortSignal | undefined;
+    logMock
+      .mockResolvedValueOnce({ runId: "run-1", store: "local_segments", logRef: "log-1", content: "partial row", cursor: "500", hasMore: true })
+      .mockImplementationOnce((_runId?: string, _cursor?: number | string, _limit?: number, options?: MockLogOptions) => {
+        continuationSignal = options?.signal;
+        return new Promise(() => {});
+      });
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logStore: "local_segments" }],
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+    expect(logMock).toHaveBeenCalledTimes(2);
+    expect(continuationSignal?.aborted).toBe(false);
+    await act(async () => root.unmount());
+    expect(continuationSignal?.aborted).toBe(true);
+  });
+
   it("keeps identical same-timestamp log records that carry distinct seq values", async () => {
     const ts = "2026-04-20T00:00:00.000Z";
     const tokenRow = (seq: number) =>
@@ -626,6 +777,58 @@ describe("useLiveRunTranscripts", () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("ignores event commit hints and deduplicates websocket rows by opaque event identity", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<Harness />);
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      buildTranscriptMock.mockClear();
+      const sendEvent = (payload: Record<string, unknown>) => socket.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            companyId: "company-1",
+            type: "heartbeat.run.event",
+            createdAt: "2026-09-29T15:00:00.000Z",
+            payload: { runId: "run-1", eventType: "run.progress", ...payload },
+          }),
+        }),
+      );
+
+      await act(async () => {
+        sendEvent({ id: "hint-id", eventEpoch: "epoch-a", cursor: "e:epoch-a:1", seq: 1, commitHint: true, message: "wake only" });
+        await Promise.resolve();
+      });
+      expect(buildTranscriptMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        sendEvent({ id: "event-a", eventEpoch: "epoch-a", cursor: "e:epoch-a:1", seq: 1, message: "first epoch" });
+        sendEvent({ id: "event-a", eventEpoch: "epoch-a", cursor: "e:epoch-a:1", seq: 1, message: "duplicate" });
+        sendEvent({ id: "event-b", eventEpoch: "epoch-b", cursor: "e:epoch-b:1", seq: 1, message: "second epoch" });
+        await Promise.resolve();
+      });
+
+      const rows = buildTranscriptMock.mock.calls.at(-1)?.[0] as Array<{ chunk: string }>;
+      expect(rows.map((row) => row.chunk)).toEqual(["first epoch", "second epoch"]);
+      expect(rows.some((row) => row.chunk.includes("wake only"))).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 
   it("retains an accumulated buffer through a transient empty poll (PAP-462 B3)", async () => {

@@ -163,7 +163,61 @@ describe("native history readiness and stable projection", () => {
     expect(latest.hydratedRunIds.has("slow")).toBe(false);
     expect(latest.transcriptByRun.has("one")).toBe(true);
     await act(async () => { root.render(<StateProbe runs={[one]} />); });
-    expect(eventsMock.mock.calls.filter(([id]) => id === "one").map(([, cursor]) => cursor)).toEqual([0, 7]);
+    expect(eventsMock.mock.calls.filter(([id]) => id === "one").map(([, cursor]) => cursor)).toEqual(["tail", 7]);
     expect(latest.isInitialHydrating).toBe(false);
+  });
+
+  it("marks older durable history when the tail page reports earlier events", async () => {
+    eventsMock.mockResolvedValueOnce([{
+      id: "event-tail", companyId: "company", runId: "one", agentId: "agent", seq: 4,
+      eventEpoch: "epoch-b", cursor: "e:epoch-b:4", historyBefore: true,
+      eventType: "turn.started", stream: null, level: null, color: null,
+      message: null, payload: null, createdAt: new Date(0),
+    }]);
+    await act(async () => { root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />); });
+    expect(eventsMock).toHaveBeenCalledWith("one", "tail", 1_000, expect.any(Object));
+    expect(latest.historyCollapsedRunIds.has("one")).toBe(true);
+  });
+
+  it("continues a short page when its last row reports more history after the byte budget", async () => {
+    const event = (id: string, cursor: string) => ({
+      id, companyId: "company", runId: "one", agentId: "agent", seq: 1,
+      eventEpoch: "epoch", cursor, eventType: "turn.started", stream: null,
+      level: null, color: null, message: null, payload: null, createdAt: new Date(0),
+    });
+    eventsMock
+      .mockResolvedValueOnce([{ ...event("first", "cursor-1"), historyAfter: true }])
+      .mockResolvedValueOnce([event("second", "cursor-2")]);
+    await act(async () => {
+      root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />);
+    });
+    expect(eventsMock.mock.calls.map(([, cursor]) => cursor)).toEqual(["tail", "cursor-1"]);
+    expect(latest.transcriptByRun.has("one")).toBe(true);
+  });
+
+  it("caps automatic backlog catch-up and jumps to the latest tail", async () => {
+    const fullPage = (page: number) => Array.from({ length: 1_000 }, (_, index) => ({
+      id: `event-${page}-${index}`,
+      companyId: "company", runId: "one", agentId: "agent", seq: page * 1_000 + index,
+      eventEpoch: "epoch", cursor: `cursor-${page}-${index}`,
+      eventType: "unknown.event", stream: null, level: null, color: null,
+      message: null, payload: null, createdAt: new Date(0),
+    }));
+    eventsMock
+      .mockResolvedValueOnce(fullPage(1))
+      .mockResolvedValueOnce(fullPage(2))
+      .mockResolvedValueOnce(fullPage(3))
+      .mockResolvedValueOnce(fullPage(4))
+      .mockResolvedValueOnce([{ ...fullPage(5)[999], historyBefore: true }]);
+
+    await act(async () => {
+      root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />);
+    });
+
+    expect(eventsMock.mock.calls.map(([, cursor]) => cursor)).toEqual([
+      "tail", "cursor-1-999", "cursor-2-999", "cursor-3-999", "tail",
+    ]);
+    expect(latest.historyCollapsedRunIds.has("one")).toBe(true);
+    expect(latest.hydratedRunIds.has("one")).toBe(true);
   });
 });

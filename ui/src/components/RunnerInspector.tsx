@@ -30,6 +30,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { heartbeatsApi, type ProviderTraceInspection } from "@/api/heartbeats";
+import { mergeRunEvents, nextRunEventCursor, runEventPageHasMore, type RunEventCursor } from "@/lib/run-event-pagination";
 import { accessApi } from "@/api/access";
 import { parsePaperclipRunnerStdoutLine } from "@/adapters/paperclip-runner";
 import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCard";
@@ -305,14 +306,14 @@ function buildOperations(
     const root = find(Number(frame.frameId));
     groupedFrames.set(root, [...(groupedFrames.get(root) ?? []), frame]);
   }
-  const claimedEvents = new Set<number>();
+  const claimedEvents = new Set<string>();
   const operations: TraceOperation[] = [];
   for (const groupFrames of groupedFrames.values()) {
     const frameIds = new Set(groupFrames.map((frame) => Number(frame.frameId)));
     const stages = interpretations.filter((entry) => frameIds.has(Number(entry.frameId)));
     const emittedIds = new Set(stages.flatMap(interpretationEventIds));
     const groupEvents = events.filter((event) => emittedIds.has(eventSourceId(event)));
-    groupEvents.forEach((event) => claimedEvents.add(event.id));
+    groupEvents.forEach((event) => claimedEvents.add(String(event.id)));
     const methods = unique(groupFrames.map(frameMethod));
     const itemTypes = unique(groupFrames.map(frameItemType));
     const title = itemTypes.at(-1) || methods.at(-1) || text(groupFrames[0]?.direction) || "Provider frame";
@@ -338,7 +339,7 @@ function buildOperations(
     });
   }
   for (const event of events) {
-    if (claimedEvents.has(event.id)) continue;
+    if (claimedEvents.has(String(event.id))) continue;
     const decision = visibilityDecision(event);
     operations.push({
       key: `event:${event.id}`,
@@ -359,17 +360,10 @@ function buildOperations(
   return operations.sort((left, right) => left.timestamp - right.timestamp);
 }
 
-async function loadAllRunEvents(runId: string) {
-  const events: HeartbeatRunEvent[] = [];
-  let afterSeq = 0;
-  for (;;) {
-    const page = await heartbeatsApi.events(runId, afterSeq, 1_000);
-    events.push(...page);
-    if (page.length < 1_000) return events;
-    const nextSeq = page.at(-1)?.seq ?? afterSeq;
-    if (nextSeq <= afterSeq) return events;
-    afterSeq = nextSeq;
-  }
+async function loadRunEventPage(runId: string, after: RunEventCursor) {
+  const page = await heartbeatsApi.events(runId, after, 1_000);
+  const next = nextRunEventCursor(after, page);
+  return { events: page, cursor: next, hasMore: runEventPageHasMore(page, 1_000) && next !== after };
 }
 
 function jsonMatches(value: unknown, query: string): boolean {
@@ -656,6 +650,9 @@ export function RunnerInspector({
 }) {
   const [inspection, setInspection] = useState<ProviderTraceInspection | null>(null);
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [eventsCursor, setEventsCursor] = useState<RunEventCursor>(0);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<InspectorView>("pipeline");
@@ -680,6 +677,9 @@ export function RunnerInspector({
     setRawTraceAccess(null);
     setInspection(null);
     setEvents([]);
+    setEventsCursor(0);
+    setHasMoreEvents(false);
+    setLoadingMoreEvents(false);
     setLoading(open);
     setError(null);
     setSelectedKey(null);
@@ -727,8 +727,8 @@ export function RunnerInspector({
     const loadEpoch = rawTraceAccessEpochRef.current;
     setLoading(true);
     setError(null);
-    Promise.all([accessApi.getCurrentBoardAccess(), loadAllRunEvents(runId)])
-      .then(async ([boardAccess, nextEvents]) => {
+    Promise.all([accessApi.getCurrentBoardAccess(), loadRunEventPage(runId, 0)])
+      .then(async ([boardAccess, eventPage]) => {
         if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
         const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
         const access: RawTraceAccess = {
@@ -753,7 +753,9 @@ export function RunnerInspector({
           return;
         }
         setInspection(trace);
-        setEvents(nextEvents);
+        setEvents(eventPage.events);
+        setEventsCursor(eventPage.cursor);
+        setHasMoreEvents(eventPage.hasMore);
       })
       .catch((cause) => {
         if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
@@ -768,6 +770,21 @@ export function RunnerInspector({
       active = false;
     };
   }, [open, runId]);
+
+  const loadMoreEvents = useCallback(async () => {
+    if (loadingMoreEvents || !hasMoreEvents) return;
+    setLoadingMoreEvents(true);
+    try {
+      const page = await loadRunEventPage(runId, eventsCursor);
+      setEvents((previous) => mergeRunEvents(previous, page.events));
+      setEventsCursor(page.cursor);
+      setHasMoreEvents(page.hasMore);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Run events could not be loaded");
+    } finally {
+      setLoadingMoreEvents(false);
+    }
+  }, [eventsCursor, hasMoreEvents, loadingMoreEvents, runId]);
 
   useEffect(() => {
     if (!open) return;
@@ -1129,6 +1146,7 @@ export function RunnerInspector({
 
           {view === "pipeline" ? (
             <>
+              {hasMoreEvents ? <div className="flex justify-center border-b border-border p-2"><Button size="sm" variant="outline" onClick={() => void loadMoreEvents()} disabled={loadingMoreEvents}>{loadingMoreEvents ? "Loading more events…" : "Load more events"}</Button></div> : null}
               <div className="grid gap-2 border-b border-border p-3 sm:grid-cols-2 xl:grid-cols-(--gtc-runner-inspector-filters)">
                 <div className="relative"><Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search operations, fields, and events" /></div>
                 <Select value={direction} onValueChange={setDirection}><SelectTrigger><SelectValue placeholder="Direction" /></SelectTrigger><SelectContent><SelectItem value="all">All directions</SelectItem><SelectItem value="client_to_provider">Client → provider</SelectItem><SelectItem value="provider_to_client">Provider → client</SelectItem><SelectItem value="provider_stderr">Provider stderr</SelectItem></SelectContent></Select>

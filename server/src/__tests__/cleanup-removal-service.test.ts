@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -244,14 +244,23 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(heartbeatRunEvents).values({
-      companyId: otherCompanyId,
-      runId,
-      agentId,
-      seq: 1,
-      eventType: "output",
-      message: "event with mismatched company scope",
+    // Simulate a retained row written before the run-event binding trigger.
+    // This transaction-local setting affects only the isolated test database;
+    // ordinary writers must still reject this scope mismatch.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.insert(heartbeatRunEvents).values({
+        companyId: otherCompanyId,
+        runId,
+        agentId,
+        seq: 1,
+        eventType: "output",
+        message: "event with mismatched company scope",
+      });
     });
+    await expect(db.insert(heartbeatRunEvents).values({
+      companyId: otherCompanyId, runId, agentId, seq: 2, eventType: "output",
+    })).rejects.toMatchObject({ cause: { message: "heartbeat_run_event_binding_mismatch" } });
 
     const removed = await companyService(db).remove(companyId);
 

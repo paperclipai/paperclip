@@ -596,15 +596,20 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     costUsd: number;
   } | null = null;
   let runResultFallback: { ts: string; text: string } | null = null;
+  const seenEventIds = new Set<string>();
+  const seenCursors = new Set<string>();
   const seenSourceEventIds = new Set<string>();
-  const orderedEvents = [...events]
-    .sort((a, b) => a.seq - b.seq)
-    .filter((event) => {
+  const orderedEvents = events.filter((event) => {
+      const id = String(event.id);
+      if (seenEventIds.has(id) || (event.cursor !== undefined && seenCursors.has(event.cursor))) return false;
+      seenEventIds.add(id);
+      if (event.cursor !== undefined) seenCursors.add(event.cursor);
       const envelope = record(event.payload?.prpEvent);
       const sourceEventId = text(envelope?.sourceEventId);
       if (!sourceEventId) return true;
-      if (seenSourceEventIds.has(sourceEventId)) return false;
-      seenSourceEventIds.add(sourceEventId);
+      const sourceKey = `${event.eventEpoch ?? "legacy"}:${sourceEventId}`;
+      if (seenSourceEventIds.has(sourceKey)) return false;
+      seenSourceEventIds.add(sourceKey);
       return true;
     });
   const hasAcceptedResult = orderedEvents.some(
@@ -622,14 +627,16 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     sourceInstanceId: string;
     normalizedSessionId: string;
     turnId: string | null;
-    seq: number;
+    eventEpoch: string | undefined;
+    arrivalIndex: number;
   } | null = null;
   const acceptedResultCounts = new Map<string, number>();
   const terminalsByRun = new Map<
     string,
     {
       entry: Extract<TranscriptEntry, { kind: "run_terminal" }>;
-      seq: number;
+      eventEpoch: string | undefined;
+      arrivalIndex: number;
       envelope: Record<string, unknown>;
     }
   >();
@@ -686,7 +693,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   }
 
   const itemIdentityById = new Map<string, ItemIdentity>();
-  for (const event of orderedEvents) {
+  for (const [arrivalIndex, event] of orderedEvents.entries()) {
     const envelope = record(event.payload?.prpEvent);
     if (
       !envelope
@@ -940,7 +947,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         entries.push(terminal);
         terminalsByRun.set(event.runId, {
           entry: terminal,
-          seq: event.seq,
+          eventEpoch: event.eventEpoch,
+          arrivalIndex,
           envelope,
         });
       }
@@ -993,7 +1001,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
             sourceInstanceId,
             normalizedSessionId,
             turnId: text(envelope.turnId),
-            seq: event.seq,
+            eventEpoch: event.eventEpoch,
+            arrivalIndex,
           };
         }
         hasRunResult = true;
@@ -1012,7 +1021,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (
       acceptedResultCounts.get(candidate.runId) === 1 &&
       terminal &&
-      terminal.seq > candidate.seq &&
+      terminal.eventEpoch === candidate.eventEpoch &&
+      terminal.arrivalIndex > candidate.arrivalIndex &&
       terminal.envelope.sourceKind === "control_plane" &&
       text(terminal.envelope.sourceEventId)?.trim() &&
       terminal.envelope.sourceInstanceId === candidate.sourceInstanceId &&

@@ -47,6 +47,7 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { readRunEventExcerpt } from "./run-event-excerpt.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
@@ -314,27 +315,34 @@ async function findMatchingFile(
   return search(rootDir, 0);
 }
 
-async function readFullRunLog(run: {
+async function readRunLogExcerpt(run: {
   logStore: string | null;
   logRef: string | null;
 }) {
-  if (run.logStore !== "local_file" || !run.logRef) return null;
+  if (!["local_file", "local_segments"].includes(run.logStore ?? "") || !run.logRef) return { text: null, truncated: false };
   const store = getRunLogStore();
   let offset = 0;
+  let cursor: string | undefined;
   let combined = "";
 
   while (true) {
-    const result = await store.read({ store: "local_file", logRef: run.logRef }, {
+    const result = await store.read({ store: run.logStore as "local_file" | "local_segments", logRef: run.logRef }, {
       offset,
+      cursor,
       limitBytes: 512_000,
     }).catch(() => null);
-    if (!result) return combined || null;
+    if (!result) return { text: combined || null, truncated: combined.length > 0 };
     combined += result.content;
-    if (result.nextOffset == null) break;
-    offset = result.nextOffset;
+    if (!(result.hasMore ?? result.nextOffset != null)) break;
+    // Feedback already limits trace text to MAX_TRACE_FILE_CHARS. Apply that
+    // envelope budget while reading, rather than materializing days of output
+    // and only then truncating it. The persisted source history stays intact.
+    if (combined.length >= MAX_TRACE_FILE_CHARS) return { text: combined, truncated: true };
+    cursor = result.cursor;
+    offset = result.nextOffset ?? offset;
   }
 
-  return combined || null;
+  return { text: combined || null, truncated: false };
 }
 
 function parseRunLogEntries(logText: string | null) {
@@ -1503,6 +1511,7 @@ async function buildFeedbackTraceBundleFromRow(
         logRef: heartbeatRuns.logRef,
         logBytes: heartbeatRuns.logBytes,
         logSha256: heartbeatRuns.logSha256,
+        nextEventSeq: heartbeatRuns.nextEventSeq,
         agentName: agents.name,
         agentRole: agents.role,
         agentTitle: agents.title,
@@ -1517,12 +1526,12 @@ async function buildFeedbackTraceBundleFromRow(
       appendNote(notes, "source_run_unavailable");
     } else {
       adapterType = run.adapterType;
-      const events = await db
-        .select()
-        .from(heartbeatRunEvents)
-        .where(eq(heartbeatRunEvents.runId, run.id))
-        .orderBy(asc(heartbeatRunEvents.seq));
-      const logText = await readFullRunLog(run);
+      const eventExcerpt = await readRunEventExcerpt(db, run.companyId, run.id);
+      const events = eventExcerpt.events;
+      if (eventExcerpt.truncated) appendNote(notes, "run_events_excerpt_truncated");
+      const logExcerpt = await readRunLogExcerpt(run);
+      if (logExcerpt.truncated) appendNote(notes, "run_log_excerpt_truncated");
+      const logText = logExcerpt.text;
       const logEntries = parseRunLogEntries(logText);
       const stdoutText = logEntries
         .filter((entry) => entry.stream === "stdout")
@@ -1556,7 +1565,9 @@ async function buildFeedbackTraceBundleFromRow(
           logRef: run.logRef,
           logBytes: run.logBytes,
           logSha256: run.logSha256,
-          eventCount: events.length,
+          eventCount: run.nextEventSeq - 1,
+          capturedEventCount: events.length,
+          eventsTruncated: eventExcerpt.truncated,
         },
         state,
         "bundle.paperclipRun",
