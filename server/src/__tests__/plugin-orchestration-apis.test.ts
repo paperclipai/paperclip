@@ -156,6 +156,25 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     return root;
   }
 
+  it("pages plugin issues after company and origin filters", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    for (let index = 0; index < 4; index += 1) {
+      await services.issues.create({
+        companyId,
+        title: `Issue ${index}`,
+        originKind: index === 3 ? "plugin:paperclip.missions:other" : "plugin:paperclip.missions:page",
+      });
+    }
+
+    const params = { companyId, originKind: "plugin:paperclip.missions:page" };
+    const all = await services.issues.list(params);
+    expect(all).toHaveLength(3);
+    expect(await services.issues.list({ ...params, limit: 1, offset: 1 })).toEqual([all[1]]);
+    expect(await services.issues.list({ ...params, limit: 0 })).toEqual([]);
+    expect(await services.issues.list({ ...params, limit: 1, offset: 3 })).toEqual([]);
+  });
+
   it("returns plugin-safe execution workspace metadata scoped to the company", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const otherCompanyId = randomUUID();
