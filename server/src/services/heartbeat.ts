@@ -343,6 +343,7 @@ import {
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
+  summarizeRunErrorForModel,
   type RunPresentationDecision,
 } from "./heartbeat-run-summary.js";
 import {
@@ -12079,6 +12080,9 @@ export function heartbeatService(
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
+        terminalFailureCategory: sql<string | null>`case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+          then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
         ...heartbeatRunListResultColumns,
       })
       .from(heartbeatRuns)
@@ -12156,7 +12160,7 @@ export function heartbeatService(
       readNonEmptyString(latestSummary?.summary) ??
       readNonEmptyString(latestSummary?.result) ??
       readNonEmptyString(latestSummary?.message) ??
-      readNonEmptyString(latestRun.error);
+      readNonEmptyString(summarizeRunErrorForModel(latestRun.error, latestRun.terminalFailureCategory));
 
     const handoffMarkdown = [
       "Paperclip session handoff:",

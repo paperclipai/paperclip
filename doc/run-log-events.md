@@ -163,6 +163,8 @@ run error, the `acpx.error` transcript record, and
 contains the provider category, title, and details. It works when raw provider
 tracing is disabled. The existing UI and CLI render the diagnostic as an error,
 not as assistant output or an automatic task response.
+Issue continuation summaries and session-compaction handoffs retain only the
+generic failure category; provider diagnostic prose is not copied into prompts.
 
 Both pinned ACPX patches pass complete title and detail strings to the in-memory
 callback. The engine redacts configured environment values (including resolved
