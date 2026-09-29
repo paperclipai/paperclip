@@ -77,19 +77,22 @@ interface StatusGlyphProps {
   className?: string;
   /** Accessible label; when set the SVG gets `role="img"`, else it's decorative. */
   title?: string;
+  /** Live run active on this task. Animates `in_review` while work continues. */
+  live?: boolean;
 }
 
-export function StatusGlyph({ status, size = "md", className, title }: StatusGlyphProps) {
+export function StatusGlyph({ status, size = "md", className, title, live = false }: StatusGlyphProps) {
   const px = SIZE_PX[size];
   const Icon = STATUS_ICON[status] ?? STATUS_ICON_DEFAULT;
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
+  const spin = status === "in_progress" || (live && status === "in_review");
   const a11y = title
     ? ({ role: "img", "aria-label": title } as const)
     : ({ "aria-hidden": true } as const);
   return (
     <Icon
       size={px}
-      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && "motion-safe:animate-spin", className)}
+      className={cn("inline-block shrink-0 align-middle", spin && "motion-safe:animate-spin", className)}
       style={{ color: `var(${cssVar})` } as CSSProperties}
       {...a11y}
     >

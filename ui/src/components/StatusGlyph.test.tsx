@@ -71,6 +71,13 @@ describe("StatusGlyph", () => {
     }
   });
 
+  it("animates in_review while a live run continues, keeps it static otherwise", () => {
+    expect(renderToStaticMarkup(<StatusGlyph status="in_review" />).includes("motion-safe:animate-spin")).toBe(false);
+    expect(renderToStaticMarkup(<StatusGlyph status="in_review" live />).includes("motion-safe:animate-spin")).toBe(true);
+    expect(renderToStaticMarkup(<StatusGlyph status="in_progress" live />).includes("motion-safe:animate-spin")).toBe(true);
+    expect(renderToStaticMarkup(<StatusGlyph status="todo" live />).includes("motion-safe:animate-spin")).toBe(false);
+  });
+
   it("uses the same circle radius and stroke for the spinner as other task icons", () => {
     for (const status of ["in_progress", "todo", "done", "blocked", "cancelled"]) {
       const html = renderToStaticMarkup(<StatusGlyph status={status} />);
