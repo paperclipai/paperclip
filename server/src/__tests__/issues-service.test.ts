@@ -152,6 +152,35 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
 });
 
 describe("readIssueCommentRunLogText", () => {
+  it("retains concurrency slots until timed-out storage reads actually settle", async () => {
+    const releases: Array<(value: { content: string }) => void> = [];
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation(() =>
+      new Promise((resolve) => { releases.push(resolve); }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const firstBatch = Array.from({ length: 8 }, () => readIssueCommentRunLogText(run));
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await Promise.all(firstBatch)).toEqual(Array(8).fill(""));
+      const nextBatch = Array.from({ length: 16 }, () => readIssueCommentRunLogText(run));
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await Promise.all(nextBatch)).toEqual(Array(16).fill(""));
+      expect(read).toHaveBeenCalledTimes(8);
+      for (const release of releases) release({ content: "too late" });
+      await vi.advanceTimersByTimeAsync(0);
+      read.mockResolvedValueOnce({ content: "storage recovered" });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("storage recovered");
+      expect(read).toHaveBeenCalledTimes(9);
+    } finally {
+      for (const release of releases) release({ content: "" });
+      await Promise.allSettled(firstBatch);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
   it.each([null, 128])("keeps partial attribution evidence when storage fails with logBytes=%s", async (logBytes) => {
     const read = vi.spyOn(getRunLogStore(), "read").mockRejectedValue(new Error("Storage gateway unavailable"));
     const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes };

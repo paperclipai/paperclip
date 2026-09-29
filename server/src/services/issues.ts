@@ -232,6 +232,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS = 3_000;
+// Optional lookups share a process-wide cap. A timed-out caller releases its
+// response, but its storage request owns the slot until that request settles.
+let activeIssueCommentRunLogReads = 0;
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS =
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -6564,24 +6567,30 @@ export async function readIssueCommentRunLogText(run: {
 
   const readChunks = async () => {
     while (!readingStopped && nextOffset !== undefined) {
+      if (activeIssueCommentRunLogReads >= ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) return;
       const remainingBytes =
         ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES -
         Buffer.byteLength(content, "utf8");
       if (remainingBytes <= 0) break;
-      const chunk = await store.read(
-        { store: "local_file", logRef },
-        {
-          offset,
-          limitBytes: Math.min(
-            ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES,
-            remainingBytes,
-          ),
-        },
-      );
-      if (readingStopped) return;
-      content += chunk.content;
-      nextOffset = chunk.nextOffset;
-      offset = chunk.nextOffset ?? 0;
+      activeIssueCommentRunLogReads += 1;
+      try {
+        const chunk = await store.read(
+          { store: "local_file", logRef },
+          {
+            offset,
+            limitBytes: Math.min(
+              ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES,
+              remainingBytes,
+            ),
+          },
+        );
+        if (readingStopped) return;
+        content += chunk.content;
+        nextOffset = chunk.nextOffset;
+        offset = chunk.nextOffset ?? 0;
+      } finally {
+        activeIssueCommentRunLogReads -= 1;
+      }
     }
   };
 
