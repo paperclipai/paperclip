@@ -81,13 +81,19 @@ export function isChatClarificationReply(body: string): boolean {
   // without a noun such as "brief" or "details" before the list.
   const listRequest = body.match(/\b(?:I|we)(?:'ll|\s+will)?\s+need\s*:\s*([\s\S]*)/i);
   if (listRequest) {
-    const items = [...listRequest[1].matchAll(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/gm)];
-    // A work checklist ("Create the task; write the note") is not a request
-    // for information. Outcome/ownership assertions still run independently.
-    const action = /^(?:to\s|(?:create|write|start|execute|run|build|send|publish|deliver|finish|complete|assign|plan|draft)\b)/i;
-    if (items.length >= 2 && items.every(([, item]) =>
-      /[\p{L}\p{N}]/u.test(item) && !action.test(item.replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, "")),
-    )) return true;
+    const items: string[] = [];
+    // Only the directly introduced list belongs to this request. A later
+    // paragraph can introduce a separate plan without invalidating it.
+    for (const line of listRequest[1].split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const item = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/);
+      if (!item) break;
+      items.push(item[1].replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, ""));
+    }
+    // Positively identify questions or brief fields. Unknown bullets are not
+    // evidence of clarification merely because their verbs are unlisted.
+    const information = /^(?:(?:who|what|where|when|whether|how)\b|(?:(?:any|the|your|preferred|intended|required|target|desired|existing|delivery|must-include)\s+){0,3}(?:(?:club|company|project|team|event|organization)\s+name|audience|readers|recipients|tone|voice|format|length|deadline|date|purpose|context|details|requirements|constraints|examples|links|name)\b)/i;
+    if (items.length >= 2 && items.every(item => information.test(item))) return true;
   }
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,

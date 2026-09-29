@@ -101,6 +101,17 @@ If you only have the club name, audience, and tone, that is enough to begin; I c
     }
   });
 
+  it("checks the requested information list separately from a later plan", () => {
+    expect(isChatClarificationReply("I need:\n- Audience\n- Tone\n\nOnce you answer, the plan is:\n- Create the task\n- Write the note")).toBe(true);
+  });
+
+  it("requires information fields or questions rather than arbitrary non-blacklisted bullets", () => {
+    expect(isChatClarificationReply("I need:\n- Set up the project\n- Install dependencies")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- Gather the audience details\n- Decide the tone")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- Audience\n- Install dependencies")).toBe(false);
+    expect(isChatClarificationReply("I need:\n- **Audience**: intended readers\n\n- [ ] Preferred format\n- When this is due")).toBe(true);
+  });
+
   it("rejects superseded plan requirements in executed output, independently of plan history", () => {
     expect(() => assertChatExecutionOutput("Welcome CHAT123.", "CHAT123", "DRAFT123")).not.toThrow();
     expect(() => assertChatExecutionOutput("Welcome DRAFT123 and CHAT123.", "CHAT123", "DRAFT123")).toThrow();
