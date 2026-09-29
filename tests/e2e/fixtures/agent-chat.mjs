@@ -36,6 +36,11 @@ if (!task.conversationAgentId) {
   });
   process.exit(0);
 }
+if (ctx.wakeReason === "chat_task_completed") {
+  // A reporting turn must not replay the last user's plan or handoff command.
+  await comment("Received the delegated task completion update.");
+  process.exit(0);
+}
 const comments = await api(`/issues/${task.id}/comments?order=asc`);
 const current =
   comments.find((c) => c.id === ctx.wakeCommentId) ??
