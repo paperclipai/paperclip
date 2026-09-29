@@ -408,7 +408,7 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
-  it("allows a comment wake to bypass the ownership, terminal-status, and review-participant checks", () => {
+  it("allows a comment wake to bypass the ownership and review-participant checks", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueAssigneeAgentId: "agent-1",
@@ -431,6 +431,30 @@ describe("decideQueuedRunStaleness", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueStatus: "done",
+      resumeIntent: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("cancels a comment wake queued on a task that reached a terminal status", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "cancelled",
+      wakeReason: "issue_commented",
+      wakeCommentIdPresent: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
+  });
+
+  it("still dispatches a comment wake that carries explicit resume intent on a terminal task", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "done",
+      wakeReason: "issue_reopened_via_comment",
+      wakeCommentIdPresent: true,
       resumeIntent: true,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });

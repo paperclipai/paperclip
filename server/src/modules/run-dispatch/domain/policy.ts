@@ -609,7 +609,16 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    // Only an explicit resume intent may run against a task in a terminal
+    // status. A wake that merely *carries* a comment id is not that proof:
+    // the runtime continuation builder refuses a terminal task, so such a run
+    // can only die during setup. Measured 2026-09-28 (CRE-514): 98
+    // `setup_failed` runs in 24 h with `continuation_task_ownership_changed`,
+    // every one a comment wake on a task a board batch cancelled moments
+    // after the comment landed. `wakeCommentIdPresent` stays the bypass for
+    // the ownership and review-participant checks below, where the comment is
+    // the authority for the wake itself.
+    terminalBypass: facts.resumeIntent,
   });
   if (statusOutcome === "terminal") {
     return {

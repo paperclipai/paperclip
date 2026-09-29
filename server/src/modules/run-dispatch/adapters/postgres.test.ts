@@ -610,6 +610,70 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       });
     });
 
+    it("cancels a queued comment wake whose task reached a terminal status", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "cancelled", assigneeAgentId: agentId });
+      const commentId = randomUUID();
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          wakeCommentId: commentId,
+          wakeReason: "issue_commented",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome).toMatchObject({
+        outcome: "cancelled",
+        errorCode: "issue_terminal_status",
+      });
+      const persisted = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("cancelled");
+    });
+
+    it("keeps a queued comment wake with resume intent dispatchable on a terminal task", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      const commentId = randomUUID();
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          wakeCommentId: commentId,
+          wakeReason: "issue_reopened_via_comment",
+          resumeIntent: true,
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome).toEqual({ outcome: "not_stale" });
+    });
+
     it(
       "reads the locked issue state and cancels in the same semantic transaction",
       async () => {
