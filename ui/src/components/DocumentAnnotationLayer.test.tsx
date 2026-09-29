@@ -77,10 +77,10 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Annotated body text."
           threads={[
-            { id: "active", selectedText: "Annotated", status: "open", anchorState: "active" },
-            { id: "focused", selectedText: "body", status: "open", anchorState: "active" },
-            { id: "stale", selectedText: "text", status: "open", anchorState: "stale" },
-            { id: "resolved", selectedText: "body text", status: "resolved", anchorState: "active" },
+            { id: "active", selectedText: "Annotated", selector: { quote: { exact: "Annotated", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 9, markdownStart: 0, markdownEnd: 9 } }, status: "open", anchorState: "active" },
+            { id: "focused", selectedText: "body", selector: { quote: { exact: "body", prefix: "", suffix: "" }, position: { normalizedStart: 10, normalizedEnd: 14, markdownStart: 10, markdownEnd: 14 } }, status: "open", anchorState: "active" },
+            { id: "stale", selectedText: "text", selector: { quote: { exact: "text", prefix: "", suffix: "" }, position: { normalizedStart: 15, normalizedEnd: 19, markdownStart: 15, markdownEnd: 19 } }, status: "open", anchorState: "stale" },
+            { id: "resolved", selectedText: "body text", selector: { quote: { exact: "body text", prefix: "", suffix: "" }, position: { normalizedStart: 10, normalizedEnd: 19, markdownStart: 10, markdownEnd: 19 } }, status: "resolved", anchorState: "active" },
           ]}
           focusedThreadId="focused"
           onThreadFocus={vi.fn()}
@@ -129,7 +129,7 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Hidden folded text"
           threads={[
-            { id: "hidden", selectedText: "Hidden folded text", status: "open", anchorState: "active" },
+            { id: "hidden", selectedText: "Hidden folded text", selector: { quote: { exact: "Hidden folded text", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 18, markdownStart: 0, markdownEnd: 18 } }, status: "open", anchorState: "active" },
           ]}
           focusedThreadId={null}
           onThreadFocus={vi.fn()}
@@ -274,7 +274,7 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Annotated body text."
           threads={[
-            { id: "active", selectedText: "Annotated", status: "open", anchorState: "active" },
+            { id: "active", selectedText: "Annotated", selector: { quote: { exact: "Annotated", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 9, markdownStart: 0, markdownEnd: 9 } }, status: "open", anchorState: "active" },
           ]}
           focusedThreadId={null}
           onThreadFocus={vi.fn()}

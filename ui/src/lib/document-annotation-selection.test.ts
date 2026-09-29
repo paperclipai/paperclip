@@ -93,6 +93,23 @@ describe("buildAnchorFromContainerSelection", () => {
     const offset = getContainerTextOffset(container, range);
     expect(offset).toBeNull();
   });
+
+  it("anchors a later duplicate selection to its matching position", () => {
+    const markdown = "First repeated text.\n\nSecond repeated text.";
+    const container = document.createElement("div");
+    container.innerHTML = "<p>First repeated text.</p><p>Second repeated text.</p>";
+    document.body.appendChild(container);
+    const secondText = container.querySelectorAll("p")[1]!.firstChild as Text;
+    const range = document.createRange();
+    const start = secondText.data.indexOf("repeated text");
+    range.setStart(secondText, start);
+    range.setEnd(secondText, start + "repeated text".length);
+    const offset = getContainerTextOffset(container, range);
+    const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset: offset! });
+
+    const firstOccurrence = markdown.indexOf("repeated text");
+    expect(anchor?.selector.position.normalizedStart).toBeGreaterThan(firstOccurrence);
+  });
 });
 
 describe("rangesForNormalizedSpan", () => {
@@ -114,5 +131,22 @@ describe("rangesForNormalizedSpan", () => {
       selectedText: "this string does not exist in the document",
     });
     expect(ranges).toEqual([]);
+  });
+
+  it("uses the supplied normalized position for later duplicate text", () => {
+    const container = document.createElement("div");
+    container.innerHTML = "<p>First repeated text.</p><p>Second repeated text.</p>";
+    document.body.appendChild(container);
+    const secondText = container.querySelectorAll("p")[1]!.firstChild as Text;
+    const normalizedStart = "First repeated text. Second ".length;
+
+    const ranges = rangesForNormalizedSpan({
+      container,
+      selectedText: "repeated text",
+      normalizedStart,
+    });
+
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.startContainer).toBe(secondText);
   });
 });

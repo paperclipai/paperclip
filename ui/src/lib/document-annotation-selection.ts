@@ -110,12 +110,23 @@ function pickClosestOccurrence(occurrences: number[], expected: number): number 
 export function rangesForNormalizedSpan(input: {
   container: HTMLElement;
   selectedText: string;
+  normalizedStart?: number;
 }): Range[] {
   const normalizedNeedle = normalizeAnchorText(input.selectedText);
   if (!normalizedNeedle) return [];
   const containerText = input.container.textContent ?? "";
   const normalizedContainerText = normalizeAnchorText(containerText);
-  const containerOccurrenceIndex = normalizedContainerText.indexOf(normalizedNeedle);
+  const occurrences = findAllOccurrences(normalizedContainerText, normalizedNeedle);
+  const positionMatchesSelection = input.normalizedStart !== undefined
+    && normalizedContainerText.slice(
+      input.normalizedStart,
+      input.normalizedStart + normalizedNeedle.length,
+    ) === normalizedNeedle;
+  const containerOccurrenceIndex = positionMatchesSelection
+    ? input.normalizedStart ?? -1
+    : input.normalizedStart === undefined
+      ? occurrences[0] ?? -1
+      : pickClosestOccurrence(occurrences, input.normalizedStart ?? 0) ?? -1;
   if (containerOccurrenceIndex === -1) return [];
 
   // Convert from normalized container offset back to raw container offset

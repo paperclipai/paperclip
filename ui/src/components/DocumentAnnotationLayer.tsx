@@ -24,6 +24,7 @@ import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
 export interface AnnotationOverlayThread {
   id: string;
   selectedText: string;
+  selector: DocumentAnnotationAnchorSelector;
   status: DocumentAnnotationThreadStatus;
   anchorState: DocumentAnnotationAnchorState;
   unreadCount?: number;
@@ -71,6 +72,7 @@ export interface AnnotationLayerProps {
    * (e.g. once focus moves into the composer textarea).
    */
   pendingHighlightText?: string | null;
+  pendingHighlightSelector?: DocumentAnnotationAnchorSelector | null;
 }
 
 /** Synthetic thread id used to render the in-progress (pending) comment highlight. */
@@ -251,6 +253,7 @@ export function DocumentAnnotationLayer({
   hideResolved = true,
   captureSelectionRequestId,
   pendingHighlightText = null,
+  pendingHighlightSelector = null,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
@@ -288,11 +291,13 @@ export function DocumentAnnotationLayer({
       anchorState: DocumentAnnotationAnchorState;
       focused: boolean;
       selectedText: string;
+      selector?: DocumentAnnotationAnchorSelector | null;
       nativeKind: NativeHighlightKind;
     }) => {
       const ranges = rangesForNormalizedSpan({
         container,
         selectedText: run.selectedText,
+        normalizedStart: run.selector?.position.normalizedStart,
       });
       const startIndex = next.length;
       for (const range of ranges) {
@@ -333,6 +338,7 @@ export function DocumentAnnotationLayer({
         anchorState: thread.anchorState,
         focused: isFocused,
         selectedText: thread.selectedText,
+        selector: thread.selector,
         nativeKind: nativeHighlightKind({ focused: isFocused, stale: isStale, resolved: isResolved }),
       });
     }
@@ -345,6 +351,7 @@ export function DocumentAnnotationLayer({
         anchorState: "active",
         focused: true,
         selectedText: pendingHighlightText,
+        selector: pendingHighlightSelector,
         nativeKind: "focused",
       });
     }
@@ -359,7 +366,7 @@ export function DocumentAnnotationLayer({
       width: activeRect.width,
       height: activeRect.height,
     } : null);
-  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightText, visibleThreads]);
+  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightSelector, pendingHighlightText, visibleThreads]);
 
   useLayoutEffect(() => {
     computeHighlightRects();
