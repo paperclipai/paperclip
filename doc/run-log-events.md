@@ -166,7 +166,8 @@ not as assistant output or an automatic task response.
 
 Both pinned ACPX patches pass complete title and detail strings to the in-memory
 callback. The engine redacts configured environment values (including resolved
-secrets with arbitrary variable names), sensitive runtime environment values,
+secrets with arbitrary variable names), launch environment values outside a
+closed allowlist of public process settings, known boolean flags, and run identifiers,
 connection URL passwords, the run API key, and common credential forms before
 truncation. It removes control characters,
 retains line breaks for JSON and stack traces, and preserves up to 4,096 title
@@ -175,7 +176,10 @@ transcript JSON below the server's 64 KiB chunk limit. Longer fields end with an
 omission count and appear in `truncatedFields`. The error message includes the
 same sanitized text. Ordinary run retrieval preserves the bounded structured
 diagnostic even when multibyte text or other result fields exceed the result
-byte budget. Other provider metadata and action payloads are not copied.
+byte budget. In that reduced response, title and details have 1 KiB and 8 KiB
+byte budgets, including truncation markers. `retrievalTruncated` directs callers
+to the full adapter-bounded text in the run error or transcript. Other provider
+metadata and action payloads are not copied.
 
 Recovery still uses the typed failure category and the adapter's existing
 classifier. Provider warnings do not become failures, and timeouts or lost

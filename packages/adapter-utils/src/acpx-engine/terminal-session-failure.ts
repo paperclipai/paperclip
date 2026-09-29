@@ -1,5 +1,4 @@
 import { redactDiagnosticText, REDACTED_COMMAND_TEXT_VALUE } from "../command-redaction.js";
-import { redactEnvForLogs } from "../server-utils.js";
 
 export interface AcpxTerminalSessionFailure {
   category: string;
@@ -15,6 +14,24 @@ const CATEGORIES = new Set(["connection", "access", "limit", "service", "request
 // Leave room under the server's 64 KiB run-log chunk limit even when every
 // retained character needs JSON escaping. The transcript stores the text once.
 const FIELD_LIMITS = { title: 4096, details: 24576 } as const;
+// Only conventional public process settings may survive by default. Provider,
+// proxy, bridge, and future launch contributions may carry secrets under any
+// name. Explicitly configured values are still redacted even for these keys.
+const PUBLIC_ENV_KEYS = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+  "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME", "LOGNAME", "SHELL", "LANG",
+  "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "NODE_ENV",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+  "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
+]);
+const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
+  "OPENCODE_ALLOW_ALL_MODELS", "CLAUDE_CODE_USE_BEDROCK", "GOOGLE_GENAI_USE_GCA",
+  "CI", "NO_COLOR", "FORCE_COLOR",
+]);
+
+function isPublicBooleanSetting(key: string, value: string): boolean {
+  return PUBLIC_BOOLEAN_ENV_KEYS.has(key.toUpperCase()) && /^(?:0|1|true|false)$/i.test(value);
+}
 
 /** Keep provider diagnostics in the run, after redaction and before truncation. */
 export function sanitizeTerminalSessionFailure(
@@ -23,14 +40,13 @@ export function sanitizeTerminalSessionFailure(
   authToken?: string,
   configuredEnv: Record<string, unknown> = {},
 ): AcpxTerminalSessionFailureDiagnostic {
-  const maskedEnv = redactEnvForLogs(env);
   const secrets = Object.entries(env)
-    .filter(([key, value]) => value && maskedEnv[key] !== value)
+    .filter(([key, value]) => value && !PUBLIC_ENV_KEYS.has(key.toUpperCase()) && !isPublicBooleanSetting(key, value))
     .map(([, value]) => value);
   // Configured values can be resolved secret_refs under arbitrary names (for
   // example DATABASE_URL). Key-name heuristics cannot establish they are public.
-  for (const value of Object.values(configuredEnv)) {
-    if (typeof value === "string" && value) secrets.push(value);
+  for (const [key, value] of Object.entries(configuredEnv)) {
+    if (typeof value === "string" && value && !isPublicBooleanSetting(key, value)) secrets.push(value);
   }
   // A provider may echo just the password from a configured connection URL.
   for (const value of Object.values(env)) {
@@ -48,16 +64,25 @@ export function sanitizeTerminalSessionFailure(
     try { forms.push(encodeURIComponent(value)); } catch { /* retain literal forms */ }
     return forms;
   }))].sort((a, b) => b.length - a.length);
+  // Replace in one pass so a short value cannot modify a redaction marker
+  // inserted for a longer value or cause repeated marker expansion.
+  const secretPattern = secretForms.length > 0
+    ? new RegExp(secretForms.map((value) => {
+      const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Short values must match complete tokens, not digits or fragments inside
+      // HTTP status codes, request IDs, paths, or ordinary diagnostic words.
+      return value.length < 8
+        ? `(?<![\\p{L}\\p{N}_./-])${escaped}(?![\\p{L}\\p{N}_./-])`
+        : escaped;
+    }).join("|"), "gu")
+    : null;
   const diagnostic: AcpxTerminalSessionFailureDiagnostic = {
     category: CATEGORIES.has(failure.category) ? failure.category : "unknown",
   };
   for (const field of ["title", "details"] as const) {
     const raw = failure[field];
     if (typeof raw !== "string" || !raw.trim()) continue;
-    let text = raw;
-    for (const secret of secretForms) {
-      text = text.replaceAll(secret, REDACTED_COMMAND_TEXT_VALUE);
-    }
+    let text = secretPattern ? raw.replace(secretPattern, () => REDACTED_COMMAND_TEXT_VALUE) : raw;
     text = redactDiagnosticText(text)
       // Keep line breaks and tabs for provider JSON and stack traces, but strip
       // terminal control sequences and characters PostgreSQL cannot store.

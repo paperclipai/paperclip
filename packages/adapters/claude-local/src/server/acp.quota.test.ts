@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { classifyClaudeTerminalSessionFailure, createClaudeAcpExecutor } from "./acp.js";
 import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
@@ -17,6 +17,7 @@ const runnerRequire = createRequire(path.join(repoRoot, "packages/paperclip-runn
 const runnerAcpx = await import(runnerRequire.resolve("acpx/runtime"));
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -90,8 +91,11 @@ it.each([
   ["0.13.1", "persistent"],
 ])("retains redacted service diagnostics beyond 4 KiB with ACPX %s in %s mode", async (version, mode) => {
   const secret = "opaque-provider-credential-canary";
+  const inheritedSecret = "opaque-inherited-proxy-canary";
+  // HTTP_PROXY is inherited by the real ACP launch but has no secret-name hint.
+  vi.stubEnv("HTTP_PROXY", inheritedSecret);
   const title = "HTTP 529: overloaded_error";
-  const details = `${"provider context\n".repeat(300)}request_id=req_service_123\nCredential echoed: ${secret}\n    at prompt (agent.js:42:7)`;
+  const details = `${"provider context\n".repeat(300)}request_id=req_service_123\nCredential echoed: ${secret}\nInherited credential: ${inheritedSecret}\n    at prompt (agent.js:42:7)`;
   const { result, logs } = await executeFailure(
     title, "service", mode, version === "0.13.1" ? runnerAcpx.createAcpRuntime : undefined,
     { PROVIDER_SETTING: secret }, details,
@@ -103,7 +107,7 @@ it.each([
       terminalSessionFailure: {
         category: "service",
         title,
-        details: details.replace(secret, "***REDACTED***"),
+        details: details.replace(secret, "***REDACTED***").replace(inheritedSecret, "***REDACTED***"),
       },
     },
   });
@@ -112,6 +116,8 @@ it.each([
   expect(result.summary).not.toContain(title);
   expect(JSON.stringify(result)).not.toContain(secret);
   expect(logs).not.toContain(secret);
+  expect(JSON.stringify(result)).not.toContain(inheritedSecret);
+  expect(logs).not.toContain(inheritedSecret);
   const transcript = logs.split("\n").flatMap((line) => parseAcpxStdoutLine(line, "2026-07-15T20:00:00Z"));
   expect(transcript).toContainEqual(expect.objectContaining({ kind: "stderr", text: result.errorMessage }));
   expect(transcript.some((entry) => entry.kind === "assistant")).toBe(false);

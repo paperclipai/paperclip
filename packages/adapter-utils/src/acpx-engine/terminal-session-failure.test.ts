@@ -67,6 +67,22 @@ describe("terminal session failure diagnostics", () => {
     );
   });
 
+  it("redacts unknown inherited launch values while preserving public process context", () => {
+    const diagnostic = sanitizeTerminalSessionFailure({
+      category: "service",
+      details: "request_id=req_123 inherited-canary A /workspace",
+    }, { UNEXPECTED_VARIABLE: "inherited-canary", ANOTHER_VARIABLE: "A", HOME: "/workspace" });
+    expect(diagnostic.details).toBe("request_id=req_123 ***REDACTED*** ***REDACTED*** /workspace");
+  });
+
+  it("preserves boolean settings, HTTP codes and request IDs around short unknown values", () => {
+    const details = "HTTP 401 request_id=req_123 req-1 /1/path retries=1 unknown=2";
+    const diagnostic = sanitizeTerminalSessionFailure({ category: "access", details }, {
+      OPENCODE_ALLOW_ALL_MODELS: "1", UNKNOWN_SETTING: "2",
+    }, undefined, { OPENCODE_ALLOW_ALL_MODELS: "1", UNKNOWN_SETTING: "2" });
+    expect(diagnostic.details).toBe(details.replace("unknown=2", "unknown=***REDACTED***"));
+  });
+
   it("fits the persisted transcript chunk limit even with escaped provider text", () => {
     const diagnostic = sanitizeTerminalSessionFailure({
       category: "service",

@@ -3432,6 +3432,18 @@ const heartbeatRunListResultColumns = {
   >`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
+// Reserve at most 9 KiB for diagnostics in the reduced result. An oversized
+// multibyte field uses a conservative four-byte-per-character prefix, with a
+// visible pointer to the full (adapter-bounded) run error and transcript.
+const diagnosticRetrievalTitleBytes = 1024;
+const diagnosticRetrievalDetailsBytes = 8192;
+function boundedRunDiagnosticText(field: "title" | "details", maxBytes: number) {
+  const value = sql`${heartbeatRuns.resultJson} #>> ARRAY['terminalSessionFailure', ${field}]`;
+  return sql`case when octet_length(${value}) <= ${maxBytes} then ${value}
+    else left(${value}, ${Math.floor((maxBytes - 100) / 4)})
+      || E'\\n[truncated for run retrieval; full text in run error/transcript]' end`;
+}
+
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
@@ -3448,8 +3460,12 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'terminalSessionFailure', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
             'category', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32),
-            'title', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,title}', 4200),
-            'details', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,details}', 24700),
+            'title', ${boundedRunDiagnosticText("title", diagnosticRetrievalTitleBytes)},
+            'details', ${boundedRunDiagnosticText("details", diagnosticRetrievalDetailsBytes)},
+            'retrievalTruncated', case when
+              octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,title}') > ${diagnosticRetrievalTitleBytes}
+              or octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,details}') > ${diagnosticRetrievalDetailsBytes}
+              then to_jsonb(true) end,
             'truncatedFields', case when ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}'
               in ('["title"]'::jsonb, '["details"]'::jsonb, '["title","details"]'::jsonb)
               then ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}' end

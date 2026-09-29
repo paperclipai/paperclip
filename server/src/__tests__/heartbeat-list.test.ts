@@ -239,7 +239,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
     const terminalSessionFailure = {
       category: "service",
       title: "HTTP 529: overloaded_error",
-      details: `${"診断".repeat(12_000)}\nrequest_id=req_retained`,
+      details: `request_id=req_retained\n${"診断".repeat(12_000)}`,
       truncatedFields: ["title"],
     };
 
@@ -268,6 +268,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       agentId,
       invocationSource: "assignment",
       status: "succeeded",
+      error: terminalSessionFailure.details,
       resultJson: {
         summary: "completed",
         stdout: oversizedStdout,
@@ -296,7 +297,11 @@ describeEmbeddedPostgres("heartbeat list", () => {
       truncated: true,
       truncationReason: "oversized_result_json",
       stdoutTruncated: true,
-      terminalSessionFailure,
+      terminalSessionFailure: {
+        ...terminalSessionFailure,
+        details: expect.stringContaining("request_id=req_retained"),
+        retrievalTruncated: true,
+      },
       instructionSave: {
         state: "unavailable", contract: "agent_files", entryFile: "AGENTS.md",
         errorCode: "AGENT_FILES_LIMIT_EXCEEDED",
@@ -311,6 +316,11 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(result).not.toHaveProperty("nestedHuge");
     expect(result?.instructionSave).not.toHaveProperty("privateSyncMetadata");
     expect(result?.terminalSessionFailure).not.toHaveProperty("privateMetadata");
+    const diagnostic = result?.terminalSessionFailure as { details: string };
+    expect(diagnostic.details).toContain("[truncated for run retrieval; full text in run error/transcript]");
+    expect(Buffer.byteLength(diagnostic.details)).toBeLessThanOrEqual(8192);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
+    expect(run?.error).toBe(terminalSessionFailure.details);
   });
 });
 
