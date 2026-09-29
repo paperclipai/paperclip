@@ -15,6 +15,7 @@ import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResum
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
+import { acknowledgeReusedChatCompletionReply } from "../chat-completion-delivery.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
@@ -1002,6 +1003,18 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               presentationSource: presentationDecision.chosenSource,
             },
           }));
+        } else if (
+          issueId &&
+          !skipRunIssueComment &&
+          presentationDecision.commentAction === "reuse" &&
+          presentationDecision.commentId
+        ) {
+          await acknowledgeReusedChatCompletionReply(db, {
+            companyId: livenessRun.companyId,
+            issueId,
+            runId: livenessRun.id,
+            commentId: presentationDecision.commentId,
+          });
         } else if (presentationDecision.commentAction === "create") {
           presentationDecision = {
             ...presentationDecision,

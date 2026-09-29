@@ -155,6 +155,38 @@ test("plan approval hands the preserved revision to an assigned project task", a
     );
     expect(plan.body).toContain(original.body);
     expect(output.body).toContain(plan.body);
+    const interactions = await json(
+      await request.get(`/api/issues/${chat.id}/interactions`),
+    );
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0].status).toBe("accepted");
+    const runs = await json(
+      await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
+    );
+    const completionRuns = runs.filter(
+      (run: any) =>
+        run.contextSnapshot?.issueId === chat.id &&
+        run.contextSnapshot?.wakeReason === "chat_task_completed",
+    );
+    expect(completionRuns).toHaveLength(1);
+    expect(completionRuns[0].status).toBe("succeeded");
+    const replies = await json(
+      await request.get(`/api/issues/${chat.id}/comments`),
+    );
+    const reportingReplies = replies.filter(
+      (reply: any) => reply.createdByRunId === completionRuns[0].id,
+    );
+    expect(reportingReplies).toEqual([expect.objectContaining({
+      authorAgentId: f.agent.id,
+      body: `Delegated work completed: ${task.identifier}`,
+    })]);
+    const reportingRun = await json(
+      await request.get(`/api/heartbeat-runs/${completionRuns[0].id}`),
+    );
+    expect(reportingRun.resultJson.presentationDecision).toMatchObject({
+      commentAction: "reuse",
+      commentId: reportingReplies[0].id,
+    });
     expect(
       (await json(await request.get(`/api/issues/${chat.id}/documents/plan`)))
         .latestRevisionId,
