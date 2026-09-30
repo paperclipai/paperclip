@@ -7,11 +7,42 @@ vi.mock('../services/tool-access.js', () => ({ toolAccessService: () => ({ githu
 vi.mock('../services/github-operation-credentials.js', () => ({ resolveGitHubOperationCredentials: mocks.managed }));
 vi.mock('../services/skill-source-git-snapshot.js', () => ({ openGitSkillSnapshot: mocks.snapshot }));
 import { skillSourceGitHubReader } from '../services/skill-source-github-access.js';
+import { scanGitHubSkills } from '../services/github-skill-source.js';
+import { githubFixture } from './helpers/github-skills.js';
 const actor = (values: Record<string, unknown>) => values as Request['actor'];
 const db = {} as Db;
 beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]); });
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
+  it('uses one lease across metadata, snapshot and auditing, then permits another complete scan', async () => {
+    const fixture = githubFixture({ 'SKILL.md': '---\nname: example\ndescription: Useful instructions\n---\nRead the document.' });
+    const fetch = vi.fn(async (url: string) => Response.json(await fixture(new URL(url).pathname)));
+    vi.stubGlobal('fetch', fetch);
+    mocks.snapshot.mockImplementation(fixture.openSnapshot);
+    const read = skillSourceGitHubReader(db, 'whole-scan-company', actor({ type: 'board', userId: 'whole-scan' }), null);
+    for (let i = 0; i < 2; i++) {
+      const result = await scanGitHubSkills({ repositoryUrl: 'https://github.com/acme/skills' }, read);
+      expect(result.candidates[0]).toMatchObject({ name: 'example', error: null });
+    }
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(mocks.snapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects exhausted scans before repository or commit requests and releases failed metadata reads', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 503 }));
+    vi.stubGlobal('fetch', fetch);
+    const caller = actor({ type: 'board', userId: 'early-scan-quota', source: 'session' });
+    for (let i = 0; i < 30; i++) {
+      const read = skillSourceGitHubReader(db, 'metadata-quota-company', caller, null);
+      await expect(scanGitHubSkills({ repositoryUrl: 'https://github.com/acme/public' }, read)).rejects.toThrow('GitHub could not complete');
+    }
+    expect(fetch).toHaveBeenCalledTimes(30);
+    const read = skillSourceGitHubReader(db, 'metadata-quota-company', caller, null);
+    await expect(scanGitHubSkills({ repositoryUrl: 'https://github.com/acme/public' }, read)).rejects.toMatchObject({ status: 429 });
+    expect(fetch).toHaveBeenCalledTimes(30);
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+  });
+
   it('shares active scan limits across connections and releases them after failures', async () => {
     mocks.headers.mockResolvedValue({ Authorization: 'Bearer allowed' });
     mocks.snapshot.mockRejectedValueOnce(new Error('Download failed'))

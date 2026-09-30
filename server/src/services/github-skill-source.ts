@@ -10,6 +10,7 @@ import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as Tr
 
 export interface GitHubRead {
   (apiPath: string, signal?: AbortSignal): Promise<unknown>;
+  withScan?: <T>(operation: () => Promise<T>) => Promise<T>;
   openSnapshot: (input: { repositoryUrl: string; ref: string; commitSha?: string }, options?: GitSkillSnapshotOptions) => Promise<GitSkillSnapshot>;
   readonly connectionId?: string | null;
 }
@@ -33,7 +34,14 @@ export interface SkillScanOptions {
   retainFiles?: boolean;
 }
 
-export async function scanGitHubSkills(input: { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string }, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
+type SkillScanInput = { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
+
+export function scanGitHubSkills(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
+  const scan = () => scanRepository(input, providerRead, options);
+  return providerRead.withScan ? providerRead.withScan(scan) : scan();
+}
+
+async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions): Promise<ScannedSkillSource> {
   const read = async (apiPath: string) => {
     options.signal?.throwIfAborted();
     const result = await providerRead(apiPath, options.signal);

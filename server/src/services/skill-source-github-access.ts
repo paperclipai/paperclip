@@ -105,9 +105,17 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       return response.json();
     }, signal);
   }) as GitHubRead;
-  read.openSnapshot = async (input, options = {}) => {
-    const callerId = actor.type === 'agent' ? `agent:${actor.agentId}` : `board:${actor.userId ?? actor.source}`;
+  const callerId = actor.type === 'agent' ? `agent:${actor.agentId}` : `board:${actor.userId ?? actor.source}`;
+  let scanLease: ReturnType<typeof limitScans> | undefined;
+  read.withScan = async operation => {
     const lease = limitScans(companyId, callerId);
+    scanLease = lease;
+    try { return await operation(); }
+    finally { scanLease = undefined; lease.release(); }
+  };
+  read.openSnapshot = async (input, options = {}) => {
+    const ownsLease = !scanLease;
+    const lease = scanLease ?? limitScans(companyId, callerId);
     try {
       const snapshot = await authorized(async (values, authorization) => {
         const header = values.Authorization ?? values.authorization;
@@ -115,9 +123,9 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
         const token = header?.replace(/^(Bearer|token)\s+/i, '') ?? '';
         return openGitSkillSnapshot({ ...input, token, cacheScope: JSON.stringify([companyId, actor.type, actor.type === 'agent' ? actor.agentId : actor.userId, actor.type === 'agent' ? actor.runId : actor.source, authorization.connectionId, authorization.grantId]) }, { ...options, beforeDownload: lease.beforeDownload });
       }, options.signal);
-      return { ...snapshot, release: async () => { try { await snapshot.release(); } finally { lease.release(); } } };
+      return { ...snapshot, release: async () => { try { await snapshot.release(); } finally { if (ownsLease) lease.release(); } } };
     } catch (error) {
-      lease.release();
+      if (ownsLease) lease.release();
       throw error;
     }
   };
