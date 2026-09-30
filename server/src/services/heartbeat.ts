@@ -8739,6 +8739,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "",
         "Task title directive:",
         "The current title is a provisional slice of the user's prompt. As one of your first tool calls, use set_task_title with a concise title describing the requested outcome and onlyIfProvisional: true. If that tool is unavailable, PUT /api/issues/" + issue.id + "/title with {title, onlyIfProvisional: true} using your normal Paperclip authentication. Do this in Ask and Plan modes too. Preserve the full task description and any title already chosen by the user; then continue the task.",
+        "Check the title tool result. If its wording is rejected as credential material, retry once with a shorter, plain-language title that keeps the task's meaning and contains no secret values. Use a new idempotency key for changed arguments. Do not treat a rejected call as a saved title.",
       );
     }
     if (issue.conversationAgentId) {

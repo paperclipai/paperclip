@@ -1722,11 +1722,7 @@ pub(crate) fn sanitize_semantic_tool_input(
             if let Some(text) = input.get(*field).and_then(Value::as_str) {
                 object.insert(
                     (*field).to_owned(),
-                    Value::String(redact_sensitive_text_values_with_context(
-                        text,
-                        true,
-                        operation_id == "set_task_title" && *field == "title",
-                    )),
+                    Value::String(redact_sensitive_text_values_with_context(text, true)),
                 );
             }
         }
@@ -1847,14 +1843,10 @@ pub(crate) fn redact_text(input: &str) -> String {
 }
 
 pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
-    redact_sensitive_text_values_with_context(input, false, false)
+    redact_sensitive_text_values_with_context(input, false)
 }
 
-fn redact_sensitive_text_values_with_context(
-    input: &str,
-    semantic_prose: bool,
-    task_title: bool,
-) -> String {
+fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) -> String {
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -2253,10 +2245,12 @@ fn redact_sensitive_text_values_with_context(
             ]
             .iter()
             .any(|lead| token_phrase_has_lead(lead));
-        // Only task titles may use this closed maintenance grammar. Match the
-        // entire remaining suffix so an opaque credential after the noun cannot
-        // bypass the whitespace-value scanner. Other prose stays unchanged.
-        let is_semantic_key_maintenance = task_title
+        // Maintenance prose uses a closed vocabulary, including common task
+        // artifacts and environment qualifiers. Validate the entire suffix:
+        // recognizing only the first noun could hide an opaque credential after
+        // it. Unknown words, punctuation, assignments and CLI forms still fail
+        // closed. Known credential formats also use the independent scanners.
+        let is_semantic_key_maintenance = semantic_prose
             && key == "api key"
             && !key_is_compound
             && (start == 0 || bytes[start - 1].is_ascii_whitespace())
@@ -2272,15 +2266,54 @@ fn redact_sensitive_text_values_with_context(
                     normalized[separator..]
                         .strip_prefix(noun)
                         .is_some_and(|suffix| {
-                            [
-                                "",
-                                " checklist",
-                                " handover",
-                                " handover checklist",
-                                " plan",
-                                " guide",
-                            ]
-                            .contains(&suffix.trim_end_matches('.'))
+                            (suffix.is_empty() || suffix.starts_with(' ') || suffix == ".")
+                                && !suffix.contains(['\n', '\r', '\t'])
+                                && suffix
+                                    .strip_suffix('.')
+                                    .unwrap_or(suffix)
+                                    .split(' ')
+                                    .filter(|word| !word.is_empty())
+                                    .all(|word| {
+                                        matches!(
+                                            word,
+                                            "a" | "an"
+                                                | "the"
+                                                | "for"
+                                                | "in"
+                                                | "of"
+                                                | "and"
+                                                | "with"
+                                                | "checklist"
+                                                | "handover"
+                                                | "plan"
+                                                | "guide"
+                                                | "schedule"
+                                                | "steps"
+                                                | "staging"
+                                                | "production"
+                                                | "development"
+                                                | "test"
+                                                | "expired"
+                                                | "new"
+                                                | "old"
+                                                | "safe"
+                                                | "secure"
+                                                | "short"
+                                                | "internal"
+                                                | "teammate"
+                                                | "routine"
+                                                | "maintenance"
+                                                | "service"
+                                                | "access"
+                                                | "api"
+                                                | "key"
+                                                | "keys"
+                                                | "rotation"
+                                                | "replacement"
+                                                | "renewal"
+                                                | "expiration"
+                                        )
+                                    })
                         })
                 });
         let is_benign_token_noun_phrase = key == "token"
@@ -3508,6 +3541,9 @@ mod tests {
             "Plan API key replacement",
             "Document API key renewal",
             "Explain API key expiration",
+            "API key rotation schedule",
+            "API key replacement for staging",
+            "API key rotation checklist for an expired key",
         ] {
             let input = json!({"title": title, "onlyIfProvisional": true, "idempotencyKey": "initial-title"});
             assert_eq!(
@@ -3543,7 +3579,7 @@ mod tests {
     }
 
     #[test]
-    fn key_maintenance_exception_is_limited_to_task_titles() {
+    fn maintenance_prose_rejects_opaque_suffixes_in_every_declared_field() {
         for (operation, field) in [
             ("create_task", "title"),
             ("create_task", "description"),
@@ -3557,6 +3593,16 @@ mod tests {
         ] {
             for text in [
                 "API key rotation",
+                "API key rotation schedule",
+                "API key replacement for staging",
+            ] {
+                let input = json!({field: text});
+                assert_eq!(
+                    sanitize_semantic_tool_input(operation, &input).unwrap(),
+                    input
+                );
+            }
+            for text in [
                 "API key rotation opaque-credential",
                 "API key renewal checklist ABCDEFG123456789",
             ] {
