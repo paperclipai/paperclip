@@ -2631,6 +2631,148 @@ describe.sequential("issue comment reopen routes", () => {
     },
   );
 
+  it("allows a run-less service-scoped comment and charges no run budget", async () => {
+    const routerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "inbound reply routed by a service integration",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: routerAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => {
+        const allowed = input.action === "issue:comment";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
+          explanation: allowed
+            ? "Allowed by a mention-scoped issue comment grant."
+            : "Missing permission.",
+        };
+      },
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: routerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "inbound reply routed by a service integration" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    // No run exists, so nothing may be charged against a per-run counter.
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+  });
+
+  it("still denies a run-less service-scoped comment the issue authorization rejects", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "issue:comment",
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "no grant on this issue" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still rejects run-less service-scoped PATCH writes", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "cross-issue write" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("charges the run budget when a service-scoped key does send a run", async () => {
+    const routerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "routed inside a run",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: routerAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action === "issue:comment",
+        action: input.action,
+        reason: "allow_issue_mention_grant",
+        explanation: "Allowed by a mention-scoped issue comment grant.",
+      }),
+    );
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      mode: "enforce",
+      count: 1,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: routerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: "77777777-7777-4777-8777-777777777777",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "routed inside a run" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["invalid", "wrong agent", "wrong company"])(
     "rejects comment and PATCH writes with a %s run",
     async () => {

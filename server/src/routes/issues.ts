@@ -3767,6 +3767,21 @@ export function issueRoutes(
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
+    // A service-scoped key belongs to an integration that speaks for an agent
+    // but never owns a heartbeat run, so there is no run to attribute the write
+    // to and no per-run budget to charge. Failing closed here would make the
+    // mention grant and the default-open visibility rule unreachable for these
+    // callers, even though both decisions have already been made upstream by
+    // `assertAgentIssueCommentAllowed`. Let that decision stand — the same way
+    // issue creation by a run-less agent actor already does. The carve-out is
+    // deliberately comments only: `update` and `interaction_resolution` change
+    // task state, so they still require a run to attribute them to.
+    if (
+      kind === "comment" &&
+      !req.actor.runId &&
+      req.actor.keyScope?.kind === "service"
+    )
+      return true;
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
 

@@ -621,7 +621,16 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+run context fails closed before mutation. One carve-out: a `service` key scope
+marks an integration that speaks for an agent but never owns a heartbeat run —
+an inbound email router, a webhook receiver, a chat bridge. A run-less comment
+from such a key skips the run-context requirement and is decided by the normal
+issue authorization rule instead, the same way run-less issue creation already
+is. The carve-out covers comments only: issue updates and interaction
+resolutions from a `service` key still require a run. A `service` key that does
+send run context is charged the cap like any other run. The scope widens nothing
+else; board users mint these keys explicitly and each key creation is logged.
+A run may attempt at most 20 cross-issue comments, issue
 updates, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is
