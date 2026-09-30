@@ -15573,7 +15573,7 @@ describeEmbeddedPostgres("tool access service", () => {
         { actorType: "user", actorId: "board" },
       ),
     ).rejects.toMatchObject({
-      message: expect.stringContaining("Paste a new key"),
+      message: expect.stringContaining("Enter a replacement credential"),
     });
 
     const result = await service.reconnectGalleryApp(

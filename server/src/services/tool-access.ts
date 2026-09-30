@@ -13703,11 +13703,11 @@ export function toolAccessService(
         key: ref.key,
         prefix: ref.prefix,
       }));
-    const credentialFields = galleryEntry
-      ? credentialFieldsFor(
-          galleryEntry,
-          connectionMethodForConnection(galleryEntry, connection).key,
-        )
+    const galleryCredentialFields = galleryEntry
+      ? credentialFieldsFor(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
+      : [];
+    const credentialFields = galleryCredentialFields.length > 0
+      ? galleryCredentialFields
       : storedCredentialFields.length > 0 ? storedCredentialFields : [
           {
             label: "App key",

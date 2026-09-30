@@ -2469,7 +2469,7 @@ rl.on("line", (line) => {
 
   it.each(([
     "zapier", "url", "bearer", "header", "public",
-  ] as const).flatMap((kind) => (kind === "zapier" || kind === "public" ? ["setup"] : ["setup", "inline"])
+  ] as const).flatMap((kind) => (kind === "public" ? ["setup"] : ["setup", "inline"])
     .map((reconnectMode) => ({ kind, reconnectMode }))))(
     "executes $kind setup and $reconnectMode reconnect through a run-scoped gateway with canonical vault declarations",
     async ({ kind, reconnectMode }) => {
@@ -2553,15 +2553,15 @@ rl.on("line", (line) => {
             .where(eq(connectionGrants.id, grant!.id));
           const freshValue = "reconnected-fixture";
           if (reconnectMode === "inline") {
-            if (kind === "url") {
+            if (kind === "url" || kind === "zapier") {
               await expect(service.reconnectGalleryApp(connection!.id, company.id, {
                 credentialValues: { "remote.url": "https://8.8.8.8/different-endpoint?token=rejected-fixture" },
               }, { actorType: "user", actorId: "alice" }))
                 .rejects.toMatchObject({ details: { code: "mcp_remote_url_credential_mismatch" } });
             }
-            const configPath = kind === "url" ? "remote.url" : kind === "header" ? "headers.X-Api-Key" : "credentials.authorization";
+            const configPath = kind === "url" || kind === "zapier" ? "remote.url" : kind === "header" ? "headers.X-Api-Key" : "credentials.authorization";
             const reconnected = await service.reconnectGalleryApp(connection!.id, company.id, {
-              credentialValues: { [configPath]: kind === "url" ? secretUrl.replace("fixture-canary", freshValue) : freshValue },
+              credentialValues: { [configPath]: kind === "url" || kind === "zapier" ? secretUrl.replace("fixture-canary", freshValue) : freshValue },
             }, { actorType: "user", actorId: "alice" });
             expect(reconnected.connection.id).toBe(connection!.id);
             expect(reconnected.connection.healthStatus).toBe("ok");
