@@ -2467,9 +2467,12 @@ rl.on("line", (line) => {
     }
   });
 
-  it.each(["zapier", "url", "bearer", "header", "public"] as const)(
-    "executes %s setup through a run-scoped gateway with canonical vault declarations",
-    async (kind) => {
+  it.each(([
+    "zapier", "url", "bearer", "header", "public",
+  ] as const).flatMap((kind) => (kind === "zapier" || kind === "public" ? ["setup"] : ["setup", "inline"])
+    .map((reconnectMode) => ({ kind, reconnectMode }))))(
+    "executes $kind setup and $reconnectMode reconnect through a run-scoped gateway with canonical vault declarations",
+    async ({ kind, reconnectMode }) => {
       for (const grantKind of ["user", "organization"] as const) {
         const company = await createCompany(db);
         const agent = await createAgent(db, company.id);
@@ -2549,16 +2552,31 @@ rl.on("line", (line) => {
           await db.update(connectionGrants).set({ updatedAt: sql`'2026-09-30T12:00:00.123456Z'::timestamptz` })
             .where(eq(connectionGrants.id, grant!.id));
           const freshValue = "reconnected-fixture";
-          const reconnected = await service.connectGalleryApp(company.id, {
-            ...setupInput, reconnectConnectionId: connection!.id,
-            ...(kind === "zapier" || kind === "url" ? { link: secretUrl.replace("fixture-canary", freshValue) }
-              : { credentialValues: { [kind === "header" ? "headers.X-Api-Key" : "credentials.authorization"]: freshValue } }),
-          }, { actorType: "user", actorId: "alice" });
-          expect(reconnected.connectionId).toBe(connection!.id);
-          await service.finishGalleryAppConnection(company.id, reconnected.connectionId, {
-            enabledCatalogEntryIds: reconnected.catalog.map((entry) => entry.id),
-            askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] }, preserveExistingAccess: true,
-          }, { actorType: "user", actorId: "alice" });
+          if (reconnectMode === "inline") {
+            if (kind === "url") {
+              await expect(service.reconnectGalleryApp(connection!.id, company.id, {
+                credentialValues: { "remote.url": "https://8.8.8.8/different-endpoint?token=rejected-fixture" },
+              }, { actorType: "user", actorId: "alice" }))
+                .rejects.toMatchObject({ details: { code: "mcp_remote_url_credential_mismatch" } });
+            }
+            const configPath = kind === "url" ? "remote.url" : kind === "header" ? "headers.X-Api-Key" : "credentials.authorization";
+            const reconnected = await service.reconnectGalleryApp(connection!.id, company.id, {
+              credentialValues: { [configPath]: kind === "url" ? secretUrl.replace("fixture-canary", freshValue) : freshValue },
+            }, { actorType: "user", actorId: "alice" });
+            expect(reconnected.connection.id).toBe(connection!.id);
+            expect(reconnected.connection.healthStatus).toBe("ok");
+          } else {
+            const reconnected = await service.connectGalleryApp(company.id, {
+              ...setupInput, reconnectConnectionId: connection!.id,
+              ...(kind === "zapier" || kind === "url" ? { link: secretUrl.replace("fixture-canary", freshValue) }
+                : { credentialValues: { [kind === "header" ? "headers.X-Api-Key" : "credentials.authorization"]: freshValue } }),
+            }, { actorType: "user", actorId: "alice" });
+            expect(reconnected.connectionId).toBe(connection!.id);
+            await service.finishGalleryAppConnection(company.id, reconnected.connectionId, {
+              enabledCatalogEntryIds: reconnected.catalog.map((entry) => entry.id),
+              askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] }, preserveExistingAccess: true,
+            }, { actorType: "user", actorId: "alice" });
+          }
           const [restoredGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
           expect(restoredGrant).toMatchObject({ id: grant!.id, kind: "user", subjectUserId: "alice", status: "active" });
           activeSecretId = restoredGrant!.credentialSecretRefs[0]!.secretId;

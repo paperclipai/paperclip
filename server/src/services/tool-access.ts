@@ -13664,12 +13664,23 @@ export function toolAccessService(
     const galleryEntry = sourceTemplateKey
       ? getConnectableAppDefinition(sourceTemplateKey)
       : null;
+    const storedCredentialFields = connection.credentialRefs
+      .filter((ref) => ref.placement === "header" || ref.placement === "url")
+      .map((ref) => ({
+        label: ref.placement === "url" ? "MCP server URL" : ref.prefix === "Bearer " ? "App key" : ref.key ?? ref.name,
+        configPath: credentialRefConfigPath(ref),
+        helpUrl: "",
+        required: false,
+        placement: ref.placement,
+        key: ref.key,
+        prefix: ref.prefix,
+      }));
     const credentialFields = galleryEntry
       ? credentialFieldsFor(
           galleryEntry,
           connectionMethodForConnection(galleryEntry, connection).key,
         )
-      : [
+      : storedCredentialFields.length > 0 ? storedCredentialFields : [
           {
             label: "App key",
             configPath: "credentials.authorization",
@@ -13686,7 +13697,7 @@ export function toolAccessService(
         (input.credentialValues[field.configPath]?.trim().length ?? 0) > 0,
     );
     if (providedFields.length === 0)
-      throw badRequest("Paste a new key to reconnect this app");
+      throw badRequest("Enter a replacement credential to reconnect this app");
 
     const personalIdentity = await fixedPersonalIdentityForReconnect(
       connection,
@@ -13704,6 +13715,11 @@ export function toolAccessService(
     const updated = await db.transaction(async (tx) => {
       for (const field of providedFields) {
         const value = input.credentialValues[field.configPath]!.trim();
+        if (field.placement === "url" && !remoteUrlCredentialMatchesPublicUrl(String(connection.config.url ?? ""), value)) {
+          throw badRequest("The replacement server URL must use the same endpoint as this connection.", {
+            code: "mcp_remote_url_credential_mismatch",
+          });
+        }
         const existing = credentialSecretRefs.find(
           (ref) => ref.configPath === field.configPath,
         );
@@ -13717,17 +13733,17 @@ export function toolAccessService(
         const refIndex = credentialSecretRefs.findIndex((ref) => ref.configPath === field.configPath);
         if (refIndex >= 0) credentialSecretRefs[refIndex] = nextRef;
         else credentialSecretRefs.push(nextRef);
-        if (field.placement === "header" && field.key) {
+        if ((field.placement === "header" && field.key) || field.placement === "url") {
           const nextCredentialRef = {
             name: field.configPath,
             secretId: secret.id,
             version: "latest",
-            placement: "header",
-            key: field.key,
+            placement: field.placement,
+            key: field.key ?? "url",
             prefix: field.prefix ?? null,
           } satisfies McpConnectionCredentialRef;
           const existingCredentialRefIndex = credentialRefs.findIndex(
-            (ref) => ref.name === field.configPath,
+            (ref) => credentialRefConfigPath(ref) === field.configPath,
           );
           if (existingCredentialRefIndex >= 0)
             credentialRefs[existingCredentialRefIndex] = nextCredentialRef;

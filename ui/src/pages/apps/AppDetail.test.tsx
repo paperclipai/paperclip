@@ -28,6 +28,7 @@ const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const checkConnectionHealthMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
+const reconnectConnectionMock = vi.hoisted(() => vi.fn());
 const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const revokeConnectionGrantMock = vi.hoisted(() => vi.fn());
 const createConnectionGrantDelegationMock = vi.hoisted(() => vi.fn());
@@ -87,7 +88,7 @@ vi.mock("@/api/tools", () => ({
       replaceConnectionGrantMembersMock(connectionId, grantId, memberUserIds),
     startPersonalAuthorization: (companyId: string, connectionId: string, input: unknown) =>
       startPersonalAuthorizationMock(companyId, connectionId, input),
-    reconnectConnection: vi.fn(),
+    reconnectConnection: (id: string, values: unknown) => reconnectConnectionMock(id, values),
   },
 }));
 
@@ -1189,6 +1190,31 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("This app needs reconnecting");
     expect(container.textContent).toContain("Token expired.");
     expect(container.textContent).toContain("Which agents can use this connection?");
+  });
+
+  it.each([
+    { name: "remote.url", placement: "url", key: "url", prefix: null, label: "MCP server URL", value: "https://example.com/mcp?token=fresh", path: "remote.url" },
+    { name: "headers.X-Api-Key", placement: "header", key: "X-Api-Key", prefix: null, label: "X-Api-Key", value: "fresh-key", path: "headers.X-Api-Key" },
+    { name: "authorization", placement: "header", key: "Authorization", prefix: "Bearer ", label: "App key", value: "fresh-token", path: "credentials.authorization" },
+  ])("reconnects a generic $label using its stored credential placement", async (fixture) => {
+    listGalleryMock.mockResolvedValue({ apps: [] });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "api_key",
+      healthStatus: "missing_secret",
+      credentialRefs: [{ ...fixture, secretId: "old-secret", version: "latest" }],
+    }));
+    reconnectConnectionMock.mockResolvedValue({ connection: connection({ healthStatus: "ok" }) });
+    await renderAppDetail();
+
+    const field = container.querySelector<HTMLInputElement>(`input[aria-label="${fixture.label}"]`);
+    expect(field).not.toBeNull();
+    await act(() => setInputValue(field!, fixture.value));
+    await act(() => findButton("Check & reconnect")!.click());
+    await flushReact();
+
+    expect(reconnectConnectionMock).toHaveBeenCalledWith("conn-1", { [fixture.path]: fixture.value });
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Reconnected" }));
   });
 
   it.each(["permissions", "review"])("offers a supported replacement for an obsolete Anthropic connection on %s", async (tab) => {

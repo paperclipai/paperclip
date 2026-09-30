@@ -220,6 +220,13 @@ export function credentialConfigPath(field: FieldDef, method?: ConnectionMethodD
   return `credentials.${field.key}`;
 }
 
+/** Older credential references used bare names; current references use paths. */
+export function connectionCredentialConfigPath(ref: { name: string }): string {
+  return /^(credentials|headers|oauth|remote)\./.test(ref.name)
+    ? ref.name
+    : `credentials.${ref.name}`;
+}
+
 export function resolveConnectionMethodServerUrl(
   method: ConnectionMethodDef,
   configValues: Record<string, string | boolean>,

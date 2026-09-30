@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { companySecrets, companySecretProposals, managedAgentProfiles, routineTriggers, userSecretDefinitions, type connectionGrants, type toolConnections } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
+import { connectionCredentialConfigPath } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
+
+export { connectionCredentialConfigPath } from "@paperclipai/shared";
 
 type CredentialDb = Parameters<typeof secretService>[0];
 type SecretActor = Parameters<ReturnType<typeof secretService>["create"]>[2];
@@ -20,13 +23,6 @@ export async function connectionSecretsUsedByOtherConsumers(db: CredentialDb, se
     .from(companySecretProposals).where(or(inArray(companySecretProposals.secretId, secretIds), inArray(companySecretProposals.createdSecretId, secretIds)));
   return new Set([...profiles, ...triggers, ...proposals, ...proposals.map((row) => ({ secretId: row.createdSecretId }))]
     .flatMap((row) => row.secretId ? [row.secretId] : []));
-}
-
-/** Names supplied by older API clients may be bare; current names are paths. */
-export function connectionCredentialConfigPath(ref: { name: string }): string {
-  return /^(credentials|headers|oauth|remote)\./.test(ref.name)
-    ? ref.name
-    : `credentials.${ref.name}`;
 }
 
 export function connectionGrantCredentialRef(

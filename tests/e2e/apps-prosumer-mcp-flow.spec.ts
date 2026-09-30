@@ -183,9 +183,10 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
 
-    // The new connection should show up on /apps/connections.
-    await gotoApps(page, seed.prefix);
+    // Return through the UI so a page reload cannot hide a stale catalog cache.
+    await page.getByRole("button", { name: "View connection" }).click();
     await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: `${new URL(mock.url).host} for the organization`, exact: true })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
   });
 
@@ -244,7 +245,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
         expect(repatch.ok(), `patch url failed ${repatch.status()}: ${await repatch.text()}`).toBe(true);
 
         await page.reload();
-        await page.getByRole("textbox", { name: "App key", exact: true }).fill("fresh-key");
+        await page.getByLabel("App key", { exact: true }).fill("fresh-key");
         await page.getByRole("button", { name: "Check & reconnect", exact: true }).click();
         await expect(page.getByText("Reconnected", { exact: true })).toBeVisible();
         await expect(page.getByRole("heading", { name: "This app needs reconnecting" })).toHaveCount(0);

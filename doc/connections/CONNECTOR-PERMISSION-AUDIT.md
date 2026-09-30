@@ -136,6 +136,14 @@ errors, and Cancel attempting to save an invalid Zapier URL. The browser
 reconnect regression now performs the replacement through the form and checks
 that the stale warning disappears.
 
+A second personal connection used a secret URL. After reproducing its legacy
+ownership failure, the browser could replace the URL and create/read back a
+widget. Generic reconnect now derives URL/header fields from the stored
+credential placement instead of assuming a bearer key, and rejects replacement
+URLs for a different public endpoint. A new public, organization-wide connection
+also appeared immediately when returning to Browse, without a page reload.
+The walkthrough fixed setup cache invalidation and a cramped reconnect banner.
+
 Zapier's URL validation and cancellation were exercised, but a live Zapier
 connection was not completed. Gmail stopped at instance enrollment. Neither
 journey establishes provider-account consent or live provider read/write proof.
