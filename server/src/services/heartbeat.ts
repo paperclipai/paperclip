@@ -19878,11 +19878,18 @@ export function heartbeatService(
     }
   }
 
-  // A 4xx from claimQueuedRun (an unverifiable interrupt receipt, an owner that
-  // cannot be resolved) is decided by the run's own rows, so it repeats on every
-  // recovery pass and every restart. 409s can be races and keep propagating.
+  // A 403 from claimQueuedRun comes from the run's own persisted identity
+  // (an unverifiable interrupt receipt, a manual wake with no user). Those rows
+  // do not change, so the claim fails the same way on every pass and restart.
   function isPermanentClaimRejection(err: unknown): err is HttpError {
-    return err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 409;
+    return err instanceof HttpError && err.status === 403;
+  }
+
+  // Other 4xx rejections can clear later (a responsible user gets assigned, a
+  // conflicting claim finishes). Keep the run queued, but do not let it stop
+  // the rest of the queue or startup recovery.
+  function isDeferrableClaimRejection(err: unknown): err is HttpError {
+    return err instanceof HttpError && err.status >= 400 && err.status < 500;
   }
 
   // Settle runs that can never be claimed. Letting the error escape stalls the
@@ -20031,8 +20038,15 @@ export function heartbeatService(
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents);
         } catch (err) {
-          if (!isPermanentClaimRejection(err)) throw err;
-          rejectedClaims.push({ run: queuedRun, err });
+          if (isPermanentClaimRejection(err)) {
+            rejectedClaims.push({ run: queuedRun, err });
+            continue;
+          }
+          if (!isDeferrableClaimRejection(err)) throw err;
+          logger.warn(
+            { err, runId: queuedRun.id, agentId: queuedRun.agentId, companyId: queuedRun.companyId },
+            "queued heartbeat run claim was rejected; leaving it queued for the next recovery pass",
+          );
           continue;
         }
         if (claimed) claimedRuns.push(claimed);

@@ -1,19 +1,42 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
   companies,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
-  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { runningProcesses } from "../adapters/index.ts";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Queued-run claim isolation test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -27,19 +50,20 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-queued-run-claim-isolation-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(agents);
-    await db.delete(companies);
+    await heartbeat.drainActiveRunExecutions();
+    mockAdapterExecute.mockClear();
+    runningProcesses.clear();
+    // Executed runs write to many company-scoped tables; clear them all.
+    await db.execute(sql`truncate table ${companies} cascade`);
   });
 
   afterAll(async () => {
@@ -71,6 +95,7 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
           enabled: true,
           intervalSec: 60,
           wakeOnDemand: true,
+          maxConcurrentRuns: 1,
         },
       },
       permissions: {},
@@ -79,9 +104,12 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     return { companyId, agentId };
   }
 
-  // A queued-comment interrupt wake whose receipt cannot be verified. The run
-  // identity check rejects it with a 403 every time the run is claimed.
-  async function insertUnverifiableInterruptRun(companyId: string, agentId: string) {
+  async function insertQueuedRun(
+    companyId: string,
+    agentId: string,
+    wake: Partial<typeof agentWakeupRequests.$inferInsert>,
+    createdAt: Date,
+  ) {
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
 
@@ -91,12 +119,9 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
       agentId,
       source: "on_demand",
       triggerDetail: "manual",
-      reason: "issue_commented",
       status: "queued",
-      idempotencyKey: `queued-comment-interrupt:${randomUUID()}`,
-      requestedByActorType: "user",
-      requestedByActorId: "board-user",
       runId,
+      ...wake,
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -106,62 +131,115 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
       triggerDetail: "manual",
       status: "queued",
       wakeupRequestId,
+      createdAt,
     });
 
     return { runId, wakeupRequestId };
+  }
+
+  // A queued-comment interrupt wake whose receipt cannot be verified. The run
+  // identity check rejects it with a 403 every time the run is claimed.
+  function insertUnverifiableInterruptRun(companyId: string, agentId: string, createdAt = new Date(Date.now() - 60_000)) {
+    return insertQueuedRun(companyId, agentId, {
+      reason: "issue_commented",
+      idempotencyKey: `queued-comment-interrupt:${randomUUID()}`,
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+    }, createdAt);
+  }
+
+  // A system wake with no issue in a company without members. Its responsible
+  // user cannot be resolved yet (422), but a user added later would fix that.
+  function insertUnresolvableOwnerRun(companyId: string, agentId: string, createdAt = new Date(Date.now() - 60_000)) {
+    return insertQueuedRun(companyId, agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_test",
+    }, createdAt);
+  }
+
+  // A manual wake from a user. It resolves its identity from the receipt, so it
+  // can always be claimed.
+  function insertClaimableRun(companyId: string, agentId: string, createdAt = new Date()) {
+    return insertQueuedRun(companyId, agentId, {
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      payload: { manualUserWake: true },
+    }, createdAt);
+  }
+
+  async function runStatus(runId: string) {
+    return db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.id} = ${runId}`)
+      .then((rows) => rows[0] ?? null);
   }
 
   it("cancels a queued run whose claim is rejected instead of failing recovery", async () => {
     const { companyId, agentId } = await insertAgent();
     const { runId, wakeupRequestId } = await insertUnverifiableInterruptRun(companyId, agentId);
 
-    const heartbeat = heartbeatService(db);
     await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
 
-    const run = await db
-      .select({
-        status: heartbeatRuns.status,
-        errorCode: heartbeatRuns.errorCode,
-        error: heartbeatRuns.error,
-      })
-      .from(heartbeatRuns)
-      .then((rows) => rows[0] ?? null);
-    expect(run).toMatchObject({
+    expect(await runStatus(runId)).toMatchObject({
       status: "cancelled",
       errorCode: "queued_run_claim_rejected",
       error: "Cancelled because the queued run cannot be claimed: Queued-message interrupt authority is unavailable",
     });
-
     const wakeup = await db
-      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .select({ status: agentWakeupRequests.status })
       .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.id} = ${wakeupRequestId}`)
       .then((rows) => rows[0] ?? null);
-    expect(wakeup).toMatchObject({ id: wakeupRequestId, status: "cancelled" });
+    expect(wakeup).toMatchObject({ status: "cancelled" });
 
     // Recovery runs again on the next cycle and on every restart. The run must
     // stay settled instead of failing the claim loop again.
     await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
-    const rerun = await db
-      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .then((rows) => rows[0] ?? null);
-    expect(rerun).toMatchObject({ id: runId, status: "cancelled" });
+    expect(await runStatus(runId)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("claims the agent's next queued run after a rejected one", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const { runId: rejectedRunId } = await insertUnverifiableInterruptRun(companyId, agentId);
+    const { runId: healthyRunId } = await insertClaimableRun(companyId, agentId);
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await runStatus(rejectedRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "queued_run_claim_rejected",
+    });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+    expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("keeps a recoverable rejection queued without blocking the runs behind it", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const { runId: deferredRunId } = await insertUnresolvableOwnerRun(companyId, agentId);
+    const { runId: healthyRunId } = await insertClaimableRun(companyId, agentId);
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await runStatus(deferredRunId)).toMatchObject({ status: "queued", errorCode: null });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+    expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
 
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {
     const first = await insertAgent();
     const second = await insertAgent();
-    await insertUnverifiableInterruptRun(first.companyId, first.agentId);
-    const { runId: secondRunId } = await insertUnverifiableInterruptRun(second.companyId, second.agentId);
+    const { runId: rejectedRunId } = await insertUnverifiableInterruptRun(first.companyId, first.agentId);
+    const { runId: healthyRunId } = await insertClaimableRun(second.companyId, second.agentId);
 
-    const heartbeat = heartbeatService(db);
     await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
 
-    const statuses = await db
-      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-      .from(heartbeatRuns);
-    expect(statuses).toHaveLength(2);
-    expect(statuses.every((row) => row.status === "cancelled")).toBe(true);
-    expect(statuses.map((row) => row.id)).toContain(secondRunId);
+    expect(await runStatus(rejectedRunId)).toMatchObject({ status: "cancelled" });
+    expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
 });
