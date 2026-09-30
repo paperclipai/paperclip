@@ -11,8 +11,10 @@ import {
   resolveNativeRunnerRequirement,
 } from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { shouldServeBuiltUi, type DevRunnerFileServerConfig } from "./dev-runner-ui-mode.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { readConfigFile } from "../server/src/config-file.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
   readDevServerRestartRequest,
@@ -29,6 +31,16 @@ import {
 // tsx context without requiring workspace package resolution first.
 const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
 type BindMode = (typeof BIND_MODES)[number];
+
+// The server child resolves its bind from the same instance config, so read it
+// here to decide whether the UI will be consumed by remote browsers.
+function readDevRunnerFileServerConfig(): DevRunnerFileServerConfig | null {
+  try {
+    return readConfigFile()?.server ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 let cliArgs: string[];
@@ -162,14 +174,21 @@ if (bindMode === "custom" && !bindHost) {
   process.exit(1);
 }
 
-// Managed HTTPS runtimes serve the built UI bundle: the Vite dev middleware's
-// unbundled module waterfall stalls behind the Tailscale HTTPS proxy and the
-// first page load in a fresh browser profile stays blank forever (PAP-18043).
+// The Vite dev middleware serves the UI as thousands of unbundled modules,
+// which stalls the first page load for any remote browser: managed Tailscale
+// HTTPS runtimes (PAP-18043) and non-loopback tailnet/lan binds.
+// Serve the built UI bundle instead unless the operator chose otherwise.
 const explicitUiDevMiddleware = process.env.PAPERCLIP_UI_DEV_MIDDLEWARE;
-const serveBuiltUiForManagedRuntime = managedRuntimeExposure && explicitUiDevMiddleware === undefined;
+const serveBuiltUi = shouldServeBuiltUi({
+  explicitUiDevMiddleware,
+  managedRuntimeExposure,
+  cliBindMode: bindMode,
+  cliBindHost: bindHost,
+  fileServer: readDevRunnerFileServerConfig(),
+});
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: explicitUiDevMiddleware ?? (serveBuiltUiForManagedRuntime ? "false" : "true"),
+  PAPERCLIP_UI_DEV_MIDDLEWARE: explicitUiDevMiddleware ?? (serveBuiltUi ? "false" : "true"),
 };
 
 if (mode === "dev") {
@@ -626,8 +645,8 @@ function uiBundleIsFresh(): boolean {
   return sources.every((source) => newestMtimeMs(source) <= distStat.mtimeMs);
 }
 
-async function buildUiBundleForManagedRuntime(): Promise<boolean> {
-  console.log("[paperclip] managed runtime: building the UI bundle for static serving...");
+async function buildUiBundleForRemoteUiExposure(): Promise<boolean> {
+  console.log("[paperclip] remote UI exposure: building the UI bundle for static serving...");
   const result = await runPnpm(
     ["--filter", "@paperclipai/ui", "build"],
     { stdio: "inherit" },
@@ -638,7 +657,7 @@ async function buildUiBundleForManagedRuntime(): Promise<boolean> {
   }
   if (result.code !== 0) {
     console.error(
-      "[paperclip] UI bundle build failed; falling back to the Vite dev middleware (the page may load slowly or stay blank over HTTPS)",
+      "[paperclip] UI bundle build failed; falling back to the Vite dev middleware (remote browsers may see a slow or blank page)",
     );
     return false;
   }
@@ -882,14 +901,14 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-// The managed runtime readiness window is tight, so reuse a fresh bundle
+// The remote UI exposure readiness window is tight, so reuse a fresh bundle
 // when possible and overlap a needed rebuild with the migration preflight.
 let uiBundleBuild: Promise<boolean> | null = null;
-if (serveBuiltUiForManagedRuntime) {
+if (serveBuiltUi) {
   if (uiBundleIsFresh()) {
-    console.log("[paperclip] managed runtime: reusing the up-to-date UI bundle in ui/dist");
+    console.log("[paperclip] remote UI exposure: reusing the up-to-date UI bundle in ui/dist");
   } else {
-    uiBundleBuild = buildUiBundleForManagedRuntime();
+    uiBundleBuild = buildUiBundleForRemoteUiExposure();
   }
 }
 await maybePreflightMigrations();
