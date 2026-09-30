@@ -111,8 +111,34 @@ The managed worktree has a separate instance configuration and database path.
 Local CLI provisioning was attempted with both minimal and full seed modes;
 both failed while applying the copied database's migrations because
 `tool_connections_transport_check` was missing. The development instance was
-not started. Clean fixture databases were used for the backend and Apps browser
+not started from that clone. Clean fixture databases were used for the backend and Apps browser
 checks; their success does not establish successful seeding of that local copy.
+
+### Embedded-browser acceptance
+
+On 2026-09-30, a hands-on walkthrough used the PR checkout's built UI and actual
+server, a fresh isolated database created through CLI onboarding, and a local
+HTTP MCP fixture. Starting from the sidebar's Connectors page, the operator
+selected “Just me,” entered a bearer key, and created and read back a disposable
+widget through the Permissions screen's agent test controls.
+
+After seeding the legacy ownership mismatch in that disposable connection,
+invocation and catalog refresh rejected it with `grant_credential_invalid`.
+The catalog showed “Needs attention” and offered Reconnect. Replacing the key
+through that UI preserved the connection and personal grant, created a fresh
+user-owned secret and canonical declaration, and restored writes. The legacy
+company secret retained its ownership. Separate HTTP calls through a session
+bound to a fixture agent run also completed a write and read-back.
+
+The walkthrough exposed and verified fixes for a false “Still not working”
+message after successful reconnect, incorrect action-input advice for ownership
+errors, and Cancel attempting to save an invalid Zapier URL. The browser
+reconnect regression now performs the replacement through the form and checks
+that the stale warning disappears.
+
+Zapier's URL validation and cancellation were exercised, but a live Zapier
+connection was not completed. Gmail stopped at instance enrollment. Neither
+journey establishes provider-account consent or live provider read/write proof.
 
 ### Automated verification
 

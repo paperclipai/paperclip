@@ -415,6 +415,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Step 2 of 2");
   });
 
+  it.each(["page", "dialog"] as const)("lets %s setup cancel after an invalid provider URL without trying to save it", async (host) => {
+    const onCancel = host === "dialog" ? vi.fn() : undefined;
+    connectAppMock.mockRejectedValue(new Error("That connection URL does not belong to Zapier"));
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="zapier" onCancel={onCancel} />);
+    await passAccessStep();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://wrong-provider.example/mcp"));
+    await act(async () => buttonByText("Connect")!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("That connection URL does not belong to Zapier"));
+
+    await act(async () => buttonByText("Cancel")!.click());
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    if (onCancel) expect(onCancel).toHaveBeenCalledOnce();
+    else expect(mockNavigate).toHaveBeenCalledWith("/apps");
+  });
+
   it("inline aggregator reuses an eligible account without changing its access", async () => {
     const onUseExisting = vi.fn().mockResolvedValue(undefined);
     await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="composio" requestedAgentId="agent-1" interactionId="intent-inline" existingConnections={[{ id: "existing", applicationId: "app", name: "Existing Composio", status: "active", enabled: true }]} onUseExisting={onUseExisting} />);

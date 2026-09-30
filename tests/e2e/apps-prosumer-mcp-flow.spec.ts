@@ -243,10 +243,12 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
         });
         expect(repatch.ok(), `patch url failed ${repatch.status()}: ${await repatch.text()}`).toBe(true);
 
-        const reconnect = await request.post(`/api/tool-connections/${connectionId}/reconnect`, {
-          data: { credentialValues: { "credentials.authorization": "fresh-key" } },
-        });
-        expect(reconnect.ok(), `reconnect failed ${reconnect.status()}: ${await reconnect.text()}`).toBe(true);
+        await page.reload();
+        await page.getByRole("textbox", { name: "App key", exact: true }).fill("fresh-key");
+        await page.getByRole("button", { name: "Check & reconnect", exact: true }).click();
+        await expect(page.getByText("Reconnected", { exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "This app needs reconnecting" })).toHaveCount(0);
+        await expect(page.getByText("Still not working", { exact: true })).toHaveCount(0);
 
         const after = await request.get(`/api/tool-connections/${connectionId}`);
         const afterBody = await after.json();

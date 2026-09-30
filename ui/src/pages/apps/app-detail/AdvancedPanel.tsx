@@ -307,7 +307,7 @@ function ReconnectForm({
     },
     onSuccess: (result) => {
       const healthy =
-        result.connection.healthStatus === "healthy" || result.connection.healthStatus === "unknown";
+        result.connection.healthStatus === "ok" || result.connection.healthStatus === "healthy" || result.connection.healthStatus === "unknown";
       if (healthy) {
         pushToast({
           title: "Reconnected",
@@ -372,6 +372,7 @@ function ReconnectForm({
       ) : (
         <Input
           type="password"
+          aria-label="App key"
           autoComplete="off"
           value={single}
           onChange={(e) => setSingle(e.target.value)}
