@@ -1264,9 +1264,26 @@ export function createToolGatewayService(
     );
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
+        // Keep names well under the 128-character tool-name limit that model
+        // providers enforce once a client adds its own prefix (Claude Code adds
+        // `mcp__<server>__`). A gallery key such as `app-gallery:notion:<uuid>`
+        // carries a full UUID that adds nothing next to the connection id.
         const applicationKey = application.applicationKey ?? null;
-        const connectionNamespace = `${slugSegment(applicationKey ?? connection.name ?? application.name, "mcp")}-${shortStableId(connection.id)}`;
-        const toolSlug = slugSegment(catalogEntry.toolName, "tool");
+        const galleryAppKey = applicationKey?.startsWith("app-gallery:")
+          ? applicationKey.replace(/^app-gallery:([a-z0-9-]+)(?::.*)?$/i, "$1")
+          : applicationKey;
+        const appSegment = slugSegment(
+          galleryAppKey && galleryAppKey !== "link"
+            ? galleryAppKey
+            : (connection.name ?? application.name ?? galleryAppKey),
+          "mcp",
+        )
+          .slice(0, 24)
+          .replace(/-+$/, "");
+        const connectionNamespace = `${appSegment}-${shortStableId(connection.id)}`;
+        const toolSlug = slugSegment(catalogEntry.toolName, "tool")
+          .slice(0, 48)
+          .replace(/-+$/, "");
         return `mcp.${connectionNamespace}:${toolSlug}`;
       },
     );
