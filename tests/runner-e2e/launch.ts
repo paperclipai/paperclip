@@ -1,3 +1,4 @@
+import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
@@ -61,11 +62,8 @@ import {
 } from "./result-exit-guard.js";
 import {
   observeDescendantProcessTree,
-  refreshContinuouslyLiveProcessGroups,
-  revalidateObservedProcessGroups,
-  safeProcessGroupTerminationOrder,
   type ObservedProcessGroup,
-  type ProcessObservation,
+  readProcessTable,
 } from "./process-tree.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -75,19 +73,6 @@ const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
 const completedResultExitGraceMs = 120_000;
-const diagnosticProcessKinds = new Set([
-  "bash",
-  "chrome",
-  "codex",
-  "google-chrome",
-  "node",
-  "paperclip-runnerd",
-  "playwright",
-  "pnpm",
-  "postgres",
-  "sh",
-  "tsx",
-]);
 let cancelled = false;
 
 function cleanId(value: string) {
@@ -159,72 +144,6 @@ function wait(milliseconds: number) {
 interface ProcessTreeDiagnostic {
   summary: string;
   groups: ObservedProcessGroup[];
-}
-
-function observedGroupsSelectedForTermination(
-  groups: readonly ObservedProcessGroup[],
-  processGroupIds: readonly number[],
-) {
-  const selected = new Set(processGroupIds);
-  return groups.filter((group) => selected.has(group.processGroupId));
-}
-
-async function readProcessTable(): Promise<ProcessObservation[] | null> {
-  if (process.platform === "win32") {
-    return null;
-  }
-  return await new Promise<ProcessObservation[] | null>((resolve) => {
-    const inspector = spawn(
-      "ps",
-      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,comm="],
-      {
-        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-    );
-    let output = "";
-    let settled = false;
-    const finish = (value: ProcessObservation[] | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(inspectionTimeout);
-      resolve(value);
-    };
-    const inspectionTimeout = setTimeout(() => {
-      inspector.kill("SIGKILL");
-      finish(null);
-    }, 5_000);
-    inspectionTimeout.unref();
-    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
-      output = `${output}${chunk}`.slice(-1024 * 1024);
-    });
-    inspector.once("error", () => finish(null));
-    inspector.once("close", () => {
-      const observations = output
-        .split(/\r?\n/)
-        .map((line) =>
-          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/.exec(
-            line,
-          ),
-        )
-        .filter((match): match is RegExpExecArray => match !== null)
-        .map((match): ProcessObservation => {
-          // A target process can choose its own argv and process name. Emit a
-          // fixed category instead of target-controlled text so diagnostics
-          // can never turn that metadata into a secret-exfiltration channel.
-          const command = path.basename(match[5]!);
-          const kind = diagnosticProcessKinds.has(command) ? command : "other";
-          return {
-            pid: Number(match[1]),
-            parentPid: Number(match[2]),
-            processGroupId: Number(match[3]),
-            started: match[4]!,
-            kind,
-          };
-        });
-      finish(observations);
-    });
-  }).catch(() => null);
 }
 
 async function processTreeDiagnostic(
@@ -353,6 +272,7 @@ async function runProcess(
   });
   if (!child.pid) throw new Error("Failed to start Playwright");
   activeProcessGroups.add(child.pid);
+  const processOwner = createProcessTreeOwner(child);
   let outputTail = "";
   const recordOutput = (chunk: Buffer, destination: NodeJS.WriteStream) => {
     destination.write(chunk);
@@ -370,90 +290,14 @@ async function runProcess(
   let childSettled = false;
   let postResultStallError: string | null = null;
   let boundedCleanup: Promise<string | null> | undefined;
-  const forceStopDirectChild = () => {
-    if (!childSettled && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-    }
-  };
-  const stopChildTree = (diagnostic?: ProcessTreeDiagnostic) => {
+  let cleanupSettled!: () => void;
+  const cleanupFinished = new Promise<number>(resolve => { cleanupSettled = () => resolve(1); });
+  const stopChildTree = (_diagnostic?: ProcessTreeDiagnostic) => {
     if (boundedCleanup) return;
-    const rootProcessGroupId = child.pid!;
-    boundedCleanup = (async () => {
-      const snapshot = diagnostic ?? (await processTreeDiagnostic(child.pid!));
-      const validationTable = await readProcessTable();
-      const currentProcessGroupId = validationTable
-        ? (validationTable.find((candidate) => candidate.pid === process.pid)
-            ?.processGroupId ?? null)
-        : null;
-      const observedGroups = validationTable
-        ? revalidateObservedProcessGroups(snapshot.groups, validationTable)
-        : [];
-      const terminationOrder = safeProcessGroupTerminationOrder({
-        rootProcessGroupId,
-        currentProcessGroupId,
-        groups: observedGroups,
-      });
-      const verifiedGroups = observedGroupsSelectedForTermination(
-        observedGroups,
-        terminationOrder,
-      );
-      if (verifiedGroups.length === 0) {
-        forceStopDirectChild();
-        return "Could not revalidate an owned process group before cleanup";
-      }
-      for (const processGroupId of terminationOrder) {
-        stopProcessGroup(processGroupId, "SIGTERM");
-      }
-
-      let remainingGroups = verifiedGroups;
-      const gracefulDeadline = Date.now() + 5_000;
-      while (remainingGroups.length > 0 && Date.now() < gracefulDeadline) {
-        const table = await readProcessTable();
-        if (table) {
-          remainingGroups = refreshContinuouslyLiveProcessGroups(
-            remainingGroups,
-            table,
-          );
-        }
-        if (remainingGroups.length > 0) await wait(50);
-      }
-      const remainingGroupIds = new Set(
-        remainingGroups.map((group) => group.processGroupId),
-      );
-      const forcedOrder = safeProcessGroupTerminationOrder({
-        rootProcessGroupId,
-        currentProcessGroupId,
-        groups: remainingGroups,
-      }).filter((processGroupId) => remainingGroupIds.has(processGroupId));
-      for (const processGroupId of forcedOrder) {
-        stopProcessGroup(processGroupId, "SIGKILL");
-      }
-
-      const forcedDeadline = Date.now() + 5_000;
-      let forcedVerificationUnavailable = false;
-      while (Date.now() < forcedDeadline) {
-        const table = await readProcessTable();
-        if (!table) {
-          forcedVerificationUnavailable = true;
-          await wait(50);
-          continue;
-        }
-        forcedVerificationUnavailable = false;
-        remainingGroups = refreshContinuouslyLiveProcessGroups(
-          remainingGroups,
-          table,
-        );
-        if (remainingGroups.length === 0) return null;
-        await wait(50);
-      }
-      if (forcedVerificationUnavailable) {
-        return "Could not verify descendant process exit after SIGKILL";
-      }
-      return `Verified descendant process groups ${remainingGroups
-        .map((group) => group.processGroupId)
-        .join(",")} survived SIGKILL`;
-    })();
-    activeProcessCleanup.set(rootProcessGroupId, boundedCleanup);
+    boundedCleanup = stopOwnedProcessTree(child, processOwner)
+      .then(() => null, error => error instanceof Error ? error.message : String(error))
+      .finally(cleanupSettled);
+    activeProcessCleanup.set(child.pid!, boundedCleanup);
   };
   activeProcessTerminators.set(child.pid, stopChildTree);
   const resultExitGuard = createResultExitGuard({
@@ -504,7 +348,7 @@ async function runProcess(
         }, timeoutMs);
   timer?.unref();
   let spawnError: string | null = null;
-  const exitCode = await new Promise<number>((resolve, reject) => {
+  const childExit = new Promise<number>((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => {
       childSettled = true;
@@ -515,13 +359,21 @@ async function runProcess(
     spawnError = error instanceof Error ? error.message : String(error);
     return 1;
   });
+  const exitCode = await Promise.race([childExit, cleanupFinished]);
   if (timer) clearTimeout(timer);
   if (completionPoll) clearInterval(completionPoll);
-  const processCleanupError = child.pid
-    ? await (boundedCleanup ??
-        activeProcessCleanup.get(child.pid) ??
-        terminateProcessGroup(child.pid))
-    : null;
+  // Even a successful launcher exit can leave an already-observed detached
+  // server behind. Retire that retained tree, never only the root group.
+  stopChildTree();
+  const processCleanupError = await boundedCleanup!;
+  processOwner.stopObserving();
+  // Even a failed direct-child kill must not hold cancellation forever or let
+  // inherited pipes write into an ended log. The cleanup error remains fatal.
+  if (processCleanupError) {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    if (child.exitCode === null && child.signalCode === null) child.unref();
+  }
   if (child.pid) {
     activeProcessGroups.delete(child.pid);
     activeProcessCleanup.delete(child.pid);
@@ -627,6 +479,7 @@ async function runAttempt(input: {
   const publishedResults: RunnerE2EResult[] = [];
   const publishedResultPaths = new Map<string, string>();
   let attemptSecrets: string[] = [];
+  let processCleanupFailed = false;
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
     const workspace = path.join(temporaryRoot, "workspace");
@@ -738,6 +591,7 @@ async function runAttempt(input: {
       ),
       options.ui || options.debug,
     );
+    processCleanupFailed = processResult.processCleanupError !== null;
     const processFailure = processResult.spawnError
       ? `Playwright failed to start: ${processResult.spawnError}`
       : processResult.timedOut
@@ -939,9 +793,11 @@ async function runAttempt(input: {
     }
     return [...publishedResults];
   } finally {
-    reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
+    if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
-    if (
+    if (processCleanupFailed) {
+      cleanupError = new Error(`Preserving temporary state after incomplete process cleanup: ${temporaryRoot}`);
+    } else if (
       temporaryRoot.startsWith(`${os.tmpdir()}${path.sep}paperclip-runner-e2e-`)
     ) {
       for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt += 1) {

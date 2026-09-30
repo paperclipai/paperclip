@@ -1088,7 +1088,26 @@ lockfile from its own trusted checkout, never from the tested branch.
 
 The restart supervisor starts Paperclip with the TypeScript loader in the same
 Node process it owns. A forced stop therefore cannot leave an old controller
-alive to stop the embedded database after the replacement starts.
+alive to stop the embedded database after the replacement starts. On Unix, the
+server has its own process group so Playwright's wrapper-group shutdown cannot
+signal it independently. Signal handling, restart cleanup, and final cleanup
+share one stop operation per server: one graceful signal, a 30-second wait, then
+SIGKILL to revalidated owned groups and a 5-second exit wait if needed. The
+wrapper retains observed descendants across an early server exit and checks
+PID/start identity before group signals. A failed cleanup can resume its saved
+phase without another graceful signal. Windows retains direct-child signaling.
+This prevents a second graceful signal from interrupting asynchronous warm-session
+retirement.
+
+Launcher cancellation first signals its outer group, so Playwright and the wrapper
+own graceful server shutdown. It allows 45 seconds for that chain before bounded
+5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
+same retained descendant inventory. Zombies count as stopped; an unavailable or
+uncertain identity inspection triggers bounded direct-child-only retirement and
+still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
+owners are selected from the same validated table used for delivery; ESRCH allows
+selection of a surviving owner, while a delivered signal covers that owner's
+existing descendants through the grace window even if the owner exits first.
 
 Everyday restart and Stop scenarios exempt only their recorded cancellation,
 graceful-shutdown interruption, or process-loss outcome. A later adapter error
