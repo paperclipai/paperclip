@@ -5,6 +5,9 @@ import { toolAccessService } from './tool-access.js';
 import { resolveGitHubOperationCredentials } from './github-operation-credentials.js';
 import type { GitHubRead } from './github-skill-source.js';
 import { openGitSkillSnapshot } from './skill-source-git-snapshot.js';
+import { createSkillSourceScanLimiter } from './skill-source-scan-limit.js';
+
+const limitScans = createSkillSourceScanLimiter();
 
 type Authorization = { connectionId: string | null; grantId?: string | null };
 function providerStatus(error: unknown): number | undefined {
@@ -102,12 +105,22 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       return response.json();
     }, signal);
   }) as GitHubRead;
-  read.openSnapshot = (input, options = {}) => authorized(async (values, authorization) => {
-    const header = values.Authorization ?? values.authorization;
-    if (header && !/^(Bearer|token)\s+\S+$/i.test(header)) throw unprocessable('Reconnect GitHub to download repositories.');
-    const token = header?.replace(/^(Bearer|token)\s+/i, '') ?? '';
-    return openGitSkillSnapshot({ ...input, token, cacheScope: JSON.stringify([companyId, actor.type, actor.type === 'agent' ? actor.agentId : actor.userId, actor.type === 'agent' ? actor.runId : actor.source, authorization.connectionId, authorization.grantId]) }, options);
-  }, options.signal);
+  read.openSnapshot = async (input, options = {}) => {
+    const callerId = actor.type === 'agent' ? `agent:${actor.agentId}` : `board:${actor.userId ?? actor.source}`;
+    const lease = limitScans(companyId, callerId);
+    try {
+      const snapshot = await authorized(async (values, authorization) => {
+        const header = values.Authorization ?? values.authorization;
+        if (header && !/^(Bearer|token)\s+\S+$/i.test(header)) throw unprocessable('Reconnect GitHub to download repositories.');
+        const token = header?.replace(/^(Bearer|token)\s+/i, '') ?? '';
+        return openGitSkillSnapshot({ ...input, token, cacheScope: JSON.stringify([companyId, actor.type, actor.type === 'agent' ? actor.agentId : actor.userId, actor.type === 'agent' ? actor.runId : actor.source, authorization.connectionId, authorization.grantId]) }, { ...options, beforeDownload: lease.beforeDownload });
+      }, options.signal);
+      return { ...snapshot, release: async () => { try { await snapshot.release(); } finally { lease.release(); } } };
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+  };
   Object.defineProperty(read, 'connectionId', { get: () => chosen?.connectionId ?? null });
   return read;
 }

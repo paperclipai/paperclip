@@ -7,6 +7,23 @@ import { skillFileBytes } from '../services/skill-snapshot.js';
 const sha = 'a'.repeat(40);
 const md = (name: string) => `---\nname: ${name}\ndescription: A useful skill\n---\nFollow these instructions.\n`;
 describe('GitHub skill repository discovery', () => {
+  it('resolves moving branches before cache lookup and reuses the same pinned commit until the branch changes', async () => {
+    const fixture = githubFixture({ 'SKILL.md': md('one') });
+    const read = vi.fn(fixture) as unknown as typeof fixture;
+    read.openSnapshot = vi.fn(fixture.openSnapshot);
+    const input = { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'feature/skills' };
+    await scanGitHubSkills(input, read);
+    await scanGitHubSkills(input, read);
+    expect(read).toHaveBeenCalledWith('/repos/acme/skills/commits/feature%2Fskills', undefined);
+    expect(read.openSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ commitSha: sha }), expect.anything());
+    const changed = 'b'.repeat(40);
+    vi.mocked(read).mockImplementation(async url => url.includes('/commits/') ? { sha: changed } : fixture(url));
+    read.openSnapshot = vi.fn(githubFixture({ 'SKILL.md': md('changed') }, {}, changed).openSnapshot);
+    const result = await scanGitHubSkills(input, read);
+    expect(read.openSnapshot).toHaveBeenCalledWith(expect.objectContaining({ commitSha: changed }), expect.anything());
+    expect(result.commitSha).toBe(changed);
+  });
+
   it.each([true, false])('bounds expanded bytes for repeated blob copies (declared sizes: %s)', async declaredSizes => {
     const bytes = Buffer.alloc(1024 * 1024);
     const fixture = githubFixture(Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`skill-${i}/SKILL.md`, bytes])));

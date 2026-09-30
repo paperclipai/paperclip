@@ -12,17 +12,35 @@ const db = {} as Db;
 beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]); });
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
+  it('shares active scan limits across connections and releases them after failures', async () => {
+    mocks.headers.mockResolvedValue({ Authorization: 'Bearer allowed' });
+    mocks.snapshot.mockRejectedValueOnce(new Error('Download failed'))
+      .mockResolvedValue({ commitSha: 'a'.repeat(40), release: async () => {} });
+    const caller = actor({ type: 'board', userId: 'scan-limits', source: 'session' });
+    const first = skillSourceGitHubReader(db, 'company', caller, 'first');
+    const second = skillSourceGitHubReader(db, 'company', caller, 'second');
+    const input = { repositoryUrl: 'https://github.com/acme/private', ref: 'main', commitSha: 'a'.repeat(40) };
+    await expect(first.openSnapshot(input)).rejects.toThrow('Could not read GitHub');
+    const snapshot = await first.openSnapshot(input);
+    await expect(second.openSnapshot(input)).rejects.toMatchObject({ status: 429 });
+    expect(mocks.snapshot).toHaveBeenCalledTimes(2);
+    await snapshot.release();
+    const retry = await second.openSnapshot(input);
+    await retry.release();
+  });
+
   it('automatically uses the active user’s connection for a pasted public URL and the Git download', async () => {
     mocks.connectionIds.mockResolvedValue(['own']);
     mocks.headers.mockResolvedValue({ Authorization: 'Bearer own-token' });
     const fetch = vi.fn().mockResolvedValue(Response.json({ id: 42 })); vi.stubGlobal('fetch', fetch);
-    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40) });
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40), release: async () => {} });
     const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null);
     await read('/repos/acme/public');
-    await read.openSnapshot({ repositoryUrl: 'https://github.com/acme/public', ref: 'main' });
+    const snapshot = await read.openSnapshot({ repositoryUrl: 'https://github.com/acme/public', ref: 'main' });
+    await snapshot.release();
     expect(new Headers(fetch.mock.calls[0][1].headers).get('authorization')).toBe('Bearer own-token');
     expect(mocks.connectionIds).toHaveBeenCalledWith('company', 'alice', false);
-    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: 'own-token', cacheScope: expect.stringContaining('alice') }), {});
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: 'own-token', cacheScope: expect.stringContaining('alice') }), { beforeDownload: expect.any(Function) });
     expect(mocks.headers).toHaveBeenCalledTimes(2);
     expect(read.connectionId).toBe('own');
   });
@@ -37,10 +55,11 @@ describe('GitHub source authorization', () => {
   });
   it('reauthorizes before serving a cached Git snapshot and never starts Git after revocation', async () => {
     mocks.headers.mockResolvedValueOnce({ Authorization: 'Bearer allowed' }).mockRejectedValueOnce(forbidden('Authorization revoked.'));
-    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40) });
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40), release: async () => {} });
     const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice' }), 'connection');
     const input = { repositoryUrl: 'https://github.com/acme/private', ref: 'main', commitSha: 'a'.repeat(40) };
-    await read.openSnapshot(input);
+    const snapshot = await read.openSnapshot(input);
+    await snapshot.release();
     await expect(read.openSnapshot(input)).rejects.toThrow('revoked');
     expect(mocks.snapshot).toHaveBeenCalledTimes(1);
   });

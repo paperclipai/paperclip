@@ -52,9 +52,14 @@ export async function scanGitHubSkills(input: { repositoryUrl: string; trackingR
   const canonical = parseSkillRepository(`https://github.com/${repo.full_name}`);
   const requestedRef = input.trackingRef || parsed.trackingRef;
   const trackingRef = !requestedRef || requestedRef === 'HEAD' ? repo.default_branch : requestedRef;
+  // Re-resolve moving branches, then use the immutable commit for caller-scoped
+  // cache lookup. Repeated discovery can reuse bytes without hiding new commits.
+  const resolved = input.commitSha ? { sha: input.commitSha }
+    : await read(`/repos/${canonical.fullName}/commits/${encodeURIComponent(trackingRef)}`) as { sha: string };
+  if (!/^[a-f0-9]{40}$/i.test(resolved.sha)) throw unprocessable('GitHub did not return an immutable commit.');
   progress.phase = 'downloading';
   await report();
-  const snapshot = await providerRead.openSnapshot({ repositoryUrl: canonical.repositoryUrl, ref: trackingRef, commitSha: input.commitSha }, {
+  const snapshot = await providerRead.openSnapshot({ repositoryUrl: canonical.repositoryUrl, ref: trackingRef, commitSha: resolved.sha }, {
     signal: options.signal,
     onDownload: async download => { progress.download = download; await report(); },
   });

@@ -167,6 +167,13 @@ directories and is limited to 100,000 paths, with paths up to 4,096 characters a
 package's contents. Importing never runs scripts, hooks, dependency installation,
 or builds.
 
+Repeated scans resolve the branch's current commit and reuse the caller's cached
+snapshot when it is unchanged. Each server process allows one active scan per
+caller and two per company. Per minute, callers can open 30 snapshots and download
+6 repositories; companies can open 60 snapshots and download 12 repositories.
+Cached scans do not consume the download quota. A limit returns a retry message;
+installed skills remain available.
+
 **Skills → Sources** shows repositories, installed skill links, and connection errors.
 Click a repository title to open it on GitHub. Its three-dot menu contains
 **Refresh**, **Select skills**, and **Disconnect source**. **Refresh** applies valid

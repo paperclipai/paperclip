@@ -17,6 +17,7 @@ export interface GitSkillSnapshot {
 export interface GitSkillSnapshotOptions {
   signal?: AbortSignal;
   onDownload?: (progress: NonNullable<SkillSourceScanProgress['download']>) => void | Promise<void>;
+  beforeDownload?: () => void;
 }
 
 const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
@@ -205,6 +206,7 @@ export async function openGitSkillSnapshot(input: { repositoryUrl: string; ref: 
   if (existing && existing.expires > Date.now()) return acquire(existing, pinnedKey!);
   for (const [key, cached] of snapshots) if (!cached.users && (cached.expires <= Date.now() || snapshots.size >= MAX_CACHED_SNAPSHOTS)) await discard(key);
   if (activeDownloads >= 2 || snapshots.size + activeDownloads >= MAX_CACHED_SNAPSHOTS) throw unprocessable('Other repositories are downloading. Try again when they finish.');
+  options.beforeDownload?.();
   activeDownloads++;
   let directory: string | undefined;
   try {

@@ -68,10 +68,12 @@ describe('Git skill snapshots', () => {
     await snapshot.release();
   });
   it('reuses the exact scanned commit for import and isolates snapshots between callers', async () => {
-    const first = await openGitSkillSnapshot(request()); await first.release();
-    const pinned = await openGitSkillSnapshot(request({ commitSha: first.commitSha }));
+    const beforeDownload = vi.fn();
+    const first = await openGitSkillSnapshot(request(), { beforeDownload }); await first.release();
+    const pinned = await openGitSkillSnapshot(request({ commitSha: first.commitSha }), { beforeDownload });
     expect(pinned.commitSha).toBe(first.commitSha); await pinned.release();
     expect(interception.commands.filter(command => command.args.includes('fetch'))).toHaveLength(1);
+    expect(beforeDownload).toHaveBeenCalledOnce();
     const other = await openGitSkillSnapshot(request({ commitSha: first.commitSha, cacheScope: 'company:bob' })); await other.release();
     expect(interception.commands.filter(command => command.args.includes('fetch'))).toHaveLength(2);
   });
