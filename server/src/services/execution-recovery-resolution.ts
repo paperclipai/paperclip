@@ -869,8 +869,18 @@ export async function settleUnrecoverableExecutions(
             !coordinator.failureDetail?.replacementDenied)
         )
           return;
+        // A submitted review has its own participant and recovery path. A
+        // terminal run from the preceding work must not turn that live stage
+        // into an "automatic recovery stopped" block.
+        const review = task.status === "in_review"
+          ? parseIssueExecutionState(task.executionState)
+          : null;
+        const activeReview = review?.status === "pending" &&
+          review.currentStageType === "review" &&
+          review.currentParticipant !== null;
         const current =
           !isSupersededConversationRun(task, run) &&
+          !activeReview &&
           action.returnOwnerAgentId !== null &&
           task.assigneeAgentId === action.returnOwnerAgentId &&
           !["done", "cancelled"].includes(task.status) &&
