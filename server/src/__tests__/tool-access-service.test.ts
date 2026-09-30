@@ -10311,6 +10311,7 @@ describeEmbeddedPostgres("tool access service", () => {
   ])(
     "starts and completes OAuth with the same redirect URI at %s",
     async (origin) => {
+      const callbackOrigin = origin.replace("http://127.0.0.1:", "http://localhost:");
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
         "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
@@ -10349,7 +10350,7 @@ describeEmbeddedPostgres("tool access service", () => {
         /^[A-Za-z0-9_-]{43}$/,
       );
       expect(startUrl.searchParams.get("redirect_uri")).toBe(
-        `${origin}/api/tools/oauth/callback`,
+        `${callbackOrigin}/api/tools/oauth/callback`,
       );
       const state = startUrl.searchParams.get("state");
       expect(state).toBeTruthy();
@@ -10375,7 +10376,7 @@ describeEmbeddedPostgres("tool access service", () => {
             expect(body.get("client_secret")).toBe("slack-client-secret");
             expect(body.get("code_verifier")).toBeTruthy();
             expect(body.get("redirect_uri")).toBe(
-              `${origin}/api/tools/oauth/callback`,
+              `${callbackOrigin}/api/tools/oauth/callback`,
             );
             return {
               ok: true,
