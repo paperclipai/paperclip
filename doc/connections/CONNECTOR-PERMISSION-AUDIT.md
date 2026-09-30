@@ -20,6 +20,8 @@ Personal invocation secrets now belong to the grant's user. Setup, health,
 discovery and the run gateway share ownership checks and canonical credential
 paths. Public unauthenticated URLs need no credential repair. OAuth client
 registration secrets remain company-owned and separate from invocation tokens.
+Existing connections with incorrectly owned credentials require the owner to
+reconnect with a fresh key or secret URL. There is no automatic ownership backfill.
 
 ## Changes
 
@@ -100,8 +102,8 @@ that proof before claiming provider-level acceptance.
 Backend regressions execute catalog Zapier, generic secret URLs, personal
 bearer/custom headers, organization credentials and public URLs through the
 run-scoped gateway using a fixture transport. They assert canonical persisted
-ownership/declarations and run read and write calls. Repair regressions cover
-idempotency, concurrency, rollback, ambiguous creators and shared references.
+ownership/declarations and run read and write calls. Reconnect regressions cover
+replacing legacy company credentials with user-owned values and declarations.
 OAuth fixtures assert exact authorization scopes and rejection of an unrelated
 advertised admin scope; they do not contact provider accounts.
 
@@ -114,21 +116,11 @@ checks; their success does not establish successful seeding of that local copy.
 
 ### Automated verification
 
-- `pnpm -r typecheck`, `pnpm build`, and `pnpm check:token-gates` passed.
-  Server typecheck was repeated after the final fixture edits and passed.
+- Run `pnpm -r typecheck`, `pnpm build`, and `pnpm check:token-gates`.
 - The affected Apps browser suites passed 10 tests, with one existing restart
   case skipped. These used clean, isolated fixture databases.
-- `pnpm test:run` completed its broad server group with 14,297 passing tests,
-  23 initial failures, and 75 skips. The failures were in five files: startup,
-  credential removal, repository discovery, AI connections, and workspace runtime.
-  The first three fixtures were updated for the new startup service and ownership/
-  path invariants; their complete files passed on rerun. AI connections and the
-  two workspace timing cases passed on targeted reruns without production edits.
-  The original command therefore exited nonzero; it was not rerun from scratch.
-- All remaining non-server groups passed: 11,298 tests. All 148 serialized server
-  files were covered and passed, totaling 2,739 tests, using the repository's
-  shard selection. Two timeout cases passed on retry; the stopped shard resumed
-  from its exact remaining file list. No selected serialized file was omitted.
+- Run `pnpm test:run` for the full suite. Current-head CI and local results are
+  recorded in the pull request; fixture coverage is distinct from provider proof.
 - New gateway fixtures execute both read and write calls through real run-scoped
-  gateway sessions. Repair tests cover canonical storage, cross-company/shared
-  reference rejection, rollback, repeat execution and concurrent startup.
+  gateway sessions. They also verify that invalid ownership requires reconnect
+  and that the owner's fresh credentials restore access without changing identity.

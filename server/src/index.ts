@@ -86,7 +86,6 @@ import {
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
-import { backfillPersonalConnectionCredentials } from "./services/connection-credential-backfill.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
@@ -702,10 +701,6 @@ async function startServerWithDatabaseTeardown(
   const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
     logger.info(accessBackfill, "Backfilled principal access compatibility records");
-  }
-  const personalCredentialBackfill = await backfillPersonalConnectionCredentials(db as any);
-  if (personalCredentialBackfill.repairedConnections || personalCredentialBackfill.reconnectRequired) {
-    logger.info(personalCredentialBackfill, "Reconciled personal connection credential ownership");
   }
   const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
   if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {

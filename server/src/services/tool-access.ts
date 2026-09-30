@@ -12520,11 +12520,17 @@ export function toolAccessService(
           let changedGrant: typeof connectionGrants.$inferSelect;
           let previousGrant: typeof connectionGrants.$inferSelect | null = null;
           if (retainedPersonalIdentity?.grant) {
-            const [currentGrant] = await db
-              .select()
+            const [grantSnapshot] = await db
+              .select({
+                grant: connectionGrants,
+                // Preserve PostgreSQL microseconds for the optimistic update;
+                // a JavaScript Date truncates them and falsely reports a race.
+                updatedAtVersion: sql<string>`${connectionGrants.updatedAt}::text`,
+              })
               .from(connectionGrants)
               .where(eq(connectionGrants.id, retainedPersonalIdentity.grant.id))
               .limit(1);
+            const currentGrant = grantSnapshot?.grant;
             if (!currentGrant)
               throw conflict(
                 "The personal credential changed during setup. Please try again.",
@@ -12543,7 +12549,7 @@ export function toolAccessService(
               .where(
                 and(
                   eq(connectionGrants.id, currentGrant.id),
-                  eq(connectionGrants.updatedAt, currentGrant.updatedAt),
+                  sql`${connectionGrants.updatedAt} = ${grantSnapshot!.updatedAtVersion}::timestamptz`,
                 ),
               )
               .returning();

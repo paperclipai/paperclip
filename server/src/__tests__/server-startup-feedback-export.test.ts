@@ -9,14 +9,6 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUN
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
-const personalCredentialBackfillMock = vi.hoisted(() => vi.fn(async () => ({
-  repairedConnections: 0, repairedSecrets: 0, reconnectRequired: 0,
-})));
-
-vi.mock("../services/connection-credential-backfill.js", () => ({
-  backfillPersonalConnectionCredentials: personalCredentialBackfillMock,
-}));
-
 const {
   completionSweepMock,
   createAppMock,
@@ -439,27 +431,6 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
-  });
-
-  it("waits for personal credential repair before accepting requests", async () => {
-    let release!: () => void;
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    personalCredentialBackfillMock.mockImplementationOnce(async () => {
-      await pending;
-      return { repairedConnections: 1, repairedSecrets: 1, reconnectRequired: 0 };
-    });
-    const startup = startServer();
-    await vi.waitFor(() => expect(personalCredentialBackfillMock).toHaveBeenCalledOnce());
-    expect(fakeServer.listen).not.toHaveBeenCalled();
-    release();
-    await startup;
-    expect(fakeServer.listen).toHaveBeenCalledOnce();
-  });
-
-  it("does not accept requests when personal credential repair fails", async () => {
-    personalCredentialBackfillMock.mockRejectedValueOnce(new Error("credential repair failed"));
-    await expect(startServer()).rejects.toThrow("credential repair failed");
-    expect(fakeServer.listen).not.toHaveBeenCalled();
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {

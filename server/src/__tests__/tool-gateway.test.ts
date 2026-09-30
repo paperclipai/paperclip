@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -2494,17 +2494,19 @@ rl.on("line", (line) => {
         };
         const options = { remoteHttpRequest, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] };
         const service = toolAccessService(db, options);
-        const connected = await service.connectGalleryApp(company.id, {
+        const setupInput: Parameters<typeof service.connectGalleryApp>[1] = {
           name: `Fixture ${kind}`, grantKind,
           ...(kind === "zapier" ? { galleryKey: "zapier", connectionMethodKey: "generated-url", link: secretUrl }
             : kind === "url" ? { link: secretUrl }
             : kind === "bearer" ? { link: "https://8.8.8.8/mcp", authMode: "bearer" as const, credentialValues: { "credentials.authorization": "fixture-canary" } }
             : kind === "header" ? { link: "https://8.8.8.8/mcp", authMode: "custom_headers" as const, credentialValues: { "headers.X-Api-Key": "fixture-canary" } }
             : { link: "https://8.8.8.8/mcp", authMode: "none" as const }),
-        }, { actorType: "user", actorId: "alice" });
+        };
+        const connected = await service.connectGalleryApp(company.id, setupInput, { actorType: "user", actorId: "alice" });
         const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
         const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
         const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id));
+        let activeSecretId = secret?.id;
         if (kind !== "public") {
           expect(secret).toMatchObject({ scope: grantKind === "user" ? "user" : "company", ownerUserId: grantKind === "user" ? "alice" : null });
           const expectedPath = kind === "header" ? "headers.X-Api-Key" : kind === "bearer" ? "credentials.authorization" : "remote.url";
@@ -2542,15 +2544,55 @@ rl.on("line", (line) => {
             .rejects.toMatchObject({ details: { code: "grant_credential_invalid", connection: { healthStatus: "missing_secret" } } });
           await expect(service.refreshCatalog(connection!.id, { actorType: "user", actorId: "alice" }))
             .rejects.toMatchObject({ details: { code: "grant_credential_invalid" } });
-          await db.update(companySecrets).set({ scope: "user", ownerUserId: "alice", userSecretDefinitionId: secret.userSecretDefinitionId }).where(eq(companySecrets.id, secret.id));
           const otherCompany = await createCompany(db);
-          await expect(resolveConnectionGrantSecret(db, { ...connection!, companyId: otherCompany.id }, grant!, grant!.credentialSecretRefs[0]!, {}))
+          // The owner reconnects explicitly; no startup process adopts the old row.
+          await db.update(connectionGrants).set({ updatedAt: sql`'2026-09-30T12:00:00.123456Z'::timestamptz` })
+            .where(eq(connectionGrants.id, grant!.id));
+          const freshValue = "reconnected-fixture";
+          const reconnected = await service.connectGalleryApp(company.id, {
+            ...setupInput, reconnectConnectionId: connection!.id,
+            ...(kind === "zapier" || kind === "url" ? { link: secretUrl.replace("fixture-canary", freshValue) }
+              : { credentialValues: { [kind === "header" ? "headers.X-Api-Key" : "credentials.authorization"]: freshValue } }),
+          }, { actorType: "user", actorId: "alice" });
+          expect(reconnected.connectionId).toBe(connection!.id);
+          await service.finishGalleryAppConnection(company.id, reconnected.connectionId, {
+            enabledCatalogEntryIds: reconnected.catalog.map((entry) => entry.id),
+            askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] }, preserveExistingAccess: true,
+          }, { actorType: "user", actorId: "alice" });
+          const [restoredGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          expect(restoredGrant).toMatchObject({ id: grant!.id, kind: "user", subjectUserId: "alice", status: "active" });
+          activeSecretId = restoredGrant!.credentialSecretRefs[0]!.secretId;
+          expect(activeSecretId).not.toBe(secret.id);
+          const [freshSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, activeSecretId));
+          expect(freshSecret).toMatchObject({ scope: "user", ownerUserId: "alice" });
+          await expect(resolveConnectionGrantSecret(db, { ...connection!, companyId: otherCompany.id }, restoredGrant!, restoredGrant!.credentialSecretRefs[0]!, {}))
             .rejects.toMatchObject({ details: { code: "grant_credential_invalid" } });
+          expect(await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connection!.id)))
+            .toEqual([expect.objectContaining({ userSecretDefinitionId: freshSecret!.userSecretDefinitionId,
+              configPath: restoredGrant!.credentialSecretRefs[0]!.configPath })]);
+          expect(await db.select().from(companySecretBindings).where(eq(companySecretBindings.targetId, connection!.id))).toEqual([]);
+          expect((await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))[0])
+            .toMatchObject({ scope: "company", ownerUserId: null, userSecretDefinitionId: null });
+          calls.length = 0;
+          const restoredSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+          const restoredTools = (await gateway.listToolsForSession(restoredSession.token)).filter((tool) => tool.providerType === "mcp_remote_http");
+          expect(restoredTools).toHaveLength(2);
+          for (const tool of restoredTools) {
+            await expect(gateway.executeTool({ sessionToken: restoredSession.token, tool: tool.name, parameters: { verification: "after-reconnect" } }))
+              .resolves.toMatchObject({ status: "completed", result: { content: "performed" } });
+          }
+          const restoredCalls = calls.filter((call) => call.method === "tools/call");
+          expect(restoredCalls).toHaveLength(2);
+          for (const call of restoredCalls) {
+            if (kind === "zapier" || kind === "url") expect(call.url).toBe(secretUrl.replace("fixture-canary", freshValue));
+            if (kind === "bearer") expect(call.headers.get("authorization")).toBe(`Bearer ${freshValue}`);
+            if (kind === "header") expect(call.headers.get("x-api-key")).toBe(freshValue);
+          }
         }
         if (secret) {
           const removed = await service.archiveConnection(connection!.id, company.id, { actorType: "user", actorId: "alice" });
           expect(removed.removal.secretsRevoked).toBe(1);
-          const [deleted] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+          const [deleted] = await db.select().from(companySecrets).where(eq(companySecrets.id, activeSecretId!));
           expect(deleted?.status ?? "deleted").toBe("deleted");
         }
       }

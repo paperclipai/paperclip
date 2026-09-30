@@ -99,24 +99,17 @@ refs and the same ownership checks. A personal resolver must not fall back to a
 company credential. Ownership mismatch is `grant_credential_invalid` and tells
 the owner to reconnect.
 
-Before accepting requests, startup repairs eligible legacy personal credentials
-in keyset pages of 100 and one serializable transaction per connection. It only
-adopts active, locally encrypted, Paperclip-created `tool_app.*` secrets with
-matching connection/grant/secret creator and owner provenance, matching refs,
-and exclusive personal use. It checks other connections, other grants (including
-revoked grants and grants on the same connection), and other secret bindings,
-including cross-company references. Oversized or ambiguous graphs require owner
-reconnect. Shared credentials, deleted records, conflicting creators, and
-operator-managed keys are never adopted. Repairs preserve secret IDs, encrypted
-versions, connection identity, action policies and historical records, replacing
-company bindings with user declarations atomically. Health becomes unchecked
-until probed. Retries are bounded; repeated/concurrent runs do not duplicate
-repairs. Logs contain counts only; audit events contain IDs/counts, never values.
+Existing personal connections with company-scoped invocation credentials require
+their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
+a user-owned credential and updates the grant and declarations while preserving
+the connection identity and action policies. Credential ownership is never
+automatically reassigned at startup. Health, discovery and invocation reject an
+invalid ownership layout with an actionable reconnect error.
 
 Verification must assert stored ownership and declarations, then execute a read
 and a write through a real run-scoped gateway. Cover generic and curated URL
 credentials, bearer/custom headers, shared identities, public endpoints, rotation,
-removal, rollback, repair eligibility, repeated/concurrent startup, another user,
+removal, failed-setup cleanup, owner reconnect of legacy credentials, another user,
 and another company. Fixture-backed MCP calls prove Paperclip behavior; they do
 not prove provider consent or account entitlements. Record account-bound live
 read/write proof separately and never describe metadata discovery as live proof.
