@@ -22,6 +22,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { getQuotaPacingState } from "../services/quota-pacing.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -283,6 +284,21 @@ export function costRoutes(
     }
     const results = await fetchAllQuotaWindows();
     res.json(results);
+  });
+
+  // Quota pacing is instance-wide; it is served next to the quota windows it
+  // reads, with the same access rules. It returns cached state and never
+  // polls a provider.
+  router.get("/companies/:companyId/costs/quota-pacing", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const company = await companies.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json(getQuotaPacingState());
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
