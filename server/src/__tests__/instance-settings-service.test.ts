@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import {
+  DEFAULT_BACKUP_RETENTION,
+  DEFAULT_QUOTA_PACING_SETTINGS,
+  type InstanceExperimentalSettings,
+  type InstanceGeneralSettings,
+} from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
+  applyGeneralSettingsPatch,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
@@ -424,4 +430,40 @@ describe("instance settings service", () => {
     expect(getExperimental).not.toHaveBeenCalled();
   });
 
+});
+
+describe("general settings patch merge", () => {
+  const stored: InstanceGeneralSettings = {
+    censorUsernameInLogs: true,
+    feedbackDataSharingPreference: "prompt",
+    backupRetention: DEFAULT_BACKUP_RETENTION,
+    quotaPacing: {
+      enabled: true,
+      mode: "auto",
+      sessionReservePercent: 30,
+      weeklyAllowancePercent: 5,
+      pollIntervalSec: 600,
+    },
+  };
+
+  it("merges a pacing patch key by key", () => {
+    expect(applyGeneralSettingsPatch(stored, { quotaPacing: { mode: "low" } })).toEqual({
+      ...stored,
+      quotaPacing: { ...stored.quotaPacing, mode: "low" },
+    });
+  });
+
+  it("keeps stored pacing settings when a patch changes another field", () => {
+    expect(applyGeneralSettingsPatch(stored, { censorUsernameInLogs: false })).toEqual({
+      ...stored,
+      censorUsernameInLogs: false,
+    });
+  });
+
+  it("defaults pacing for a row stored before pacing existed", () => {
+    const { quotaPacing: _omitted, ...legacy } = stored;
+    const merged = applyGeneralSettingsPatch(legacy as InstanceGeneralSettings, {});
+    expect(merged.quotaPacing).toEqual(DEFAULT_QUOTA_PACING_SETTINGS);
+    expect(merged.censorUsernameInLogs).toBe(true);
+  });
 });
