@@ -57,6 +57,7 @@ export function AgentProviderConnection({
   /** Connections supplies its access intent; presentation and login controllers stay shared. */
   managedAccount?: {
     intent: AiConnectionLoginIntent;
+    nameForMethod?: (method: "subscription" | "api_key") => string;
     initialMethod?: "subscription" | "api_key";
     fixedMethod?: boolean;
     disabled?: boolean;
@@ -119,7 +120,20 @@ export function AgentProviderConnection({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && !savedSubscription && storedLogin.data))
       ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
-  const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
+  const authMethod = method === "api" ? "api_key" : "subscription";
+  // Reconnect preserves an account's method. Choosing another method creates
+  // an account for the same provider; the task host selects it after sign-in.
+  const reconnecting = managedAccount?.intent.connectionId && (
+    managedAccount.fixedMethod !== false || managedAccount.initialMethod === authMethod
+  );
+  const managedIntent: AiConnectionLoginIntent | undefined = managedAccount ? {
+    ...managedAccount.intent,
+    connectionId: reconnecting ? managedAccount.intent.connectionId : undefined,
+    name: reconnecting
+      ? managedAccount.intent.name
+      : managedAccount.nameForMethod?.(authMethod) ?? managedAccount.intent.name,
+  } : undefined;
+  const localLogin = useLocalAiLogin(companyId, managedIntent ?? {
     provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
   }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
@@ -145,11 +159,11 @@ export function AgentProviderConnection({
     setBusy(true);
     setError(null);
     try {
-      if (managedAccount) {
+      if (managedAccount && managedIntent) {
         if (method === "subscription" && !canUseLocalLogin) return;
         const result = savedManagedAccount.current ?? await (method === "api"
-          ? aiConnectionsApi.create(companyId, { ...managedAccount.intent, method: "api_key", apiKey: apiKey.trim() })
-          : localLogin.connect(managedAccount.intent));
+          ? aiConnectionsApi.create(companyId, { ...managedIntent, method: "api_key", apiKey: apiKey.trim() })
+          : localLogin.connect(managedIntent));
         savedManagedAccount.current = result;
         setApiKey("");
         if (run === epoch.current) managedAccount.onComplete({ ...result, method: method === "api" ? "api_key" : "subscription" });
@@ -231,13 +245,17 @@ export function AgentProviderConnection({
         collapsed={opened}
         onSelect={() => { if (!managedAccount?.disabled) setOpened(true); }}
       />
-      {!opened && !managedAccount?.fixedMethod && (
+      {(!opened || managedAccount) && !managedAccount?.fixedMethod && (
         <div className="-ml-3 mt-1">
           <CredentialModeLink
             mode={method}
             onChange={(next) => {
+              cancel();
+              setOpened(opened);
               savedManagedAccount.current = null;
               setMethod(next);
+              setApiKey("");
+              setStoredConnection(null);
               setError(null);
             }}
           />
@@ -315,7 +333,7 @@ export function AgentProviderConnection({
                 adapterType={adapterType}
                 environmentId={environmentId}
                 chrome="onboarding"
-                aiConnection={managedAccount?.intent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
+                aiConnection={managedIntent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
                 autoStart
                 onStored={() => {}}
                 onPromptReady={(url) => {

@@ -1,3 +1,5 @@
+import { connectionIntentService } from "../services/connection-intents.js";
+import { completeConnectionIntentSchema } from "@paperclipai/shared";
 import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
 import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
@@ -5365,6 +5367,34 @@ export function agentRoutes(
     });
 
     res.json(result.bundle);
+  });
+
+  router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
+    assertBoard(req);
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const userId = responsibleUserForAiRequest(req);
+    const intents = connectionIntentService(db);
+    const interactionId = req.params.interactionId as string;
+    const loaded = await intents.loadIntent(interactionId);
+    if (loaded.issue.companyId !== agent.companyId || loaded.interaction.payload.requestingAgentId !== agent.id) throw notFound("Connection intent not found");
+    if (!userId || loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can adopt this connection");
+    const connectionId = req.body.connectionId as string;
+    if (loaded.interaction.status === "accepted" && loaded.interaction.result?.connectionId === connectionId) {
+      res.json(loaded.interaction);
+      return;
+    }
+    if (loaded.interaction.status !== "pending") throw conflict("Connection intent is already resolved");
+    const setup = await intents.setupOptions(interactionId);
+    if (!setup.aiConnectionRequiresAdoption || !setup.aiConnection) throw conflict("The agent’s AI configuration changed. Reload the task and try again.");
+    // Probe in the agent's execution environment without installing access.
+    // The binding, install, audit, and card resolution commit together below.
+    const validatedConnectionId = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
+    if (validatedConnectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
+    res.json(await intents.complete(interactionId, connectionId, userId, {
+      validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection },
+    }));
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

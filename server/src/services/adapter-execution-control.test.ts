@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { AdapterStopTimeoutError } from "./adapter-stop-timeout.js";
 import {
   adapterExecutionControls,
   captureAdapterStopOwnership,
@@ -119,4 +120,34 @@ it("bounds Stop when an adapter does not settle", async () => {
   await vi.advanceTimersByTimeAsync(1000);
   await assertion;
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("records the exact unconfirmed run without finishing or removing its control", async () => {
+  vi.useFakeTimers();
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const control = createAdapterExecutionControl();
+  await registerAdapterExecutionControl(runId, control);
+  control.controller.abort();
+  let finished = false;
+  void control.settled.then(() => { finished = true; });
+  const result = waitForAdapterStop(control.settled, 1000, {
+    runId, adapterType: "claude_local", runtimeMode: "legacy", abortRequested: control.controller.signal.aborted,
+  }).catch((error: unknown) => error);
+  try {
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await result;
+    expect(error).toBeInstanceOf(AdapterStopTimeoutError);
+    expect((error as AdapterStopTimeoutError).diagnostics).toEqual({
+      runId, adapterType: "claude_local", runtimeMode: "legacy", abortRequested: true, timeoutMs: 1000,
+    });
+    expect(adapterExecutionControls.get(runId)).toBe(control);
+    expect(finished).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    control.finish();
+    await control.settled;
+    expect(finished).toBe(true);
+  } finally {
+    control.finish();
+    adapterExecutionControls.delete(runId);
+  }
 });

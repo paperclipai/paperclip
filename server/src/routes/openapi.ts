@@ -176,7 +176,6 @@ import {
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
-  updateCurrentUserPreferencesSchema,
   // Company portability (legacy routes)
   companyPortabilityExportSchema,
   companyPortabilityPreviewSchema,
@@ -1443,6 +1442,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/connection-intents/{interactionId}/setup-options",
   "POST /api/connection-intents/{interactionId}/phase",
   "POST /api/connection-intents/{interactionId}/complete",
+  "POST /api/agents/{id}/connection-intents/{interactionId}/adopt",
   "POST /api/connection-intents/{interactionId}/decline",
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
@@ -6591,23 +6591,6 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
-registry.registerPath({
-  method: "get",
-  path: "/api/auth/preferences",
-  tags: ["auth"],
-  summary: "Get the signed-in user's personal preferences",
-  request: { query: z.object({ expectedUserId: z.string().min(1) }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-registry.registerPath({
-  method: "patch",
-  path: "/api/auth/preferences",
-  tags: ["auth"],
-  summary: "Update personal preferences with a company audit context",
-  request: { body: jsonBody(updateCurrentUserPreferencesSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
-});
-
 // ─── Auth / profile ──────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10272,6 +10255,23 @@ registerCurrentRoute({
   tags: ["connection-intents"],
   summary: "Complete an addressed connection request",
   body: completeConnectionIntentSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/{id}/connection-intents/{interactionId}/adopt",
+  tags: ["connection-intents", "agents"],
+  summary: "Validate and atomically adopt an AI connection for a legacy agent",
+  body: completeConnectionIntentSchema,
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registerCurrentRoute({

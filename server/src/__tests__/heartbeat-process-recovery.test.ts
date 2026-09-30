@@ -91,6 +91,8 @@ import { buildNativeExecutionInput } from "../services/native-runtime/native-exe
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../services/native-runtime/native-runner-ownership.js";
 import { nativeCompletionSource } from "../services/native-runtime/completion-contracts.js";
+import { nativeCompletionFeedback } from "../services/native-runtime/native-completion-feedback.js";
+import type { PrpStructuredRunResult } from "../vendor/paperclip-runner/index.js";
 import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
@@ -13766,6 +13768,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedNativePassiveBoardResponse(
     continuationKind:
       "response_wake" | "same_agent" | "retry" = "response_wake",
+    options: { blockingWork?: boolean; repairUsed?: boolean } = {},
   ) {
     const fixture = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -13776,9 +13779,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const commentId = randomUUID();
     const contractId = randomUUID();
     const runnerInstanceId = randomUUID();
-    const request =
+    const request = options.blockingWork ? "Is this done?" :
       "Read only this newly attached TXT. Report Object, Accent color and Count. Keep the task open; no other work.";
-    const summary = "Object: lighthouse. Accent color: amber. Count: 63.";
+    const summary = options.blockingWork ? "Not yet. Icons, screenshots, verification and the PR remain unfinished." :
+      "Object: lighthouse. Accent color: amber. Count: 63.";
     // PostgreSQL's default clock retains microseconds; a later JS Date in the
     // same millisecond could otherwise precede this supposedly admitted source.
     const sourceAt = new Date(Date.now() - 1_000);
@@ -13800,7 +13804,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "completed",
         requestedByActorType: "user",
         requestedByActorId: "responsible-user",
-        payload: { issueId, commentId },
+        payload: { issueId, commentId, ...(options.repairUsed ? { continuationIdempotencyKey: "native-completion-incomplete" } : {}) },
       })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
     await db.insert(completionContracts).values({
@@ -13871,7 +13875,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           criteria: [
             { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
           ],
-          remainingWork: [],
+          remainingWork: options.blockingWork ? [{ description: "Finish icons, screenshots, verification and PR", blocksCompletion: true }] : [],
         },
         evidence: [],
         verification: [],
@@ -13936,6 +13940,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     ]);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unfinished native response wait while the finish report is still correctable", async () => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    const result = stored!.resultJson.result as PrpStructuredRunResult;
+    await expect(nativeCompletionFeedback(db, fixture.runId, result)).rejects.toThrow("blocking remaining work without a pending wait condition");
+    await expect(nativeCompletionFeedback(db, fixture.runId, {
+      ...result, continuation: { ...result.continuation!, kind: "same_agent" },
+    })).resolves.toContain("accepted");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, fixture.runId))).toHaveLength(0);
+  });
+
+  it.each([false, true])("bounds unfinished native response wait repair across repeated finalization (used=%s)", async (repairUsed) => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true, repairUsed });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    }
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, fixture.runId));
+    expect(decision?.reasonCode).toBe(repairUsed ? "prior_status_preserved_no_live_path" : "completion_evidence_incomplete");
+    expect(decision?.decisionJson).toMatchObject({
+      boardResponseWait: { sourceCommentId: fixture.commentId },
+      boardResponseWaitOrigin: { sourceCommentId: fixture.commentId },
+    });
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
+    expect(wakes).toHaveLength(repairUsed ? 1 : 2);
+    if (!repairUsed) expect(wakes.find((wake) => wake.id !== fixture.wakeupRequestId)?.payload).toMatchObject({
+      continuationKind: "same_agent", continuationIdempotencyKey: "native-completion-incomplete",
+    });
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions).toHaveLength(repairUsed ? 1 : 0);
+    expect(await hasCommittedNativeBoardResponseWait(db, fixture)).toBe(false);
+  });
+
+  it.each(["question", "approval", "dependency", "pause", "conversation"] as const)(
+    "preserves a real wait when an unfinished native response reports %s",
+    async (gate) => {
+      const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true });
+      if (gate === "question") await db.insert(issueThreadInteractions).values({
+        companyId: fixture.companyId, issueId: fixture.issueId, kind: "ask_user_questions", status: "pending",
+        sourceRunId: fixture.runId, createdByUserId: "responsible-user", payload: { prompt: "Which account should I use?" },
+      });
+      if (gate === "approval") {
+        const [approval] = await db.insert(approvals).values({ companyId: fixture.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+        await db.insert(issueApprovals).values({ companyId: fixture.companyId, issueId: fixture.issueId, approvalId: approval!.id });
+      }
+      if (gate === "dependency") {
+        const [dependency] = await db.insert(issues).values({ companyId: fixture.companyId, title: "Required dependency", status: "todo" }).returning();
+        await db.insert(issueRelations).values({ companyId: fixture.companyId, issueId: dependency!.id, relatedIssueId: fixture.issueId, type: "blocks" });
+      }
+      if (gate === "pause") await db.insert(issueTreeHolds).values({ companyId: fixture.companyId, rootIssueId: fixture.issueId,
+        mode: "pause", status: "active", reason: "Operator pause", releasePolicy: { strategy: "manual" } });
+      if (gate === "conversation") await db.update(issues).set({ conversationAgentId: fixture.agentId,
+        conversationUserId: "responsible-user", conversationState: "active" }).where(eq(issues.id, fixture.issueId));
+      const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+      await expect(nativeCompletionFeedback(db, fixture.runId, stored!.resultJson.result as PrpStructuredRunResult)).resolves.toContain("accepted");
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+      const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, fixture.runId));
+      expect(decision?.reasonCode).toBe({ question: "governed_response_waiting", approval: "governed_response_waiting",
+        dependency: "durable_dependency_blocker_bound", pause: "response_wait_pause_preserved", conversation: "conversation_turn_finished" }[gate]);
+    },
+  );
+
+  it.each([false, true])("reconsiders a legacy committed unfinished Board wait (superseded=%s)", async (superseded) => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true });
+    const source = await readNativeBoardResponseWaitSource(db, fixture);
+    const origin = await readNativeBoardResponseWaitOrigin(db, fixture);
+    // Build the assessment, then emulate the old policy's accepted passive wait.
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", failpoint: "status_projection" });
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    await commitNativeStatusDecision({ db, companyId: fixture.companyId, issueId: fixture.issueId, runId: fixture.runId,
+      assessmentId: coordinator!.assessmentId!, priorStatus: issue!.status, priorStatusVersion: issue!.statusVersion,
+      priorDecisionId: issue!.lastStatusDecisionId,
+      decision: { policyVersion: "phase6-v7", statusAction: "in_progress", toStatus: "in_progress",
+        reasonCode: "board_response_waiting", unblockDescriptor: null, effects: [] },
+      requireBoardResponseWaitSource: source!.source, requireBoardResponseWaitOrigin: origin!,
+    });
+    expect(await hasCommittedNativeBoardResponseWait(db, fixture)).toBe(false);
+    if (superseded) {
+      await db.update(issueComments).set({ body: "Stop; I changed the request", updatedAt: new Date() }).where(eq(issueComments.id, fixture.commentId));
+      expect(await hasCommittedNativeBoardResponseWait(db, fixture)).toBe(true);
+    } else {
+      const recovery = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(recovery.escalated + recovery.continuationRequeued).toBe(1);
+    }
+  });
+
+  it("does not repair unfinished native work after its Board comment is superseded", async () => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", { blockingWork: true });
+    await db.update(issueComments).set({ body: "Stop; scope changed", updatedAt: new Date() }).where(eq(issueComments.id, fixture.commentId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, fixture.runId));
+    expect(decision?.reasonCode).toBe("board_response_wait_superseded");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await hasCommittedNativeBoardResponseWait(db, fixture)).toBe(true);
   });
 
   describe("paused maintenance over committed native passive waits", () => {
@@ -14489,8 +14592,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("rechecks native passive Board source inside the status transaction", async () => {
-    const fixture = await seedNativePassiveBoardResponse();
+  it.each(
+    (["board_response_waiting", "completion_evidence_incomplete", "prior_status_preserved_no_live_path"] as const)
+      .flatMap((reasonCode) => (["edited", "deleted", "newer_comment", "wake_actor"] as const)
+        .map((change) => ({ reasonCode, change }))),
+  )("rechecks native Board source inside the status transaction ($reasonCode, $change)", async ({ reasonCode, change }) => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", {
+      blockingWork: reasonCode !== "board_response_waiting",
+    });
     const expected = await readNativeBoardResponseWaitSource(db, fixture);
     const origin = await readNativeBoardResponseWaitOrigin(db, fixture);
     await finalizeNativeRun({
@@ -14507,10 +14616,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issues)
       .where(eq(issues.id, fixture.issueId));
-    await db
+    const recoveryActionsBefore = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    if (change === "edited") await db
       .update(issueComments)
       .set({ body: "A later edit revoked this result", updatedAt: new Date() })
       .where(eq(issueComments.id, fixture.commentId));
+    if (change === "deleted") await db.update(issueComments)
+      .set({ deletedAt: new Date() }).where(eq(issueComments.id, fixture.commentId));
+    if (change === "newer_comment") await db.insert(issueComments).values({
+      companyId: fixture.companyId, issueId: fixture.issueId, authorType: "user",
+      authorUserId: "responsible-user", body: "Stop; the request has changed.",
+    });
+    if (change === "wake_actor") await db.update(agentWakeupRequests)
+      .set({ requestedByActorType: "system" }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
     await expect(
       commitNativeStatusDecision({
         db,
@@ -14522,12 +14641,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         priorStatusVersion: issue!.statusVersion,
         priorDecisionId: issue!.lastStatusDecisionId,
         decision: {
-          policyVersion: "phase6-v4",
-          statusAction: "in_progress",
+          policyVersion: "phase6-v7",
+          statusAction: reasonCode === "prior_status_preserved_no_live_path" ? "preserve" : "in_progress",
           toStatus: "in_progress",
-          reasonCode: "board_response_waiting",
+          reasonCode,
           unblockDescriptor: null,
-          effects: [],
+          effects: reasonCode === "board_response_waiting" ? [] : reasonCode === "completion_evidence_incomplete" ? [{
+            kind: "enqueue_continuation", continuationKind: "same_agent", agentId: fixture.agentId,
+            summary: "Finish remaining work", idempotencyKey: "native-completion-incomplete",
+          }] : [{
+            kind: "record_finalization_error", cause: "completion_evidence_incomplete",
+            nextAction: "Bind a durable continuation", agentId: fixture.agentId,
+          }],
         },
         requireBoardResponseWaitSource: expected!.source,
         requireBoardResponseWaitOrigin: origin!,
@@ -14545,6 +14670,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(statusDecisions)
         .where(eq(statusDecisions.runId, fixture.runId)),
     ).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toEqual(recoveryActionsBefore);
   });
 
   it("does not let a native passive Board wait suppress a fresh request or reassignment", async () => {

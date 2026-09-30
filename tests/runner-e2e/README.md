@@ -256,6 +256,36 @@ is injected or modified. The usual workspace, sandbox, provider, process,
 three-run, screenshot, timeout, billing, and cleanup assertions remain required;
 `--all` excludes this stress case.
 
+`daytona-git-streaming` is an explicit-only native Codex Daytona cell for
+large Git filename snapshots. Run
+`pnpm test:e2e:runner -- --id daytona-git-streaming.runner-codex.daytona.large-path-three-turn`.
+This heavy-file cell explicitly configures the environment's 20-minute native
+idle timeout and a 25-minute Daytona auto-stop interval. It checks the admitted
+runtime policy before each continuation; the environment policy takes precedence
+over the agent setting. Large copyback plus the next preparation
+can exceed the normal five-minute idle window; the PID and process-fingerprint
+continuity checks remain strict. The ordinary warm-continuity cell keeps its
+existing five-minute policy.
+This cell uses a fixed external instruction bundle. Managed agent folders
+intentionally checkpoint and stop the provider after every turn for file
+collection; external instructions allow this cell to test retained-process
+continuity without changing that collection policy.
+It seeds an empty local Git project, creates 60,000 small untracked files through
+the real provider, then performs the same three browser-driven review turns.
+Each later turn updates all 60,000 generated files to distinct turn-specific
+contents. Before each follow-up and after the last turn an independent host oracle reads every copied-back file
+and proves the generated NUL-delimited filename list exceeds 32 MiB
+(39,828,890 bytes). It also checks whitespace, newline, option-like, Unicode,
+and glob-like filenames. Each turn is bounded to fifteen minutes and the cell
+to fifty minutes, including five minutes for setup, host verification, and cleanup
+outside the turns. Preparing and copying back this many files exceeded the
+ordinary warm fixture's ten-minute turn limit on CI. It keeps the warm suite's
+billing scope, screenshots, and explicit sandbox cleanup; `--all` excludes it.
+Before each follow-up and after the last turn, public durable run records must
+show committed native finalization, successful workspace receipts, no active
+workspace operation (including cleanup without a run ID), and no scheduled native recovery. A succeeded run or
+correct host bytes alone cannot hide an overlapping finalizer retry.
+
 `agent-chat` (**Persistent Agent Chat**) has eight workflows on `legacy-codex`,
 `legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **28 local cells**.
 They cover continuity across server restart, fresh context after `/new`,

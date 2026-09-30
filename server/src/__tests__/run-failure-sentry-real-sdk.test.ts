@@ -35,6 +35,53 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("keeps unconfirmed Stop context off unrelated events and drops arbitrary error fields", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({
+      ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureException } = await import("../sentry.js");
+    const { AdapterStopTimeoutError } = await import("../services/adapter-stop-timeout.js");
+    await sentryReady;
+    const timeout = Object.assign(new AdapterStopTimeoutError(60_000, {
+      runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor",
+      runtimeMode: "legacy", abortRequested: true,
+    }), {
+      cause: new Error("private-provider-cause"),
+      providerResponse: { headers: "private-provider-headers", body: "private-provider-body" },
+    });
+    captureException(timeout);
+    await Promise.resolve();
+    captureException(new Error("unrelated stop diagnostic fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(2);
+    const captured = (message: string) => events.find((event) =>
+      (event.exception as { values: Array<{ value: string }> }).values.some((entry) => entry.value === message),
+    );
+    expect(captured(timeout.message)).toMatchObject({
+      tags: { error_code: "adapter_stop_unconfirmed" }, fingerprint: ["{{ default }}"],
+      contexts: { adapter_stop: {
+        runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor",
+        runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000,
+      } },
+    });
+    expect(JSON.stringify(events)).not.toContain("private-provider-");
+    const unrelated = captured("unrelated stop diagnostic fixture");
+    expect(unrelated).toBeDefined();
+    expect(unrelated).not.toHaveProperty("contexts.adapter_stop");
+    expect(unrelated).not.toHaveProperty("tags.error_code");
+    expect(unrelated).not.toHaveProperty("fingerprint");
+  });
+
   it("keeps each run's identity and fingerprint off unrelated errors", async () => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];
