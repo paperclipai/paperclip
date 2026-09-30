@@ -10,6 +10,6 @@ export function SkillBinaryFile({ file }: { file: CompanySkillFileDetail }) {
   }, [file.content]);
   return <div className="flex flex-col items-start gap-3 py-6">
     <p className="text-sm text-muted-foreground">This asset is stored in its original binary format.</p>
-    <Button asChild variant="outline"><a href={url} download={file.path.split('/').at(-1)}>Download {file.path.split('/').at(-1)}</a></Button>
+    <Button asChild variant="outline" className="max-w-full"><a href={url} download={file.path.split('/').at(-1)} title={`Download ${file.path.split('/').at(-1)}`}><span className="truncate">Download {file.path.split('/').at(-1)}</span></a></Button>
   </div>;
 }
