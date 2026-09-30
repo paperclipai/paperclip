@@ -86,6 +86,42 @@ Recovery policies handle supported transient failures and interrupted runs, reta
 
 Skill Studio provides saved test inputs, test runs, results, and version history. Task and document feedback helps people improve procedures. Automatic organizational learning remains a separate roadmap item below.
 
+### ✅ Connected Apps
+
+Apps and Connections provide a service catalog, custom MCP connections, personal and shared accounts, agent access controls, and per-action Allowed / Ask first / Off policies. Supported AI accounts also use Connections. Setup varies by provider and deployment; not every integration is one-click. Broader provider coverage and simpler setup remain ongoing work.
+
+### ✅ Personal & Shared AI Accounts
+
+Connect supported subscription accounts or API keys and choose personal defaults or shared accounts for compatible agents. Human access and agent eligibility are separate controls; account selection stays independent of the model and harness. See [AI Connections](doc/connections/AI-CONNECTIONS.md).
+
+### ✅ Shared Agents, Personal GitHub Identities
+
+Shared agents can use the GitHub identity of the person whose instructions they are executing. Managed Git and GitHub operations resolve that identity through delegation and follow-up work, subject to connection permissions. See [GitHub identity during agent execution](doc/execution-github-identity.md).
+
+### ✅ Ready-Made Team Templates
+
+Browse, preview, and install teams with agent roles, skills, projects, and routines. Choose compatible runtimes during setup and adapt the team to your organization.
+
+### ✅ Skill Version History & Restore
+
+Save skill versions, inspect earlier contents, and restore a previous version as a new revision. Saved test inputs and results support comparison as procedures evolve.
+
+### ✅ Document Comments & Revision History
+
+Leave comments on specific passages in task documents, follow revision history, and restore previous document revisions. Annotations carry into agent review context so feedback stays attached to the work.
+
+### ✅ Company-Wide Search
+
+Search tasks, comments, documents, agents, projects, and artifacts within company access boundaries. Filters and matching excerpts help people find relevant work and its outputs.
+
+### ✅ Task Dependencies & Automatic Unblocking
+
+Tasks track explicit dependencies and blockers. Resolving blockers can wake eligible work while preserving task ownership and respecting pause, budget, and approval gates.
+
+### ✅ Multi-Model & Multi-Harness Teams
+
+Choose models and supported harnesses per agent while keeping tasks, skills, and history in one organization. Built-in adapters cover Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Pi, Hermes, Grok, Kimi Code, OpenClaw, and process or HTTP integrations.
+
 ### 🟡 Memory / Knowledge
 
 Experimental memory connections support Mem0, Zep, Supermemory, Cognee, and Honcho. The optional LLM Wiki plugin provides another knowledge workflow. A broader memory and knowledge surface for companies, agents, and projects remains a direction for future work. See [memory connections](doc/connections/MEMORY.md) for setup and availability.
@@ -110,7 +146,7 @@ Paperclip should get better at turning completed work into reusable organization
 
 Experimental Agent Chat provides persistent conversations with any agent, including leadership. Conversations keep their history and plans, then hand execution off to linked tasks. Agent Chat is off by default. Experimental chat and email connectors provide additional entry points through configured external services; they have separate setup and access controls.
 
-### 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
+### 🟡 Cloud deployments
 
 Local-first remains important, but Paperclip also needs a cleaner shared deployment story. Teams should be able to run the same product in hosted or semi-hosted environments without changing the mental model.
 
@@ -123,7 +159,3 @@ A desktop app can make Paperclip feel more accessible and persistent for day-to-
 ### ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
 
 Existing ticket systems should be able to feed work into Paperclip without becoming the agent control plane themselves. Asana, Linear, and Jira can act as familiar on-ramps while Paperclip owns execution, governance, and outcomes.
-
-### ✅ Connected Apps & governed actions
-
-Apps and Connections provide a service catalog, custom MCP connections, personal and shared accounts, agent access controls, and per-action Allowed / Ask first / Off policies. Supported AI accounts also use Connections. Setup varies by provider and deployment; not every integration is one-click. Broader provider coverage and simpler setup remain ongoing work.

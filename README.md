@@ -502,13 +502,22 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Activity log & action attribution
 - ✅ Self-healing runs & automatic recovery
 - ✅ Agent evals & feedback
-- 🟡 Memory / Knowledge — experimental memory connectors and an optional LLM Wiki plugin are available; broader organizational memory remains in development
+- ✅ Connected Apps
+- ✅ Personal & Shared AI Accounts
+- ✅ Shared Agents, Personal GitHub Identities
+- ✅ Ready-Made Team Templates
+- ✅ Skill Version History & Restore
+- ✅ Document Comments & Revision History
+- ✅ Company-Wide Search
+- ✅ Task Dependencies & Automatic Unblocking
+- ✅ Multi-Model & Multi-Harness Teams
+- 🟡 Memory / Knowledge
 - ⚪ MAXIMIZER MODE
 - ⚪ Work Queues
 - ⚪ Self-Organization
 - ⚪ Automatic Organizational Learning
-- 🟡 Agent Chat — experimental persistent conversations with agents, including leadership, can hand plans and work off to tasks
-- 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
+- 🟡 Agent Chat
+- 🟡 Cloud deployments
 - ⚪ Desktop App
 - ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
 
