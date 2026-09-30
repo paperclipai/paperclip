@@ -22,6 +22,7 @@ import {
   connectionGrants,
   connectionTokenIssuances,
   companySecrets,
+  managedAgentProfiles,
   companySecretVersions,
   createDb,
   heartbeatRuns,
@@ -75,6 +76,7 @@ import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import {
   canonicalToolArguments,
   signToolArguments,
@@ -828,6 +830,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await db.delete(connectionTokenIssuances);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
+    await db.delete(managedAgentProfiles);
     await db.delete(companySecrets);
     await db.delete(activityLog);
     await db.delete(toolCallEvents);
@@ -11662,6 +11665,99 @@ describeEmbeddedPostgres("tool access service", () => {
       actorType: "system", actorId: null, responsibleUserId: actor.actorId });
     expect(resolved?.value).toBe("restored-key");
     expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+  });
+
+  it.each([
+    { oldSecret: "is used only by the personal grant", kept: false },
+    { oldSecret: "is also in the organization slot", kept: true },
+    { oldSecret: "is also used by a managed-agent profile", kept: true },
+    { oldSecret: "is stored outside Paperclip", kept: true },
+  ])("replaces a legacy company-scoped personal credential on reconnect when the old secret $oldSecret", async ({ oldSecret, kept }) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const actor = { actorType: "user" as const, actorId: "legacy-personal-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", grantKind: "user", credentialValues: { "credentials.authorization": "old-key" },
+    }, actor);
+    // Older builds stored the personal key as a company secret on the user grant.
+    const legacy = await secretService(db).create(company.id, {
+      provider: "local_encrypted", name: `Legacy personal ${randomUUID()}`,
+      key: `tool_app.${randomUUID()}.credentials_authorization`, value: "old-key",
+    });
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    const [grantRef] = grants[0]!.credentialSecretRefs;
+    await db.update(connectionGrants).set({ credentialSecretRefs: [{ ...grantRef!, secretId: legacy.id }] })
+      .where(eq(connectionGrants.id, grants[0]!.id));
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await db.update(toolConnections).set({
+      credentialRefs: row!.credentialRefs.map((ref) => ({ ...ref, secretId: legacy.id })),
+      credentialSecretRefs: oldSecret === "is also in the organization slot" ? [{ ...grantRef!, secretId: legacy.id }] : [],
+    }).where(eq(toolConnections.id, connected.connectionId));
+    if (oldSecret === "is stored outside Paperclip") {
+      // A provider delete cannot roll back with the ref swap, so reconnect keeps it.
+      await db.update(companySecrets).set({ provider: "aws_secrets_manager" }).where(eq(companySecrets.id, legacy.id));
+    }
+    if (oldSecret === "is also used by a managed-agent profile") {
+      await db.insert(managedAgentProfiles).values({
+        companyId: company.id, profileKey: `legacy-${randomUUID()}`, displayName: "Legacy profile",
+        anthropicAgentId: "agent", agentVersion: "1", environmentId: "env", apiKeySecretId: legacy.id,
+      });
+    }
+
+    await service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.authorization": "new-key" } }, actor);
+
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    const ref = after.grants[0]!.credentialSecretRefs[0]!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    expect(secret).toMatchObject({ scope: "user", ownerUserId: actor.actorId });
+    const resolved = await secretService(db).resolveUserSecretValue(company.id, {
+      definitionId: secret.userSecretDefinitionId!, responsibleUserId: actor.actorId,
+    }, { consumerType: "tool_connection", consumerId: connected.connectionId, configPath: ref.configPath,
+      actorType: "system", actorId: null, responsibleUserId: actor.actorId });
+    expect(resolved?.value).toBe("new-key");
+    const connection = await service.getConnection(connected.connectionId, company.id);
+    expect(connection.credentialRefs.map((credentialRef) => credentialRef.secretId)).toEqual([ref.secretId]);
+    const legacyRows = await db.select().from(companySecrets).where(eq(companySecrets.id, legacy.id));
+    expect(legacyRows.map((row) => row.status)).toEqual(kept ? ["active"] : []);
+  });
+
+  it("rolls back a legacy personal credential replacement when revoking the old secret fails, so a retry repairs it", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const actor = { actorType: "user" as const, actorId: "legacy-retry-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", grantKind: "user", credentialValues: { "credentials.authorization": "old-key" },
+    }, actor);
+    const legacy = await secretService(db).create(company.id, {
+      provider: "local_encrypted", name: `Legacy personal ${randomUUID()}`,
+      key: `tool_app.${randomUUID()}.credentials_authorization`, value: "old-key",
+    });
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    const [grantRef] = grants[0]!.credentialSecretRefs;
+    await db.update(connectionGrants).set({ credentialSecretRefs: [{ ...grantRef!, secretId: legacy.id }] })
+      .where(eq(connectionGrants.id, grants[0]!.id));
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await db.update(toolConnections).set({
+      credentialRefs: row!.credentialRefs.map((ref) => ({ ...ref, secretId: legacy.id })),
+    }).where(eq(toolConnections.id, connected.connectionId));
+    const grantSecretId = async () =>
+      (await service.listConnectionGrants(connected.connectionId, company.id)).grants[0]!.credentialSecretRefs[0]!.secretId;
+
+    vi.spyOn(localEncryptedProvider, "deleteOrArchive").mockRejectedValueOnce(new Error("provider unavailable"));
+    await expect(service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.authorization": "new-key" } }, actor)).rejects.toThrow("provider unavailable");
+    expect(await grantSecretId()).toBe(legacy.id);
+    const [legacyAfterFailure] = await db.select().from(companySecrets).where(eq(companySecrets.id, legacy.id));
+    expect(legacyAfterFailure?.status).toBe("active");
+
+    await service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.authorization": "new-key" } }, actor);
+    const [repaired] = await db.select().from(companySecrets).where(eq(companySecrets.id, await grantSecretId()));
+    expect(repaired).toMatchObject({ scope: "user", ownerUserId: actor.actorId });
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, legacy.id))).toHaveLength(0);
   });
 
   it("keeps rejected Mem0 API keys on the key-entry path rather than switching to OAuth", async () => {

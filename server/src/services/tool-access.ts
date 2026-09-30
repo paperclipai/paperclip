@@ -41,6 +41,7 @@ import {
   companies,
   companyMemberships,
   companySecretBindings,
+  managedAgentProfiles,
   companySecrets,
   principalPermissionGrants,
   userSecretDefinitions,
@@ -6032,6 +6033,19 @@ export function toolAccessService(
         ),
       );
     for (const row of foreignBindings) referencedElsewhere.add(row.secretId);
+
+    // A managed-agent profile holds its API key through a restrict foreign
+    // key, so deleting a secret it uses would fail.
+    const profileRefs = await db
+      .select({ secretId: managedAgentProfiles.apiKeySecretId })
+      .from(managedAgentProfiles)
+      .where(
+        and(
+          eq(managedAgentProfiles.companyId, connection.companyId),
+          inArray(managedAgentProfiles.apiKeySecretId, unique),
+        ),
+      );
+    for (const row of profileRefs) referencedElsewhere.add(row.secretId);
 
     // Bindings are the authority, but read the sibling refs too: a row written
     // before `syncCredentialBindings` existed — or by hand — can reference a
@@ -13964,8 +13978,9 @@ export function toolAccessService(
    * Replace the credential(s) on an existing connection and re-run the health
    * check — the "Replace key" / reconnect flow (M7, PAP-10859). Rotates the
    * secret in place when a ref already exists so the connection keeps its
-   * profile, policies, and catalog; creates a fresh secret only when the field
-   * had none (e.g. a link connection added a key after the fact).
+   * profile, policies, and catalog; creates a fresh secret when the field had
+   * none (e.g. a link connection added a key after the fact) or when a personal
+   * grant points at a value its owner does not hold.
    */
   async function reconnectGalleryApp(
     connectionId: string,
@@ -14030,19 +14045,32 @@ export function toolAccessService(
     const credentialRefs: McpConnectionCredentialRef[] = [
       ...(connection.credentialRefs ?? []),
     ];
+    const replacedSecretIds: string[] = [];
 
     for (const field of providedFields) {
       const value = input.credentialValues[field.configPath]!.trim();
-      const existing = credentialSecretRefs.find(
+      const existingIndex = credentialSecretRefs.findIndex(
         (ref) => ref.configPath === field.configPath,
       );
+      const existing = existingIndex >= 0 ? credentialSecretRefs[existingIndex] : undefined;
       if (existing) {
-        await secrets.rotate(
-          existing.secretId,
-          { value },
-          actorForSecret(actor),
-        );
-        continue;
+        // Builds before personal key setup minted user-owned values attached a
+        // company-scoped secret to the user grant. The gateway never resolves
+        // that pairing, so rotating it in place would leave the connection
+        // broken. Replace it with a user-owned value instead.
+        const legacyPersonalValue =
+          personalIdentity &&
+          !(await isUserOwnedSecret(companyId, existing.secretId, personalIdentity.subjectUserId));
+        if (!legacyPersonalValue) {
+          await secrets.rotate(
+            existing.secretId,
+            { value },
+            actorForSecret(actor),
+          );
+          continue;
+        }
+        credentialSecretRefs.splice(existingIndex, 1);
+        replacedSecretIds.push(existing.secretId);
       }
       const metadata = {
         name: `${connection.name} ${field.label} ${randomUUID().slice(0, 8)}`,
@@ -14083,6 +14111,14 @@ export function toolAccessService(
       }
     }
 
+    const revokedSecretIds = await replacedSecretsToRevoke(connection, replacedSecretIds, {
+      grantId: personalIdentity?.grant?.id ?? null,
+      keptSecretIds: [
+        ...credentialRefs.map((ref) => ref.secretId),
+        ...connection.credentialSecretRefs.map((ref) => ref.secretId),
+        ...credentialSecretRefs.map((ref) => ref.secretId),
+      ],
+    });
     const updated = await db.transaction(async (tx) => {
       const updatedAt = new Date();
       if (personalIdentity) {
@@ -14125,6 +14161,10 @@ export function toolAccessService(
         })
         .where(eq(toolConnections.id, connection.id))
         .returning();
+      // Revoke in the same transaction as the ref swap. A failure rolls both
+      // back, so a retry still finds the legacy ref and replaces it again.
+      const vault = secretService(tx as unknown as Db);
+      for (const secretId of revokedSecretIds) await vault.remove(secretId);
       return nextConnection;
     });
     await syncCredentialBindings(
@@ -14136,6 +14176,66 @@ export function toolAccessService(
       enableAllByDefault: true,
     });
     return { ...health, connection: refresh.connection };
+  }
+
+  /** True when `secretId` is a user-scoped value owned by `userId`. */
+  async function isUserOwnedSecret(companyId: string, secretId: string, userId: string) {
+    const [secret] = await db
+      .select({
+        scope: companySecrets.scope,
+        ownerUserId: companySecrets.ownerUserId,
+        userSecretDefinitionId: companySecrets.userSecretDefinitionId,
+      })
+      .from(companySecrets)
+      .where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId)))
+      .limit(1);
+    return secret?.scope === "user" && secret.ownerUserId === userId && secret.userSecretDefinitionId !== null;
+  }
+
+  /**
+   * The replaced secrets a reconnect may revoke. `classifyConnectionSecrets`
+   * only looks at other consumers, so first keep any secret this connection
+   * will still reference: the refs being committed and its other grants' refs.
+   * Only `local_encrypted` values qualify: reconnect revokes inside its ref-swap
+   * transaction, and only a value stored in Paperclip's database rolls back
+   * with it. Connection-owned secrets are always created that way.
+   */
+  async function replacedSecretsToRevoke(
+    connection: typeof toolConnections.$inferSelect,
+    secretIds: string[],
+    kept: { grantId: string | null; keptSecretIds: string[] },
+  ): Promise<string[]> {
+    if (secretIds.length === 0) return [];
+    const otherGrants = await db
+      .select({ refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          kept.grantId ? ne(connectionGrants.id, kept.grantId) : undefined,
+        ),
+      );
+    const stillReferenced = new Set([
+      ...kept.keptSecretIds,
+      ...otherGrants.flatMap((row) => (row.refs ?? []).map((ref) => ref.secretId)),
+    ]);
+    const { owned } = await classifyConnectionSecrets(
+      connection,
+      secretIds.filter((id) => !stillReferenced.has(id)),
+    );
+    if (owned.length === 0) return [];
+    const localRows = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(
+        and(
+          eq(companySecrets.companyId, connection.companyId),
+          inArray(companySecrets.id, owned),
+          eq(companySecrets.provider, "local_encrypted"),
+        ),
+      );
+    return localRows.map((row) => row.id);
   }
 
   async function startOAuth(
