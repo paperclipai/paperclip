@@ -77,7 +77,8 @@ describe("database backup health", () => {
     // The two optional failure markers are observed after the archive scan.
     const archiveReads = vi.mocked(fs.stat).mock.calls.filter(([file]) => String(file).endsWith(".sql.gz"));
     expect(archiveReads).toHaveLength(12);
-    expect(peak).toBeLessThanOrEqual(2);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
   });
 
   it("lets a timer run while the filesystem observation is pending", async () => {

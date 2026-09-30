@@ -96,19 +96,24 @@ async function findLatestBackup(backupDir: string, nowMs: number) {
     throw error;
   }
   let latest: { fullPath: string; stat: Stats } | null = null;
-  // Observe one file at a time: health probes must not flood the filesystem
-  // thread pool when a backup directory contains a large retained history.
-  for (const name of names) {
-    if (!name.endsWith(".sql.gz")) continue;
-    const fullPath = join(backupDir, name);
-    try {
-      const metadata = await stat(fullPath);
-      if (!latest || metadata.mtimeMs > latest.stat.mtimeMs) {
-        latest = { fullPath, stat: metadata };
+  // Keep bounded parallelism so a retained history neither floods the
+  // filesystem thread pool nor waits for every metadata read sequentially.
+  const archives = names.filter((name) => name.endsWith(".sql.gz"));
+  for (let index = 0; index < archives.length; index += 4) {
+    const batch = await Promise.all(archives.slice(index, index + 4).map(async (name) => {
+      const fullPath = join(backupDir, name);
+      try {
+        return { fullPath, stat: await stat(fullPath) };
+      } catch (error) {
+        // Retention can remove a listed backup while its metadata is read.
+        if (isMissing(error)) return null;
+        throw error;
       }
-    } catch (error) {
-      // Retention can remove a listed backup while its metadata is read.
-      if (!isMissing(error)) throw error;
+    }));
+    for (const candidate of batch) {
+      if (candidate && (!latest || candidate.stat.mtimeMs > latest.stat.mtimeMs)) {
+        latest = candidate;
+      }
     }
   }
   if (!latest) return null;
