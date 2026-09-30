@@ -10497,6 +10497,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
       .set("Host", "127.0.0.1:3200")
+      .set("Origin", "http://127.0.0.1:3200")
       .send({ galleryKey: "slack", name: "Loopback Slack workspace" });
 
     expect(connectRes.status).toBe(201);
@@ -11616,11 +11617,66 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("uses Asana v2 metadata instead of stale v1 endpoints for a saved custom app", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    });
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await db.update(toolConnections).set({ config: {
+      ...connection.config,
+      oauth: { ...connection.config.oauth as Record<string, unknown>,
+        issuer: "https://mcp.asana.com", authorizationUrl: "https://mcp.asana.com/authorize",
+        tokenUrl: "https://mcp.asana.com/token", resource: "https://mcp.asana.com" },
+    } }).where(eq(toolConnections.id, connected.connectionId));
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      calls.push(String(url));
+      if (String(url) === "https://mcp.asana.com/.well-known/oauth-protected-resource/v2") {
+        return mcpHttpResponse({ resource: "https://mcp.asana.com/v2/mcp",
+          authorization_servers: ["https://app.asana.com"], scopes_supported: ["default"] });
+      }
+      if (String(url) === "https://app.asana.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({ issuer: "https://app.asana.com",
+          authorization_endpoint: "https://app.asana.com/-/oauth_authorize",
+          token_endpoint: "https://app.asana.com/-/oauth_token",
+          token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+          code_challenge_methods_supported: ["S256"] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.origin + authorization.pathname).toBe("https://app.asana.com/-/oauth_authorize");
+    expect(authorization.searchParams.get("resource")).toBe("https://mcp.asana.com/v2/mcp");
+    expect(authorization.searchParams.get("scope")).toBe("default");
+    expect(authorization.searchParams.get("client_id")).toBe("asana-client");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(calls).toEqual([
+      "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+      "https://app.asana.com/.well-known/oauth-authorization-server",
+    ]);
+    const missingSecret = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "another-client" },
+    });
+    await expect(service.startOAuth(company.id, missingSecret.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("requires an OAuth client secret") });
+  });
+
   it("stores a curated customer-owned OAuth client without exposing its secret", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-customer-client",
@@ -11653,6 +11709,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {
@@ -11668,11 +11725,34 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("resumes personal Asana client credentials with database timestamp precision", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "asana-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const before = await service.listConnectionGrants(connected.connectionId, company.id);
+    const grant = before.grants[0]!;
+    await db.update(connectionGrants).set({ updatedAt: sql`'2026-01-01 12:00:00.123456'::timestamp` })
+      .where(eq(connectionGrants.id, grant.id));
+    await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      resumeConnectionId: connected.connectionId, oauthClient: { clientId: "asana-client" },
+    }, actor);
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(after.grants).toHaveLength(1);
+    expect(after.grants[0]!.credentialSecretRefs).toEqual(grant.credentialSecretRefs);
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+  });
+
   it("does not retain a customer OAuth secret when the client id changes", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-first-client",
@@ -11682,6 +11762,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {

@@ -981,6 +981,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(gmail?.textContent).not.toContain("Coming soon");
   });
 
+  it("defaults Asana to managed sign-in and allows a custom app before enrollment", async () => {
+    mockSearch.value = "source=asana";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...ASANA, methods: ASANA.methods.filter((method) => !method.oauthStrategy), ownershipAvailability: {
+      ...ASANA.ownershipAvailability, platform_shared: false,
+    } }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ configured: false, status: "not_configured", origins: [] });
+    await render();
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect with Paperclip");
+    await act(async () => { buttonByText("Use your own Asana OAuth app")!.click(); });
+    await flushReact();
+    expect(container.textContent).toContain("Your OAuth app");
+    expect(container.textContent).toContain("API apps do not work with Asana MCP");
+    expect(container.textContent).not.toContain("You must connect this instance");
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "asana-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
     listGalleryMock.mockResolvedValue({ apps: [BOX] });
     mockParams.appKey = "box";

@@ -1,4 +1,5 @@
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
 import { browserUseService } from "./browser-use.js";
@@ -2491,13 +2492,16 @@ export function isGoogleWorkspaceToolAllowed(
 }
 
 type ManagedConnectorProfileId =
-  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
+  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
 
 function managedConnectorProfile(value: string | undefined): {
   id: ManagedConnectorProfileId;
-  provider: "google" | "github";
+  provider: "google" | "github" | "asana";
   scopes: readonly string[];
 } | null {
+  if (value && isAsanaConnectorProfileId(value)) {
+    return { id: value, provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
+  }
   if (value && isGoogleWorkspaceConnectorProfileId(value)) {
     return {
       id: value,
@@ -9030,6 +9034,17 @@ export function toolAccessService(
       connection.ownership !== "dcr" &&
       typeof storedOAuth.clientId === "string" &&
       storedOAuth.clientId.trim().length > 0;
+    // A reviewed protected-resource document is authoritative for this method.
+    // Some hosts still serve metadata for a retired MCP server at the root.
+    // Resolve it before cached endpoints, including on existing draft reconnects.
+    if (!smokeLabEndpoints && galleryMethod?.defaults?.discoveryUrl) {
+      const endpoints = await endpointsFromMetadataUrl(
+        connection, galleryMethod.defaults.discoveryUrl, [], originOf(redirectUri),
+      );
+      if (!endpoints) throw unprocessable("OAuth provider metadata could not be loaded");
+      assertNotSmokeLabOAuthEndpoints(connection, endpoints);
+      return endpoints;
+    }
     const hasCompleteGalleryEndpointHints = Boolean(
       galleryMethod?.defaults?.authorizationEndpoint &&
       galleryMethod.defaults.tokenEndpoint &&
@@ -14137,7 +14152,9 @@ export function toolAccessService(
         issuer:
           managedProfile.provider === "github"
             ? "https://github.com"
-            : "https://accounts.google.com",
+            : managedProfile.provider === "asana"
+              ? "https://app.asana.com"
+              : "https://accounts.google.com",
         resource: galleryMethod.defaults?.serverUrl ?? null,
         registrationSource: null,
       };
@@ -14161,6 +14178,9 @@ export function toolAccessService(
     });
     connection = resolvedClient.connection;
     const client = resolvedClient.client;
+    if (galleryMethod?.oauthClientSecretRequired && !client.clientSecret) {
+      throw unprocessable("This app requires an OAuth client secret. Add it in the app setup before signing in.");
+    }
     if (!client.clientId)
       throw unprocessable(
         `OAuth client id is not configured for ${endpoints.provider}`,
@@ -14765,9 +14785,9 @@ export function toolAccessService(
       redemptionId: input.state,
     });
     const refreshToken = credentials.refreshToken;
-    if (profile.provider === "google" && !refreshToken) {
+    if ((profile.provider === "google" || profile.provider === "asana") && !refreshToken) {
       throw unprocessable(
-        `Google did not return offline access. Reconnect ${providerName} and grant the requested scopes.`,
+        `${providerName} did not return offline access. Reconnect and grant the requested permissions.`,
         {
           code: "oauth_refresh_missing",
         },

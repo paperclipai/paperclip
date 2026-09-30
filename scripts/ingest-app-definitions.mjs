@@ -1095,6 +1095,31 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "asana") return [
+    oauthMethodFor(entry, "managed", entry.serverUrl, {
+      label: "Sign in with Asana",
+      ownershipModes: ["platform_shared"],
+      oauthStrategy: "paperclip_cloud_connector",
+      connectorProfile: "asana.mcp",
+      grantKinds: ["user", "agent"],
+      defaults: { serverUrl: entry.serverUrl, scopesHint: ["default"] },
+      guidanceMd: "Sign in to Asana with Paperclip. Asana gives this connection access to the workspaces available to your account.",
+      whenToUse: "Connect your Asana account with Paperclip's app.",
+      warnings: [],
+    }),
+    {
+      ...customerOAuthMethodFor(entry),
+      defaults: {
+        serverUrl: entry.serverUrl,
+        discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        scopesHint: ["default"],
+      },
+      oauthClientSecretRequired: true,
+      guidanceMd: "Create an MCP app in Asana, then add the callback URL below under OAuth. Under Manage distribution, select your workspace and save. API apps do not work with Asana MCP.",
+      consoleLinks: { register: "https://app.asana.com/0/my-apps", docs: entry.docsUrl },
+      warnings: [],
+    },
+  ];
   if (entry.slug === "mem0" || entry.slug === "honcho") return [
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,

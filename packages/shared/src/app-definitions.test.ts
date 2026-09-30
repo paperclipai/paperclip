@@ -572,10 +572,15 @@ describe("AppDefinition catalog", () => {
         (field) => field.key === "readOnly",
       )?.defaultValue,
     ).toBe(false);
-    // Asana and Linear both advertise dynamic client registration and issue
-    // clients on request (verified live 2026-09-28), so neither needs an
-    // operator-registered OAuth app. "customer" stays as the manual fallback.
-    expect(method("asana")?.ownershipModes).toEqual(["dcr", "customer"]);
+    expect(method("asana")).toMatchObject({
+      key: "managed", ownershipModes: ["platform_shared"], connectorProfile: "asana.mcp",
+      defaults: { serverUrl: "https://mcp.asana.com/v2/mcp", scopesHint: ["default"] },
+    });
+    expect(APP_DEFINITIONS.find((app) => app.slug === "asana")?.methods[1]).toMatchObject({
+      key: "mcp-own-oauth", ownershipModes: ["customer"], oauthClientSecretRequired: true,
+      defaults: { discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2" },
+      consoleLinks: { register: "https://app.asana.com/0/my-apps" },
+    });
     expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
