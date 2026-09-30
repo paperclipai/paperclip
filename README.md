@@ -83,12 +83,18 @@ Built-in adapters also support **Gemini CLI, OpenCode, Pi, Hermes, Grok, Kimi Co
 
 Four things have to work for an organization of AI agents to actually produce: the tasks, the org, the training, and the infrastructure. Paperclip is built around exactly those four pillars.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-light.png">
+  <img src="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-light.png" alt="The four pillars of Paperclip">
+</picture>
+
 | Pillar | Built for | What it covers |
 | --- | --- | --- |
 | **Agentic Task Manager** — Declare intent. Agents work. You verify the output. | Everyone, daily | Tasks, approvals & review gates · proactive agent coworkers · auditable routines & workflows · verify from diffs, screenshots & tests |
-| **Org Chart for Agents** — Roles, permissions & boundaries for humans and agents. | Managers | Agent reporting lines & human collaborators · responsibilities, delegation, specialization · connection permissions & responsible-user identities · scoped secrets & company boundaries |
-| **Agent Employee Training** — Build and improve your agents' procedures. | Enablers | Skill Studio & shared org-wide skills · saved test inputs & runs · skill version history & restore · reusable team templates |
-| **Agentic OS** — The infrastructure that makes the work run. | IT & platform | Multiple models & harnesses · local execution & configured sandboxes · app connections & MCP servers · user roles, secrets & cost controls · run history & opt-in tracing |
+| **Org Chart for Agents** — Roles, permissions & boundaries for humans and agents. | Managers | Mixed human + agent org chart · responsibilities, delegation, specialization · governance: who can do what · scoped secrets & company boundaries · connection permissions & responsible-user identities |
+| **Agent Employee Training** — Design, train & evaluate your AI employees. | Enablers | Skill Studio & shared org-wide skills · evals & saved test runs · active learning loops & quality metrics · performance reviews for agents · saved test inputs · skill version history & restore · reusable team templates |
+| **Agentic OS** — The infrastructure that makes the work run. | IT & platform | Cross-provider runtime: any model, any agent · sandboxing, integrations & MCP servers · SSO, GRC, RBAC & cost controls · data privacy, internal trace collection, compounding data value · personal & shared app connections · run history & opt-in tracing |
 
 <br/>
 
@@ -175,7 +181,7 @@ Experimental **Agent Chat** and **chat/email connectors** add conversations with
 
 | Without Paperclip                                                                                                                     | With Paperclip                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks, conversations, and outputs persist in Paperclip. Supporting adapters resume their saved sessions.                            |
+| ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                |
 | ❌ You manually gather context from several places to remind your bot what you're actually doing.                                     | ✅ Context flows from the task up through the project and company goals — your agent always knows what to do and why.                  |
 | ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ Paperclip gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
 | ❌ Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                           | ✅ Spend tracking, budget alerts, and automatic pauses help you control the cost of ongoing work.                                       |
@@ -242,7 +248,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td width="50%">
 
-**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Mix supported harnesses on one team. Managed AI connections let compatible agents use personal or shared subscription accounts or API keys, independently of model selection.
+**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Adapter examples match the diagram: Claude Code, Codex, CLI agents such as Cursor/Gemini/bash, HTTP/webhook bots such as OpenClaw, and external adapter plugins. If it can receive a heartbeat, it's hired.
 
 </td>
 </tr>
@@ -478,8 +484,24 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 ## Roadmap
 
-Skills, routines, review stages, multi-user access, artifacts, company packages, plugins, and governed app connections are available today; see [Features](#features) above. The remaining directions include:
-
+- ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
+- ✅ Get OpenClaw / claw-style agent employees
+- ✅ companies.sh - import and export entire organizations
+- ✅ Easy AGENTS.md configurations
+- ✅ Skills Manager, Skill Studio & Skills Store
+- ✅ Scheduled Routines
+- ✅ Better Budgeting
+- ✅ Agent Reviews and Approvals
+- ✅ Multiple Human Users
+- ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, self-hosted Kubernetes)
+- ✅ Artifacts & Work Products
+- ✅ Deep Planning (planning mode, revisioned plans, plan approvals)
+- ✅ Enforced Outcomes (watchdogs, recovery actions, review gates)
+- ✅ MCP Tool Gateway & Apps (governed tool access)
+- ✅ Secrets Manager with per-agent access
+- ✅ Activity log & action attribution
+- ✅ Self-healing runs & automatic recovery
+- ✅ Agent evals & feedback
 - 🟡 Memory / Knowledge — experimental memory connectors and an optional LLM Wiki plugin are available; broader organizational memory remains in development
 - ⚪ MAXIMIZER MODE
 - ⚪ Work Queues
@@ -490,7 +512,7 @@ Skills, routines, review stages, multi-user access, artifacts, company packages,
 - ⚪ Desktop App
 - ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
 
-🟡 means partial or experimental; ⚪ means planned. Experimental surfaces depend on instance settings. Status tracks the default branch; check [release notes](https://github.com/paperclipai/paperclip/releases) for packaged versions. These are directions, not release commitments. See [ROADMAP.md](ROADMAP.md) for milestones and remaining work.
+This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
 
 <br/>
 
