@@ -9,7 +9,7 @@ function fixture() {
     interactions: [{ id: "question", kind: "ask_user_questions", status: "pending", resolverPolicy: "human_only", addresseeUserId: "requester", continuationPolicy: "wake_assignee", payload: { prompt: "Clarify salary scope?" } }],
     runs: [{ id: "first", agentId: "worker", status: "succeeded", runtimeMode: "legacy" }] };
   const final: BlockerCheckpoint = { ...structuredClone(waiting), phase: "final", issue: { ...waiting.issue, status: "done" },
-    comments: [{ authorAgentId: "worker", body: "DECISION_test" }],
+    comments: [{ id: "worker-reply", authorAgentId: "worker", body: "DECISION_test" }],
     interactions: [{ ...waiting.interactions[0], status: "answered", resolvedByUserId: "requester", result: { text: "DECISION_test" } }],
     runs: [...waiting.runs, { ...waiting.runs[0], id: "second" }] };
   return { caseId: "requester-scope" as const, assigneeId: "worker", managerId: "manager", marker: "DECISION_test", checkpoints: [waiting, final] };
@@ -77,6 +77,7 @@ describe("blocker guidance oracle calibration", () => {
     ["unpermitted hire", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.agents.push({ id: "casey" }); }],
     ["premature done", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.issue.status = "done"; }],
     ["invented acknowledgement", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.comments[0]!.authorAgentId = "requester"; }],
+    ["acknowledgement predates human answer", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.comments.push(structuredClone(f.checkpoints[1]!.comments[0]!)); }],
     ["missing continuation", (f: ReturnType<typeof fixture>) => { f.checkpoints.pop(); }],
     ["missing evidence", (f: ReturnType<typeof fixture>) => { f.checkpoints = []; }],
   ])("rejects %s", (_label, mutate) => { const f = fixture(); mutate(f); expect(gradeBlocker(f).some(c => !c.passed)).toBe(true); });

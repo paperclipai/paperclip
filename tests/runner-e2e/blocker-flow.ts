@@ -130,7 +130,7 @@ export async function runBlockerFlow(input: {
       collectChatRunEvidence(api, run as Parameters<typeof collectChatRunEvidence>[1])
         .catch(error => ({ runId: run.id, evidenceError: String(error) })))));
     await input.evidence("api-state.json", { capturePhase: "blocker-final", issue, runs, checks, lastObservation });
-    await input.evidence("blocker-guidance.json", { schema: "paperclip.blocker-guidance.v3", graderVersion: BLOCKER_GRADER_VERSION,
+    await input.evidence("blocker-guidance.json", { schema: BLOCKER_GRADER_VERSION, graderVersion: BLOCKER_GRADER_VERSION,
       inputUx: gradeBlockerInputUx(checkpoints.find(c => c.phase === "waiting")), caseId: scenario.id,
       prompt: scenario.prompt, answer: scenario.answer, hashes, managerId, assigneeId: fixtures.agent.id, checks, checkpoints, lastObservation });
   }

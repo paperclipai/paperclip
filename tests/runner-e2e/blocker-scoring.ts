@@ -1,6 +1,6 @@
 import type { BlockerCase } from "./blocker-cases.js";
 type Row = Record<string, any>;
-export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v3";
+export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v4";
 export const BLOCKER_INPUT_KINDS = ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"];
 
 export function pendingBlockerInput(checkpoint: BlockerCheckpoint | undefined) {
@@ -79,7 +79,8 @@ export function gradeBlocker(input: {
     check("resumed-to-done", !!waiting && final.runs.some(r => !waiting.runs.some(old => old.id === r.id)) &&
       final.issue.status === "done" && !final.issue.scheduledRetry && !final.issue.activeRecoveryAction &&
       final.interactions.every(i => i.status !== "pending") &&
-      final.comments.some(c => c.authorAgentId === input.assigneeId && String(c.body).includes(input.marker)),
+      final.comments.some(c => c.authorAgentId === input.assigneeId &&
+        !waiting.comments.some(old => old.id === c.id) && String(c.body).includes(input.marker)),
       "A subsequent provider run uses the human answer, finishes the same task, and leaves no pending work.");
   } else if (input.requireFinal !== false || input.checkpoints.length !== 1 || !waiting) {
     check("evidence-present", false, "A waiting checkpoint is required; missing evidence cannot pass.");

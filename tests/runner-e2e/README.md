@@ -1373,8 +1373,9 @@ contribute to the existing billing contract. Evidence includes the waiting and
 final task screenshots, saved checkpoints, final observations, source revision,
 profile/model, catalog digest, and SHA-256 fingerprints of both changed skill
 files and the grader/flow in `snapshots/blocker-guidance.json`. Grader version
-`paperclip.blocker-guidance.v3` accepts supported confirmations and multiple
-questions, verifies human resolution, and records `inputUx` separately from
+`paperclip.blocker-guidance.v4` accepts supported confirmations and multiple
+questions, verifies human resolution and a new worker reply after the waiting
+checkpoint, and records `inputUx` separately from
 the blocking checks. Direct text input is the preferred UX for these open-ended
 requests; a valid confirmation can satisfy the waiting contract while losing
 that UX dimension. Earlier results retain their original grades. Version 2
