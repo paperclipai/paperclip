@@ -58,6 +58,28 @@ describe("database backup health", () => {
     expect((await inspect()).warnings.map((warning) => warning.code)).toEqual(["database_backup_missing"]);
   });
 
+  it("bounds metadata reads while scanning retained backups", async () => {
+    for (let index = 0; index < 12; index++) await backup(`${index}.sql.gz`, index + 1);
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let active = 0;
+    let peak = 0;
+    vi.mocked(fs.stat).mockImplementation((async (...args: Parameters<typeof fs.stat>) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return await actual.stat(...args);
+      } finally {
+        active--;
+      }
+    }) as typeof fs.stat);
+    expect((await inspect()).latestBackup?.name).toBe("0.sql.gz");
+    // The two optional failure markers are observed after the archive scan.
+    const archiveReads = vi.mocked(fs.stat).mock.calls.filter(([file]) => String(file).endsWith(".sql.gz"));
+    expect(archiveReads).toHaveLength(12);
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+
   it("lets a timer run while the filesystem observation is pending", async () => {
     let release!: () => void;
     const held = new Promise<string[]>((resolve) => { release = () => resolve([]); });

@@ -1,4 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
@@ -94,22 +95,22 @@ async function findLatestBackup(backupDir: string, nowMs: number) {
     if (isMissing(error)) return null;
     throw error;
   }
-  const candidates = (await Promise.all(names
-    .filter((name) => name.endsWith(".sql.gz"))
-    .map(async (name) => {
-      const fullPath = join(backupDir, name);
-      try {
-        return { fullPath, name, stat: await stat(fullPath) };
-      } catch (error) {
-        // Retention can remove a listed backup while its metadata is read.
-        if (isMissing(error)) return null;
-        throw error;
+  let latest: { fullPath: string; stat: Stats } | null = null;
+  // Observe one file at a time: health probes must not flood the filesystem
+  // thread pool when a backup directory contains a large retained history.
+  for (const name of names) {
+    if (!name.endsWith(".sql.gz")) continue;
+    const fullPath = join(backupDir, name);
+    try {
+      const metadata = await stat(fullPath);
+      if (!latest || metadata.mtimeMs > latest.stat.mtimeMs) {
+        latest = { fullPath, stat: metadata };
       }
-    })))
-    .filter((candidate) => candidate !== null)
-    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-
-  const latest = candidates[0];
+    } catch (error) {
+      // Retention can remove a listed backup while its metadata is read.
+      if (!isMissing(error)) throw error;
+    }
+  }
   if (!latest) return null;
 
   return {
