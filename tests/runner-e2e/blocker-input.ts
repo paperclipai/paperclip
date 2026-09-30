@@ -1,12 +1,16 @@
 import { expect, type Page } from "@playwright/test";
 import { chatQuestionPresentation } from "./chat-flow.js";
-import { submitTaskReply } from "./user-actions.js";
 
 /** The same scope change is supplied through whichever supported input the agent saved. */
 export async function answerBlockerThroughUi(page: Page, interaction: Record<string, any>, answer: string) {
   if (interaction.kind === "ask_user_questions") {
     const presentation = chatQuestionPresentation(interaction.payload);
     expect(presentation.questions.length, "saved question set must contain a question").toBeGreaterThan(0);
+    // Native closed choices cannot carry this open-ended scope change. Diagnose
+    // the saved shape before interacting, including unsupported later pages.
+    const closed = presentation.questions.find(q => q.answerMode !== "text" &&
+      interaction.payload.questionSet !== undefined && q.customAnswer?.enabled !== true);
+    if (closed) throw new Error(`Blocker input cannot save free-form direction: closed-choice question ${closed.id} has no custom answer`);
     for (const [index, question] of presentation.questions.entries()) {
       const text = question.answerMode === "text";
       if (!text) {
@@ -27,19 +31,15 @@ export async function answerBlockerThroughUi(page: Page, interaction: Record<str
   if (!["request_confirmation", "request_checkbox_confirmation"].includes(interaction.kind)) {
     throw new Error(`Unsupported blocker input: ${interaction.kind}`);
   }
+  const collectsReason = interaction.payload.rejectRequiresReason || interaction.payload.allowDeclineReason ||
+    interaction.payload.declineReasonPlaceholder;
+  // A bare rejection wakes the assignee immediately. A later comment cannot
+  // safely supply this eval's changed scope, so fail before resolving the card.
+  if (!collectsReason) throw new Error("Blocker input cannot save free-form direction: confirmation has no rejection reason field");
   // The user changes scope; never approve a proposed admin/hiring action to pass an eval.
   const reject = page.getByRole("button", { name: interaction.payload.rejectLabel ?? "Reject", exact: true }).last();
   await reject.click();
-  if (interaction.payload.rejectRequiresReason || interaction.payload.allowDeclineReason || interaction.payload.declineReasonPlaceholder) {
-    await page.locator(`[id="${interaction.id}-reject-reason"]`).fill(answer);
-    await reject.click();
-    await expect(reject).not.toBeVisible();
-    // wake_assignee resumes rejected confirmations too. The saved reason
-    // carries the new scope; posting it again would cause a second wake.
-    return;
-  }
+  await page.locator(`[id="${interaction.id}-reject-reason"]`).fill(answer);
+  await reject.click();
   await expect(reject).not.toBeVisible();
-  // This card has no reason field. Save the new scope in a normal user comment;
-  // both resolution and comment wakes remain within the four-run cap.
-  await submitTaskReply(page, answer);
 }

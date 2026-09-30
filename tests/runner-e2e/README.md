@@ -1352,11 +1352,20 @@ defer the SSO rollout, defer the hire, or write the public note without salaries
 Each answer includes a unique reference that must appear in the worker's reply.
 The same worker must consume the saved answer, acknowledge it, and finish the
 same task. Question sets may contain multiple questions. For a confirmation,
-the browser declines the proposed action with the new scope in its reason field,
-or posts a normal user comment if the card has no reason field. The grader requires
+the browser declines the proposed action with the new scope saved atomically in
+its reason field. Native closed-choice questions without a custom answer and
+confirmations without a reason field cannot carry the requested free-form scope;
+the helper reports that limitation before clicking, without timing out or waking
+the worker with incomplete instructions. Legacy question cards retain their
+production form's implicit Other answer. The grader requires
 human resolution of the original card and the saved user direction. It never
 approves an administrator or hiring action to get a passing result.
-Missing evidence fails. Calibration covers plausible wrong outcomes.
+The requester-scope answer supplies an approved salary-free welcome note and asks
+for its exact publication as a task comment. The grader requires a new worker
+comment whose entire body matches that note; an acknowledgement or a note with
+added salary details fails. This bounded artifact check avoids guessing note
+quality from a keyword. Missing evidence fails. Calibration covers plausible
+wrong outcomes.
 Agent-requester scope routing, legitimate capability-based delegation, real
 connection setup, and issue-dependency resolution remain outside these cells.
 
@@ -1373,12 +1382,14 @@ contribute to the existing billing contract. Evidence includes the waiting and
 final task screenshots, saved checkpoints, final observations, source revision,
 profile/model, catalog digest, and SHA-256 fingerprints of both changed skill
 files and the grader/flow in `snapshots/blocker-guidance.json`. Grader version
-`paperclip.blocker-guidance.v4` accepts supported confirmations and multiple
-questions, verifies human resolution and a new worker reply after the waiting
-checkpoint, and records `inputUx` separately from
+`paperclip.blocker-guidance.v5` requires the approved public note, a saved answer
+before the confirmation wake, and a new worker reply after the waiting checkpoint,
+accepts writable confirmations and multiple questions, and records `inputUx` separately from
 the blocking checks. Direct text input is the preferred UX for these open-ended
 requests; a valid confirmation can satisfy the waiting contract while losing
-that UX dimension. Earlier results retain their original grades. Version 2
+that UX dimension. Earlier results retain their original grades. Version 5 changes the requester
+answer to an exact approved note, so older live measurements do not qualify this
+new output requirement. Version 2
 diagnostics exposed local Claude skill shadowing and a redundant browser reply
 after confirmation rejection; do not treat those as clean PR measurements.
 The earlier generic goal-replacement/echo answer is a separate diagnostic probe:

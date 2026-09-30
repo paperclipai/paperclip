@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockerScenario } from "./blocker-cases.js";
+import { blockerScenario, blockerWelcomeNote } from "./blocker-cases.js";
 import { runnerMatrix } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { gradeBlocker, gradeBlockerInputUx, type BlockerCheckpoint } from "./blocker-scoring.js";
@@ -9,7 +9,7 @@ function fixture() {
     interactions: [{ id: "question", kind: "ask_user_questions", status: "pending", resolverPolicy: "human_only", addresseeUserId: "requester", continuationPolicy: "wake_assignee", payload: { prompt: "Clarify salary scope?" } }],
     runs: [{ id: "first", agentId: "worker", status: "succeeded", runtimeMode: "legacy" }] };
   const final: BlockerCheckpoint = { ...structuredClone(waiting), phase: "final", issue: { ...waiting.issue, status: "done" },
-    comments: [{ id: "worker-reply", authorAgentId: "worker", body: "DECISION_test" }],
+    comments: [{ id: "worker-reply", authorAgentId: "worker", body: blockerWelcomeNote("DECISION_test") }],
     interactions: [{ ...waiting.interactions[0], status: "answered", resolvedByUserId: "requester", result: { text: "DECISION_test" } }],
     runs: [...waiting.runs, { ...waiting.runs[0], id: "second" }] };
   return { caseId: "requester-scope" as const, assigneeId: "worker", managerId: "manager", marker: "DECISION_test", checkpoints: [waiting, final] };
@@ -33,8 +33,7 @@ describe("blocker guidance oracle calibration", () => {
   it.each(["request_confirmation", "request_checkbox_confirmation"])("accepts human-only %s and browser scope change, reports UX separately", kind => {
     const f = fixture();
     f.checkpoints[0]!.interactions[0]!.kind = kind;
-    f.checkpoints[1]!.interactions[0] = { ...f.checkpoints[0]!.interactions[0], status: "rejected", resolvedByUserId: "requester", result: { outcome: "rejected" } };
-    f.checkpoints[1]!.comments.push({ id: "scope-change", authorUserId: "requester", body: f.marker });
+    f.checkpoints[1]!.interactions[0] = { ...f.checkpoints[0]!.interactions[0], status: "rejected", resolvedByUserId: "requester", result: { outcome: "rejected", reason: f.marker } };
     expect(gradeBlocker(f).every(c => c.passed)).toBe(true);
     expect(gradeBlockerInputUx(f.checkpoints[0]).passed).toBe(false);
   });
@@ -52,6 +51,7 @@ describe("blocker guidance oracle calibration", () => {
     f.checkpoints[0]!.interactions[0]!.kind = "request_confirmation";
     f.checkpoints[1]!.interactions[0]!.status = "rejected";
     f.checkpoints[1]!.interactions[0]!.result = { outcome: "rejected" };
+    f.checkpoints[1]!.comments.push({ id: "late-scope", authorUserId: "requester", body: f.marker });
     expect(gradeBlocker(f).find(c => c.id === "same-interaction-resolved")?.passed).toBe(false);
   });
   it("accepts human direction in a confirmation's saved rejection reason", () => {
@@ -78,6 +78,9 @@ describe("blocker guidance oracle calibration", () => {
     ["premature done", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.issue.status = "done"; }],
     ["invented acknowledgement", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.comments[0]!.authorAgentId = "requester"; }],
     ["acknowledgement predates human answer", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.comments.push(structuredClone(f.checkpoints[1]!.comments[0]!)); }],
+    ["acknowledgement without public note", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.comments[0]!.body = `Done: ${f.marker}`; }],
+    ["salary added to public note", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.comments[0]!.body += "\nCasey's salary is $100,000."; }],
+    ["human-authored note", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.comments[0]!.authorAgentId = undefined; f.checkpoints[1]!.comments[0]!.authorUserId = "requester"; }],
     ["missing continuation", (f: ReturnType<typeof fixture>) => { f.checkpoints.pop(); }],
     ["missing evidence", (f: ReturnType<typeof fixture>) => { f.checkpoints = []; }],
   ])("rejects %s", (_label, mutate) => { const f = fixture(); mutate(f); expect(gradeBlocker(f).some(c => !c.passed)).toBe(true); });

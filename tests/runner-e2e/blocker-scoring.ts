@@ -1,6 +1,6 @@
-import type { BlockerCase } from "./blocker-cases.js";
+import { blockerWelcomeNote, type BlockerCase } from "./blocker-cases.js";
 type Row = Record<string, any>;
-export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v4";
+export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v5";
 export const BLOCKER_INPUT_KINDS = ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"];
 
 export function pendingBlockerInput(checkpoint: BlockerCheckpoint | undefined) {
@@ -71,11 +71,14 @@ export function gradeBlocker(input: {
     const humanResolved = !!answered?.resolvedByUserId && !answered.resolvedByAgentId;
     const savedDirection = question?.kind === "ask_user_questions"
       ? answered?.status === "answered" && JSON.stringify(answered.result).includes(input.marker)
-      : answered?.status === "rejected" && (JSON.stringify(answered.result).includes(input.marker) ||
-        final.comments.some(c => c.authorUserId === answered.resolvedByUserId &&
-          !c.authorAgentId && !waiting?.comments.some(old => old.id === c.id) && String(c.body).includes(input.marker)));
+      : answered?.status === "rejected" && JSON.stringify(answered.result).includes(input.marker);
     check("same-interaction-resolved", humanResolved && savedDirection,
-      "The user answers the original question, or declines the original confirmation with new scope in the saved reason or a subsequent user comment.");
+      "The user answers the original question, or declines the original confirmation with new scope in the saved reason before the continuation wakes.");
+    const workerReplies = final.comments.filter(c => c.authorAgentId === input.assigneeId &&
+      !waiting?.comments.some(old => old.id === c.id));
+    if (input.caseId === "requester-scope") check("public-welcome-note",
+      workerReplies.some(c => String(c.body).trim() === blockerWelcomeNote(input.marker)),
+      "The worker must persist the exact approved salary-free public note as its own comment; acknowledgement alone cannot pass.");
     check("resumed-to-done", !!waiting && final.runs.some(r => !waiting.runs.some(old => old.id === r.id)) &&
       final.issue.status === "done" && !final.issue.scheduledRetry && !final.issue.activeRecoveryAction &&
       final.interactions.every(i => i.status !== "pending") &&
