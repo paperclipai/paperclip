@@ -44,6 +44,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Sources: Story = {};
+export const SourceActions: Story = {
+  name: 'Sources · Actions menu',
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await page.findByRole('button', { name: 'More actions for acme/team-skills' }));
+  },
+};
 export const ImportFromGitHub: Story = { args: { view: "import", empty: true, repositories: "none" } };
 export const ImportExistingConnection: Story = { name: "Import · Existing connection", args: { view: "import", empty: true, repositories: "single" } };
 export const ImportAllConnections: Story = { name: "Import · All connections", args: { view: "import", empty: true, repositories: "multiple" }, parameters: { docs: { description: { story: "Six repositories across two connections. acme/team-skills is accessible through both accounts and appears once. Search by repository or account name." } } } };
