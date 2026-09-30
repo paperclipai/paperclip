@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -2439,6 +2440,34 @@ describeEmbeddedPostgres("tool access service", () => {
         .rejects.toMatchObject({ status: 400, details: { code: "oauth_scope_widening_rejected", scopes: [removedScope] } });
     }
   });
+
+  it.each(["airtable", "beehiiv", "miro", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
+    "requests the reviewed read/write scopes for %s without adopting advertised admin scopes",
+    async (slug) => {
+      const company = await createCompany(db);
+      const actor = { actorType: "user" as const, actorId: "alice" };
+      const service = createTestToolAccessService(db, {
+        remoteHttpRequest: async (url, init) => {
+          const origin = new URL(url).origin;
+          if (init.method === "POST") return Response.json({ client_id: "fixture-client", ...JSON.parse(String(init.body)) });
+          return Response.json({ issuer: origin, authorization_endpoint: `${origin}/authorize`,
+            token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
+            scopes_supported: ["unrelated:admin"], response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+          });
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", grantKind: "user", ...(slug === "supabase" ? { configValues: { projectRef: "abcdefghijklmnopqrst" } } : {}) }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+      const review = JSON.parse(await fs.readFile(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8"))
+        .methods.find((entry: { app: string; method: string }) => entry.app === slug && entry.method === "mcp-oauth");
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")?.split(" ")).toEqual(review.requestedScopes);
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")).not.toContain("unrelated:admin");
+      await expect(service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, scopes: ["unrelated:admin"],
+      })).rejects.toMatchObject({ details: { code: "oauth_scope_widening_rejected" } });
+    },
+  );
 
   it("keeps tools outside a Google Workspace capability profile disabled", async () => {
     const company = await createCompany(db);
@@ -8011,7 +8040,6 @@ describeEmbeddedPostgres("tool access service", () => {
           ),
         );
       expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
-        "credentials.oauth.access_token",
         "oauth.access_token",
         "oauth.refresh_token",
       ]);
@@ -10365,7 +10393,7 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
-      ).resolves.toHaveLength(6);
+      ).resolves.toHaveLength(4);
       const [connection] = await db
         .select()
         .from(toolConnections)
@@ -10879,7 +10907,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(
       new URL(first.authorizationUrl).searchParams.get("scope"),
-    ).toBeNull();
+    ).toBe("default");
     expect(
       new URL(concurrent.authorizationUrl).searchParams.get("client_id"),
     ).toBe("notion-dcr-client");
@@ -10972,7 +11000,7 @@ describeEmbeddedPostgres("tool access service", () => {
         clientTokenEndpointAuthMethod: "none",
         clientRedirectUri: redirectUri,
         registrationUrl: "https://mcp.notion.com/register",
-        scopes: [],
+        scopes: ["default"],
       },
     });
     expect(connection.credentialSecretRefs).toEqual([
@@ -12042,7 +12070,7 @@ describeEmbeddedPostgres("tool access service", () => {
           outcome: "success",
         }),
         expect.objectContaining({
-          configPath: "credentials.oauth.access_token",
+          configPath: "oauth.access_token",
           outcome: "success",
         }),
       ]),

@@ -140,13 +140,11 @@ export function getRecommendedConnectionMethod(
     || method.oauthStrategy === "paperclip_id_connector"
   );
 
-  // When a managed pilot advertises only read access, defaulting to a
-  // customer-owned write method would turn the available one-click path into
-  // an OAuth client setup form. Capability-specific callers pass only the
-  // selected group, so explicit write/draft choices keep their own fallback.
+  // Prefer the permissions needed for agent work, then the simplest sign-in.
+  // Explicit read-only selections pass their own capability group here.
   return recommendedCapability(managedMethods)
-    ?? managedMethods[0]
     ?? recommendedCapability(methods)
+    ?? managedMethods[0]
     ?? methods[0]
     ?? null;
 }

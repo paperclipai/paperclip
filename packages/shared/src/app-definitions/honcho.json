@@ -36,7 +36,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Honcho API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "Create peers/sessions and save memory under the API key project. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

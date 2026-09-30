@@ -25,7 +25,10 @@
       ],
       "whenToUse": "Register an OAuth app with Asana, then enter its client ID and secret.",
       "defaults": {
-        "serverUrl": "https://mcp.asana.com/v2/mcp"
+        "serverUrl": "https://mcp.asana.com/v2/mcp",
+        "scopesHint": [
+          "default"
+        ]
       },
       "guidanceMd": "Connect Asana in the browser. Create an Asana MCP OAuth app and register Paperclip's callback URI; DCR is not supported.",
       "riskTier": "S3",

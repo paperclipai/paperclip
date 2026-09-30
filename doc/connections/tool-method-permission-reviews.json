@@ -1,0 +1,2169 @@
+{
+  "reviewedAt": "2026-09-30",
+  "evidenceLevel": "Official documentation and public MCP metadata; no account-bound read/write proof. Runtime discovery never expands this allowlist.",
+  "methods": [
+    {
+      "app": "airtable",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "data.records:read",
+        "data.records:write",
+        "schema.bases:read",
+        "schema.bases:write",
+        "data.recordComments:read",
+        "data.recordComments:write",
+        "workspacesAndBases:read"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update records, schema and record comments in selected bases.",
+      "evidence": [
+        "https://airtable.com/developers/agents/mcp/getting-started",
+        "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+        "https://mcp.airtable.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "api-key-generic",
+      "method": "api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Actions depend on the operator-supplied API and key; grant read/write on the required resources at the provider.",
+      "evidence": [
+        "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Actions depend on the operator-supplied API and key; grant read/write on the required resources at the provider. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "arcade",
+      "method": "mcp",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Actions depend on the user-configured endpoint and its upstream authorizations.",
+      "evidence": [
+        "https://docs.arcade.dev/en/operate/governance/mcp-gateways"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "asana",
+      "method": "mcp-own-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "default"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update tasks and projects authorized by the account.",
+      "evidence": [
+        "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+        "https://mcp.asana.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "beehiiv",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "read",
+        "write"
+      ],
+      "capability": "write",
+      "supportedActions": "Publication/subscriber actions exposed by the MCP catalog.",
+      "evidence": [
+        "https://www.beehiiv.com/features/mcp/getting-started",
+        "https://mcp.beehiiv.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "bitly",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create/manage links in authorized groups.",
+      "evidence": [
+        "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
+        "https://api-ssl.bitly.com/.well-known/oauth-protected-resource",
+        "https://api-ssl.bitly.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The official MCP quickstart uses browser authorization without client-selected scopes; neither protected-resource nor authorization-server metadata advertises a scope list. Bitly account permissions govern link actions."
+    },
+    {
+      "app": "bitly",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create/manage links in authorized groups.",
+      "evidence": [
+        "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
+        "https://api-ssl.bitly.com/.well-known/oauth-protected-resource",
+        "https://api-ssl.bitly.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Create/manage links in authorized groups. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "box",
+      "method": "mcp-own-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "File/folder actions exposed by the configured Box MCP app; app registration and content ACLs apply.",
+      "evidence": [
+        "https://support.box.com/hc/en-us/articles/43847256139923-Managing-Box-MCP-Servers",
+        "https://mcp.box.com/.well-known/oauth-protected-resource",
+        "https://api.box.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Box requires scopes (including Manage AI) on the registered Box app in the Admin Console. Its MCP authorization metadata has no request-scope list; consent and the app registration control file operations."
+    },
+    {
+      "app": "brex",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "offline_access",
+        "email",
+        "users.readonly",
+        "departments.readonly",
+        "locations.readonly",
+        "titles.readonly",
+        "legal_entities.readonly",
+        "cards.readonly",
+        "cards",
+        "companies.readonly",
+        "budgets.readonly",
+        "travel.trips.readonly",
+        "expenses.card.readonly",
+        "expenses.card",
+        "expenses.bill",
+        "accounts.cash.readonly",
+        "vendors.readonly",
+        "accounting.integration.read",
+        "accounting.record.read"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Own card/expense memos, receipts, attendees and spend limits. No reimbursement creation or expense approval through MCP.",
+      "evidence": [
+        "https://www.brex.com/support/using-brex-in-ai-apps",
+        "https://api.brex.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "browser-use-cloud",
+      "method": "cloud-v4",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create/stop browser sessions and run browser tasks under the API key.",
+      "evidence": [
+        "https://docs.browser-use.com/cloud/api-v4-overview"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Create/stop browser sessions and run browser tasks under the API key. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "candid",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "capability": "read",
+      "supportedActions": "None: nonprofit/funder discovery and research.",
+      "evidence": [
+        "https://learning.candid.org/getting-started-with-the-candid-mcp-connector/375441",
+        "https://mcp.candid.org/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "clickhouse",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:access",
+        "clickstack:access",
+        "openid",
+        "profile",
+        "email"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "ClickStack dashboards, saved searches and alerts; selected service access applies.",
+      "evidence": [
+        "https://clickhouse.com/blog/announcing-managed-clickstack-mcp-server",
+        "https://mcp.clickhouse.cloud/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "cloudflare",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "user:read",
+        "account:read"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes.",
+      "evidence": [
+        "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/",
+        "https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "cloudflare",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes.",
+      "evidence": [
+        "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/",
+        "https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "cloudinary",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "asset_management",
+        "upload",
+        "media_generation"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Upload, manage and generate media in the authorized product environment.",
+      "evidence": [
+        "https://cloudinary.com/documentation/cloudinary_llm_mcp",
+        "https://asset-management.mcp.cloudinary.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "coda",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:all"
+      ],
+      "capability": "write",
+      "supportedActions": "Modify documents/tables permitted by the account.",
+      "evidence": [
+        "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP",
+        "https://coda.io/.well-known/oauth-protected-resource/apis/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "coda",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Modify documents/tables permitted by the account.",
+      "evidence": [
+        "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP",
+        "https://coda.io/.well-known/oauth-protected-resource/apis/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Modify documents/tables permitted by the account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "cognee",
+      "method": "cloud-local",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Add/process knowledge and manage authorized datasets.",
+      "evidence": [
+        "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Add/process knowledge and manage authorized datasets. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "composio",
+      "method": "mcp",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Actions depend on the configured toolkits and upstream connected accounts.",
+      "evidence": [
+        "https://docs.composio.dev/docs/composio-connect"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "context7",
+      "method": "mcp",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: library documentation retrieval.",
+      "evidence": [
+        "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "egnyte",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Account-dependent file operations; live write verification outstanding.",
+      "evidence": [
+        "https://developers.egnyte.com/docs/Remote_MCP_Server",
+        "https://mcp-server.egnyte.com/.well-known/oauth-protected-resource",
+        "https://mcp-oauth.egnyte.com/.well-known/oauth-authorization-server/egnyte-connect"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The hosted authorization server selects the Egnyte tenant/account permissions. Neither MCP nor authorization-server metadata advertises request scopes. Documentation rendered no readable body during this review; tenant-bound write proof remains required."
+    },
+    {
+      "app": "embat",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "email",
+        "offline_access",
+        "openid",
+        "profile"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Provider/account dependent; published metadata is identity-only, so no write guarantee.",
+      "evidence": [
+        "https://tellme.embat.io/.well-known/oauth-protected-resource/mcp",
+        "https://complete-book-76.authkit.app/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "executor",
+      "method": "mcp",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Actions depend on the custom MCP endpoint and configured services.",
+      "evidence": [
+        "https://executor.sh/docs/mcp-proxy"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "fireflies",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "email",
+        "profile"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Share/revoke meeting access, rename/move meetings and create soundbites where the authenticated owner or team-admin role permits. The MCP resource requests profile/email, not separate mutation scopes.",
+      "evidence": [
+        "https://docs.fireflies.ai/getting-started/mcp-configuration",
+        "https://api.fireflies.ai/.well-known/oauth-protected-resource",
+        "https://docs.fireflies.ai/mcp-tools/overview"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "fireflies",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Share/revoke meeting access, rename/move meetings and create soundbites where the authenticated owner or team-admin role permits. The MCP resource requests profile/email, not separate mutation scopes.",
+      "evidence": [
+        "https://docs.fireflies.ai/getting-started/mcp-configuration",
+        "https://api.fireflies.ai/.well-known/oauth-protected-resource",
+        "https://docs.fireflies.ai/mcp-tools/overview"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Use an API key for an account with write access to the meetings your agents need to share, rename, move or turn into soundbites. Paperclip cannot increase the key\u2019s permissions."
+    },
+    {
+      "app": "github",
+      "method": "managed",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply.",
+      "evidence": [
+        "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Managed github.code uses a GitHub App installation and selected repositories. Installation permissions, not OAuth scope strings, grant code and pull-request writes; retain the managed profile.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "github",
+      "method": "mcp-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply.",
+      "evidence": [
+        "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "gmail",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search and read messages, threads, drafts, and labels.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search and read messages, threads, drafts, and labels.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "paperclip-draft",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and create drafts for review in Gmail.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "customer-draft-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and create drafts for review in Gmail.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-calendar",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read calendars, events, and availability.",
+      "evidence": [
+        "https://developers.google.com/workspace/calendar/api/reference/mcp",
+        "https://calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "google-calendar",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read calendars, events, and availability.",
+      "evidence": [
+        "https://developers.google.com/workspace/calendar/api/reference/mcp",
+        "https://calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "google-calendar",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "Create, update, respond to, and delete events.",
+      "evidence": [
+        "https://developers.google.com/workspace/calendar/api/reference/mcp",
+        "https://calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "google-calendar",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "Create, update, respond to, and delete events.",
+      "evidence": [
+        "https://developers.google.com/workspace/calendar/api/reference/mcp",
+        "https://calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "google-chat",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search conversations and read messages.",
+      "evidence": [
+        "https://developers.google.com/workspace/chat/api/reference/mcp",
+        "https://chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-chat",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search conversations and read messages.",
+      "evidence": [
+        "https://developers.google.com/workspace/chat/api/reference/mcp",
+        "https://chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-chat",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.messages.create"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Chat and send messages.",
+      "evidence": [
+        "https://developers.google.com/workspace/chat/api/reference/mcp",
+        "https://chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-chat",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.messages.create"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Chat and send messages.",
+      "evidence": [
+        "https://developers.google.com/workspace/chat/api/reference/mcp",
+        "https://chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-docs",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read document text and structure.",
+      "evidence": [
+        "https://developers.google.com/workspace/docs/api/reference/mcp",
+        "https://docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-docs",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read document text and structure.",
+      "evidence": [
+        "https://developers.google.com/workspace/docs/api/reference/mcp",
+        "https://docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-docs",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update documents.",
+      "evidence": [
+        "https://developers.google.com/workspace/docs/api/reference/mcp",
+        "https://docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-docs",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update documents.",
+      "evidence": [
+        "https://developers.google.com/workspace/docs/api/reference/mcp",
+        "https://docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-drive",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search and read files and metadata.",
+      "evidence": [
+        "https://developers.google.com/workspace/drive/api/reference/mcp",
+        "https://drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-drive",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search and read files and metadata.",
+      "evidence": [
+        "https://developers.google.com/workspace/drive/api/reference/mcp",
+        "https://drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-drive",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file"
+      ],
+      "capability": "write",
+      "supportedActions": "Read files and create or copy files.",
+      "evidence": [
+        "https://developers.google.com/workspace/drive/api/reference/mcp",
+        "https://drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-drive",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file"
+      ],
+      "capability": "write",
+      "supportedActions": "Read files and create or copy files.",
+      "evidence": [
+        "https://developers.google.com/workspace/drive/api/reference/mcp",
+        "https://drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-people",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/directory.readonly",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/contacts.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search contacts, directory people, and your profile.",
+      "evidence": [
+        "https://developers.google.com/people/api/mcp",
+        "https://people.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-people",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/directory.readonly",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/contacts.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search contacts, directory people, and your profile.",
+      "evidence": [
+        "https://developers.google.com/people/api/mcp",
+        "https://people.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-sheets",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read spreadsheet values and structure.",
+      "evidence": [
+        "https://developers.google.com/workspace/sheets/api/reference/mcp",
+        "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-sheets",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read spreadsheet values and structure.",
+      "evidence": [
+        "https://developers.google.com/workspace/sheets/api/reference/mcp",
+        "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-sheets",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update spreadsheet values, formulas, and dimensions.",
+      "evidence": [
+        "https://developers.google.com/workspace/sheets/api/reference/mcp",
+        "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-sheets",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update spreadsheet values, formulas, and dimensions.",
+      "evidence": [
+        "https://developers.google.com/workspace/sheets/api/reference/mcp",
+        "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-sheets",
+      "method": "local",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Share only named spreadsheets with the Paperclip robot account.",
+      "evidence": [
+        "https://developers.google.com/workspace/sheets/api/reference/mcp",
+        "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-slides",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/presentations.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read presentation slides and content.",
+      "evidence": [
+        "https://developers.google.com/workspace/slides/api/reference/mcp",
+        "https://slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-slides",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/presentations.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Read presentation slides and content.",
+      "evidence": [
+        "https://developers.google.com/workspace/slides/api/reference/mcp",
+        "https://slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-slides",
+      "method": "paperclip-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/presentations"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update presentations.",
+      "evidence": [
+        "https://developers.google.com/workspace/slides/api/reference/mcp",
+        "https://slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-slides",
+      "method": "customer-write-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/presentations"
+      ],
+      "capability": "write",
+      "supportedActions": "Read and update presentations.",
+      "evidence": [
+        "https://developers.google.com/workspace/slides/api/reference/mcp",
+        "https://slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-workspace-search",
+      "method": "paperclip-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search Gmail, Drive, Calendar, and Chat without write access.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/universal-search-mcp",
+        "https://workspacemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-workspace-search",
+      "method": "customer-read-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly"
+      ],
+      "capability": "read",
+      "supportedActions": "Search Gmail, Drive, Calendar, and Chat without write access.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/universal-search-mcp",
+        "https://workspacemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "honcho",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create peers/sessions and save memory under the API key project.",
+      "evidence": [
+        "https://honcho.dev/docs/v3/guides/integrations/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Create peers/sessions and save memory under the API key project. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "hugging-face",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "read-mcp",
+        "read-repos",
+        "contribute-repos",
+        "jobs"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/contribute repositories and schedule/run jobs; users must enable those tools in HF MCP settings. Paid compute still requires an eligible account.",
+      "evidence": [
+        "https://huggingface.co/docs/hub/en/agents-mcp",
+        "https://huggingface.co/docs/hub/agents-mcp",
+        "https://huggingface.co/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "jira",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "read:me",
+        "read:account",
+        "offline_access",
+        "email",
+        "read:jira-work",
+        "write:jira-work",
+        "search:confluence",
+        "read:confluence-user",
+        "read:page:confluence",
+        "write:page:confluence",
+        "read:comment:confluence",
+        "write:comment:confluence",
+        "read:space:confluence",
+        "read:hierarchical-content:confluence",
+        "write:component:compass",
+        "read:component:compass",
+        "read:scorecard:compass",
+        "write:scorecard:compass",
+        "read:event:compass",
+        "read:metric:compass",
+        "read:all:twg",
+        "write:all:twg"
+      ],
+      "capability": "write",
+      "supportedActions": "Jira issues, Confluence pages/comments and Compass components/scorecards. Admin policy and consent toolset choices apply.",
+      "evidence": [
+        "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+        "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v1/mcp/authv2"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "kernel",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Launch/manage browsers, profiles, apps and browser automation.",
+      "evidence": [
+        "https://www.kernel.sh/docs/reference/mcp-server/",
+        "https://mcp.onkernel.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "kernel",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Launch/manage browsers, profiles, apps and browser automation.",
+      "evidence": [
+        "https://www.kernel.sh/docs/reference/mcp-server/",
+        "https://mcp.onkernel.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Launch/manage browsers, profiles, apps and browser automation. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "linear",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "read",
+        "write"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update issues and other authorized workspace resources.",
+      "evidence": [
+        "https://mcp.linear.app/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "local-falcon",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "api",
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Account-authorized scans/campaigns; subscription credits apply.",
+      "evidence": [
+        "https://docs.localfalcon.com/",
+        "https://mcp.localfalcon.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "make",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Run selected scenarios; paid plans additionally manage scenarios, data stores and teams.",
+      "evidence": [
+        "https://developers.make.com/mcp-server",
+        "https://mcp.make.com/.well-known/oauth-protected-resource",
+        "https://www.make.com/.well-known/oauth-authorization-server/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Make documents selecting scopes and scenarios during its hosted connection flow. Management tools require a paid plan. Do not replace that resource selection with invented MCP client scopes."
+    },
+    {
+      "app": "manufact",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Deploy/redeploy/stop servers and edit server configuration under the signed-in role.",
+      "evidence": [
+        "https://docs.manufact.com/mcp",
+        "https://mcp.manufact.com/.well-known/oauth-protected-resource/mcp",
+        "https://cloud.manufact.com/.well-known/oauth-authorization-server/api/auth"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "mem0",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Add/update/delete memories under the API key account.",
+      "evidence": [
+        "https://docs.mem0.ai/platform/mem0-mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Add/update/delete memories under the API key account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "miro",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "boards:read",
+        "boards:write",
+        "openid",
+        "email"
+      ],
+      "capability": "write",
+      "supportedActions": "Create board content/diagrams and act on comments; board/team ACLs apply.",
+      "evidence": [
+        "https://help.miro.com/hc/en-us/articles/31625301583890-How-to-enable-Miro-s-MCP-Server-user-guide",
+        "https://mcp.miro.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "mixpanel",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "projects",
+        "analysis",
+        "events",
+        "insights",
+        "segmentation",
+        "retention",
+        "data:read",
+        "funnels",
+        "flows",
+        "data_definitions",
+        "alerts",
+        "annotations",
+        "bookmarks",
+        "business_context",
+        "cohorts",
+        "context",
+        "custom_alerts",
+        "custom_events",
+        "custom_properties",
+        "dashboard_reports",
+        "experiments",
+        "feature_flags",
+        "metrics",
+        "user_details"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Metadata, annotations, cohorts and enabled management tools; project role still governs each action.",
+      "evidence": [
+        "https://mixpanel.com/blog/mixpanel-mcp-server/",
+        "https://mcp.mixpanel.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "netlify",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "offline_access",
+        "read",
+        "write"
+      ],
+      "capability": "write",
+      "supportedActions": "Deploy/manage sites via the account; no Claude-specific scope is required for Paperclip.",
+      "evidence": [
+        "https://docs.netlify.com/build/build-with-ai/agent-setup-guides/agent-setup-overview/",
+        "https://netlify-mcp.netlify.app/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "notion",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "default"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update pages and databases shared with the authenticated account.",
+      "evidence": [
+        "https://developers.notion.com/guides/mcp/build-mcp-client",
+        "https://mcp.notion.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "oauth-generic",
+      "method": "oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Actions and scope requirements depend on the operator-supplied provider.",
+      "evidence": [
+        "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Operator-defined OAuth endpoints have no provider-specific reviewed scope list. Request only the scopes supplied by the operator; this template is not a curated provider allowlist.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "oreilly",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "offline_access"
+      ],
+      "capability": "read",
+      "supportedActions": "None: content discovery and retrieval.",
+      "evidence": [
+        "https://learning.oreilly.com/apidocs/mcp/content/",
+        "https://api.oreilly.com/.well-known/oauth-protected-resource/api/content-discovery/v1/mcp/"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "oreilly",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: content discovery and retrieval.",
+      "evidence": [
+        "https://learning.oreilly.com/apidocs/mcp/content/",
+        "https://api.oreilly.com/.well-known/oauth-protected-resource/api/content-discovery/v1/mcp/"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "None: content discovery and retrieval. A read-only key is sufficient."
+    },
+    {
+      "app": "pagerduty",
+      "method": "mcp-api-key-us",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Incident and on-call changes require a full-access API key and role access.",
+      "evidence": [
+        "https://support.pagerduty.com/main/docs/pagerduty-mcp-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "pagerduty",
+      "method": "mcp-api-key-eu",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Incident and on-call changes require a full-access API key and role access.",
+      "evidence": [
+        "https://support.pagerduty.com/main/docs/pagerduty-mcp-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "planetscale",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "SQL writes and database actions only when selected at provider consent; insights-only remains read only.",
+      "evidence": [
+        "https://planetscale.com/docs/connect/mcp",
+        "https://mcp.pscale.dev/.well-known/oauth-protected-resource/mcp/planetscale",
+        "https://mcp.pscale.dev/.well-known/oauth-protected-resource/mcp/planetscale-insights-only",
+        "https://mcp.pscale.dev/.well-known/oauth-authorization-server/mcp/planetscale-insights-only",
+        "https://api.planetscale.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "PlanetScale documents choosing organizations, databases and read/write permission at authorization. Its general authorization server advertises unrelated organization administration too; retain the provider consent selection, and the separate insights-only endpoint."
+    },
+    {
+      "app": "planetscale",
+      "method": "mcp-insights-only",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "SQL writes and database actions only when selected at provider consent; insights-only remains read only.",
+      "evidence": [
+        "https://planetscale.com/docs/connect/mcp",
+        "https://mcp.pscale.dev/.well-known/oauth-protected-resource/mcp/planetscale",
+        "https://mcp.pscale.dev/.well-known/oauth-protected-resource/mcp/planetscale-insights-only",
+        "https://mcp.pscale.dev/.well-known/oauth-authorization-server/mcp/planetscale-insights-only",
+        "https://api.planetscale.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "PlanetScale documents choosing organizations, databases and read/write permission at authorization. Its general authorization server advertises unrelated organization administration too; retain the provider consent selection, and the separate insights-only endpoint."
+    },
+    {
+      "app": "posthog",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced.",
+      "evidence": [
+        "https://posthog.com/docs/model-context-protocol",
+        "https://mcp.posthog.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "PostHog documents the no-scope MCP setup as read/write, with optional readonly and feature filters. The authorization server advertises account administration unrelated to many tools; retain its MCP consent defaults and the existing explicit filters."
+    },
+    {
+      "app": "posthog",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced.",
+      "evidence": [
+        "https://posthog.com/docs/model-context-protocol",
+        "https://mcp.posthog.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-oauth-minimal",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The official remote MCP setup uses browser sign-in and endpoint-selected minimal/code/full tool catalogs. Its protected-resource and authorization-server metadata publish no scope set; account/workspace rights govern writes."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-oauth-code",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The official remote MCP setup uses browser sign-in and endpoint-selected minimal/code/full tool catalogs. Its protected-resource and authorization-server metadata publish no scope set; account/workspace rights govern writes."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-oauth-full",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The official remote MCP setup uses browser sign-in and endpoint-selected minimal/code/full tool catalogs. Its protected-resource and authorization-server metadata publish no scope set; account/workspace rights govern writes."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-eu-key-minimal",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-eu-key-code",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "postman",
+      "method": "mcp-eu-key-full",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role.",
+      "evidence": [
+        "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
+        "https://mcp.postman.com/.well-known/oauth-protected-resource",
+        "https://mcp.postman.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "railway",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "offline_access",
+        "workspace:member"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Project/service/deployment operations in authorized workspaces; workspace:member and account role bound access.",
+      "evidence": [
+        "https://docs.railway.com/ai/mcp-server",
+        "https://mcp.railway.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "razorpay",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Provider-authorized payment/account tools; financial policy gates remain. Live verification outstanding.",
+      "evidence": [
+        "https://razorpay.com/docs/mcp-server/oauth/",
+        "https://mcp.razorpay.com/.well-known/oauth-protected-resource",
+        "https://mcp.razorpay.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Neither protected-resource nor authorization-server metadata advertises scopes. Keep hosted provider consent; the previous official OAuth documentation URL returned 404 during review. Account-bound writes need live confirmation.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "razorpay",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Provider-authorized payment/account tools; financial policy gates remain. Live verification outstanding.",
+      "evidence": [
+        "https://razorpay.com/docs/mcp-server/oauth/",
+        "https://mcp.razorpay.com/.well-known/oauth-protected-resource",
+        "https://mcp.razorpay.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Provider-authorized payment/account tools; financial policy gates remain. Live verification outstanding. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "resend",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "full_access"
+      ],
+      "capability": "write",
+      "supportedActions": "Send email and manage domains/templates/account resources. full_access covers the MCP management tools as well as sending.",
+      "evidence": [
+        "https://resend.com/changelog/remote-mcp-server",
+        "https://mcp.resend.com/.well-known/oauth-protected-resource",
+        "https://api.resend.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "sanity",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "global"
+      ],
+      "capability": "write",
+      "supportedActions": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs.",
+      "evidence": [
+        "https://www.sanity.io/docs/ai/mcp-server",
+        "https://mcp.sanity.io/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "sanity",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs.",
+      "evidence": [
+        "https://www.sanity.io/docs/ai/mcp-server",
+        "https://mcp.sanity.io/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "sentry",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "org:read",
+        "project:write",
+        "team:write",
+        "event:write",
+        "alerts:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Manage projects/teams, triage issues and edit alerts under the authorized organization role.",
+      "evidence": [
+        "https://mcp.sentry.dev/.well-known/oauth-authorization-server",
+        "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "shopify",
+      "method": "ucp-commerce",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Storefront cart operations; checkout/purchase and account privileges remain provider-controlled.",
+      "evidence": [
+        "https://shopify.dev/docs/apps/build/storefront-mcp/servers/storefront"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "shopify",
+      "method": "storefront-mcp",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Storefront cart operations; checkout/purchase and account privileges remain provider-controlled.",
+      "evidence": [
+        "https://shopify.dev/docs/apps/build/storefront-mcp/servers/storefront"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "similarweb",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: analytics retrieval; subscription entitlements apply.",
+      "evidence": [
+        "https://developers.similarweb.com/docs/similarweb-mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "None: analytics retrieval; subscription entitlements apply. A read-only key is sufficient."
+    },
+    {
+      "app": "slack",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "canvases:read",
+        "canvases:write",
+        "channels:history",
+        "channels:read",
+        "channels:write",
+        "chat:write",
+        "emoji:read",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "groups:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "lists:read",
+        "lists:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "reactions:read",
+        "reactions:write",
+        "search:read.files",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.private",
+        "search:read.public",
+        "search:read.users",
+        "users:read",
+        "users:read.email"
+      ],
+      "capability": "write",
+      "supportedActions": "Send/schedule messages, create conversations, react, edit canvases/lists and upload files. Published internal app/Marketplace and admin approval requirements apply.",
+      "evidence": [
+        "https://docs.slack.dev/ai/slack-mcp-server/",
+        "https://mcp.slack.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "stripe",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain.",
+      "evidence": [
+        "https://docs.stripe.com/mcp",
+        "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+        "https://access.stripe.com/.well-known/oauth-authorization-server/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "stripe",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain.",
+      "evidence": [
+        "https://docs.stripe.com/mcp",
+        "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+        "https://access.stripe.com/.well-known/oauth-authorization-server/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "supabase",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative.",
+      "evidence": [
+        "https://supabase.com/docs/guides/ai-tools/mcp",
+        "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "supabase",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative.",
+      "evidence": [
+        "https://supabase.com/docs/guides/ai-tools/mcp",
+        "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+    },
+    {
+      "app": "supermemory",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Save memories/documents in the workspace selected at provider consent; read/write choice is provider-controlled.",
+      "evidence": [
+        "https://supermemory.ai/docs/supermemory-mcp/mcp",
+        "https://mcp.supermemory.ai/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "ticket-tailor",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Box-office operations allowed by the API key chosen at provider consent.",
+      "evidence": [
+        "https://developers.tickettailor.com/docs/mcp/authentication/"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "Hosted authorization controls box-office API-key permissions; do not treat OAuth sign-in as increasing the underlying key permissions. This method requires account-bound proof."
+    },
+    {
+      "app": "ticktick",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "tasks:write",
+        "tasks:read"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update tasks in the authenticated account.",
+      "evidence": [
+        "https://help.ticktick.com/articles/7438129581631995904",
+        "https://mcp.ticktick.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "todoist",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "data:read_write"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update tasks and projects in the authenticated account.",
+      "evidence": [
+        "https://developer.todoist.com/",
+        "https://ai.todoist.net/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "vercel",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Account/team-authorized project and deployment actions; identity scope is not an admin permission.",
+      "evidence": [
+        "https://mcp.vercel.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "webflow",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "provider-default",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Build/edit sites and CMS content for explicitly authorized sites.",
+      "evidence": [
+        "https://developers.webflow.com/mcp/reference/getting-started",
+        "https://mcp.webflow.com/.well-known/oauth-protected-resource",
+        "https://mcp.webflow.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "providerDefaultReason": "The official MCP setup installs the Bridge App and asks users to authorize sites. Neither protected-resource nor authorization-server metadata publishes a request-scope list; the installed app and site selection govern writes."
+    },
+    {
+      "app": "wix",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Site editing and business operations under the signed-in Wix role.",
+      "evidence": [
+        "https://www.wix.com/studio/developers/mcp-server",
+        "https://mcp.wix.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "xero",
+      "method": "mcp-own-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "accounting.settings",
+        "accounting.invoices.read",
+        "accounting.reports.aged.read",
+        "accounting.reports.balancesheet.read",
+        "accounting.reports.profitandloss.read"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Invoice/report reads and settings access only in the current MCP resource profile; no invoice writes are advertised.",
+      "evidence": [
+        "https://developer.xero.com/ai",
+        "https://mcp.xero.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "youcom",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "Tools",
+        "offline_access"
+      ],
+      "capability": "read",
+      "supportedActions": "None: search, contents and research tools (usage may be billed).",
+      "evidence": [
+        "https://you.com/docs/build-with-agents/mcp-server",
+        "https://api.you.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "youcom",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: search, contents and research tools (usage may be billed).",
+      "evidence": [
+        "https://you.com/docs/build-with-agents/mcp-server",
+        "https://api.you.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run",
+      "keyPermissions": "None: search, contents and research tools (usage may be billed). A read-only key is sufficient."
+    },
+    {
+      "app": "youcom",
+      "method": "mcp-free",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: search, contents and research tools (usage may be billed).",
+      "evidence": [
+        "https://you.com/docs/build-with-agents/mcp-server",
+        "https://api.you.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "zapier",
+      "method": "generated-url",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Run only the actions configured by the user in the generated Zapier MCP endpoint; a URL cannot add actions or permissions.",
+      "evidence": [
+        "https://docs.zapier.com/mcp/quickstart"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "zep",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "graph:read",
+        "graph:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Write memory graphs authorized for the signed-in identity.",
+      "evidence": [
+        "https://help.getzep.com/memory-mcp-server",
+        "https://api.getzep.com/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    }
+  ]
+}

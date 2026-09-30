@@ -1093,7 +1093,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
     if (!popupBlocked) expect(popup.close).toHaveBeenCalled();
-    expect(container.textContent).toContain("What should Paperclip be able to do?");
+    expect(container.textContent).not.toContain("What should Paperclip be able to do?");
+    expect(buttonByText("Advanced")).toBeDefined();
     expect(container.textContent).toContain("Step 2 of 2");
     connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "per_user" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
     await act(async () => buttonByText("Continue to sign in")?.click());
@@ -1455,6 +1456,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       }
 
       if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+        expect(radioContaining(readMethod.capabilityProfile!.label)).toBeUndefined();
+        await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+        await flushReact();
         const readChoice = radioContaining(readMethod.capabilityProfile!.label);
         expect(readChoice).not.toBeNull();
         await act(async () => {
@@ -1527,6 +1531,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(radioContaining("Any human in the organization")?.getAttribute("aria-checked")).toBe("true");
     await passAccessStep();
 
+    expect(container.textContent).toContain("Read & create");
+    expect(radioContaining("Read only")).toBeUndefined();
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     expect(radioContaining("Read & create")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Read only")?.getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).not.toContain("Before connecting, enroll the signed-in Workspace account");
@@ -1545,7 +1553,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       (heading) => heading.textContent?.trim() === "Connect Google Calendar",
     );
     expect(duplicateHeadings).toHaveLength(1);
-    expect(container.textContent).toContain("What should Paperclip be able to do?");
+    expect(container.textContent).not.toContain("What should Paperclip be able to do?");
+    expect(buttonByText("Advanced")).toBeDefined();
     expect(container.textContent).toContain("Review requirements");
     expect(container.textContent).not.toContain("Connect Google Calendar to read and manage events.");
     expect(container.textContent).not.toContain("All event mutations require approval.");
@@ -1555,6 +1564,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("You’ll sign in before anything turns on.");
     expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
 
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     const capabilityQuestion = Array.from(container.querySelectorAll("label")).find(
       (label) => label.textContent === "What should Paperclip be able to do?",
     );
@@ -2976,6 +2987,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
     await passAccessStep();
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3002,6 +3015,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
     await passAccessStep();
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3177,6 +3192,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
     await passAccessStep();
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3215,6 +3232,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
     await passAccessStep();
+    await act(async () => { buttonByText("Advanced")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

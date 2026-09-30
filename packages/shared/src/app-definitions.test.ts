@@ -611,6 +611,7 @@ describe("AppDefinition catalog", () => {
     expect(notion?.redirectConstraints).toBe("https-or-loopback-http");
     expect(notion?.methods[0]?.defaults).toEqual({
       serverUrl: "https://mcp.notion.com/mcp",
+      scopesHint: ["default"],
     });
   });
   it("preserves required Linear OAuth scopes", () =>
@@ -618,11 +619,11 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("requests only Hugging Face's MCP read scope", () =>
+  it("requests Hugging Face MCP read, contribution and job scopes", () =>
     expect(
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
-    ).toEqual(["read-mcp"]));
+    ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
   it("defaults every new connection action to allowed", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods)
@@ -657,7 +658,7 @@ describe("AppDefinition catalog", () => {
           ].includes(candidate.key),
         ),
       )?.key,
-    ).toBe("paperclip-read");
+    ).toBe("customer-draft-oauth");
     expect(
       getRecommendedConnectionMethod(
         gmail.methods.filter(
@@ -1023,5 +1024,41 @@ describe("Railway provider", () => {
     expect(app.methods).toHaveLength(1);
     expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
     expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
+  });
+});
+
+
+describe("tool method permission review", () => {
+  const audit = JSON.parse(fs.readFileSync(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8")) as {
+    methods: { app: string; method: string; auth: string; policy: string; requestedScopes: string[]; providerDefaultReason?: string; supportedActions: string; evidence: string[]; reviewedAt: string }[];
+  };
+  const methods = APP_DEFINITIONS.flatMap((app) => app.methods
+    .filter((method) => method.purpose !== "channel" && method.purpose !== "ai")
+    .map((method) => ({ app, method })));
+  it("requires an explicit review for every tool method, including documented scope omissions", () => {
+    expect(new Set(audit.methods.map((review) => `${review.app}/${review.method}`)).size).toBe(audit.methods.length);
+    expect(audit.methods).toHaveLength(methods.length);
+    for (const { app, method } of methods) {
+      const review = audit.methods.find((entry) => entry.app === app.slug && entry.method === method.key);
+      expect(review, `${app.slug}/${method.key}`).toBeDefined();
+      expect(review!.auth).toBe(method.auth);
+      expect(review!.supportedActions.length).toBeGreaterThan(15);
+      expect(review!.evidence.length).toBeGreaterThan(0);
+      if (method.auth === "oauth") {
+        expect(method.defaults?.scopesHint ?? []).toEqual(review!.requestedScopes);
+        if (!review!.requestedScopes.length) {
+          expect(review!.policy).toBe("provider-default");
+          expect(review!.providerDefaultReason!.length).toBeGreaterThan(30);
+        } else expect(review!.policy).toBe("explicit");
+      }
+    }
+  });
+  it("requests Airtable record, schema and comment writes, and Hugging Face repository/job actions", () => {
+    expect(APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods[0]!.defaults!.scopesHint).toEqual([
+      "data.records:read", "data.records:write", "schema.bases:read", "schema.bases:write",
+      "data.recordComments:read", "data.recordComments:write", "workspacesAndBases:read",
+    ]);
+    expect(APP_DEFINITIONS.find((app) => app.slug === "hugging-face")!.methods[0]!.defaults!.scopesHint)
+      .toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]);
   });
 });

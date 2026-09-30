@@ -61,6 +61,66 @@ execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
 
+## Read/write defaults and credential ownership
+
+New tool connections request the provider-documented permissions needed for their
+supported read **and write** actions. Prefer an available write/draft capability
+before a managed read-only method. Read-only capability choices and provider
+read-only switches belong under **Advanced**. Preserve an explicit method on
+resume/reconnect. Keep the Access → Connect flow and manage action restrictions
+on Permissions; changing OAuth configuration never changes existing consent or
+turns an Off/Ask-first action into Allowed.
+
+Every tool method must have a review in
+[`tool-method-permission-reviews.json`](./tool-method-permission-reviews.json).
+It records requested scopes, supported actions, provider restrictions, official
+evidence, and live-proof status. The ingestion script uses its explicit scope
+lists as `scopesHint`; the catalog regression rejects missing reviews, drift,
+and undocumented omitted OAuth scopes. An omission requires a provider-default
+exception explaining how consent/registration grants access. Never automatically
+request all scopes advertised by an authorization server. See the
+[permission audit](./CONNECTOR-PERMISSION-AUDIT.md) for review findings and limits.
+API-key fields must explain required provider permissions; Paperclip cannot
+increase an already-issued key's permissions. Reconnect with fresh consent/key
+when access is insufficient. A provider's explicit `insufficient_scope` response
+becomes an actionable `oauth_insufficient_scope` error; provider response text
+and credentials are not echoed.
+
+All invocation credential writes use `writeConnectionCredential` (setup,
+replacement, reconnect, OAuth completion and rotation). A personal grant requires
+a **user-scoped** secret owned by its subject and a user-secret definition and
+declaration for the connection. Organization/dedicated-agent credentials use
+company secrets and bindings. OAuth **client-registration** secrets remain
+company-owned and are resolved separately from action credentials. Declaration
+paths are canonical (`credentials.authorization`, `headers.X-Api-Key`,
+`remote.url`, `oauth.access_token`), never double-prefixed. Health, discovery,
+board tests, invocation, and version tracking must use the selected grant's
+refs and the same ownership checks. A personal resolver must not fall back to a
+company credential. Ownership mismatch is `grant_credential_invalid` and tells
+the owner to reconnect.
+
+Before accepting requests, startup repairs eligible legacy personal credentials
+in keyset pages of 100 and one serializable transaction per connection. It only
+adopts active, locally encrypted, Paperclip-created `tool_app.*` secrets with
+matching connection/grant/secret creator and owner provenance, matching refs,
+and exclusive personal use. It checks other connections, other grants (including
+revoked grants and grants on the same connection), and other secret bindings,
+including cross-company references. Oversized or ambiguous graphs require owner
+reconnect. Shared credentials, deleted records, conflicting creators, and
+operator-managed keys are never adopted. Repairs preserve secret IDs, encrypted
+versions, connection identity, action policies and historical records, replacing
+company bindings with user declarations atomically. Health becomes unchecked
+until probed. Retries are bounded; repeated/concurrent runs do not duplicate
+repairs. Logs contain counts only; audit events contain IDs/counts, never values.
+
+Verification must assert stored ownership and declarations, then execute a read
+and a write through a real run-scoped gateway. Cover generic and curated URL
+credentials, bearer/custom headers, shared identities, public endpoints, rotation,
+removal, rollback, repair eligibility, repeated/concurrent startup, another user,
+and another company. Fixture-backed MCP calls prove Paperclip behavior; they do
+not prove provider consent or account entitlements. Record account-bound live
+read/write proof separately and never describe metadata discovery as live proof.
+
 ## Contents
 
 - [Mental model and support matrix](#mental-model-five-independent-axes)

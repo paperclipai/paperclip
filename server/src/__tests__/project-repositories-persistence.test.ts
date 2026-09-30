@@ -1,12 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, createDb, projects as projectTable } from "@paperclipai/db";
+import { companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, createDb, projects as projectTable, userSecretDefinitions } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
 import { projectService } from "../services/projects.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+const personalTokens = vi.hoisted(() => new Map<string, string>());
 vi.mock("../services/secrets.js", () => ({ secretService: () => ({
   resolveSecretValue: async (_companyId: string, secretId: string) => secretId,
+  resolveUserSecretValue: async (_companyId: string, input: { definitionId: string }) => ({ value: personalTokens.get(input.definitionId) }),
 }) }));
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -21,7 +23,7 @@ const support = await getEmbeddedPostgresTestSupport();
     [companyId] = (await db.insert(companies).values({ name: "Repositories", issuePrefix: "REPO" }).returning()).map((company) => company.id);
   }, 20_000);
   afterAll(async () => { await temp?.cleanup(); });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); personalTokens.clear(); });
 
   it("creates multiple source repos atomically and persists them across reads", async () => {
     const svc = projectService(db);
@@ -69,9 +71,15 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "alice", membershipRole: "admin" });
     const [otherCompany] = await db.insert(companies).values({ name: "Other", issuePrefix: "OTHER" }).returning();
     const tokenRepos = new Map<string, Array<{ id: number; full_name: string }>>();
-    async function connection(name: string, kind: "user" | "organization", owner: string | null, audience: string[] = [], targetCompanyId = companyId) {
+    async function connection(name: string, kind: "user" | "organization", owner: string | null, audience: string[] = [], targetCompanyId = companyId, legacyCompanyCredential = false) {
       const [app] = await db.insert(toolApplications).values({ companyId: targetCompanyId, name, type: "mcp_http" }).returning();
-      const [secret] = await db.insert(companySecrets).values({ companyId: targetCompanyId, name, key: name }).returning();
+      const definition = kind === "user" && !legacyCompanyCredential
+        ? (await db.insert(userSecretDefinitions).values({ companyId: targetCompanyId, name, key: name }).returning())[0]
+        : undefined;
+      const [secret] = await db.insert(companySecrets).values({ companyId: targetCompanyId, name, key: name,
+        scope: definition ? "user" : "company", ownerUserId: definition ? owner : null,
+        userSecretDefinitionId: definition?.id }).returning();
+      if (definition) personalTokens.set(definition.id, secret.id);
       const [conn] = await db.insert(toolConnections).values({ companyId: targetCompanyId, applicationId: app.id, name, uid: name, status: "active", enabled: true,
         transport: "mcp_remote", authKind: "api_key", credentialPolicy: kind === "user" ? "per_user" : "shared", config: { sourceTemplateKey: "github" } }).returning();
       const [grant] = await db.insert(connectionGrants).values({ companyId: targetCompanyId, connectionId: conn.id, kind, subjectUserId: owner,
@@ -85,18 +93,19 @@ const support = await getEmbeddedPostgresTestSupport();
     const restricted = await connection("restricted", "organization", null, ["bob"]);
     const crossCompany = await connection("cross-company", "organization", null, [], otherCompany.id);
     const broken = await connection("broken", "organization", null);
+    const legacyPersonal = await connection("legacy-personal", "user", "alice", [], companyId, true);
     tokenRepos.set(personal, [{ id: 10, full_name: "org/common" }, { id: 11, full_name: "alice/private" }]);
     tokenRepos.set(shared, [{ id: 10, full_name: "org/common" }, { id: 12, full_name: "org/shared" }]);
     const request = vi.fn<typeof fetch>(async (_url, init) => {
       const token = new Headers(init?.headers).get("authorization")?.replace("Bearer ", "") ?? "";
       if (token === broken) return new Response("secret-provider-error", { status: 503 });
-      expect([otherPerson, restricted, crossCompany]).not.toContain(token);
+      expect([otherPerson, restricted, crossCompany, legacyPersonal]).not.toContain(token);
       return Response.json(tokenRepos.get(token) ?? []);
     });
     vi.stubGlobal("fetch", request);
     const result = await toolAccessService(db).listProjectRepositories(companyId, "alice");
-    expect(result.connectionCount).toBe(3);
-    expect(result.failedConnectionCount).toBe(1);
+    expect(result.connectionCount).toBe(4);
+    expect(result.failedConnectionCount).toBe(2);
     expect(result.repositories.map((repo) => repo.id).sort()).toEqual(["10", "11", "12"]);
     expect(result.repositories.find((repo) => repo.id === "10")?.connections.sort()).toEqual(["personal", "shared"]);
     expect(JSON.stringify(result)).not.toContain("secret-provider-error");

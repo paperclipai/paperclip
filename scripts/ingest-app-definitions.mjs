@@ -1627,6 +1627,39 @@ for (const [slug, name, subscription, envKey] of [["anthropic", "Claude", true, 
  // AI account flow; saved REST connections remain removable through Connections.
  app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
 }
+// Every tool method has a checked-in permission review. Discovery metadata is
+// evidence for reviewers, never a runtime instruction to request more scopes.
+const permissionReviews = JSON.parse(fs.readFileSync(
+  path.join(root, "doc/connections/tool-method-permission-reviews.json"), "utf8",
+)).methods;
+for (const app of apps) {
+  for (const connectionMethod of app.methods) {
+    if (["channel", "ai"].includes(connectionMethod.purpose)) continue;
+    const review = permissionReviews.find((entry) => entry.app === app.slug && entry.method === connectionMethod.key);
+    if (!review) throw new Error(`${app.slug}/${connectionMethod.key}: permission review required`);
+    if (connectionMethod.auth === "oauth") {
+      if (review.policy === "explicit") {
+        connectionMethod.defaults = { ...connectionMethod.defaults, scopesHint: review.requestedScopes };
+      } else if (review.policy !== "provider-default" || !review.providerDefaultReason) {
+        throw new Error(`${app.slug}/${connectionMethod.key}: reviewed scopes or documented provider default required`);
+      }
+    }
+    for (const configField of connectionMethod.tenantFields ?? []) {
+      if (configField.key === "readOnly") configField.advanced = true;
+    }
+    if (review.keyPermissions) {
+      for (const credential of connectionMethod.credentialFields ?? []) {
+        if (credential.secret !== false) credential.helperMd = review.keyPermissions;
+      }
+    }
+    if (app.slug === "planetscale") {
+      connectionMethod.capabilityProfile = connectionMethod.key === "mcp-insights-only"
+        ? { key: "read", label: "Read only", description: "Inspect database performance with the insights-only server." }
+        : { key: "write", label: "Read and write", description: "Query and change the databases you authorize in PlanetScale." };
+    }
+  }
+}
+
 const validateApp = (app) => {
   if (
     app.schemaVersion !== 1 ||

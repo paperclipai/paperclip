@@ -36,7 +36,7 @@
           "required": true,
           "placeholder": "bu_…",
           "secret": true,
-          "helperMd": "Open Browser Use → Settings → API keys. Create a key for the project agents should use."
+          "helperMd": "Create/stop browser sessions and run browser tasks under the API key. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

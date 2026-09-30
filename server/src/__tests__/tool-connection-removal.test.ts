@@ -245,7 +245,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await expect(secretService(db).resolveSecretValue(company.id, secretIds[0]!, "latest", {
       consumerType: "tool_connection",
       consumerId: connectionId,
-      configPath: `credentials.headers.${HEADER.name}`,
+      configPath: `headers.${HEADER.name}`,
       actorType: "system",
     })).resolves.toBe(HEADER.value);
     await expect(policy.decide({
@@ -278,7 +278,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
       await expect(secretService(db).resolveSecretValue(company.id, secretId, "latest", {
         consumerType: "tool_connection",
         consumerId: connectionId,
-        configPath: `credentials.headers.${HEADER.name}`,
+        configPath: `headers.${HEADER.name}`,
         actorType: "system",
       })).rejects.toMatchObject({ status: 404 });
     }
@@ -513,7 +513,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await expect(secretService(db).resolveSecretValue(company.id, secretIds[0]!, "latest", {
       consumerType: "tool_connection",
       consumerId: connectionId,
-      configPath: `credentials.headers.${HEADER.name}`,
+      configPath: `headers.${HEADER.name}`,
       actorType: "system",
     })).rejects.toMatchObject({ status: 404 });
     // The ref survives the failure on purpose: it is the only pointer a retry

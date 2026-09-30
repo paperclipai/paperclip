@@ -3143,6 +3143,9 @@ function LinkConnectStep({
                 placeholder="••••••••••••••••"
                 className="mt-2 h-11 font-mono"
               />
+              <p className="mt-2 text-xs text-muted-foreground">
+                Grant this key read and write access to the resources your agents need. Paperclip cannot increase its permissions.
+              </p>
             </div>
           </div>
         ) : null}
@@ -3470,7 +3473,8 @@ function KeyStep({
   const optionalCustomerOAuthClient = !usingVercel
     && acceptsCustomerOAuthClient
     && !customerOAuthClientRequired;
-  const hasAdvancedSettings = advancedConfigFields.length > 0 || optionalCustomerOAuthClient;
+  const hasReadOnlyAlternatives = capabilityGroups.length > 1 && capabilityGroups.some((group) => group.key === "read");
+  const hasAdvancedSettings = advancedConfigFields.length > 0 || optionalCustomerOAuthClient || hasReadOnlyAlternatives;
   const capabilitySelection = capabilityGroups.length > 1 ? (
     <div>
       <label className="text-sm font-medium text-foreground">What should Paperclip be able to do?</label>
@@ -3614,7 +3618,12 @@ function KeyStep({
       ) : null}
 
       <div className="space-y-6">
-        {capabilitySelection}
+        {!hasReadOnlyAlternatives && capabilitySelection}
+        {(hasReadOnlyAlternatives || capabilityGroups.length === 1) && method?.capabilityProfile && (
+          <p className="text-sm text-muted-foreground">
+            {method.capabilityProfile.label}: {method.capabilityProfile.description}
+          </p>
+        )}
         {authenticationSelection}
 
         {usingVercel && vercelReview && vercelConnectAvailability ? (
@@ -3672,6 +3681,7 @@ function KeyStep({
             </CollapsibleTrigger>
             <CollapsibleContent className="pt-4">
               <div className="space-y-6">
+                {hasReadOnlyAlternatives && capabilitySelection}
                 {advancedConfigFields.map((field) => (
                   <MethodConfigField
                     key={field.key}
@@ -3727,6 +3737,9 @@ function KeyStep({
                 placeholder={field.type === "text" && field.secret === false ? field.placeholder : "••••••••••••••••"}
                 className="mt-2 h-11 font-mono"
               />
+              <p className="mt-2 text-xs text-muted-foreground">
+                {field.helperMd ?? "Create a key with read and write permissions for the resources your agents need. Paperclip cannot add permissions to an existing key."}
+              </p>
               {field.helpUrl && (
                 <a
                   href={field.helpUrl}

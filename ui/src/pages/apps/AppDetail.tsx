@@ -651,6 +651,18 @@ export function AppDetail({ renderActions, onReconnect }: {
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />
               {isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
+              {connection.authKind === "oauth" && (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    Provider permissions come from your last sign-in. Reconnect to grant missing write access, then enable the actions you need here.
+                  </p>
+                  {canReconnect && <Button variant="outline" onClick={() => onReconnect
+                    ? onReconnect(connection)
+                    : navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`)}>
+                    Reconnect to update permissions
+                  </Button>}
+                </div>
+              )}
               <PermissionsPanel
                 actions={actionsContent}
                 connectionId={connectionId}
