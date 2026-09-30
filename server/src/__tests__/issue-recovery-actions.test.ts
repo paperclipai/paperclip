@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
@@ -132,9 +133,16 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+function spawnAliveProcess() {
+  return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+}
+
 describeEmbeddedPostgres("issue recovery actions", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  const childProcesses = new Set<ChildProcess>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-recovery-actions-");
@@ -142,6 +150,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   }, 30_000);
 
   afterEach(async () => {
+    for (const child of childProcesses) {
+      child.kill("SIGKILL");
+    }
+    childProcesses.clear();
     await db.delete(issueThreadInteractions);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
@@ -222,6 +234,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     runId: string;
     issueId?: string;
     status?: string;
+    processPid?: number | null;
+    processGroupId?: number | null;
   }) {
     await db.insert(heartbeatRuns).values({
       id: input.runId,
@@ -231,6 +245,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: input.status ?? "running",
       startedAt: new Date("2026-05-13T18:00:00.000Z"),
       contextSnapshot: input.issueId ? { issueId: input.issueId } : undefined,
+      processPid: input.processPid ?? null,
+      processGroupId: input.processGroupId ?? null,
     });
   }
 
@@ -2776,11 +2792,25 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     async function seedOrphanedRunRecovery(options: {
       errorCode?: string | null;
       cause?: string;
+      // Defaults to a pid the OS will never assign (matches the convention
+      // used elsewhere in this suite, e.g. heartbeat-process-recovery.test.ts)
+      // so the server-verified path has positive stopped-process proof rather
+      // than the mere absence of a recorded pid.
+      processPid?: number | null;
+      processGroupId?: number | null;
     } = {}) {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
       const runId = randomUUID();
-      await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "failed" });
+      await seedHeartbeatRun({
+        companyId,
+        agentId: coderId,
+        runId,
+        issueId: sourceIssueId,
+        status: "failed",
+        processPid: options.processPid === undefined ? 999_999_999 : options.processPid,
+        processGroupId: options.processGroupId ?? null,
+      });
       if (options.errorCode !== null) {
         await db
           .update(heartbeatRuns)
@@ -2906,6 +2936,50 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
       const res = await request(app)
         .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("active");
+    });
+
+    it("still requires a board actor when the run has no recorded process identity at all", async () => {
+      // The absence of a pid/process-group is not proof the provider stopped;
+      // it is the absence of evidence, and must fail closed rather than fall
+      // through to "confirmed stopped".
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery({
+        processPid: null,
+        processGroupId: null,
+      });
+      await grantRecoveryReconcile(companyId, coderId);
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("active");
+    });
+
+    it("still requires a board actor when the run's provider process is still alive", async () => {
+      const child = spawnAliveProcess();
+      childProcesses.add(child);
+      expect(child.pid).toBeTypeOf("number");
+
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery({
+        processPid: child.pid ?? null,
+      });
+      await grantRecoveryReconcile(companyId, coderId);
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        // Spoofing providerStopped must not help: a live pid is a positive
+        // "still running" signal the server checks directly.
         .send(resolveBody({ actionId: action.id, runId }))
         .expect(403);
 

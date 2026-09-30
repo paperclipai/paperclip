@@ -82,12 +82,15 @@ export async function isServerVerifiedZeroOperationRecovery(input: {
   }
 
   // Provider process confirmed stopped — never trust the caller's
-  // `providerStopped: true` claim for this decision.
-  for (const pid of [
+  // `providerStopped: true` claim for this decision. A run with no recorded
+  // process identity at all is not evidence of a stopped provider; it is the
+  // absence of evidence, so it must fail closed rather than fall through.
+  const pidCandidates = [
     run.processPid,
     run.processGroupId ? -run.processGroupId : null,
-  ]) {
-    if (!pid) continue;
+  ].filter((pid): pid is number => Boolean(pid));
+  if (pidCandidates.length === 0) return false;
+  for (const pid of pidCandidates) {
     try {
       process.kill(pid, 0);
     } catch (error) {
