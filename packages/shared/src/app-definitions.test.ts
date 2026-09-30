@@ -71,7 +71,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [googleScope("drive.readonly"), googleScope("documents.readonly")],
+    scopes: [googleScope("documents.readonly")],
     writeTools: [],
   },
   {
@@ -80,11 +80,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("documents"),
-    ],
+    scopes: [googleScope("documents")],
     writeTools: ["update_doc"],
   },
   {
@@ -93,10 +89,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("spreadsheets.readonly"),
-    ],
+    scopes: [googleScope("spreadsheets.readonly")],
     writeTools: [],
   },
   {
@@ -105,11 +98,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("spreadsheets"),
-    ],
+    scopes: [googleScope("spreadsheets")],
     writeTools: [
       "update_spreadsheet",
       "update_values",
@@ -123,10 +112,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("presentations.readonly"),
-    ],
+    scopes: [googleScope("presentations.readonly")],
     writeTools: [],
   },
   {
@@ -135,11 +121,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("presentations"),
-    ],
+    scopes: [googleScope("presentations")],
     writeTools: ["update_presentation"],
   },
   {
@@ -163,7 +145,6 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [
       googleScope("calendar.calendarlist.readonly"),
-      googleScope("calendar.events.freebusy"),
       googleScope("calendar.events"),
     ],
     writeTools: [
