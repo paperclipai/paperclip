@@ -282,6 +282,8 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
     }
   }
 
+  assert.match(jobs.get("installer"), /^ {8}run: \.\/scripts\/test-install-sh-docker\.sh$/m);
+
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
   assert.notEqual(runAggregate(e2e, true, { policy: "failure" }).status, 0);
