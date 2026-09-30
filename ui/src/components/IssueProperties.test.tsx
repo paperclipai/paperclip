@@ -1245,6 +1245,20 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("preserves a locked parent stub without manufacturing a title or navigation link", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ parentId: "private-parent", ancestors: [{ id: "private-parent", identifier: "PAP-99", locked: true }] as unknown as Issue["ancestors"] }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toContain("PAP-99");
+    expect(container.querySelector('a[href="/issues/PAP-99"]')).toBeNull();
+    expect(container.querySelector('[title="private-"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("links relationship status and IDs and removes only the selected blocker with its X", async () => {
     const onUpdate = vi.fn();
     const blockers = [

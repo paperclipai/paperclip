@@ -158,6 +158,7 @@ function useVisualViewportLayout(enabled: boolean) {
 }
 
 interface IssueDraft {
+  isPrivate?: boolean;
   title: string;
   description: string;
   status: string;
@@ -516,6 +517,7 @@ export function NewIssueDialog() {
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [isPrivate, setIsPrivate] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -597,6 +599,15 @@ export function NewIssueDialog() {
     companyId: effectiveCompanyId,
     userId: currentUserId,
   });
+
+  const { data: privacyParent } = useQuery({
+    queryKey: queryKeys.issues.detail(newIssueDefaults.parentId ?? ""),
+    queryFn: () => issuesApi.get(newIssueDefaults.parentId!),
+    enabled: newIssueOpen && Boolean(newIssueDefaults.parentId),
+  });
+  const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
+  const effectivePrivate = isPrivate || inheritsPrivateAccess
+    || orderedProjects.some(project => project.id === projectId && project.visibility === "private");
 
   const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
@@ -742,10 +753,12 @@ export function NewIssueDialog() {
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
       workMode,
+      isPrivate,
     });
   }, [
     newIssueOpen,
     scheduleSave,
+    isPrivate,
     status,
     priority,
     assigneeValue,
@@ -875,6 +888,7 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
+      setIsPrivate(draft.isPrivate ?? false);
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
@@ -1000,6 +1014,7 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setIsPrivate(false);
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -1083,6 +1098,7 @@ export function NewIssueDialog() {
       status,
       priority: priority || "medium",
       workMode,
+      ...(effectivePrivate ? { visibility: "private" } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -1281,6 +1297,7 @@ export function NewIssueDialog() {
     if (nextProjectId) trackRecentProject(nextProjectId);
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+    if (nextProject?.visibility === "private") setIsPrivate(true);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
@@ -2018,6 +2035,34 @@ export function NewIssueDialog() {
             )}
             </div>
           )}
+
+          {/* Private task toggle */}
+          <div className="flex items-start justify-between gap-3 border-t border-border/60 px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">Private task</div>
+              <div className="text-(length:--text-micro) text-muted-foreground">
+                {inheritsPrivateAccess ? "This subtask inherits private access from its parent." : "Only you and people you share with can read it. Subtasks stay private too."}
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={effectivePrivate}
+              disabled={inheritsPrivateAccess}
+              onCheckedChange={(checked) => {
+                setIsPrivate(checked);
+                if (!checked) {
+                  const selectedProject = orderedProjects.find((project) => project.id === projectId);
+                  if (selectedProject?.visibility === "private") handleProjectChange("");
+                  return;
+                }
+                if (projectId || !currentUserId) return;
+                const personalProject = orderedProjects.find(
+                  (project) => project.personalOwnerUserId === currentUserId,
+                );
+                if (personalProject) handleProjectChange(personalProject.id);
+              }}
+              aria-label="Private task"
+            />
+          </div>
 
           {/* Description */}
           <div

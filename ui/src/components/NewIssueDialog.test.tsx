@@ -45,6 +45,7 @@ const toastState = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  get: vi.fn(),
   create: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -231,8 +232,12 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/toggle-switch", () => ({
-  ToggleSwitch: ({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) => (
-    <button type="button" aria-pressed={checked} onClick={onCheckedChange}>toggle</button>
+  ToggleSwitch: ({ checked, onCheckedChange, ...props }: {
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
+    "aria-label"?: string;
+  }) => (
+    <button type="button" aria-pressed={checked} onClick={() => onCheckedChange(!checked)} {...props}>toggle</button>
   ),
 }));
 
@@ -344,6 +349,7 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "open" });
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
@@ -514,6 +520,79 @@ describe("NewIssueDialog", () => {
       }),
     );
 
+    act(() => root.unmount());
+  });
+
+  it("restores private visibility from a saved draft without a project", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
+    const { root } = renderDialog(container);
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Private task"]')!;
+    await waitForAssertion(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"))!;
+    await act(async () => submit.click());
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ title: "Private draft", visibility: "private" }));
+    act(() => root.unmount());
+  });
+
+  it("locks inherited privacy and submits the child as private", async () => {
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "private" });
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Private task"]')!;
+    await waitForAssertion(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    expect(toggle.disabled).toBe(true);
+    expect(container.textContent).toContain("inherits private access from its parent");
+    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title"]')!, "Private child draft");
+    // Saving this form must retain only the explicit toggle choice. A later
+    // standalone draft must not acquire a sticky private flag from its parent.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft")!).isPrivate).toBe(false);
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Sub-Task"))!;
+    await act(async () => submit.click());
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ parentId: "issue-1", visibility: "private" }));
+    act(() => root.unmount());
+  });
+
+  it("defaults a private task to the current user's personal private project", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "personal-project",
+        companyId: "company-1",
+        name: "My private tasks",
+        visibility: "private",
+        personalOwnerUserId: "user-1",
+        archivedAt: null,
+      },
+    ]);
+    dialogState.newIssueDefaults = { title: "Private scratch task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+    const privateToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Private task"]');
+    expect(privateToggle).not.toBeNull();
+    await act(async () => privateToggle!.click());
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
+    await act(async () => submitButton!.click());
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Private scratch task",
+        visibility: "private",
+        projectId: "personal-project",
+      }),
+    );
     act(() => root.unmount());
   });
 
