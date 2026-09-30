@@ -1618,6 +1618,7 @@ export type {
   FieldDef,
   OAuthRedirectConstraints,
   QuotaWindow,
+  QuotaWindowKind,
   ProviderQuotaResult,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";

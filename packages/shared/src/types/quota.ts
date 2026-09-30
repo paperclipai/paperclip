@@ -1,3 +1,11 @@
+/**
+ * role of a quota window for run pacing:
+ * - "session": the account-wide short rolling window (for example 5 hours)
+ * - "weekly": the account-wide weekly window
+ * - "other": model-scoped windows, credits, and extra usage
+ */
+export type QuotaWindowKind = "session" | "weekly" | "other";
+
 /** a single rate-limit or usage window returned by a provider quota API */
 export interface QuotaWindow {
   /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
@@ -10,6 +18,10 @@ export interface QuotaWindow {
   valueLabel: string | null;
   /** optional supporting text, e.g. reset details or provider-specific notes */
   detail?: string | null;
+  /** role of the window, when the adapter classifies it; see QuotaWindowKind */
+  kind?: QuotaWindowKind | null;
+  /** length of the rolling window in seconds, when known */
+  windowSeconds?: number | null;
 }
 
 /** result for one provider from the quota-windows endpoint */
