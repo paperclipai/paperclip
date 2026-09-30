@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readPinnedCopilotInnerDistribution } from "./copilot-inner-distribution.mjs";
 
 export const COPILOT_VERSION = "1.0.88";
 // Extracted executable SHA-256 pins from npm archives after registry SHA-512 verification.
@@ -36,33 +37,77 @@ export function materializePinnedCopilotBinary(options = {}) {
   const bytes = readPinnedFile(source, 384 * 1024 * 1024, true);
   const sourceDigest = createHash("sha256").update(bytes).digest("hex");
   if (sourceDigest !== distribution.executableDigest) throw new Error("Copilot executable digest does not match its pinned distribution");
-  let target = source;
-  if (options.targetDirectory !== undefined) {
-    const directory = realpathSync(options.targetDirectory);
-    if (!lstatSync(directory).isDirectory()) throw new Error("Copilot target must be a directory");
-    target = join(directory, "copilot");
-    // Refuse replacement and links, including a previous incompatible materialization.
-    const fd = openSync(target, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o755);
-    let success = false;
-    try {
-      writeFileSync(fd, bytes);
-      fchmodSync(fd, 0o755);
-      fsyncSync(fd);
-      success = true;
-    } finally {
-      closeSync(fd);
-      if (!success) unlinkSync(target);
-    }
-  }
+  const inner = readPinnedCopilotInnerDistribution(bytes, `${options.platform ?? process.platform}-${options.architecture ?? process.arch}`);
+  const output = options.targetDirectory === undefined ? packageRoot : realpathSync(options.targetDirectory);
+  const target = options.targetDirectory === undefined ? source : join(output, "copilot");
   const entries = [{ path: "copilot", sha256: sourceDigest, size: bytes.length, executable: true }];
-  const closureSha256 = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-  const manifestPath = join(options.targetDirectory === undefined ? packageRoot : realpathSync(options.targetDirectory), ".paperclip-copilot-closure.json");
-  const closure = `${JSON.stringify({ schema: "paperclip.native_distribution_closure.v1", entries })}\n`;
-  try { writeFileSync(manifestPath, closure, { flag: "wx", mode: 0o644 }); }
-  catch (error) {
-    if (error.code !== "EEXIST" || readPinnedFile(manifestPath, 256 * 1024).toString("utf8") !== closure) throw error;
+  const files = options.targetDirectory === undefined ? [] : [{ path: "copilot", bytes, executable: true }];
+  // Preserve every embedded asset; only the hash-pinned app's message mapping
+  // changes. Never import or execute any archive entry during materialization.
+  for (const [path, entry] of inner) {
+    const relative = `distribution/${path}`;
+    files.push({ path: relative, ...entry });
+    entries.push({ path: relative, sha256: createHash("sha256").update(entry.bytes).digest("hex"), size: entry.bytes.length, executable: entry.executable });
   }
+  entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const closureSha256 = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+  const manifestPath = join(output, ".paperclip-copilot-closure.json");
+  files.push({ path: ".paperclip-copilot-closure.json", bytes: Buffer.from(`${JSON.stringify({ schema: "paperclip.native_distribution_closure.v1", entries })}\n`), executable: false });
+  writeCopilotMaterialization(output, files);
   return { packageName: distribution.packageName, version: COPILOT_VERSION, sourceDigest, target, manifestPath, closureSha256 };
+}
+
+/** Build-only writer for already verified entries; never grants launch authority.
+ * Roll back only entries this invocation exclusively created, even when a write
+ * failed partway through. Never recursively remove a caller's output directory.
+ */
+export function writeCopilotMaterialization(output, files) {
+  if (realpathSync(output) !== output || !lstatSync(output).isDirectory()) throw new Error("Copilot target must be an owned real directory");
+  const root = lstatSync(output, { bigint: true });
+  const created = [];
+  const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+  const assertRoot = () => {
+    const current = lstatSync(output, { bigint: true });
+    if (!current.isDirectory() || !same(root, current) || realpathSync(output) !== output) throw new Error("Copilot output identity changed");
+  };
+  try {
+    for (const entry of files) {
+      if (typeof entry.path !== "string" || entry.path.includes("\\") || entry.path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("Unsafe Copilot output entry");
+      assertRoot();
+      const parts = entry.path.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const directory = join(output, ...parts.slice(0, i));
+        try {
+          mkdirSync(directory, { mode: 0o755 });
+          created.push({ path: directory, stat: lstatSync(directory, { bigint: true }), directory: true });
+        } catch (error) { if (error.code !== "EEXIST") throw error; }
+        if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) throw new Error("Copilot inner destination redirects through links");
+      }
+      const path = join(output, entry.path);
+      const mode = entry.executable ? 0o755 : 0o644;
+      const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, mode);
+      try {
+        created.push({ path, stat: fstatSync(fd, { bigint: true }), directory: false });
+        writeFileSync(fd, entry.bytes);
+        fchmodSync(fd, mode);
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
+    }
+  } catch (error) {
+    const cleanupErrors = [];
+    for (const entry of created.reverse()) {
+      try {
+        assertRoot();
+        if (realpathSync(dirname(entry.path)) !== dirname(entry.path)) throw new Error("Copilot cleanup parent identity changed");
+        let current;
+        try { current = lstatSync(entry.path, { bigint: true }); } catch (missing) { if (missing.code === "ENOENT") continue; throw missing; }
+        if (!same(entry.stat, current) || (entry.directory ? !current.isDirectory() : !current.isFile())) throw new Error("Copilot cleanup entry identity changed");
+        if (entry.directory) rmdirSync(entry.path); else unlinkSync(entry.path);
+      } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+    }
+    if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], "Copilot materialization failed and owned cleanup is incomplete");
+    throw error;
+  }
 }
 
 function readPinnedFile(path, maxBytes, executable = false) {

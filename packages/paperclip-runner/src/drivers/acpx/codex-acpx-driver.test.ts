@@ -44,6 +44,45 @@ describe("Codex ACPX harness driver", () => {
     fixture.finishTurn({ status: "completed" });
     await session.close({ reason: "plan identity verified" });
   });
+  it.each(["codex", "cursor"] as const)("keeps existing %s item and unidentified-text semantics", async agent => {
+    const runtimeEvents: AcpRuntimeEvent[] = [
+      { type: "text_delta", stream: "output", messageId: "first", text: "progress" },
+      { type: "text_delta", stream: "output", messageId: "second", text: "answer" },
+      { type: "text_delta", stream: "output", text: " suffix" },
+    ];
+    const fixture = driverFixture({ agent, model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "other-provider-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const { turnId } = await session.startTurn({ message: { text: "fixture" } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    const messages = events.filter(event => event.payload.kind === "agentMessage");
+    expect(new Set(messages.map(event => event.itemId))).toEqual(new Set([`${turnId}:assistant-message`]));
+    expect(messages.filter(event => event.eventType === "item.completed").map(event => event.payload)).toEqual([{ kind: "agentMessage", channel: "final", text: "answer suffix" }]);
+    await session.close({ reason: "unchanged provider semantics verified" });
+  });
+  it.each(["same-text", "split-final", "empty-final", "cancelled"])("Copilot native message identities preserve interim activity and the actual final message: %s", async scenario => {
+    const chunk = (messageId: string | undefined, text: string, stream: "output" | "thought" = "output"): AcpRuntimeEvent => ({ type: "text_delta", text, stream, ...(messageId ? { messageId } : {}) });
+    const runtimeEvents: AcpRuntimeEvent[] = [chunk("first", ""), chunk("first", "EXACT_MARKER"),
+      { type: "status", tag: "tool_call_update", text: "attached tool continuation" },
+      chunk("second", ""), chunk("second", "private reasoning", "thought")];
+    if (scenario !== "empty-final") runtimeEvents.push(...(scenario === "split-final" ? [chunk("second", "EXACT_"), chunk("second", "MARKER")] : [chunk("second", "EXACT_MARKER")]));
+    runtimeEvents.push(chunk(undefined, "Info: native session activity"));
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-copilot-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Answer exactly" } });
+    fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
+    const events = await collectUntil(session.events(), scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
+    const interim = events.find(event => event.eventType === "item.delta" && event.payload.text === "EXACT_MARKER");
+    expect(interim).toBeDefined();
+    expect(events.some(event => event.eventType === "item.delta" && event.payload.text === "Info: native session activity")).toBe(true);
+    const commentary = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "commentary");
+    expect(commentary.map(event => event.payload.text)).toEqual(["EXACT_MARKER"]);
+    expect(commentary[0]!.itemId).toBe(interim!.itemId);
+    const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
+    expect(final.map(event => event.payload.text)).toEqual(scenario === "empty-final" || scenario === "cancelled" ? [] : ["EXACT_MARKER"]);
+    if (final.length) expect(final[0]!.itemId).not.toBe(interim!.itemId);
+    await session.close({ reason: "Copilot native identity verified" });
+  });
   it("keeps Pi retry-only activity as a rich notice without inventing a final answer", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-pi-notice", normalizedSessionId: "session-1", workingDirectory: "/workspace" });

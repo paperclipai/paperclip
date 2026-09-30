@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { chmod, copyFile, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -107,6 +107,29 @@ describe("native ACPX execution closure", () => {
     const second = await output((await install.openCommand()).spawn());
     expect(first.text).toMatch(/^native:fixed:.*paperclip-acpx-native-.*\/state$/);
     expect(first.text).not.toBe(second.text);
+  });
+  it("loads the owned Copilot distribution through a guarded private shim and ignores ambient overrides", async () => {
+    const declaration = await fixture({ node: true });
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    await mkdir(join(declaration.distributionRoot, "distribution"));
+    const source = 'console.log(JSON.stringify({owned:__dirname,dist:process.env.COPILOT_CLI_DIST_DIR,version:process.env.COPILOT_CLI_VERSION??null,options:process.env.NODE_OPTIONS??null}));';
+    await writeFile(join(declaration.distributionRoot, "distribution/index.js"), source, { mode: 0o600 });
+    entries.push({ path: "distribution/index.js", sha256: hash(source), size: Buffer.byteLength(source), executable: false });
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+    const owned = { ...declaration, entrypoint: undefined, expectedClosureSha256: hash(JSON.stringify(entries)), copilotDistributionDirectory: "distribution", fixedArguments: ["-e", 'require(process.env.COPILOT_CLI_DIST_DIR+"/index.js")'] };
+    const installation = await verifyNativeAcpxInstallation(owned);
+    const lease = await installation.openCommand();
+    const result = await output(lease.spawn([], { env: { COPILOT_CLI_DIST_DIR: "/ambient/evil", COPILOT_CLI_VERSION: "99.0.0", NODE_OPTIONS: "--untrusted-option" } }));
+    expect(result.code, result.error).toBe(0);
+    const observed = JSON.parse(result.text);
+    expect(observed.owned).toMatch(/paperclip-acpx-native-.*\/distribution\/distribution$/);
+    expect(observed.dist).toBe(join(dirname(observed.owned), ".paperclip-copilot-entry"));
+    expect(observed.version).toBeNull(); expect(observed.options).toBeNull();
+    await lease.close();
+    await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "../ambient" })).rejects.toThrow("launch declaration");
+    await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "missing" })).rejects.toThrow("owned entrypoint");
+    await expect(readNativeAcpxDistributionEntries({ ...owned, entrypoint: "entry.cjs" })).rejects.toThrow("launch declaration");
   });
   it("loads a pinned Node entrypoint while rejecting unqualified external modules", async () => {
     const declaration = await fixture({ node: true });

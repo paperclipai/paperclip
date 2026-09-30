@@ -223,7 +223,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:0fe49c2f8a2b144344d0de745fed1e4568df305de3a26c3a121dec21c8d4b751",
+                "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
             ),
             "grok" => (
                 "grok-4.7",
@@ -2812,7 +2812,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:0fe49c2f8a2b144344d0de745fed1e4568df305de3a26c3a121dec21c8d4b751",
+                "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
                 None,
                 None,
                 "explicit-model",
@@ -2880,6 +2880,13 @@ mod tests {
                 assert!(wrong_agent.validate(&context()).is_err());
             }
             if agent == "copilot" {
+                let mut previous_v6 = value.clone();
+                previous_v6["commandDigest"] = json!(
+                    "sha256:0fe49c2f8a2b144344d0de745fed1e4568df305de3a26c3a121dec21c8d4b751"
+                );
+                let previous_v6: AcpxProviderDescriptor =
+                    serde_json::from_value(previous_v6).unwrap();
+                assert!(previous_v6.validate(&context()).is_err());
                 let mut previous_v4 = value.clone();
                 previous_v4["commandDigest"] = json!(
                     "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797"

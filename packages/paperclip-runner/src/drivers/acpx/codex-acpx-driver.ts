@@ -1479,7 +1479,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#emit(
             "item.completed",
             { kind: "agentMessage", channel: "final", text: finalText },
-            { turnId, itemId: `${turnId}:assistant-message` },
+            { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) },
           );
         }
         this.#publishTerminal(
@@ -1636,6 +1636,11 @@ class CodexAcpxSession implements HarnessSession {
     if (this.#activeTurnId === turnId) this.#activeTurnId = null;
   }
 
+  #assistantItemId(turnId: string, messageId: string | null): string {
+    if (this.#agent !== "copilot") return `${turnId}:assistant-message`;
+    return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
+  }
+
   #mapRuntimeEvent(
     event: PiProjectedMessageEvent<AcpRuntimeEvent>,
     turnId: string,
@@ -1646,10 +1651,18 @@ class CodexAcpxSession implements HarnessSession {
       const output = boundedText(event.text, 64 * 1024);
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
-      if (!isReasoning && !event.piMessageHistory) {
+      const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+      // The pinned Copilot mapper supplies actual native identity, including
+      // empty starts. Unidentified session info/warnings remain activity only.
+      if (!isReasoning && !event.piMessageHistory && (this.#agent !== "copilot" || messageId)) {
         if (piBoundaryClearsFinal(event)) this.#assistantText = "";
-        const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
-        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) this.#assistantText = "";
+        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) {
+          if (this.#agent === "copilot" && this.#assistantText) {
+            this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: this.#assistantText },
+              { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) });
+          }
+          this.#assistantText = "";
+        }
         if (messageId) this.#assistantMessageId = messageId;
         this.#assistantText = boundedText(
           `${this.#assistantText}${output}`,
@@ -1667,7 +1680,7 @@ class CodexAcpxSession implements HarnessSession {
           turnId,
           itemId: isReasoning
             ? `${turnId}:reasoning`
-            : `${turnId}:assistant-message`,
+            : this.#assistantItemId(turnId, messageId),
         },
       );
     }

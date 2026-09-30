@@ -5,9 +5,9 @@ import { COPILOT_LAUNCH_ARGUMENTS, COPILOT_VERSION } from "./copilot-profile.js"
 import { QUALIFIED_ACPX_PROFILES, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 
 export const COPILOT_CLOSURE_SHA256 = Object.freeze({
-  "darwin-arm64": "fb3b367a45cd76122fe931521fa2a18adf234ba944fc302db9e10e005e57037e",
-  "darwin-x64": "05f3497b336b3efdec347beb2e3b80b02cfa95f811fafddc25d0b029ab95d711",
-  "linux-x64": "1a675c5b54ae4d94f08718a318451e0499708ded388b4cfd98acec6b4311ccbd",
+  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
+  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
+  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
 });
 
 /** Admission primitive only. Pending candidates remain gated by qualification. */
@@ -30,6 +30,7 @@ export async function verifyCopilotInstallation(profile: QualifiedAcpxProfile): 
     expectedClosureSha256: COPILOT_CLOSURE_SHA256[platform as keyof typeof COPILOT_CLOSURE_SHA256],
     executable: "copilot", fixedArguments: COPILOT_LAUNCH_ARGUMENTS,
     isolatedCacheEnvironmentName: "COPILOT_PKG_CACHE_HOME",
+    copilotDistributionDirectory: "distribution",
   });
   // The host identity binds the versioned profile. Native admission independently
   // binds the complete platform closure before creating each single-use lease.

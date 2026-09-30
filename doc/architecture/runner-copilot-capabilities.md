@@ -1,6 +1,36 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current checkpoint (2026-09-30): **Copilot profile v6 remains unqualified**. The latest paid controller and Product harness source is `81c20ad22723a2d35d7bd693cc6a47002fb46125`; native runtime source remains `e822b614fc368043f4b3d5e34a8d9bbda644e055`. Current local restrictive-denial evidence passed all ten Product checks and an additive screenshot-reader reconciliation, including denial delivery, no file mutation, explicit cancellation and owned process cleanup. The first attached-command attempt failed supervision. The new controller81 attempt reached task Done but failed exact native-command digest correlation; its cleanup and full end audit passed. The command differs by one leading ASCII space; the bounded fixture-only correction preserves raw digests and exact command content. That original case remains failed because independent settlement observations were not retained before the assertion. Two provider text bursts also produced a doubled final marker, and their native message boundaries remain under investigation. A visible Done status does not prove command settlement. This does not qualify the provider. See the [comparative capability report](runner-rich-acp-capabilities.md) for current evidence and remaining cases. The dated observations below retain their original source/profile identities.
+Current checkpoint (2026-09-30): **Copilot profile v7 remains unqualified**. Paid controller/Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`; runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`. All three target runtime builds are complete. Local attached-async attempt `40064-copilot-async-01` passed all eight matchers on `gpt-5.6-luna`, including exact one-command identity, trusted child exit and independent completion observations before terminal settlement, one run and one exact final marker. Done was visible, and full end integrity, owned process/semaphore retirement and temporary-root cleanup passed. The exact local native-permission-deny-write case `40064-copilot-deny-01` also passed all ten checks, with no target side effect through process retirement, correlated cancellation and successful cleanup/end integrity. These two local cases pass; the provider remains unqualified. Native per-run USD is unknown; included credits stayed 16→16 after async and reached 17 after denial, with possible dashboard lag, and extra usage remained disabled at $0. Result SHA-256: `d1d074bc9df4644794dfa8b020fdeba8a9b0de4618e1f55d1845f7726a2ece33`; reconciliation SHA-256: `8e9b9233ed987e9e522b17a271922fd409d311e04ee5c3422a4b5bd1fa2fce68`. The prior exact head passed CI and Greptile for [draft #14676](https://github.com/paperclipai/paperclip/pull/14676). The earlier v6 denial pass and attached-command failures remain historical, including the doubled final marker and missing settlement observations; they do not qualify v7. See the [comparative capability report](runner-rich-acp-capabilities.md) for exact source identities and remaining local/Daytona, billing and cleanup gates.
+
+Message identity implementation (2026-09-30, **deterministic evidence and one paid async case; full qualification pending**): the pinned 1.0.88
+ACP mapper discards `assistant.message_start` and removes native `messageId`
+from text deltas. The separate candidate keeps the original executable and
+every embedded distribution asset, patches the hash-pinned JavaScript mapper,
+and supplies its complete verified distribution through a per-spawn owned
+entry shim. The shim installs the module guard before importing Copilot;
+ambient distribution/version/module paths do not select executable content.
+The original executable, inner archive, upstream app, patched app and complete
+platform closure have independent hashes. Unknown upstream bytes are refused.
+
+The mapping carries real message IDs on the ordered standard ACP stream,
+including empty starts; completed native messages do not echo their full text
+again. Distinct native messages remain distinct transcript items. Earlier
+messages close as commentary, and only the last message supplies final output.
+An empty final message clears preceding text. Reasoning and unidentified native
+session notices are not promoted into the final answer. This does not deduplicate
+equal text or infer a message boundary from a tool call.
+
+A credential-free loopback probe through the actual pinned ARM64 process
+observed three equal-text messages with three native IDs, three empty starts,
+and attached-shell settlement. A separate actual ACPX transport fixture preserved
+empty boundaries across three warm turns. All three platform distributions were
+materialized; this is not native x64/Linux execution proof or paid qualification.
+The [complete candidate inventories](../../packages/paperclip-runner/test/fixtures/copilot-message-identity-distributions-1.0.88.json)
+retain platform closure hashes. Private bounded probe receipts are under
+`runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/` in the existing
+qualification artifact collection. Copilot v7 binds this candidate to a new profile and warm identity; v6 paid
+failures and missing settlement observations remain unchanged. The 1.0.89 comparison moves ACP transport into its native runtime and
+does not establish that upgrading alone fixes message identity.
 
 Initially audited 2026-09-28 against repository base `c65fc9e3c81c41aafe421aa90a00514b84343285`;
 updated 2026-09-29. Status remains **candidate, not qualified**. On frozen source
