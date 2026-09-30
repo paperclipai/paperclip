@@ -247,6 +247,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
     "canary_dry_run",
     "e2e_shards",
     "verify_runner_e2e_support",
+    "installer",
   ]) {
     assert.match(
       jobs.get(jobId),
