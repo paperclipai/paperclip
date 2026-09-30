@@ -49,7 +49,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -1520,18 +1520,18 @@ export class PaperclipRunnerToolAuthority {
       // the attempt *before* permitting that effect. If the effect transaction
       // or its acknowledgement is lost, a missing result is unknown, not a
       // license to run the instruction write a second time.
-      await this.db.transaction(async (tx) => {
+      const reserved = await this.db.transaction(async (tx) => {
         const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
         const bound = await authorize(tx as unknown as Db);
         const resultJson = record(context.run.resultJson);
-        if (record(resultJson.semanticToolReceipts)[key] !== undefined) return;
+        if (record(resultJson.semanticToolReceipts)[key] !== undefined) return false;
         const attempts = record(resultJson.instructionToolAttempts);
         const prior = record(attempts[key]);
         if (attempts[key] !== undefined) {
           if (prior.operationId !== tool || prior.inputDigest !== digest) {
             throw new Error("paperclip_runner_tool_idempotency_conflict");
           }
-          throw new Error(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
+          throw new SemanticToolOutcomeUnknownError(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
         }
         if (Object.keys(attempts).length >= 512) throw badRequest("Run instruction mutation limit reached");
         attempts[key] = { operationId: tool, inputDigest: digest, targetAgentId };
@@ -1544,11 +1544,24 @@ export class PaperclipRunnerToolAuthority {
           action: "agent.instruction_write_attempted", entityType: "agent", entityId: targetAgentId,
           details: { callId, operationId: tool, inputDigest: digest },
         });
+        return true;
       });
-      return this.#withMutationReceipt(tool, key, input, (tx) =>
-        executeAgentInstructionTool({ db: tx, binding: {
-          companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
-        }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+      try {
+        return await this.#withMutationReceipt(tool, key, input, (tx) =>
+          executeAgentInstructionTool({ db: tx, binding: {
+            companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+          }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+      } catch (error) {
+        // Instruction validation, authorization and CAS errors precede the
+        // file write. Storage errors and lost commit acknowledgements do not
+        // prove that a reserved filesystem effect rolled back.
+        const status = record(error).status;
+        if (!reserved || [400, 401, 403, 404, 409, 422].includes(Number(status))) throw error;
+        throw new SemanticToolOutcomeUnknownError(
+          `paperclip_runner_instruction_outcome_unknown call_id=${callId}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
     });
   }
 

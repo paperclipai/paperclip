@@ -233,6 +233,9 @@ or pretend to have succeeded. This also applies to another process reaching a
 reserved call before its effect transaction starts. The controller retains an
 unsettled operation for authoritative reconciliation. If only the commit
 acknowledgement was lost, the committed receipt is replayed normally.
+The native tool wrapper propagates `SemanticToolOutcomeUnknownError` instead
+of turning it into a completed failed tool response. Ordinary validation,
+authorization, and stale-base errors still return normal tool errors.
 
 ### Lossless arguments and bounded transport
 
@@ -266,6 +269,7 @@ model or rely on an LLM choosing the desired timing.
 | Concurrent writes held at filesystem commit; authority restart | One write, one audit record, same receipt; revoked authorization rejected | Server `agent-instruction-tools.integration.test.ts` |
 | Failure after file rename or rollback while saving the receipt | Durable attempt and audit evidence survive; no success claim and no second write | Server `agent-instruction-tools.integration.test.ts` |
 | Receipt commits but its database acknowledgement is lost | Exact original result replays; one file-update audit and one attempt record | Server `agent-instruction-tools.integration.test.ts` |
+| Tool handler throws an unknown-outcome error versus a validation error | Unknown propagates without a completed tool event; validation returns an ordinary failed response | `codex-app-server-driver.test.ts` |
 | Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |
 | Handler finishes during close, after close budget, or persistence fails | Checkpoint marked settled only with completed delivery and drained provider | `runnerd-codex-transport.test.ts` |
 | Controller restarts with committed input but no result | No second dispatch and no fabricated outcome | `durable-prp-control-plane.test.ts` |

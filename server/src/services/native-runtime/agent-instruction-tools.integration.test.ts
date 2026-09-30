@@ -140,7 +140,7 @@ describe("canonical instruction tools through native authority", () => {
       }
     });
     try {
-      await expect(authority.execute(request)).rejects.toThrow();
+      await expect(authority.execute(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
       expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(request.arguments.content);
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       expect((run!.resultJson as any).instructionToolAttempts[key]).toMatchObject({
@@ -151,7 +151,7 @@ describe("canonical instruction tools through native authority", () => {
       expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
       expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(0);
       authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
-      await expect(authority.execute(request)).rejects.toThrow("paperclip_runner_instruction_outcome_unknown");
+      await expect(authority.execute(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
       await expect(authority.execute({ ...request, arguments: { ...request.arguments, content: "different" } }))
         .rejects.toThrow("idempotency_conflict");
       expect(writes).toBe(1);

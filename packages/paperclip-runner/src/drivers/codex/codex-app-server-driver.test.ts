@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -2956,6 +2957,29 @@ describe("Codex app-server Codex driver", () => {
         arguments: {},
       }),
     );
+  });
+
+  it.each(["unknown", "validation"])("preserves the dynamic tool outcome boundary (%s)", async (outcome) => {
+    const transport = new FakeCodexTransport();
+    const error = outcome === "unknown"
+      ? new SemanticToolOutcomeUnknownError("write may have committed")
+      : new Error("invalid instruction input");
+    const handler = vi.fn(async () => { throw error; });
+    const session = await makeDriver([transport], {
+      dynamicTools: [{ name: "update_agent_instructions", description: "Write instructions.", inputSchema: { type: "object" } }],
+      dynamicToolHandler: handler,
+    }).openSession({ runId: "run-uncertain-write", normalizedSessionId: "session-uncertain-write", workingDirectory: TEST_WORKING_DIRECTORY });
+    await session.startTurn({ message: { role: "user", text: "Update instructions." } });
+    const response = transport.invoke({ id: "rpc-write", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "uncertain-write", tool: "update_agent_instructions", arguments: {},
+    } });
+    if (outcome === "unknown") await expect(response).rejects.toBe(error);
+    else await expect(response).resolves.toMatchObject({ success: false });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const completions = events.filter((event) => event.eventType === "item.completed" && event.itemId === "uncertain-write");
+    expect(completions).toHaveLength(outcome === "unknown" ? 0 : 1);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when an agent message changes a tool-committed result", async () => {
