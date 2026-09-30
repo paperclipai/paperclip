@@ -9162,6 +9162,7 @@ async function executePaperclipNativeSessionWithinScope(
     const ownedSession = warmNativeSessions.get(warmSessionId);
     const collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
       (instructionCopy.checkpointWarm ? !await instructionCopy.checkpointWarm() : await instructionCopy.hasChanges()));
+    const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped;
     if (collectInstructions && ownedSession) {
       // Keep the unchanged warm path intact. A changed private instruction copy
       // requires the existing checkpoint-and-close boundary before collection.
@@ -9173,7 +9174,7 @@ async function executePaperclipNativeSessionWithinScope(
       lifecyclePolicy.idleTimeoutMs,
       false,
     );
-    if (collectInstructions) await instructionCopy!.collectStopped();
+    if (collectInstructions && !collectedByOwner) await instructionCopy!.collectStopped();
   }
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,

@@ -34,6 +34,23 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Managed Agent File Save Receipts
+
+The server writes `instruction_save` after managed file collection or a warm
+turn checkpoint. The payload includes the save state, instruction entry path,
+storage warning, and error code/message. Agent-directory receipts identify
+`contract: "agent_files"` and the applied candidate hash. Legacy instruction
+receipts instead identify the saved revision.
+
+A validated warm checkpoint reports `saved` or `unchanged`, even though its
+working directory remains owned by the live session. An unstable checkpoint
+reports `pending_collection` until stopped collection produces a final receipt.
+Successful checkpoints can include `checkpointStats`: `scannedEntries`,
+`hashedBytes`, `copiedFiles`, and `copiedBytes`. These counts describe that
+capture, not cumulative traffic or an atomic snapshot of background writers.
+They contain no file contents. The receipt remains in the instance run log;
+it adds no Paperclip Telemetry or OpenTelemetry export.
+
 ## Omitted Unsafe Workspace Export
 
 `workspace_export_omitted` is an informational system event in the local run log.

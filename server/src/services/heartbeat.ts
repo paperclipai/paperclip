@@ -1,6 +1,6 @@
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
-import { isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+import { AgentDirectoryReuseInvalidatedError, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
 
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
@@ -23270,13 +23270,26 @@ export function heartbeatService(
                 canReuse: () => instructionCopies.canReuseWarm(agent.companyId, agent.id, taskSessionForRun!.lastRunId!),
               });
             }
-            instructionCopy = await instructionCopies.prepare({
+            const prepareInstructions = (reuseRunId?: string) => instructionCopies.prepare({
               companyId: agent.companyId, agentId: agent.id, runId: run.id,
               target: executionTarget, cwd: executionWorkspace.cwd,
               legacy: Object.keys(priorFileInput).length > 0 && priorWorkingCopy.kind !== "agent_files",
-              warm: warmFiles, reuseRunId: nativeInstructionReservation?.reuseRunId,
+              warm: warmFiles, reuseRunId,
+              onWarmHandoff: copy => {
+                instructionCopy = copy;
+                nativeInstructionReservation?.adopt(copy.executionRoot, collectStoppedInstructions);
+              },
             });
-            if (instructionCopy) nativeInstructionReservation?.adopt(instructionCopy.executionRoot, collectStoppedInstructions);
+            try {
+              instructionCopy = await prepareInstructions(nativeInstructionReservation?.reuseRunId);
+            } catch (error) {
+              if (!(error instanceof AgentDirectoryReuseInvalidatedError)) throw error;
+              // prepare has released its canonical lock. Retirement can now
+              // collect under that same lock before a fresh restore starts.
+              await nativeInstructionReservation?.release();
+              nativeInstructionReservation = null;
+              instructionCopy = await prepareInstructions();
+            }
           } catch (error) {
             if ((error as { status?: number }).status !== 403) throw error;
             // Missing write identity must not break a background run's read-only

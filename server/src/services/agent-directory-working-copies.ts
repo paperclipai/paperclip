@@ -18,6 +18,7 @@ import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline
 import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
+export class AgentDirectoryReuseInvalidatedError extends Error {}
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
 const key = (row: Pick<Copy, "companyId" | "runId">) => `${row.companyId}:${row.runId}`;
@@ -65,7 +66,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       workspaceBaseline: baseline(row), workspaceGitSnapshot: null, workspaceFileMode: "all",
       workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
   }
-  async function prepare(input: { companyId: string; agentId: string; runId: string; target?: AdapterExecutionTarget | null; cwd: string; warm?: boolean; reuseRunId?: string }) {
+  async function prepare(input: { companyId: string; agentId: string; runId: string; target?: AdapterExecutionTarget | null; cwd: string; warm?: boolean; reuseRunId?: string; onWarmHandoff?: (copy: Copy) => void }) {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
     if (!agent) throw notFound("Agent not found");
     if (agentInstructionsBundleMode(agent) !== "managed") return null;
@@ -77,18 +78,36 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       return serial(prior, async current => {
         if (current.state !== "warm_saved" || current.errorCode || !await owns(current) || current.location !== (input.target?.kind === "remote" ? `remote:${input.target.environmentId ?? ""}` : "local")) throw conflict("Managed warm directory is not reusable");
         const receipt = { ...current.receipt, cleanup: input.target?.kind === "remote" ? { leaseId: input.target.leaseId ?? null, remoteCwd: input.target.remoteCwd } : undefined };
-        await db.insert(copies).values({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!,
-          entryFile: current.entryFile, baseHash: current.baseHash, localRoot: current.localRoot, executionRoot: current.executionRoot, location: current.location, state: "prepared", receipt });
-        // The controller-owned marker fences every old callback before the
-        // successor can execute. Never put it in the agent-writable directory.
-        const temporary = `${ownerFile(current)}.next`;
-        await fs.writeFile(temporary, JSON.stringify({ runId: input.runId }));
-        await fs.rename(temporary, ownerFile(current));
-        const runtime = transports.get(key(current));
-        if (runtime) transports.set(key({ companyId: input.companyId, runId: input.runId }), runtime);
-        transports.delete(key(current));
-        await patch(current, { state: "superseded", receipt: { schema: AGENT_FILES_CONTRACT, warm: true, successorRunId: input.runId } });
-        return (await get(input.companyId, input.runId))!;
+        // Insert before taking the agent-row lock: this foreign key needs an
+        // independent transaction, and must survive post-handoff failures.
+        const [successor] = await db.insert(copies).values({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!,
+          entryFile: current.entryFile, baseHash: current.baseHash, localRoot: current.localRoot, executionRoot: current.executionRoot, location: current.location, state: "prepared", receipt }).returning();
+        let handedOff = false;
+        try { return await store.locked(input.companyId, input.agentId, bound, false, async (_tx, lockedAgent, canonical) => {
+          // The reservation's earlier check is only a hint. Serialize this last
+          // validation and ownership transfer with every canonical writer.
+          if (current.entryFile !== deriveBundleState(lockedAgent).entryFile ||
+              directorySnapshotSha256(checkpointSnapshot(await cachedAgentFileManifest(canonical))) !== current.baseHash) {
+            throw new AgentDirectoryReuseInvalidatedError("Managed agent files changed before warm directory handoff");
+          }
+          // The controller-owned marker fences old callbacks. Attach the new
+          // collector immediately after it moves, before fallible bookkeeping.
+          const temporary = `${ownerFile(current)}.next`;
+          await fs.writeFile(temporary, JSON.stringify({ runId: input.runId }));
+          await fs.rename(temporary, ownerFile(current));
+          handedOff = true;
+          input.onWarmHandoff?.(successor!);
+          const runtime = transports.get(key(current));
+          if (runtime) transports.set(key(successor!), runtime);
+          transports.delete(key(current));
+          await patch(current, { state: "superseded", receipt: { schema: AGENT_FILES_CONTRACT, warm: true, successorRunId: input.runId } });
+          return successor!;
+        }); } catch (error) {
+          // No process used this proposed owner. Remove it after the canonical
+          // lock releases so the same run can restore a fresh directory.
+          if (!handedOff) await db.delete(copies).where(and(eq(copies.companyId, input.companyId), eq(copies.runId, input.runId)));
+          throw error;
+        }
       });
     }
     const localRoot = path.join(path.dirname(root), "file-sync", "runs", input.runId, "live");

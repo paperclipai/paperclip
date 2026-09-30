@@ -18,6 +18,7 @@ import { resolveManagedInstructionsRoot } from "../services/agent-instructions.j
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
 
 describe("persistent agent directories", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -474,6 +475,47 @@ describe("persistent agent directories", () => {
     expect(await fs.readFile(path.join(fresh.localRoot, "memory.txt"), "utf8")).toBe("turn 1\nturn 2\nturn 3\n");
     expect(await fs.readFile(path.join(fresh.localRoot, "late.txt"), "utf8")).toBe("after turn");
   });
+
+  it("rechecks canonical edits at handoff and releases the writer lock before retirement and fresh restore", async () => {
+    const first = await run({ warm: true });
+    await copies.checkpointWarm({ companyId, runId: first.runId });
+    expect(await copies.canReuseWarm(companyId, agentId, first.runId)).toBe(true);
+    await agentFileStore(db).write({ ...target(), path: "editor.txt", bytes: Buffer.from("new canonical content"), baseHash: null }, board());
+
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+    await expect(copies.prepare({ ...target(), runId, cwd: home, warm: true, reuseRunId: first.runId })).rejects.toBeInstanceOf(AgentDirectoryReuseInvalidatedError);
+    expect(JSON.parse(await fs.readFile(path.join(path.dirname(first.localRoot), "owner.json"), "utf8")).runId).toBe(first.runId);
+    // Both paths need the canonical writer lock. A handoff failure must release
+    // it before orchestration stops the old session and restores a fresh copy.
+    expect((await copies.collectStopped({ companyId, runId: first.runId }))?.state).toBe("unchanged");
+    const next = (await copies.prepare({ ...target(), runId, cwd: home, warm: true }))!;
+    expect(next.localRoot).not.toBe(first.localRoot);
+    expect(await fs.readFile(path.join(next.localRoot, "editor.txt"), "utf8")).toBe("new canonical content");
+  }, 10_000);
+
+  it("attaches the successor collector before fallible post-handoff bookkeeping", async () => {
+    const first = await run({ warm: true });
+    await copies.checkpointWarm({ companyId, runId: first.runId });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+    let collectorRunId = first.runId;
+    const handoff = vi.fn((copy: typeof first) => { collectorRunId = copy.runId; });
+    const directories = agentDirectoryWorkingCopyService(db, copies.get, async () => { throw new Error("injected post-handoff database failure"); });
+
+    await expect(directories.prepare({ ...target(), runId, cwd: home, warm: true, reuseRunId: first.runId, onWarmHandoff: handoff }))
+      .rejects.toThrow("injected post-handoff database failure");
+    expect(handoff).toHaveBeenCalledOnce();
+    expect(collectorRunId).toBe(runId);
+    await fs.writeFile(path.join(first.localRoot, "last-write.txt"), "saved after failed handoff");
+    // The stale collector cannot touch the successor; the attached collector
+    // still saves and cleans the actual owner after process retirement.
+    await copies.collectStopped({ companyId, runId: first.runId });
+    expect((await fs.stat(first.localRoot)).isDirectory()).toBe(true);
+    expect((await copies.collectStopped({ companyId, runId: collectorRunId }))?.state).toBe("saved");
+    expect(await fs.readFile(path.join(root, "last-write.txt"), "utf8")).toBe("saved after failed handoff");
+    await expect(fs.stat(first.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 10_000);
   it("retires loaded instruction edits while allowing ordinary personal-file edits to stay warm", async () => {
     const copy = await run({ warm: true });
     await fs.writeFile(path.join(copy.localRoot, entryFile), "# New loaded policy\n");

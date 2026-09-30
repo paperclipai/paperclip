@@ -71,7 +71,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
   }
   const directories = agentDirectoryWorkingCopyService(db, get, patch, options.environmentRuntime);
-  async function prepare(input: { companyId: string; agentId: string; runId: string; target?: AdapterExecutionTarget | null; cwd: string; legacy?: boolean; warm?: boolean; reuseRunId?: string }) {
+  async function prepare(input: { companyId: string; agentId: string; runId: string; target?: AdapterExecutionTarget | null; cwd: string; legacy?: boolean; warm?: boolean; reuseRunId?: string; onWarmHandoff?: (copy: Copy) => void }) {
     const existing = await get(input.companyId, input.runId);
     if (isAgentDirectoryCopy(existing) || (!existing && !input.legacy)) return directories.prepare(input);
     let refreshStoppedCopy = false;

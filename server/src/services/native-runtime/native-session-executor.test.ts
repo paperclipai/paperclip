@@ -5969,7 +5969,7 @@ describe("native warm session supervision", () => {
     it("stops before collecting when a checkpoint cannot stabilize", async () => {
       const f = await start("managed-fallback", false);
       expect(f.close).toHaveBeenCalledOnce();
-      expect(f.copy.collectStopped).toHaveBeenCalled();
+      expect(f.copy.collectStopped).toHaveBeenCalledOnce();
       expect(f.close.mock.invocationCallOrder[0]).toBeLessThan(f.copy.collectStopped.mock.invocationCallOrder[0]!);
     });
 
