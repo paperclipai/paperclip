@@ -16,7 +16,7 @@ const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
  * stages into the sandbox `home` asset (see {@link stageCodexHomeForSync}).
  * Derived from the seeding constants so it can never drift from what the adapter
  * actually writes into the home: the copied static config files, the symlinked
- * credential file, and the injected `skills/` directory. Everything else the
+ * credential file, and the injected `skills/` and `agents/` directories. Everything else the
  * stock upstream `codex` binary writes at runtime (`*.sqlite`, `*-wal`,
  * `plugins/`, `cache/`, `sessions/`, `shell_snapshots/`, …) is intentionally
  * excluded — it is large host-local runtime state the sandbox run never needs.
@@ -25,6 +25,7 @@ export const CODEX_SYNC_ALLOWLIST = [
   ...COPIED_SHARED_FILES,
   ...SYMLINKED_SHARED_FILES,
   "skills",
+  "agents",
 ] as const;
 
 export type ManagedCodexMcpGateway = {
@@ -373,7 +374,7 @@ export interface StageCodexHomeForSyncOptions {
  * is not fooled by `..` segments or a trailing-separator prefix collision
  * (`/a/skills` vs `/a/skills-evil`).
  */
-function isResolvedPathInside(candidate: string, root: string): boolean {
+export function isResolvedPathInside(candidate: string, root: string): boolean {
   if (candidate === root) return true;
   const rel = path.relative(root, candidate);
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -446,8 +447,8 @@ async function stageContainedSubtree(
 }
 
 /**
- * Recursively copies `sourceDir` (a directory allowlist entry — currently only
- * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
+ * Recursively copies `sourceDir` (a directory allowlist entry — `skills/` or
+ * `agents/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
  * every copied regular file to mode `0600`. Created directories get mode `0700`.
  *
  * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
@@ -469,6 +470,7 @@ async function stageContainedSubtree(
 async function stageDirectorySecure(
   sourceDir: string,
   targetDir: string,
+  roleRoots?: string[],
 ): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
   const realSourceDir = await fs.realpath(sourceDir);
@@ -487,6 +489,10 @@ async function stageDirectorySecure(
     // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
     // re-stage the whole home under `skills/`. Skip it.
     if (isResolvedPathInside(realSourceDir, resolved)) continue;
+    // `agents/` children link to `<skill>/agents/<role>.toml`: a link must land inside a skill
+    // staged under `skills/` (the rule role injection applies), so a role linked out of its skill,
+    // or straight at a host file, cannot ship host files.
+    if (roleRoots && entry.isSymbolicLink() && !roleRoots.some((root) => isResolvedPathInside(resolved, root))) continue;
     const entryStat = await fs.stat(resolved).catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
@@ -503,6 +509,16 @@ async function stageDirectorySecure(
     }
     // Other types (sockets, devices) are silently skipped.
   }
+}
+
+/** The real path of each skill linked under `<home>/skills`. */
+async function skillRoleRoots(home: string): Promise<string[]> {
+  const skillsDir = path.join(home, "skills");
+  const names = await fs.readdir(skillsDir).catch(() => [] as string[]);
+  const roots = await Promise.all(
+    names.map((name) => fs.realpath(path.join(skillsDir, name)).catch(() => null)),
+  );
+  return roots.filter((root): root is string => root !== null);
 }
 
 /**
@@ -529,7 +545,7 @@ async function stageCodexHomeEntry(
   if (stat.isDirectory()) {
     // Recursively copy with mode normalization — nested regular files land
     // `0600` and dangling/circular symlinks are skipped.
-    await stageDirectorySecure(source, target);
+    await stageDirectorySecure(source, target, entry === "agents" ? await skillRoleRoots(sourceHome) : undefined);
     return;
   }
 

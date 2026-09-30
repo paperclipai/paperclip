@@ -1081,6 +1081,13 @@ describe("stageCodexHomeForSync", () => {
     // skills/ is a directory of symlinks.
     await fs.mkdir(path.join(home, "skills"), { recursive: true });
     await fs.symlink(skillSource, path.join(home, "skills", "demo.md"));
+    // agents/ holds agent-role links into skill sources.
+    await fs.mkdir(path.join(home, "agents"), { recursive: true });
+    const roleSkill = path.join(root, "shared", "role-skill");
+    await fs.mkdir(path.join(roleSkill, "agents"), { recursive: true });
+    await fs.writeFile(path.join(roleSkill, "agents", "demo.toml"), skillBytes, "utf8");
+    await fs.symlink(roleSkill, path.join(home, "skills", "role-skill"));
+    await fs.symlink(path.join(roleSkill, "agents", "demo.toml"), path.join(home, "agents", "demo.toml"));
 
     // Decoys: large runtime state the 4-name denylist missed.
     await fs.writeFile(path.join(home, "logs_2.sqlite"), "x", "utf8");
@@ -1120,8 +1127,82 @@ describe("stageCodexHomeForSync", () => {
       expect((await fs.lstat(stagedSkill)).isSymbolicLink()).toBe(false);
       expect(await fs.readFile(stagedSkill, "utf8")).toBe(skillBytes);
 
+      // agents/ (agent roles linked from skills) copied the same way.
+      expect(await fs.readFile(path.join(staged, "agents", "demo.toml"), "utf8")).toBe(skillBytes);
+
       // config.toml (post-rewrite state) carried through.
       expect(await fs.readFile(path.join(staged, "config.toml"), "utf8")).toContain("model_provider");
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not stage an agent role whose real path escapes its skill", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-roles-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      const design = path.join(root, "store", "design");
+      const borrowed = path.join(root, "store", "borrowed");
+      await fs.mkdir(path.join(design, "agents"), { recursive: true });
+      await fs.mkdir(path.join(root, "outside"), { recursive: true });
+      await fs.mkdir(borrowed, { recursive: true });
+      await fs.writeFile(path.join(root, "secret.txt"), "host secret\n", "utf8");
+      await fs.writeFile(path.join(root, "outside", "loot.toml"), "host secret\n", "utf8");
+      await fs.writeFile(path.join(design, "agents", "ok.toml"), 'name = "ok"\n', "utf8");
+      // A role file that is itself a link out of the skill, and a skill whose agents/ dir is one.
+      await fs.symlink(path.join(root, "secret.txt"), path.join(design, "agents", "leak.toml"));
+      await fs.symlink(path.join(root, "outside"), path.join(borrowed, "agents"));
+      await fs.mkdir(path.join(home, "agents"), { recursive: true });
+      await fs.mkdir(path.join(home, "skills"), { recursive: true });
+      await fs.symlink(design, path.join(home, "skills", "design"));
+      await fs.symlink(borrowed, path.join(home, "skills", "borrowed"));
+      for (const [name, source] of [
+        ["ok.toml", path.join(design, "agents", "ok.toml")],
+        ["leak.toml", path.join(design, "agents", "leak.toml")],
+        ["loot.toml", path.join(borrowed, "agents", "loot.toml")],
+        // A link straight at a host file, not at any skill's agents/ dir.
+        ["host.toml", path.join(root, "secret.txt")],
+      ]) {
+        await fs.symlink(source, path.join(home, "agents", name));
+      }
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-roles" });
+
+      expect(await fs.readdir(path.join(staged, "agents"))).toEqual(["ok.toml"]);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stages an agent role that a skill links to another place inside itself", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-roles-inside-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      const design = path.join(root, "store", "design");
+      const audit = path.join(root, "store", "audit");
+      // design: a role file linked to another file inside the skill.
+      await fs.mkdir(path.join(design, "agents"), { recursive: true });
+      await fs.mkdir(path.join(design, "shared"), { recursive: true });
+      await fs.writeFile(path.join(design, "shared", "reviewer.toml"), 'name = "reviewer"\n', "utf8");
+      await fs.symlink(path.join(design, "shared", "reviewer.toml"), path.join(design, "agents", "reviewer.toml"));
+      // audit: the agents/ dir itself linked to another dir inside the skill.
+      await fs.mkdir(path.join(audit, "roles"), { recursive: true });
+      await fs.writeFile(path.join(audit, "roles", "auditor.toml"), 'name = "auditor"\n', "utf8");
+      await fs.symlink(path.join(audit, "roles"), path.join(audit, "agents"));
+      await fs.mkdir(path.join(home, "agents"), { recursive: true });
+      await fs.mkdir(path.join(home, "skills"), { recursive: true });
+      await fs.symlink(design, path.join(home, "skills", "design"));
+      await fs.symlink(audit, path.join(home, "skills", "audit"));
+      await fs.symlink(path.join(design, "agents", "reviewer.toml"), path.join(home, "agents", "reviewer.toml"));
+      await fs.symlink(path.join(audit, "agents", "auditor.toml"), path.join(home, "agents", "auditor.toml"));
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-roles-inside" });
+
+      expect((await fs.readdir(path.join(staged, "agents"))).sort()).toEqual(["auditor.toml", "reviewer.toml"]);
     } finally {
       if (staged) await fs.rm(staged, { recursive: true, force: true });
       await fs.rm(root, { recursive: true, force: true });

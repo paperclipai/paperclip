@@ -71,6 +71,7 @@ import {
   codexHomeHasUsableAuth,
   evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
+  isResolvedPathInside,
   pathExists,
   prepareManagedCodexHome,
   resolveManagedCodexHomeDir,
@@ -262,6 +263,88 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
       "stdout",
       `[paperclip] Removed stale Codex skill "${entry.name}" from ${skillsHome}\n`,
     );
+  }
+}
+
+async function isPaperclipSkillRolePath(rolePath: string): Promise<boolean> {
+  const skillDir = path.dirname(path.dirname(rolePath));
+  return (
+    path.basename(path.dirname(rolePath)) === "agents" &&
+    (await isLikelyPaperclipRuntimeSkillPath(skillDir, path.basename(skillDir), { requireSkillMarkdown: false }))
+  );
+}
+
+// Codex loads agent roles only from CODEX_HOME/agents, not from a skill's own agents/ folder, so
+// link the roles that desired skills ship. As with skills, live links are never removed (other
+// agents and the operator share this home); only dangling links into Paperclip repo skills are.
+async function syncCodexSkillAgentRoles(
+  codexHome: string,
+  skillsEntries: Array<{ source: string; runtimeName: string }>,
+  onLog: AdapterExecutionContext["onLog"],
+) {
+  const agentsHome = path.join(codexHome, "agents");
+  const wanted = new Map<string, string>();
+  for (const entry of skillsEntries) {
+    const rolesDir = path.join(entry.source, "agents");
+    const names = await fs.readdir(rolesDir).catch(async (err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to read Codex agent roles of skill "${entry.runtimeName}": ${err.message}\n`,
+        );
+      }
+      return [] as string[];
+    });
+    const realSource = names.length > 0 ? await fs.realpath(entry.source).catch(() => null) : null;
+    for (const name of names.sort()) {
+      if (!name.endsWith(".toml") || wanted.has(name)) continue;
+      const source = path.join(rolesDir, name);
+      const realRole = await fs.realpath(source).catch(() => null);
+      if (!realSource || !realRole || !isResolvedPathInside(realRole, realSource)) {
+        await onLog(
+          "stderr",
+          `[paperclip] Refused Codex agent role "${name}" of skill "${entry.runtimeName}": it does not resolve inside the skill\n`,
+        );
+        continue;
+      }
+      wanted.set(name, source);
+    }
+  }
+
+  for (const name of await fs.readdir(agentsHome).catch(() => [] as string[])) {
+    if (wanted.has(name)) continue;
+    const target = path.join(agentsHome, name);
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) continue;
+    const resolvedLinkedPath = path.resolve(agentsHome, linkedPath);
+    if ((await pathExists(resolvedLinkedPath)) || !(await isPaperclipSkillRolePath(resolvedLinkedPath))) continue;
+    await fs.unlink(target).catch(() => {});
+    await onLog("stdout", `[paperclip] Removed stale Codex agent role "${name}" from ${agentsHome}\n`);
+  }
+
+  for (const [name, source] of wanted) {
+    try {
+      await fs.mkdir(agentsHome, { recursive: true });
+      const target = path.join(agentsHome, name);
+      // A live link to the same-named role of another Paperclip skill would shadow this one, as for
+      // skills: repoint it. Links that are not Paperclip skill roles (the operator's) stay.
+      const linkedPath = await fs.readlink(target).catch(() => null);
+      const resolvedLinkedPath = linkedPath && path.resolve(agentsHome, linkedPath);
+      if (resolvedLinkedPath && resolvedLinkedPath !== source && (await isPaperclipSkillRolePath(resolvedLinkedPath))) {
+        await fs.unlink(target);
+        await fs.symlink(source, target);
+        await onLog("stdout", `[paperclip] Repaired Codex agent role "${name}" into ${agentsHome}\n`);
+        continue;
+      }
+      if ((await ensurePaperclipSkillSymlink(source, target)) === "created") {
+        await onLog("stdout", `[paperclip] Linked Codex agent role "${name}" into ${agentsHome}\n`);
+      }
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to link Codex agent role "${name}" into ${agentsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 }
 
@@ -510,9 +593,10 @@ export async function ensureCodexSkillsInjected(
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
   const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.key));
+  const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
+  await syncCodexSkillAgentRoles(path.dirname(skillsHome), skillsEntries, onLog);
   if (skillsEntries.length === 0) return;
 
-  const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
   const linkSkill = options.linkSkill;
   for (const entry of skillsEntries) {
