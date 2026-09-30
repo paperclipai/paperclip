@@ -16,6 +16,9 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  managedAgentProfiles,
+  routines,
+  routineTriggers,
   secretAccessEvents,
   toolAccessAuditEvents,
   toolApplications,
@@ -180,6 +183,8 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
+    await db.delete(managedAgentProfiles);
+    await db.delete(routines);
     await db.delete(companySecrets);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
@@ -397,6 +402,26 @@ describeEmbeddedPostgres("tool connection removal", () => {
     expect(issuance!.tokenHash).toBeNull();
     // The ledger row itself is history and stays.
     expect(issuance!.path).toBe("oauth_access");
+  });
+
+  it.each(["managed-profile", "routine-trigger"])("retains a credential referenced directly by a %s", async (consumer) => {
+    installMcpFixture(HEADER);
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { service, connectionId } = await connectHeaderApp(company.id, agent.id);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    const secretId = connection!.credentialRefs[0]!.secretId;
+    if (consumer === "managed-profile") {
+      await db.insert(managedAgentProfiles).values({ companyId: company.id, profileKey: "shared", displayName: "Shared",
+        anthropicAgentId: "fixture", agentVersion: "1", environmentId: "fixture", apiKeySecretId: secretId });
+    } else {
+      const [routine] = await db.insert(routines).values({ companyId: company.id, title: "Shared" }).returning();
+      await db.insert(routineTriggers).values({ companyId: company.id, routineId: routine!.id, kind: "webhook", secretId });
+    }
+    const removed = await service.archiveConnection(connectionId, company.id);
+    expect(removed.removal.secretsRetainedShared).toBe(1);
+    expect((await db.select().from(companySecrets).where(eq(companySecrets.id, secretId)))[0]!.status).toBe("active");
+    await expect(secretService(db).resolveSecretValue(company.id, secretId, "latest")).resolves.toBe(HEADER.value);
   });
 
   it("leaves another consumer's credential in place", async () => {

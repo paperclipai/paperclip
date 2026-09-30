@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import {
   activityLog, companies, companySecrets, companySecretVersions, companySecretBindings, connectionGrants,
   createDb, toolApplications, toolConnections, userSecretDefinitions, userSecretDeclarations, toolAccessAuditEvents,
+  managedAgentProfiles, routines, routineTriggers,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { backfillPersonalConnectionCredentials } from "../services/connection-credential-backfill.js";
@@ -23,6 +24,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.delete(activityLog);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
+    await db.delete(managedAgentProfiles);
+    await db.delete(routines);
     await db.delete(companySecrets);
     await db.delete(companies); });
   afterAll(async () => { await database?.cleanup(); });
@@ -59,7 +62,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(toolAccessAuditEvents)).toHaveLength(1);
   });
 
-  it.each(["other-grant", "same-connection-grant", "revoked-grant", "cross-company-reference", "other-target", "conflicting-owner", "conflicting-grant-creator", "mismatched-shape", "deleted", "unmanaged", "shared-slot"])("leaves %s untouched and requests reconnect", async (reason) => {
+  it.each(["other-grant", "same-connection-grant", "revoked-grant", "cross-company-reference", "other-target", "managed-profile", "routine-trigger", "conflicting-owner", "conflicting-grant-creator", "mismatched-shape", "deleted", "unmanaged", "shared-slot"])("leaves %s untouched and requests reconnect", async (reason) => {
     const f = await fixture();
     if (reason === "other-grant" || reason === "same-connection-grant" || reason === "revoked-grant") {
       let connectionId = f.connection.id;
@@ -76,6 +79,12 @@ const support = await getEmbeddedPostgresTestSupport();
         name: "Other", uid: randomUUID(), transport: "mcp_remote", credentialSecretRefs: [f.ref] });
     }
     if (reason === "other-target") await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: f.secret.id, targetType: "agent", targetId: randomUUID(), configPath: "env.KEY" });
+    if (reason === "managed-profile") await db.insert(managedAgentProfiles).values({ companyId: f.company.id,
+      profileKey: "shared", displayName: "Shared", anthropicAgentId: "fixture", agentVersion: "1", environmentId: "fixture", apiKeySecretId: f.secret.id });
+    if (reason === "routine-trigger") {
+      const [routine] = await db.insert(routines).values({ companyId: f.company.id, title: "Shared" }).returning();
+      await db.insert(routineTriggers).values({ companyId: f.company.id, routineId: routine!.id, kind: "webhook", secretId: f.secret.id });
+    }
     if (reason === "conflicting-owner") await db.update(companySecrets).set({ createdByUserId: "bob" }).where(eq(companySecrets.id, f.secret.id));
     if (reason === "conflicting-grant-creator") await db.update(connectionGrants).set({ createdByUserId: "bob" }).where(eq(connectionGrants.id, f.grant.id));
     if (reason === "mismatched-shape") await db.update(toolConnections).set({ credentialRefs: [] }).where(eq(toolConnections.id, f.connection.id));

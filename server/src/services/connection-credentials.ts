@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, ne } from "drizzle-orm";
-import { companySecrets, userSecretDefinitions, type connectionGrants, type toolConnections } from "@paperclipai/db";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { companySecrets, companySecretProposals, managedAgentProfiles, routineTriggers, userSecretDefinitions, type connectionGrants, type toolConnections } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
@@ -8,6 +8,19 @@ import { secretService } from "./secrets.js";
 type CredentialDb = Parameters<typeof secretService>[0];
 type SecretActor = Parameters<ReturnType<typeof secretService>["create"]>[2];
 type ConsumerContext = NonNullable<Parameters<ReturnType<typeof secretService>["resolveUserSecretValue"]>[2]>;
+
+/** These consumers reference secrets directly, without connection bindings. */
+export async function connectionSecretsUsedByOtherConsumers(db: CredentialDb, secretIds: string[]) {
+  if (!secretIds.length) return new Set<string>();
+  const profiles = await db.select({ secretId: managedAgentProfiles.apiKeySecretId }).from(managedAgentProfiles)
+    .where(inArray(managedAgentProfiles.apiKeySecretId, secretIds));
+  const triggers = await db.select({ secretId: routineTriggers.secretId }).from(routineTriggers)
+    .where(inArray(routineTriggers.secretId, secretIds));
+  const proposals = await db.select({ secretId: companySecretProposals.secretId, createdSecretId: companySecretProposals.createdSecretId })
+    .from(companySecretProposals).where(or(inArray(companySecretProposals.secretId, secretIds), inArray(companySecretProposals.createdSecretId, secretIds)));
+  return new Set([...profiles, ...triggers, ...proposals, ...proposals.map((row) => ({ secretId: row.createdSecretId }))]
+    .flatMap((row) => row.secretId ? [row.secretId] : []));
+}
 
 /** Names supplied by older API clients may be bare; current names are paths. */
 export function connectionCredentialConfigPath(ref: { name: string }): string {

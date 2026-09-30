@@ -4,7 +4,7 @@ import {
   toolConnections, userSecretDefinitions, toolAccessAuditEvents, activityLog,
 } from "@paperclipai/db";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
-import { connectionCredentialConfigPath } from "./connection-credentials.js";
+import { connectionCredentialConfigPath, connectionSecretsUsedByOtherConsumers } from "./connection-credentials.js";
 
 const PAGE_SIZE = 100;
 const RECONNECT_MESSAGE = "This personal credential needs its owner to reconnect it.";
@@ -46,7 +46,9 @@ export async function backfillPersonalConnectionCredentials(db: Db) {
               inArray(companySecrets.id, secretIds.slice(0, PAGE_SIZE)),
             )).for("update");
             if (!legacy.length) return result;
+            const otherConsumers = await connectionSecretsUsedByOtherConsumers(tx, legacy.map((secret) => secret.id));
             let safe = secretIds.length <= PAGE_SIZE && grants.length === 1
+              && otherConsumers.size === 0
               && !connection.createdByAgentId && grant.createdByUserId === grant.subjectUserId
               && connection.credentialSecretRefs.every((ref) => ref.configPath === "oauth.client_secret");
             for (const secret of legacy) {
