@@ -59,15 +59,13 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
     <td align="center" valign="top"><img src="ui/public/brands/codex-color.svg" width="32" height="32" alt="Codex" /><br/><sub>Codex</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/cursor-dark.svg" /><img src="ui/public/brands/adapters/cursor.svg" width="32" height="32" alt="Cursor and Cursor Cloud" /></picture><br/><sub>Cursor<br/>+ Cloud</sub></td>
     <td align="center" valign="top"><img src="ui/public/brands/adapters/gemini-color.svg" width="32" height="32" alt="Gemini CLI" /><br/><sub>Gemini CLI</sub></td>
-    <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/opencode-logo-dark-square.svg" /><img src="ui/public/brands/opencode-logo-light-square.svg" width="32" height="32" alt="OpenCode" /></picture><br/><sub>OpenCode</sub></td>
   </tr>
   <tr>
+    <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/opencode-logo-dark-square.svg" /><img src="ui/public/brands/opencode-logo-light-square.svg" width="32" height="32" alt="OpenCode" /></picture><br/><sub>OpenCode</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/pi-dark.svg" /><img src="ui/public/brands/adapters/pi.svg" width="32" height="32" alt="Pi" /></picture><br/><sub>Pi</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/hermesagent-dark.svg" /><img src="ui/public/brands/adapters/hermesagent.svg" width="32" height="32" alt="Hermes and Hermes Gateway" /></picture><br/><sub>Hermes<br/>+ Gateway</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/grok-dark.svg" /><img src="ui/public/brands/adapters/grok.svg" width="32" height="32" alt="Grok Build" /></picture><br/><sub>Grok Build</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/kimi-color.svg" /><img src="ui/public/brands/adapters/kimi-color-light.svg" width="32" height="32" alt="Kimi Code" /></picture><br/><sub>Kimi Code</sub></td>
-    <td align="center" valign="top"><img src="doc/assets/logos/bash.svg" width="32" height="32" alt="Bash" /><br/><sub>Bash</sub></td>
-    <td align="center" valign="top"><img src="doc/assets/logos/http.svg" width="32" height="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
   </tr>
 </table>
 
