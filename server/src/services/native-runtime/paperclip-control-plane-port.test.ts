@@ -943,9 +943,16 @@ describe("PaperclipControlPlanePort conformance", () => {
       restore: Partial<typeof heartbeatRuns.$inferInsert>;
     }>;
     for (const mutation of mutations) {
-      await db.update(heartbeatRuns).set(mutation.invalid).where(eq(heartbeatRuns.id, runId));
+      // Verify service-level binding checks even for corrupted historical rows.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set(mutation.invalid).where(eq(heartbeatRuns.id, runId));
+      });
       await expect(createPort().openRun(open)).rejects.toThrow("native_open_run_not_authorized");
-      await db.update(heartbeatRuns).set(mutation.restore).where(eq(heartbeatRuns.id, runId));
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set(mutation.restore).where(eq(heartbeatRuns.id, runId));
+      });
     }
 
     const openedPort = createPort();

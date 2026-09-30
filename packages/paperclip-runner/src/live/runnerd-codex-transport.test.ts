@@ -7491,6 +7491,14 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
   `], { maxBuffer: 16 * 1024 * 1024 });
   await writeFile(proxy, proxyBytes, { mode: 0o755 });
   const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+  // Linux runner images can install Node with group-write permission. Qualify
+  // an isolated copy without mutating the host. Keep the original on macOS,
+  // where Homebrew Node can load dylibs relative to its installation directory.
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (providerNode !== process.execPath) {
+    await cp(process.execPath, providerNode);
+    await chmod(providerNode, 0o755);
+  }
   const runtime = join(root, "opencode");
   const bundle = createCapabilityRunnerdCodexTransport({
     provider: "opencode",
@@ -7501,8 +7509,8 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     opencodeCommandSha256: digest(executable),
     opencodeProxyPath: proxy,
     opencodeProxySha256: digest(proxy),
-    providerNodeCommand: process.execPath,
-    providerNodeCommandSha256: digest(process.execPath),
+    providerNodeCommand: providerNode,
+    providerNodeCommandSha256: digest(providerNode),
     environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
   });
   const task = createCodexTaskEnvelope({

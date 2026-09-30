@@ -4838,6 +4838,9 @@ async function listIssueReviewAttentionMap(
 }
 
 const issueListSelect = {
+  visibility: issues.visibility,
+  privacyRootIssueId: issues.privacyRootIssueId,
+  privacyParentIssueId: issues.privacyParentIssueId,
   externalConversationState: externalConversationStateSql(),
   conversationAgentId: issues.conversationAgentId,
   conversationUserId: issues.conversationUserId,

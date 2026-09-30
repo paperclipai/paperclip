@@ -188,7 +188,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
     });
     expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
-    expect(JSON.stringify(captured)).not.toContain("private-");
+    // Match the sensitive fixture values, not a legitimate checkout name in the stack.
+    for (const value of ["private-response", "private-stderr", "private-stdout", "private-prompt", "private-provider-raw", "private-summary", "private-env", "private-adapter-response"]) {
+      expect(JSON.stringify(captured)).not.toContain(value);
+    }
     expect(error.cause).toBe(cause);
   });
 

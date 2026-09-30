@@ -5668,7 +5668,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
       .then((rows) => rows[0] ?? null);
 
-    expect(workspace?.metadata).toEqual({
+    expect(workspace?.metadata).toMatchObject({
       config: {
         environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",

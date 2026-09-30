@@ -335,18 +335,21 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       permissions: {},
     });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: randomUUID() })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    // Simulate historical corruption to retain the service-level defense test.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: randomUUID() }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
     )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),

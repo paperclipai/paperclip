@@ -10,12 +10,14 @@ import {
   integer,
   bigint,
   boolean,
+  check,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
+import { issues } from "./issues.js";
 
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
@@ -23,6 +25,11 @@ export const heartbeatRuns = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
+    scopeKind: text("scope_kind")
+      .$type<"company" | "issue">()
+      .notNull()
+      .default("company"),
+    issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
@@ -98,6 +105,11 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    scopeBindingCheck: check(
+      "heartbeat_runs_scope_binding_check",
+      sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
+        OR ${table.scopeKind} = 'issue'`,
+    ),
     executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
       .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
     executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")
@@ -122,6 +134,11 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.agentId,
       table.startedAt,
+    ),
+    companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
+      table.companyId,
+      table.issueId,
+      table.createdAt,
     ),
     companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
       table.companyId,

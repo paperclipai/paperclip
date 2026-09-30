@@ -37,6 +37,9 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    visibility: text("visibility").notNull().default("open"),
+    privacyRootIssueId: uuid("privacy_root_issue_id").references((): AnyPgColumn => issues.id),
+    privacyParentIssueId: uuid("privacy_parent_issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -90,6 +93,7 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    visibilityCheck: check("issues_visibility_check", sql`${table.visibility} in ('open', 'private')`),
     conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
     conversationIdentityCheck: check("issues_conversation_identity_check", sql`(
       ${table.conversationAgentId} is null and ${table.conversationUserId} is null and ${table.conversationState} is null
@@ -115,6 +119,8 @@ export const issues = pgTable(
     ),
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
+    privacyParentIdx: index("issues_company_privacy_parent_idx").on(table.companyId, table.privacyParentIssueId),
+    privacyRootIdx: index("issues_company_privacy_root_idx").on(table.companyId, table.privacyRootIssueId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),

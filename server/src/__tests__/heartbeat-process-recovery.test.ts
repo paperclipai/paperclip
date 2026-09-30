@@ -726,6 +726,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       claimedAt: now,
     });
 
+    if (input?.includeIssue !== false) {
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Recover local adapter after lost process",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+    }
+
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -753,19 +767,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       seq: 1, eventType: "adapter.invoke", payload: { adapterType: input?.adapterType ?? "codex_local" } });
 
     if (input?.includeIssue !== false) {
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Recover local adapter after lost process",
-        status: "in_progress",
-        priority: "medium",
-        assigneeAgentId: agentId,
-        checkoutRunId: runId,
-        executionRunId: runId,
-        responsibleUserId: "responsible-user",
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.update(issues).set({ checkoutRunId: runId, executionRunId: runId }).where(eq(issues.id, issueId));
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
@@ -1483,6 +1485,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       identifier: `${issuePrefix}-1`,
       startedAt: now,
     });
+
+    // Complete the circular issue/run fixture after both FK targets exist.
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, runId));
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
