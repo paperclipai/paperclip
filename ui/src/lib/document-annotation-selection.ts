@@ -125,16 +125,17 @@ export function rangesForNormalizedSpan(input: {
       input.normalizedStart,
     )
     : input.normalizedStart;
-  const positionMatchesSelection = renderedStart !== undefined
+  const resolvedRenderedStart = renderedStart ?? input.normalizedStart;
+  const positionMatchesSelection = resolvedRenderedStart !== undefined
     && normalizedContainerText.slice(
-      renderedStart,
-      renderedStart + normalizedNeedle.length,
+      resolvedRenderedStart,
+      resolvedRenderedStart + normalizedNeedle.length,
     ) === normalizedNeedle;
   const containerOccurrenceIndex = positionMatchesSelection
-    ? renderedStart ?? -1
+    ? resolvedRenderedStart ?? -1
     : input.normalizedStart === undefined
       ? occurrences[0] ?? -1
-      : pickClosestOccurrence(occurrences, renderedStart ?? input.normalizedStart) ?? -1;
+      : pickClosestOccurrence(occurrences, resolvedRenderedStart ?? input.normalizedStart) ?? -1;
   if (containerOccurrenceIndex === -1) return [];
 
   // Convert from normalized container offset back to raw container offset
