@@ -3,7 +3,8 @@ import { listServerAdapters } from "../adapters/registry.js";
 
 const QUOTA_PROVIDER_TIMEOUT_MS = 20_000;
 
-function providerSlugForAdapterType(type: string): string {
+/** Provider slug that quota results use for an adapter type. */
+export function providerSlugForAdapterType(type: string): string {
   switch (type) {
     case "claude_local":
       return "anthropic";

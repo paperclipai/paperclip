@@ -51,6 +51,7 @@ export const DEFAULT_QUOTA_PACING_SETTINGS: QuotaPacingSettings = {
 
 /** Why a provider runs at its current mode. */
 export type QuotaPacingReason =
+  | "disabled"
   | "manual_override"
   | "no_data"
   | "stale_data"
