@@ -72,6 +72,8 @@ Edit an agent's configuration from the agent detail page:
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
 - **Budget** — monthly spend limit
 
+**Max concurrent runs** limits how many runs of one agent are live at the same time. The limit is not the only rule. A run that is bound to an issue keeps its slot. A run with no issue, such as a timer wake, waits while an issue-bound run of the same agent is live. The queued run starts when the bound run finishes. This rule stops two runs of one agent from writing the same workspace at the same time.
+
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
 
 ## Pausing and Resuming
