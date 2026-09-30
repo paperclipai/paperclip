@@ -450,6 +450,9 @@ Source development also builds the native Paperclip Runner when enabled (the sel
 
 ## FAQ
 
+**Is this project maintained or just slop?**
+Paperclip is maintained by the [Paperclip team](https://paperclip.ing).
+
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
