@@ -62,6 +62,63 @@ GET /api/companies/{companyId}/costs/by-agent     # Per-agent breakdown
 GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
 ```
 
+## Run Pacing
+
+Local subscription agents (`claude_local` and `codex_local`) share rolling
+usage windows: a 5-hour session window and a weekly window. A full queue can
+use a whole session window in a few hours, and each full session window uses
+several percent of the weekly quota. Run pacing spreads that usage over the
+windows. It is off by default.
+
+Turn it on in **Costs → Providers → Run pacing**, or with the API:
+
+```
+PATCH /api/instance/settings/general
+{ "quotaPacing": { "enabled": true } }
+```
+
+Only instance admins can change pacing. A PATCH may send any subset of the
+fields; the other fields keep their stored values.
+
+| Field | Default | Range | Meaning |
+|-------|---------|-------|---------|
+| `enabled` | `false` | | Turns pacing on. |
+| `mode` | `auto` | `auto`, `full`, `half`, `low` | `auto` follows the quota windows. The other values are manual overrides. |
+| `sessionReservePercent` | `20` | 0–60 | Share of the session window kept free for interactive use of the same subscription. |
+| `weeklyAllowancePercent` | `8` | 0–30 | How far weekly usage may run ahead of an even weekly pace. |
+| `pollIntervalSec` | `300` | 300–3600 | Seconds between quota polls. Paperclip never polls faster than every 5 minutes. |
+
+### How the mode is chosen
+
+While pacing is on, Paperclip polls the provider quota windows. For each
+provider and window it computes how much of the window has elapsed
+(`elapsed = 1 - (resetsAt - now) / windowSeconds`) and a target:
+
+- session target = `elapsed × (100 - sessionReservePercent)`
+- weekly target = `elapsed × 100 + weeklyAllowancePercent`
+
+| Mode | When | Concurrent-run limit per agent |
+|------|------|--------------------------------|
+| `low` | Session usage reaches `100 - sessionReservePercent`, weekly usage reaches 95%, the session is more than 10 points ahead of its target, or the week is more than `weeklyAllowancePercent` ahead | 1 |
+| `half` | Either window is ahead of its target | half of `maxConcurrentRuns`, rounded up |
+| `full` | Otherwise | `maxConcurrentRuns` |
+
+Pacing changes only how many new runs start. It never cancels a running run
+and it never changes agent configuration. When a provider's mode relaxes,
+queued runs start at once. Other adapters are not paced.
+
+Pacing fails open. When quota data is missing, or older than three poll
+intervals, the provider runs at `full` and the server logs a warning. A
+failed poll keeps the last good result and backs off.
+
+Pacing reads the quota of the subscription login on the machine that runs
+Paperclip. Agents that run under another account use that login's windows.
+On macOS, quota polling reads the Claude Code login from the Keychain when
+no credentials file exists.
+
+The current state is available at
+`GET /api/companies/{companyId}/costs/quota-pacing`.
+
 ## Best Practices
 
 - Set conservative budgets initially and increase as you see results
