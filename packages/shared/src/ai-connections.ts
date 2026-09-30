@@ -173,6 +173,13 @@ export interface AiManagedConnectionSummary {
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
 }
+// The long-lived OAuth token that `claude setup-token` prints. It is valid for
+// one year and carries only the inference scope, so the usage endpoint that
+// checks a normal Claude login rejects it.
+const CLAUDE_SETUP_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/;
+export function isClaudeSetupToken(value: string): boolean {
+  return CLAUDE_SETUP_TOKEN_RE.test(value.trim());
+}
 export const createAiConnectionSchema = z
   .object({
     ...requirement,
@@ -180,6 +187,7 @@ export const createAiConnectionSchema = z
     ownership: z.enum(["personal", "shared"]),
     apiKey: z.string().trim().min(1).max(32768).optional(),
     loginSessionId: z.string().max(128).optional(),
+    setupToken: z.string().trim().min(1).max(4096).optional(),
     connectionId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),
     allAgents: z.boolean().default(false),
@@ -188,10 +196,10 @@ export const createAiConnectionSchema = z
   .superRefine((v, ctx) => {
     if (!AI_CONNECTION_CAPABILITIES[v.provider].methods[v.method])
       ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
+    const credentials = [v.apiKey, v.loginSessionId, v.setupToken].filter(Boolean).length;
     if (
-      v.method === "api_key"
-        ? !v.apiKey || Boolean(v.loginSessionId)
-        : !v.loginSessionId || Boolean(v.apiKey)
+      credentials !== 1 ||
+      (v.method === "api_key" ? !v.apiKey : Boolean(v.apiKey))
     ) {
       ctx.addIssue({
         code: "custom",
@@ -199,6 +207,18 @@ export const createAiConnectionSchema = z
           "Provide exactly the credential for the selected sign-in method",
       });
     }
+    if (v.setupToken && v.provider !== "anthropic")
+      ctx.addIssue({
+        code: "custom",
+        path: ["setupToken"],
+        message: "Only Claude subscriptions accept a setup token",
+      });
+    else if (v.setupToken && !isClaudeSetupToken(v.setupToken))
+      ctx.addIssue({
+        code: "custom",
+        path: ["setupToken"],
+        message: "Paste the full token that claude setup-token prints",
+      });
   });
 export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
