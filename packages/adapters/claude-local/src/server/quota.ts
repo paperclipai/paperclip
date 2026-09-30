@@ -201,11 +201,27 @@ export async function readClaudeToken(options: { allowKeychain?: boolean } = {})
   if (process.env.CLAUDE_CONFIG_DIR?.trim()) {
     return readClaudeTokenFromKeychain(isolatedKeychainService(configDir));
   }
-  // Only an explicit local-account import may consult the user's Keychain.
+  // Only an explicit local-account import or quota polling may consult the
+  // user's Keychain.
   if (options.allowKeychain) {
     return readClaudeTokenFromKeychain("Claude Code-credentials");
   }
   return null;
+}
+
+/**
+ * Read the OAuth token that quota polling uses.
+ *
+ * On macOS, Claude Code keeps the machine-level login in the unsuffixed
+ * Keychain item and writes no credentials file. Without the Keychain read,
+ * quota polling falls back to the CLI `/usage` scrape, which needs a TTY and
+ * fails when the server runs as a background service (launchd). That fallback
+ * already reads the same Keychain login through the `claude` binary, so this
+ * read exposes no new account. The token goes only to the Anthropic usage API.
+ * A custom CLAUDE_CONFIG_DIR still reads only its own suffixed item.
+ */
+export function readClaudeQuotaToken(): Promise<string | null> {
+  return readClaudeToken({ allowKeychain: true });
 }
 
 interface AnthropicUsageWindow {
@@ -551,7 +567,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
 
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
-  const token = await readClaudeToken();
+  const token = await readClaudeQuotaToken();
 
   const errors: string[] = [];
 
