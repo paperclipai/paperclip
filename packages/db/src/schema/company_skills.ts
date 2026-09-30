@@ -64,6 +64,8 @@ export const companySkills = pgTable(
 
 export type CompanySkillVersionFileInventoryEntry = CompanySkillFileInventoryEntry & {
   content: string;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
 };
 
 export const companySkillVersions = pgTable(

@@ -9,6 +9,7 @@ import { ApiError } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppsConnect } from "./AppsConnect";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -802,6 +803,15 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       .toBe("true");
     expect(radios.find((r) => r.textContent?.includes("Any agent"))?.getAttribute("aria-checked"))
       .toBe("true");
+  });
+
+  it("returns to the pending skill import when GitHub setup is cancelled", async () => {
+    mockParams.appKey = "github";
+    rememberSkillSourceReturn("company-1", "new");
+    await render();
+    await act(async () => buttonByText("Cancel")?.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/skills/sources/new");
+    expect(skillSourceReturnPath("company-1")).toBeNull();
   });
 
   it("uses Cancel to exit while the bottom Back button stays in the wizard", async () => {

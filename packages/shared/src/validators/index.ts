@@ -985,3 +985,5 @@ export * from "./chat-github.js";
 export * from "./email.js";
 
 export { restoreAgentInstructionSchema } from "./agent.js";
+
+export * from "./skill-source.js";

@@ -6,6 +6,9 @@ import { CloudSignIn } from "../components/CloudSignIn";
 import { CloudAccessError } from "../components/CloudAccessGate";
 import { SetupPrompt } from "./apps/chat/SetupPrompt";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
+
+import { SkillSourceTree } from "./skills/SkillSourceTree";
+import { SkillBinaryFile } from "../components/SkillBinaryFile";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
 import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
@@ -2202,6 +2205,12 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="GitHub skill sources">
+        <p className="text-sm text-muted-foreground">The shared FileTree explorer layout puts disclosure controls beside selection, with compact folder chains, equal-height rows, inline skill descriptions, and trailing status badges. Folders select descendant packages; package checkboxes select only that package, independently of nested skills. Included files use aligned rows without individual checkboxes (`getCheckboxState` returns null); package rows use `renderNodeExtra` for file counts and inspection. Use arrow keys to navigate and Space to select.</p>
+        <SkillSourceTreeShowcase />
+        <SkillBinaryFile file={{ skillId: "example", path: "assets/example.bin", kind: "asset", content: "AAECAw==", encoding: "base64", language: null, markdown: false, editable: false }} />
+      </Section>
+
       <Section title="Source Repositories">
         <SubSection title="Empty and disconnected">
           <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
@@ -2473,4 +2482,18 @@ export function DesignGuide() {
       </Section>
     </div>
   );
+}
+
+function SkillSourceTreeShowcase() {
+  const candidates = [
+    { path: ".agents/review/SKILL.md", name: "Review", description: "Review changes before release.", error: null, inspection: { requirements: null, references: [], warnings: [], files: [
+      { path: "SKILL.md", kind: "skill", sizeBytes: 120, encoding: "utf8" as const, executable: false },
+      { path: "scripts/check.sh", kind: "script", sizeBytes: 45, encoding: "utf8" as const, executable: true },
+    ] } },
+    { path: ".agents/review/nested/SKILL.md", name: "Nested skill", description: "An independently selected package.", error: null, note: "New skill" },
+    { path: "broken/SKILL.md", name: "Needs attention", description: null, error: "Missing required description." },
+  ];
+  const [selected, setSelected] = useState(new Set(candidates.map(skill => skill.path)));
+  const [excluded, setExcluded] = useState<string[]>([]);
+  return <SkillSourceTree candidates={candidates} selected={selected} excludedFolders={excluded} onChange={(paths, folders) => { setSelected(paths); setExcluded(folders); }} />;
 }

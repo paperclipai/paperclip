@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppStoreDefinition } from "@paperclipai/shared";
+import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -329,6 +330,7 @@ describe("AppDetail", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockParams.connectionId = "conn-1";
@@ -606,6 +608,20 @@ describe("AppDetail", () => {
       tone: "success",
     });
     expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions", { replace: true });
+  });
+
+  it.each([
+    ["company-1", "github", "active", true],
+    ["other-company", "github", "active", false],
+    ["company-1", "notion", "active", false],
+    ["company-1", "github", "pending", false],
+  ])("resumes a skill import only for its company's active GitHub callback (%s, %s, %s)", async (companyId, provider, status, returns) => {
+    rememberSkillSourceReturn("company-1", "new");
+    mockSearchParams.value = new URLSearchParams("success=1");
+    getConnectionMock.mockResolvedValue(connection({ companyId, status, config: { sourceTemplateKey: provider } }));
+    await renderAppDetail();
+    expect(mockNavigate).toHaveBeenCalledWith(returns ? "/skills/sources/new" : "/apps/conn-1/permissions", { replace: true });
+    expect(skillSourceReturnPath("company-1")).toBe(returns ? null : "/skills/sources/new");
   });
 
   it("normalizes the retired post-OAuth Setup URL into Permissions", async () => {

@@ -66,6 +66,13 @@ The governing rule is: **skill permissions are opt-in restrictions, not opt-in c
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
 
+GitHub repositories are first-class sources within Skills. People import selected
+skills through their existing GitHub connection and manually refresh installed
+snapshots. The source records repository, branch, path, and installed commit;
+the connection supplies caller-authorized access. Originals remain viewable and
+testable, with independent editable copies. New upstream skills require selection,
+and deselection, source disconnection, or upstream removal retains installed content.
+
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 
 ## Principles

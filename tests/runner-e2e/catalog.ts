@@ -935,6 +935,16 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
   ].join("\n");
 }
 
+function managedWarmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
+  return [warmTurnInstructions(turn, nonce),
+    "Also update your personal AGENT_HOME with ordinary filesystem tools. Do not edit the loaded AGENTS.md instructions and do not use an API to save these files.",
+    turn === 1
+      ? `Create notes/warm-memory.txt containing exactly T1-${nonce} followed by a newline. Create notes/unchanged.bin with exactly 8388608 bytes, each byte equal to 93. Create notes/delete-me.txt containing temporary.`
+      : `Read notes/warm-memory.txt under AGENT_HOME and verify it contains exactly the prior turn lines ${Array.from({ length: turn - 1 }, (_, i) => `T${i + 1}-${nonce}`).join(" | ")}, each followed by a newline. Append exactly T${turn}-${nonce} and a newline. Verify notes/unchanged.bin still has 8388608 bytes, each equal to 93, and leave it unchanged. ${turn === 2 ? "Delete notes/delete-me.txt." : "Verify notes/delete-me.txt is absent."}`,
+    "Perform these personal-file edits and verification before calling paperclip_finish. Paperclip saves them at the turn boundary.",
+  ].join("\n");
+}
+
 export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   id: "warm-three-turn",
   label: "Warm three-turn workspace continuity",
@@ -947,10 +957,10 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
   buildVisibleMarker: (nonce) => warmTurnMarker(3, nonce),
-  buildPrompt: (nonce) => warmTurnInstructions(1, nonce),
+  buildPrompt: (nonce) => managedWarmTurnInstructions(1, nonce),
   buildFollowupMessages: (nonce) => [
-    warmTurnInstructions(2, nonce),
-    warmTurnInstructions(3, nonce),
+    managedWarmTurnInstructions(2, nonce),
+    managedWarmTurnInstructions(3, nonce),
   ],
   buildMatchers(nonce, execution) {
     // Workspace persistence is the oracle for this story. Exact response text
@@ -980,6 +990,7 @@ export const daytonaLargeJournalTask: RunnerTaskFixture = {
   ...daytonaWarmContinuityTask,
   id: "large-journal-three-turn",
   label: "Large journal three-turn workspace continuity",
+  buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
   buildTitle: (nonce) => `Runner E2E large journal continuity ${nonce}`,
   buildPrompt: (nonce) => [
     "First exercise ordinary execution history with 240 separate execution-tool calls. In each call, run the Python command below exactly once. Issue the calls one by one. Do not combine them into a shell loop, script, parallel wrapper, or a single tool call: each command must be a separate ordinary execution-tool invocation. Keep a count from 1 through 240. The output is synthetic fixture data and needs no analysis.",
@@ -988,10 +999,28 @@ export const daytonaLargeJournalTask: RunnerTaskFixture = {
     warmTurnInstructions(1, nonce),
   ].join("\n"),
 };
-export const daytonaGitStreamingTask = createGitStreamingTask(daytonaWarmContinuityTask);
+export const daytonaGitStreamingTask = createGitStreamingTask({ ...daytonaWarmContinuityTask, buildPrompt: nonce => warmTurnInstructions(1, nonce), buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)] });
 
 const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
+);
+
+// The journal stress fixture keeps a fixed external bundle as a control.
+// Ordinary warm continuity exercises managed files and incremental checkpoints.
+const warmCodexContinuityProfiles = codexContinuityProfiles.map((profile) =>
+  profile.generation !== "native" ? profile : {
+    ...profile,
+    buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      return { ...agent, adapterConfig: {
+        ...(agent.adapterConfig as Record<string, unknown>),
+        instructionsBundleMode: "external",
+        instructionsRootPath: fileURLToPath(new URL("./fixtures/warm-continuity/", import.meta.url)),
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: fileURLToPath(new URL("./fixtures/warm-continuity/AGENTS.md", import.meta.url)),
+      } };
+    },
+  },
 );
 
 export const connectionReviewSuite: RunnerSuiteFixture = {
@@ -1292,6 +1321,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
+    definitionMetadata: { version: 3, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
   },
   {
     id: "daytona-journal-continuity",
@@ -1299,11 +1329,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     manualOnly: true,
     description: "Continue the same native session after separate ordinary tool invocations and their output grow its durable journal beyond 2 MiB.",
     groups: ["daytona", "warm"],
-    profiles: codexContinuityProfiles.filter((profile) => profile.id === "runner-codex"),
+    profiles: warmCodexContinuityProfiles.filter((profile) => profile.id === "runner-codex"),
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaLargeJournalTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 4, journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
+    definitionMetadata: { version: 5, nativeInstructions: "fixed-external", journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
   },
   {
     id: "daytona-git-streaming",

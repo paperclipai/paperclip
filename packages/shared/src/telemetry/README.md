@@ -202,3 +202,13 @@ When a new event carries only enums, booleans, counts, or coarse buckets and
 no token material or PII, assign it to `operational_enum_count` in
 `EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
 `RETENTION_DAYS` and document it here.
+
+## GitHub-synced skills
+
+The legacy import endpoint retains `skill.imported` with its existing `source_type`.
+For source-managed GitHub skills, `skill_ref` is omitted, including public sources:
+the saved repository may be private and its key contains user-authored names.
+Source discovery, selection, and refresh add no first-party telemetry events.
+Repository URLs, paths, commits, connection IDs, names, and file contents stay out
+of these telemetry dimensions. Review this suppression in privacy review alongside
+changes to the legacy import caller; the event schema and envelope are unchanged.

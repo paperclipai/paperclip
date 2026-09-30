@@ -318,3 +318,20 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Managed Agent File Save Receipts
+
+The server writes `instruction_save` after managed file collection or a warm
+turn checkpoint. The payload includes the save state, instruction entry path,
+storage warning, and error code/message. Agent-directory receipts identify
+`contract: "agent_files"` and the applied candidate hash. Legacy instruction
+receipts instead identify the saved revision.
+
+A validated warm checkpoint reports `saved` or `unchanged`, even though its
+working directory remains owned by the live session. An unstable checkpoint
+reports `pending_collection` until stopped collection produces a final receipt.
+Successful checkpoints can include `checkpointStats`: `scannedEntries`,
+`hashedBytes`, `copiedFiles`, and `copiedBytes`. These counts describe that
+capture, not cumulative traffic or an atomic snapshot of background writers.
+They contain no file contents. The receipt remains in the instance run log;
+it adds no Paperclip Telemetry or OpenTelemetry export.
