@@ -86,6 +86,18 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("does not send an unscoped run back to resend the header it already sent", () => {
+    // The header is honoured; an on-demand run's `contextSnapshot` is what is empty, and
+    // no caller can populate it. Offering the header alone read as "retry this" and cost
+    // agents retry loops plus a wrong read of their own permissions (OIG-221).
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    expect(copy.sanctionedPath).toContain("unscoped");
+    expect(copy.sanctionedPath).toContain("cannot help");
+    // The two channels this denial never gated, so the agent stops concluding it is mute.
+    expect(copy.sanctionedPath).toContain("documents");
+    expect(copy.description).toContain("no issue scope");
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",

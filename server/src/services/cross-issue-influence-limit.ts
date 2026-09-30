@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,7 +110,35 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // An `on_demand` run has no issue in its snapshot, and nothing the caller sends
+      // can supply one. Refusing outright denied an agent writes to its own assigned
+      // issues — strictly less than the cap below already grants a *scoped* run, which
+      // may reach any visible issue up to `CROSS_ISSUE_INFLUENCE_LIMIT`. So this is not
+      // containment to preserve: admit the two ownerships the server can already prove,
+      // and keep failing closed for every other target.
+      const target = await tx
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      const ownsTarget = Boolean(
+        target &&
+        ((target.assigneeAgentId && target.assigneeAgentId === input.agentId) ||
+          (target.checkoutRunId && target.checkoutRunId === input.runId)),
+      );
+      if (!ownsTarget) throw crossIssueInfluenceRunContextError();
+      // Same-issue semantics: an agent acting on an issue it owns is not fan-out, so
+      // the write is admitted uncharged, exactly as a scoped run's write to its own
+      // source issue is below.
+      return null;
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetIssue: { assigneeAgentId: string | null; checkoutRunId: string | null } | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -20,6 +21,14 @@ function counterDb(
           if (Object.keys(selection).includes("count")) {
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+            };
+          }
+          // The target-issue ownership lookup is the only select that reads the
+          // issues table, and unlike the run row it is not locked `for update`.
+          if (Object.keys(selection).includes("assigneeAgentId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve(targetIssue === null ? [] : [targetIssue]),
             };
           }
           return {
@@ -198,19 +207,84 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  // An unscoped (`on_demand`) run carries no `contextSnapshot.issueId`. It used to be
+  // refused on every target, including issues it owns, which denied it strictly less
+  // than the cap already grants a scoped run — OIG-221. These four cases pin the
+  // narrowed rule: ownership the server can prove is admitted, everything else still
+  // fails closed.
+  const unscopedRun = { contextSnapshot: {} };
+  const unscopedBase = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    runId: "11111111-1111-4111-8111-111111111111",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    targetIssueId: "55555555-5555-4555-8555-555555555555",
+  } as const;
+
+  it("lets an unscoped run write to an issue assigned to itself, uncharged", async () => {
+    const fake = counterDb(0, unscopedRun, {
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      checkoutRunId: null,
+    });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
-      companyId: "22222222-2222-4222-8222-222222222222",
-      runId: "11111111-1111-4111-8111-111111111111",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      ...unscopedBase,
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
+    })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
+  });
+
+  it("lets an unscoped run write to the issue its own run holds the checkout on", async () => {
+    // Assigned to somebody else, but this run claimed it through `POST /checkout`,
+    // so the server already persisted that this run owns it.
+    const fake = counterDb(0, unscopedRun, {
+      assigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...unscopedBase,
+      kind: "comment",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it.each([
+    ["another agent's issue", {
+      assigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      checkoutRunId: "99999999-9999-4999-8999-999999999999",
+    }],
+    ["an unassigned issue", { assigneeAgentId: null, checkoutRunId: null }],
+    ["a target that does not exist", null],
+  ] as const)(
+    "still fails closed when an unscoped run reaches %s",
+    async (_label, targetIssue) => {
+      const fake = counterDb(0, unscopedRun, targetIssue);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        ...unscopedBase,
+        kind: "update",
+      })).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_influence_run_context_required" },
+      });
+      expect(fake.inserted).toEqual([]);
+    },
+  );
+
+  it("does not consult issue ownership at all once the run has a source issue", async () => {
+    // A scoped run's cross-issue writes stay charged even when the target happens to
+    // be assigned to it, so the rate backstop keeps its meaning. If the ownership
+    // lookup leaked onto this path, the write would come back uncharged (null).
+    const fake = counterDb(0, {}, {
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...unscopedBase,
+      kind: "comment",
+      now: new Date(CROSS_ISSUE_INFLUENCE_ENFORCE_AT.getTime() - 1),
+    })).resolves.toMatchObject({ count: 1, allowed: true });
+    expect(fake.inserted).toHaveLength(1);
   });
 });

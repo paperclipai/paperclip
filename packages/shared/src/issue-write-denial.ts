@@ -254,12 +254,19 @@ export function describeIssueWriteDenial(
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `Either this request carried no valid run, or its run has no issue scope and ` +
+          `${issue} is not one it owns, so the write could not be contained.`,
+        whoCanAct: `${actor}, from a run that carries an issue scope or owns ${issue}.`,
+        // Do not offer the header alone. An on-demand run has an empty
+        // `contextSnapshot`, which no caller can populate, so "send the header and retry"
+        // was unreachable advice in the most common case and cost agents retry loops plus
+        // a wrong conclusion about their own permissions (OIG-221).
         sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
+          `If the request had no run id, send the \`X-Paperclip-Run-Id\` header with your ` +
+          `current run (\`$PAPERCLIP_RUN_ID\`) and retry. If you already did, the run is ` +
+          `unscoped — resending it cannot help. Act from a heartbeat bound to a task, or ` +
+          `on an issue assigned to you or checked out by this run. Issue documents and new ` +
+          `issues are not gated by this, so they stay available meanwhile.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
