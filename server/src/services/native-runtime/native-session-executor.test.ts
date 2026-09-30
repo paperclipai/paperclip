@@ -2694,6 +2694,9 @@ describe("retained native cleanup activation", () => {
     "distinct_provider_account",
     "wrong_provider_account",
     "wrong_result_digest",
+    "digest_only_command",
+    "wrong_command_digest",
+    "conflicting_command_digest",
     "wrong_semantic_input",
     "wrong_contract",
     "wrong_turn",
@@ -2927,7 +2930,9 @@ describe("retained native cleanup activation", () => {
               payload: {
                 callId: semantic.callId,
                 operationId: semantic.operationId,
-                input: semanticInput,
+                ...(mode === "digest_only_command" || mode === "wrong_command_digest"
+                  ? { inputDigest: mode === "wrong_command_digest" ? "wrong" : nativeSha256(semanticInput) }
+                  : { input: semanticInput, ...(mode === "conflicting_command_digest" ? { inputDigest: "wrong" } : {}) }),
                 correlation,
                 sourceEventId: rawInput.sourceEventId,
                 sourceEventType: rawInput.eventType,
@@ -3188,6 +3193,8 @@ describe("retained native cleanup activation", () => {
         ![
           "foreign_event",
           "wrong_result_digest",
+          "wrong_command_digest",
+          "conflicting_command_digest",
           "wrong_semantic_input",
           "wrong_contract",
           "wrong_turn",
@@ -3793,6 +3800,8 @@ describe("retained native cleanup activation", () => {
         "foreign_event",
         "nonempty_root",
         "wrong_result_digest",
+        "wrong_command_digest",
+        "conflicting_command_digest",
         "wrong_semantic_input",
         "wrong_contract",
         "wrong_turn",
@@ -3802,6 +3811,7 @@ describe("retained native cleanup activation", () => {
         "wrong_provider_account",
       ].includes(mode);
       const succeeds = [
+        "digest_only_command",
         "home_paginated",
         "canonical_source",
         "canonical_claim_commit_stalled",

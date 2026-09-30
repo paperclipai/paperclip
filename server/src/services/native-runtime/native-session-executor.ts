@@ -2193,7 +2193,13 @@ export function retainedNativeCleanupJournalMatches(input: {
         payload.isError === false &&
         payload.sourceEventId === event.sourceEventId &&
         payload.sourceEventType === event.eventType &&
-        canonicalJson(payload.input) === canonicalJson(semantic.input) &&
+        // Current receipts retain a digest; older journals retain the input.
+        // If both exist, both must bind to the accepted semantic input.
+        (payload.inputDigest === undefined
+          ? canonicalJson(payload.input) === canonicalJson(semantic.input)
+          : payload.inputDigest === nativeSha256(semantic.input) &&
+            (payload.input === undefined ||
+              canonicalJson(payload.input) === canonicalJson(semantic.input))) &&
         canonicalJson(payload.correlation) ===
           canonicalJson(semantic.correlation) &&
         record(record(command.result).result).callId === semantic.callId
