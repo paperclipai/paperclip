@@ -144,7 +144,19 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
-## Connection loss during a transaction
+## Connection loss and retries
+
+The database client does not replay arbitrary statements after a disconnect.
+PostgreSQL may have committed a statement before the connection loses its
+response. The postgres.js message `write CONNECTION_CLOSED` does not prove
+that the statement was never sent: the driver also uses it when an in-flight
+query loses its connection. SQL text cannot establish replay safety either;
+a `SELECT` can call a function with side effects.
+
+The affected operation fails and a new operation can reconnect through the
+pool. Callers may retry only when the complete operation is idempotent or has
+a durable receipt that prevents duplicate effects. Some transient statement
+failures therefore reach the caller instead of being retried automatically.
 
 When a database connection closes, its transaction fails. Paperclip does not
 replay that transaction. New requests can use a fresh connection from the pool.
