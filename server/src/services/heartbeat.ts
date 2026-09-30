@@ -19878,9 +19878,44 @@ export function heartbeatService(
     }
   }
 
+  // A 4xx from claimQueuedRun (an unverifiable interrupt receipt, an owner that
+  // cannot be resolved) is decided by the run's own rows, so it repeats on every
+  // recovery pass and every restart. 409s can be races and keep propagating.
+  function isPermanentClaimRejection(err: unknown): err is HttpError {
+    return err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 409;
+  }
+
+  // Settle runs that can never be claimed. Letting the error escape stalls the
+  // agent's queue and, during startup recovery, stops the server from booting.
+  async function cancelRejectedQueuedRuns(
+    rejected: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }>,
+  ) {
+    for (const { run, err } of rejected) {
+      logger.warn(
+        { err, runId: run.id, agentId: run.agentId, companyId: run.companyId },
+        "cancelling queued heartbeat run whose claim was rejected",
+      );
+      try {
+        await cancelRunInternal(
+          run.id,
+          `Cancelled because the queued run cannot be claimed: ${err.message}`,
+          { errorCode: "queued_run_claim_rejected" },
+        );
+      } catch (cancelErr) {
+        logger.error(
+          { err: cancelErr, runId: run.id },
+          "failed to cancel queued heartbeat run whose claim was rejected; it stays queued for the next recovery pass",
+        );
+      }
+    }
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
+    // Cancelled after the start lock is released: cancelRunInternal promotes the
+    // agent's next queued run, which takes this same lock.
+    const rejectedClaims: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }> = [];
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -19992,7 +20027,14 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
+        let claimed: typeof heartbeatRuns.$inferSelect | null;
+        try {
+          claimed = await claimQueuedRun(queuedRun, companyAgents);
+        } catch (err) {
+          if (!isPermanentClaimRejection(err)) throw err;
+          rejectedClaims.push({ run: queuedRun, err });
+          continue;
+        }
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -20016,7 +20058,7 @@ export function heartbeatService(
         });
       }
       return claimedRuns;
-    });
+    }).finally(() => cancelRejectedQueuedRuns(rejectedClaims));
   }
 
   // Await every background heartbeat execution that is currently in flight. A
