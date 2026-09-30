@@ -124,7 +124,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({
-    fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+    fetchCompanyQuotaWindows: mockFetchAllQuotaWindows,
   }));
 }
 

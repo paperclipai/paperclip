@@ -18,6 +18,7 @@ import {
   readCodexAuthInfo,
   readCodexToken,
   fetchCodexQuota,
+  getQuotaWindowsForAuth,
   mapCodexRpcQuota,
   codexHomeDir,
 } from "@paperclipai/adapter-codex-local/server";
@@ -851,5 +852,44 @@ describe("fetchWithTimeout", () => {
     const promise = fetchWithTimeout("https://example.com", {}, 1000);
     vi.advanceTimersByTime(1001);
     await expect(promise).rejects.toThrow("aborted");
+  });
+});
+
+describe("getQuotaWindowsForAuth", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("queries WHAM with the access token and account id of the given auth.json", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: 18000, reset_at: null } },
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getQuotaWindowsForAuth(
+      JSON.stringify({ tokens: { access_token: "managed-token", account_id: "acct-1" } }),
+    );
+    expect(result).toMatchObject({ provider: "openai", source: "codex-wham", ok: true });
+    expect(result.windows[0]).toMatchObject({ usedPercent: 3 });
+    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer managed-token");
+    expect(headers["ChatGPT-Account-Id"]).toBe("acct-1");
+  });
+
+  it("returns an error result without a network call when the credential has no access token", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getQuotaWindowsForAuth(JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
+    expect(result).toMatchObject({ provider: "openai", ok: false, windows: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a WHAM failure as an error result", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => "" } as Response));
+    const result = await getQuotaWindowsForAuth(JSON.stringify({ tokens: { access_token: "t" } }));
+    expect(result).toMatchObject({ provider: "openai", source: "codex-wham", ok: false, windows: [] });
+    expect(result.error).toContain("chatgpt wham api returned 503");
   });
 });

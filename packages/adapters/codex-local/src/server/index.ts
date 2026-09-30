@@ -54,6 +54,7 @@ export {
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
+  getQuotaWindowsForAuth,
   readCodexAuthInfo,
   readCodexToken,
   fetchCodexQuota,

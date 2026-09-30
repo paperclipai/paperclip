@@ -37,6 +37,10 @@ vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
 
+vi.mock("../context/SidebarContext", () => ({
+  useSidebar: () => ({ isMobile: false }),
+}));
+
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: setBreadcrumbsMock }),
 }));
@@ -88,5 +92,67 @@ describe("Costs embedded Audit surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("shows each OpenAI subscription account's quota, including one that failed", async () => {
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, utilizationPercent: 0 });
+    costsApiMocks.byAgent.mockResolvedValue([]);
+    costsApiMocks.byProject.mockResolvedValue([]);
+    costsApiMocks.byAgentModel.mockResolvedValue([]);
+    costsApiMocks.financeSummary.mockResolvedValue({
+      companyId: "company-1",
+      debitCents: 0,
+      creditCents: 0,
+      netCents: 0,
+      estimatedDebitCents: 0,
+      eventCount: 0,
+    });
+    costsApiMocks.financeByBiller.mockResolvedValue([]);
+    costsApiMocks.financeByKind.mockResolvedValue([]);
+    costsApiMocks.financeEvents.mockResolvedValue([]);
+    costsApiMocks.byProvider.mockResolvedValue([
+      {
+        provider: "openai",
+        biller: "openai",
+        billingType: "subscription_included",
+        model: "gpt-5",
+        costCents: 0,
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        apiRunCount: 0,
+        subscriptionRunCount: 1,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 10,
+        subscriptionOutputTokens: 5,
+      },
+    ]);
+    costsApiMocks.windowSpend.mockResolvedValue([]);
+    const window = (usedPercent: number) => ({ label: "5h limit", usedPercent, resetsAt: null, valueLabel: null, detail: null });
+    costsApiMocks.quotaWindows.mockResolvedValue([
+      { provider: "openai", source: "codex-wham", ok: true, accountName: "Plus account", windows: [window(11)] },
+      { provider: "openai", source: "codex-wham", ok: true, accountName: "Pro account", windows: [window(77)] },
+      { provider: "openai", ok: false, accountName: "Broken account", error: "Reconnect this AI account", windows: [] },
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Costs embedded initialTab="providers" lockTab />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        const text = container.textContent ?? "";
+        for (const expected of ["Plus account", "Pro account", "Broken account", "Reconnect this AI account", "11%", "77%"]) {
+          expect(text).toContain(expected);
+        }
+      });
+    });
   });
 });

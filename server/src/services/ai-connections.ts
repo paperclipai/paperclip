@@ -26,6 +26,7 @@ import {
   type AiConnectionAttribution,
   type AiConnectionMetadata,
   type AiManagedConnectionSummary,
+  type AiProvider,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
@@ -373,7 +374,34 @@ export function aiConnectionService(db: Db) {
       } satisfies AiConnectionAttribution,
     };
   }
-  async function credential(row: Awaited<ReturnType<typeof select>>) {
+  /** Credentials of the active subscription accounts this user may use, for read-only quota checks. */
+  async function subscriptionCredentials(companyId: string, userId: string, provider: AiProvider) {
+    const [accounts, members] = await Promise.all([
+      rows(companyId),
+      db
+        .select()
+        .from(connectionGrantMembers)
+        .where(eq(connectionGrantMembers.companyId, companyId)),
+    ]);
+    return accounts
+      .filter(({ connection, grant }) => {
+        const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
+        return (
+          metadata.success &&
+          metadata.data.provider === provider &&
+          metadata.data.method === "subscription" &&
+          grant.status === "active" &&
+          connection.enabled &&
+          connection.status === "active" &&
+          // Same availability rules select() applies to agent runs.
+          connection.healthStatus === "ok" &&
+          !aiSubscriptionNeedsIsolatedLogin(connection.config) &&
+          canUseCredential(grant, userId, members.filter((m) => m.grantId === grant.id))
+        );
+      })
+      .map((row) => ({ name: row.connection.name, value: () => credential(row) }));
+  }
+  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">) {
     const ref = row.grant.credentialSecretRefs.find(
       (r) => r.configPath === "ai.credential",
     );
@@ -775,5 +803,5 @@ export function aiConnectionService(db: Db) {
       return { connectionId: id, grantId };
     });
   }
-  return { list, select, credential, save, setDefault, membership };
+  return { list, select, credential, subscriptionCredentials, save, setDefault, membership };
 }

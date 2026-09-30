@@ -627,8 +627,7 @@ function BudgetFinanceMatrix() {
                 weekSpendCents={3_870}
                 windowRows={providerWindowRows.anthropic}
                 showDeficitNotch={false}
-                quotaWindows={claudeQuotaWindows}
-                quotaSource="anthropic-oauth"
+                quotaResults={[{ provider: "anthropic", source: "anthropic-oauth", ok: true, windows: claudeQuotaWindows }]}
               />
             </CaseFrame>
             <CaseFrame title="Warning provider" detail="Codex weekly usage is high and subscription overage has started." tone="warning">
@@ -640,8 +639,7 @@ function BudgetFinanceMatrix() {
                 weekSpendCents={10_430}
                 windowRows={providerWindowRows.openai}
                 showDeficitNotch={false}
-                quotaWindows={codexQuotaWindows}
-                quotaSource="codex-rpc"
+                quotaResults={[{ provider: "openai", source: "codex-rpc", ok: true, windows: codexQuotaWindows }]}
               />
             </CaseFrame>
             <CaseFrame title="Critical biller" detail="OpenRouter credits are beyond the monthly allocation and show deficit treatment." tone="critical">
@@ -653,11 +651,17 @@ function BudgetFinanceMatrix() {
                 weekSpendCents={14_630}
                 windowRows={providerWindowRows.openrouter}
                 showDeficitNotch
-                quotaWindows={[
-                  { label: "Credits", usedPercent: 97, resetsAt: null, valueLabel: "$8.17 remaining", detail: "Critical credit balance before next top-up." },
-                  { label: "Requests", usedPercent: 89, resetsAt: at(-520).toISOString(), valueLabel: null, detail: "Warning-level gateway request window." },
+                quotaResults={[
+                  {
+                    provider: "openrouter",
+                    source: "openrouter",
+                    ok: true,
+                    windows: [
+                      { label: "Credits", usedPercent: 97, resetsAt: null, valueLabel: "$8.17 remaining", detail: "Critical credit balance before next top-up." },
+                      { label: "Requests", usedPercent: 89, resetsAt: at(-520).toISOString(), valueLabel: null, detail: "Warning-level gateway request window." },
+                    ],
+                  },
                 ]}
-                quotaSource="openrouter"
               />
             </CaseFrame>
           </div>

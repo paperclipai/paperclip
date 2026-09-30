@@ -16,6 +16,8 @@ export interface QuotaWindow {
 export interface ProviderQuotaResult {
   /** provider slug, e.g. "anthropic", "openai" */
   provider: string;
+  /** account the result belongs to when a provider has several (e.g. managed subscription connections) */
+  accountName?: string | null;
   /** source label when the provider reports where the quota data came from */
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */

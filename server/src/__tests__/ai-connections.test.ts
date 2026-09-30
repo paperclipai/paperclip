@@ -761,6 +761,19 @@ describe("managed AI connections", () => {
     }
   }, 30000);
 
+  it("offers for quota checks only the OpenAI subscriptions an agent run could use", async () => {
+    // local_trusted boards act as the local-board user, who owns the subscriptions they sign in with.
+    const user = "local-board";
+    await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "member" });
+    const token = JSON.stringify({ tokens: { access_token: "quota-token", account_id: "quota-account" } });
+    const save = (name: string) => service.save(companyId, user, { provider: "openai", method: "subscription", ownership: "personal", name, loginSessionId: "fixture", allAgents: true, agentIds: [] }, token);
+    const [, unhealthy, preview] = [await save("Quota healthy"), await save("Quota unhealthy"), await save("Quota preview login")];
+    await db.update(toolConnections).set({ healthStatus: "error" }).where(eq(toolConnections.id, unhealthy.connectionId));
+    await db.update(toolConnections).set({ config: sql`${toolConnections.config} - 'aiIsolatedSubscription'` }).where(eq(toolConnections.id, preview.connectionId));
+    const accounts = await service.subscriptionCredentials(companyId, user, "openai");
+    expect(accounts.map(account => account.name)).toEqual(["Quota healthy"]);
+    await expect(accounts[0]!.value()).resolves.toBe(token);
+  });
 });
 
 

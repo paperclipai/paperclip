@@ -120,6 +120,11 @@ export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthIn
   } catch {
     return null;
   }
+  return parseCodexAuthInfo(raw);
+}
+
+/** Parses the contents of a Codex auth.json (modern or legacy shape). */
+export function parseCodexAuthInfo(raw: string): CodexAuthInfo | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -470,7 +475,7 @@ type PendingRequest = {
 class CodexRpcClient {
   private proc = spawn(
     "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
+    ["-s", "read-only", "-a", "never", "app-server"],
     { stdio: ["pipe", "pipe", "pipe"], env: process.env },
   );
 
@@ -595,6 +600,29 @@ export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailu
   if (error instanceof CodexQuotaAuthError) return error.errorFamily;
   const message = error instanceof Error ? error.message : String(error);
   return classifyCodexAuthRefreshFailure({ errorMessage: message });
+}
+
+/**
+ * Quota for a Codex auth.json kept outside the local Codex home, such as a managed AI connection.
+ * Only the access token is used, so the stored credential is never refreshed or rewritten here.
+ */
+export async function getQuotaWindowsForAuth(rawAuth: string): Promise<ProviderQuotaResult> {
+  const auth = parseCodexAuthInfo(rawAuth);
+  if (!auth) return { provider: "openai", ok: false, error: "no codex access token in this credential", windows: [] };
+  try {
+    const windows = await fetchCodexQuota(auth.accessToken, auth.accountId);
+    return { provider: "openai", source: CODEX_USAGE_SOURCE_WHAM, ok: true, windows };
+  } catch (error) {
+    const errorFamily = readCodexQuotaErrorFamily(error);
+    return {
+      provider: "openai",
+      source: CODEX_USAGE_SOURCE_WHAM,
+      ok: false,
+      ...(errorFamily ? { errorFamily } : {}),
+      error: formatProviderError("ChatGPT WHAM usage", error),
+      windows: [],
+    };
+  }
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
