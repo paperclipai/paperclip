@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, externalObjectMentions, heartbeatRuns, issues } from "@paperclipai/db";
-import { createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
+import { createChildIssueSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { issueService } from "../services/issues.js";
 import { externalObjectService } from "../services/external-objects.js";
@@ -47,6 +47,39 @@ describe("task titles", () => {
     expect(createIssueSchema.safeParse({ description: "A request" }).success).toBe(true);
     expect(setIssueTitleSchema.safeParse({ title: "  " }).success).toBe(false);
     expect(setIssueTitleSchema.safeParse({ title: "x".repeat(241) }).success).toBe(false);
+  });
+
+  it("creates prompt-only children and still accepts explicit child titles", async () => {
+    const f = await server.fixture();
+    const description = "Investigate the child sign-in redirect";
+    const response = await request(f, `/issues/${f.issueId}/children`, "POST", { description, status: "backlog" });
+    const result = await response.json();
+    expect(response.status, JSON.stringify(result)).toBe(201);
+    expect(result).toMatchObject({ parentId: f.issueId, title: description, description, titleNeedsGeneration: true });
+    const explicit = await request(f, `/issues/${f.issueId}/children`, "POST", { title: "Chosen child title", description, status: "backlog" });
+    expect(explicit.status).toBe(201);
+    expect(await explicit.json()).toMatchObject({ title: "Chosen child title", titleNeedsGeneration: false });
+    expect(createChildIssueSchema.safeParse({ title: "  ", description: "\n " }).success).toBe(false);
+  });
+
+  it("bounds title receipts without evicting replay protection across native and HTTP calls", async () => {
+    const f = await server.fixture();
+    const input = { title: "Original agent title", onlyIfProvisional: false, idempotencyKey: "original" };
+    const original = await rename(f, input);
+    await issueService(server.db).update(f.issueId, { title: "Later user title" });
+    for (let i = 1; i < 64; i++) {
+      await rename(f, { idempotencyKey: `bounded-${i}` });
+    }
+    await expect(rename(f, { idempotencyKey: "overflow" })).rejects.toThrow(/limit/);
+    const overflow = await request(f, `/issues/${f.issueId}/title`, "PUT", { ...input, idempotencyKey: "overflow" });
+    expect(overflow.status).toBe(409);
+    expect(await rename(f, input)).toEqual(original);
+    const replay = await request(f, `/issues/${f.issueId}/title`, "PUT", input);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(original);
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(Object.keys(run.resultJson?.taskTitleReceipts ?? {})).toHaveLength(64);
+    expect(await issueService(server.db).getById(f.issueId)).toMatchObject({ title: "Later user title" });
   });
 
   it("keeps distinct prompts with the same prefix and replays creation keys after naming", async () => {

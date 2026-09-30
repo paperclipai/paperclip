@@ -9,6 +9,8 @@ type TitleActor = Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "
 type TitleResult = { id: string; title: string; titleNeedsGeneration: boolean; changed: boolean };
 type TitleReceipt = { issueId: string; title: string; onlyIfProvisional: boolean; result: TitleResult };
 
+const MAX_TASK_TITLE_RECEIPTS_PER_RUN = 64;
+
 /** Caller owns the transaction and publishes the activity only after commit. */
 export async function setIssueTitle(
   tx: Db,
@@ -49,6 +51,11 @@ export async function setIssueTitle(
       throw conflict("Task title idempotency key was already used with different arguments");
     }
     return { result: prior.result, publication: null };
+  }
+  // Keep all accepted keys replayable, including after a user edit. Reject new
+  // keys at the limit instead of evicting receipts and allowing writes to replay.
+  if (receiptKey && Object.keys(receipts).length >= MAX_TASK_TITLE_RECEIPTS_PER_RUN) {
+    throw conflict("Task title retry-key limit reached for this run");
   }
   const saveReceipt = async (result: TitleResult) => {
     if (receiptKey && authorizedRun) {

@@ -1722,7 +1722,11 @@ pub(crate) fn sanitize_semantic_tool_input(
             if let Some(text) = input.get(*field).and_then(Value::as_str) {
                 object.insert(
                     (*field).to_owned(),
-                    Value::String(redact_sensitive_text_values_with_context(text, true)),
+                    Value::String(redact_sensitive_text_values_with_context(
+                        text,
+                        true,
+                        operation_id == "set_task_title" && *field == "title",
+                    )),
                 );
             }
         }
@@ -1843,10 +1847,14 @@ pub(crate) fn redact_text(input: &str) -> String {
 }
 
 pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
-    redact_sensitive_text_values_with_context(input, false)
+    redact_sensitive_text_values_with_context(input, false, false)
 }
 
-fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) -> String {
+fn redact_sensitive_text_values_with_context(
+    input: &str,
+    semantic_prose: bool,
+    task_title: bool,
+) -> String {
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -2245,10 +2253,10 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
             ]
             .iter()
             .any(|lead| token_phrase_has_lead(lead));
-        // Declared prose can discuss API key maintenance. These exact noun
-        // phrases are not whitespace-separated credentials; assignments,
-        // quoted values, and compound/CLI names still use the normal scanner.
-        let is_semantic_key_maintenance = semantic_prose
+        // Only task titles may use this closed maintenance grammar. Match the
+        // entire remaining suffix so an opaque credential after the noun cannot
+        // bypass the whitespace-value scanner. Other prose stays unchanged.
+        let is_semantic_key_maintenance = task_title
             && key == "api key"
             && !key_is_compound
             && (start == 0 || bytes[start - 1].is_ascii_whitespace())
@@ -2260,7 +2268,21 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
                 .all(|value| matches!(value, b' ' | b'\t'))
             && ["rotation", "replacement", "renewal", "expiration"]
                 .iter()
-                .any(|tail| token_phrase_has_tail(tail));
+                .any(|noun| {
+                    normalized[separator..]
+                        .strip_prefix(noun)
+                        .is_some_and(|suffix| {
+                            [
+                                "",
+                                " checklist",
+                                " handover",
+                                " handover checklist",
+                                " plan",
+                                " guide",
+                            ]
+                            .contains(&suffix.trim_end_matches('.'))
+                        })
+                });
         let is_benign_token_noun_phrase = key == "token"
             && (!key_is_compound || has_hyphenated_count_lead)
             && whitespace_start == start + key.len()
@@ -3506,6 +3528,10 @@ mod tests {
             "--api key rotation",
             "OPENAI_API_KEY rotation",
             "API key rotation-secret",
+            "API key rotation opaque-credential",
+            "API key replacement ABCDEFG123456789",
+            "API key renewal checklist opaque-credential",
+            "API key expiration\nopaque-credential",
             "API key rotation sk-proj-secretvalue123456",
             "API key rotation Authorization: Bearer opaque-credential",
         ] {
@@ -3513,6 +3539,32 @@ mod tests {
                 sanitize_semantic_tool_input("set_task_title", &json!({"title": title})).is_err(),
                 "{title}"
             );
+        }
+    }
+
+    #[test]
+    fn key_maintenance_exception_is_limited_to_task_titles() {
+        for (operation, field) in [
+            ("create_task", "title"),
+            ("create_task", "description"),
+            ("create_task", "initialPlan"),
+            ("create_project", "name"),
+            ("create_project", "description"),
+            ("write_document", "title"),
+            ("write_document", "body"),
+            ("write_document", "changeSummary"),
+            ("update_agent_instructions", "content"),
+        ] {
+            for text in [
+                "API key rotation",
+                "API key rotation opaque-credential",
+                "API key renewal checklist ABCDEFG123456789",
+            ] {
+                assert!(
+                    sanitize_semantic_tool_input(operation, &json!({field: text})).is_err(),
+                    "{operation}.{field}: {text}"
+                );
+            }
         }
     }
 

@@ -790,17 +790,22 @@ export const createIssueInputSchema = createIssueBaseSchema.extend({
   ...onboardingFirstTaskMarkerSchema,
 });
 
+function requireTitleOrDescription(
+  value: { title?: string; description?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (!value.title?.trim() && !value.description?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Provide a title or task description" });
+  }
+}
+
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend({
     title: z.string().optional(),
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
   }),
-).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine((value, ctx) => {
-  if (!value.title?.trim() && !value.description?.trim()) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Provide a title or task description" });
-  }
-});
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription);
 
 export const setIssueTitleSchema = z.object({
   title: z.string().trim().min(1).max(240),
@@ -829,13 +834,14 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(
       watchdogDiscovery: true,
     })
     .extend({
+      title: z.string().optional(),
       acceptanceCriteria: z
         .array(z.string().trim().min(1).max(500))
         .max(20)
         .optional(),
       blockParentUntilDone: z.boolean().optional().default(false),
     }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
