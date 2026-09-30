@@ -64,17 +64,21 @@ describe("database backup health", () => {
     let active = 0;
     let peak = 0;
     vi.mocked(fs.stat).mockImplementation((async (...args: Parameters<typeof fs.stat>) => {
-      active++;
-      peak = Math.max(peak, active);
+      const isArchive = String(args[0]).endsWith(".sql.gz");
+      if (isArchive) {
+        active++;
+        peak = Math.max(peak, active);
+      }
       try {
         await new Promise((resolve) => setTimeout(resolve, 1));
         return await actual.stat(...args);
       } finally {
-        active--;
+        if (isArchive) active--;
       }
     }) as typeof fs.stat);
     expect((await inspect()).latestBackup?.name).toBe("0.sql.gz");
-    // The two optional failure markers are observed after the archive scan.
+    // Count archive I/O only; parallel marker reads must not make a fully
+    // sequential archive scan satisfy the lower bound.
     const archiveReads = vi.mocked(fs.stat).mock.calls.filter(([file]) => String(file).endsWith(".sql.gz"));
     expect(archiveReads).toHaveLength(12);
     expect(peak).toBeGreaterThan(1);
