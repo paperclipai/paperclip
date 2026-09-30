@@ -9165,8 +9165,17 @@ async function executePaperclipNativeSessionWithinScope(
     const retainSession = native.terminal.runTerminalState === "succeeded";
     const instructionCopy = input.instructionWorkingCopy;
     const ownedSession = warmNativeSessions.get(warmSessionId);
-    const collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
-      (instructionCopy.checkpointWarm ? !await instructionCopy.checkpointWarm() : await instructionCopy.hasChanges()));
+    let collectInstructions: boolean;
+    try {
+      collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
+        (instructionCopy.checkpointWarm ? !await instructionCopy.checkpointWarm() : await instructionCopy.hasChanges()));
+    } catch (error) {
+      // A checkpoint or its receipt callback can reject. Retire this owner
+      // before heartbeat stops the sandbox, preserving the initiating error.
+      await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true)
+        .catch(() => undefined);
+      throw error;
+    }
     const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped;
     if (collectInstructions && ownedSession) {
       // Keep the unchanged warm path intact. A changed private instruction copy

@@ -6006,6 +6006,58 @@ describe("native warm session supervision", () => {
     expect(collectStopped).not.toHaveBeenCalled();
   });
 
+  it.each(["failed", "cancelled"] as const)("retires a %s session even if its warm checkpoint rejects", async (runTerminalState) => {
+    const name = `warm-checkpoint-rejects-${runTerminalState}`;
+    const current = { ...execution,
+      binding: { ...execution.binding, runId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const close = vi.fn(async () => undefined);
+    const collectStopped = vi.fn(async () => undefined);
+    const failure = new Error("instruction-save receipt failed");
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "provider failed" }, terminal: { runTerminalState },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name,
+      instructionWorkingCopy: { runId: name, root: `/tmp/${name}`, collectStopped, hasChanges: vi.fn(),
+        checkpointWarm: async () => { throw failure; } },
+    })).rejects.toBe(failure);
+    expect(close).toHaveBeenCalledOnce();
+    expect(collectStopped).toHaveBeenCalledOnce();
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(collectStopped.mock.invocationCallOrder[0]!);
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+  });
+
+  it.each(["failed", "cancelled"] as const)("collects edits written during %s provider shutdown after the warm checkpoint", async (runTerminalState) => {
+    const name = `warm-shutdown-edits-${runTerminalState}`;
+    const current = { ...execution,
+      binding: { ...execution.binding, runId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    let remoteNote = "before shutdown";
+    let canonicalNote = "original";
+    const checkpointWarm = vi.fn(async () => { canonicalNote = remoteNote; return true; });
+    const close = vi.fn(async () => { remoteNote += "\nafter shutdown"; });
+    const collectStopped = vi.fn(async () => { canonicalNote = remoteNote; });
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "provider failed" }, terminal: { runTerminalState },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name,
+      instructionWorkingCopy: { runId: name, root: `/tmp/${name}`, checkpointWarm, collectStopped, hasChanges: vi.fn() },
+    })).resolves.toMatchObject({ exitCode: 1 });
+    expect(checkpointWarm).toHaveBeenCalledOnce();
+    expect(collectStopped).toHaveBeenCalledOnce();
+    expect(checkpointWarm.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(collectStopped.mock.invocationCallOrder[0]!);
+    expect(canonicalNote).toBe("before shutdown\nafter shutdown");
+  });
+
   describe("managed directory warm checkpoints", () => {
     const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
       turnId: "turn", normalizedSessionId: "managed", providerSessionId: "provider", driverKind: "test", driverVersion: "1",
