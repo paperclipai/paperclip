@@ -2433,6 +2433,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }
     return result;
   }, [interactions, pendingRuntimeRequest]);
+  // Agent Chat questions already have an answerable history card, including
+  // when the user dismisses a fresh form without sending another message.
+  const pendingReminderInputs = useMemo(() => pendingComposerInputs.filter(input =>
+    !(conversationMode && input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
+  [pendingComposerInputs, conversationMode]);
   const latestUserComment = useMemo(() => comments
     .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
     .reduce<(typeof comments)[number] | null>((latest, comment) =>
@@ -2477,21 +2482,21 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
-    if (!selectedPendingInput || !currentPendingKeys.has(selectedPendingInput.key)) {
-      setSelectedPendingKey(currentPendingInputs[0]?.key ?? null);
+    if (!pendingReminderInputs.some(input => input.key === selectedPendingInput?.key)) {
+      setSelectedPendingKey(pendingReminderInputs[0]?.key ?? null);
     }
     setTakeoverMode("open");
-  }, [currentPendingInputs, currentPendingKeys, selectedPendingInput]);
+  }, [pendingReminderInputs, selectedPendingInput]);
   const showNextPendingInput = useCallback(() => {
-    if (currentPendingInputs.length < 2) return;
-    const currentIndex = currentPendingInputs.findIndex(
+    if (pendingReminderInputs.length < 2) return;
+    const currentIndex = pendingReminderInputs.findIndex(
       (input) => input.key === selectedPendingInput?.key,
     );
     setSelectedPendingKey(
-      currentPendingInputs[(currentIndex + 1) % currentPendingInputs.length]
+      pendingReminderInputs[(currentIndex + 1) % pendingReminderInputs.length]
         ?.key ?? null,
     );
-  }, [currentPendingInputs, selectedPendingInput?.key]);
+  }, [pendingReminderInputs, selectedPendingInput?.key]);
   const skipPendingInput = useCallback(
     async (input: PendingComposerInput) => {
       if (input.kind === "runtime") {
@@ -2721,8 +2726,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             selectedPendingInput.kind === "durable" &&
             selectedPendingInput.interaction.kind === "request_confirmation" &&
             Boolean(selectedPendingInput.interaction.payload.toolAction),
-          // A reopened history question does not rejoin the pending-input queue.
-          pendingCount: Math.max(1, currentPendingInputs.length),
+          pendingCount: Math.max(1, pendingReminderInputs.length),
           content: takeoverContent,
           onDismiss: () => setTakeoverMode("normal"),
           onSkip: () => skipPendingInput(selectedPendingInput),
@@ -3133,10 +3137,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}
                       onRunnerGoalReassign={reassignForRunnerGoal}
                       pendingTakeover={
-                        currentPendingInputs.length > 0
+                        pendingReminderInputs.length > 0
                           ? {
-                              count: currentPendingInputs.length,
-                              label: `${currentPendingInputs.length} pending input${currentPendingInputs.length === 1 ? "" : "s"}`,
+                              count: pendingReminderInputs.length,
+                              label: `${pendingReminderInputs.length} pending input${pendingReminderInputs.length === 1 ? "" : "s"}`,
                               onOpen: openPendingTakeover,
                             }
                           : null

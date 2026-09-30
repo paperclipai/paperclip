@@ -203,6 +203,13 @@ export async function runUnansweredQuestionReturn(context: {
   await expect(page.getByTestId("task-chat-composer-takeover")).toBeVisible();
   await expect(questionRow()).toBeVisible();
   await input.capture("question-asked", "Original question awaiting an answer", "question-asked.png");
+  await page.getByTestId("task-chat-composer-takeover").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(questionRow()).toBeVisible();
+  await expect(page.getByTestId("task-chat-composer-takeover")).toHaveCount(0);
+  await expect(page.getByTestId("task-chat-pending-input-indicator")).toHaveCount(0);
+  await input.capture("question-dismissed", "Dismissing a fresh question leaves only its history card", "question-dismissed.png");
+  await questionRow().click();
+  await expect(page.getByTestId("task-chat-composer-takeover")).toBeVisible();
 
   const unrelated = "Leave that color question unanswered for now. What is the capital of France? Answer that in chat; do not create tasks.";
   await sendChatMessage(page, unrelated);

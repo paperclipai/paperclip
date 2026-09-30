@@ -71,6 +71,15 @@ const meta = { title: "Chat & Comments/Agent Chat Unanswered Questions", paramet
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const JustAsked: Story = { args: {} };
+export const DismissFreshQuestion: Story = { args: {}, play: async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getByRole("radio", { name: "Green" })).toBeVisible());
+  await userEvent.click(canvas.getByRole("radio", { name: "Green" }));
+  await userEvent.click(canvas.getByRole("button", { name: /^Cancel$/ }));
+  await expect(canvas.getByTestId("task-chat-unanswered-question")).toBeVisible();
+  await expect(canvas.queryByTestId("task-chat-composer-takeover")).not.toBeInTheDocument();
+  await expect(canvas.queryByTestId("task-chat-pending-input-indicator")).not.toBeInTheDocument();
+} };
 export const MovedOn: Story = { args: { movedOn: true }, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await waitFor(() => expect(canvas.getByTestId("task-chat-unanswered-question")).toBeVisible());

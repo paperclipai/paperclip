@@ -2742,6 +2742,17 @@ describe("Agent Chat unanswered question history", () => {
     expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
   });
 
+  it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    await click("Yes");
+    if (action === "Cancel") await click("Cancel");
+    else await dismiss();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+  });
+
   it("keeps multiple historical questions out of the composer after reopening and dismissing one", async () => {
     const anotherOld = questionInteraction("another-old", "Which format?", "2026-08-15T12:00:02Z");
     render(<TaskChatThread {...props} comments={movedOn} interactions={[old, anotherOld]} />);
@@ -2755,14 +2766,15 @@ describe("Agent Chat unanswered question history", () => {
     expect(pendingIndicator()).toBeNull();
   });
 
-  it("counts and cycles only current inputs alongside historical question cards", async () => {
-    const newest = questionInteraction("newest", "Which size?", "2026-08-15T12:06:00Z");
-    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, newer, newest]} />);
-    expect(takeover()?.textContent).toContain("Which size?");
+  it("counts and cycles approvals without including fresh or historical question cards", async () => {
+    const approval = { ...planReviewInteraction(), id: "approval", title: "Approve the outline?", payload: { version: 1, prompt: "Approve the outline?" } } as IssueThreadInteraction;
+    const nextApproval = { ...approval, id: "next-approval", title: "Approve the note?", createdAt: new Date("2026-08-23T10:02:00Z"), payload: { version: 1, prompt: "Approve the note?" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, newer, approval, nextApproval]} />);
+    expect(takeover()?.textContent).toContain("Approve the note?");
     await click("2 pending");
-    expect(takeover()?.textContent).toContain("Which tone?");
+    expect(takeover()?.textContent).toContain("Approve the outline?");
     await click("2 pending");
-    expect(takeover()?.textContent).toContain("Which size?");
+    expect(takeover()?.textContent).toContain("Approve the note?");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
     expect(takeover()?.textContent).toContain("Which color?");
     expect(takeover()?.textContent).toContain("2 pending");
@@ -2770,7 +2782,7 @@ describe("Agent Chat unanswered question history", () => {
     await dismiss();
     expect(pendingIndicator()?.textContent).toContain("2 pending inputs");
     await act(async () => pendingIndicator()!.click());
-    expect(takeover()?.textContent).toContain("Which size?");
+    expect(takeover()?.textContent).toContain("Approve the note?");
   });
 
   it("opens the new question but can reopen the exact historical native question", async () => {
@@ -2784,8 +2796,8 @@ describe("Agent Chat unanswered question history", () => {
     render(<TaskChatThread {...props} comments={[...movedOn]} interactions={[nativeOld, newer]} />);
     expect(takeover()?.textContent).toContain("Which color?");
     await dismiss();
-    expect(pendingIndicator()?.textContent).toContain("1 pending input");
-    await act(async () => pendingIndicator()!.click());
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which tone?"]')!.click());
     expect(takeover()?.textContent).toContain("Which tone?");
   });
 
@@ -2800,6 +2812,7 @@ describe("Agent Chat unanswered question history", () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
     if (success) {
       expect(takeover()).toBeNull();
+      expect(pendingIndicator()).toBeNull();
       await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-unanswered-question"]')!.click());
     }
     expect(takeover()).not.toBeNull();
