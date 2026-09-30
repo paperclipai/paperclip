@@ -1,4 +1,4 @@
-import { matchCopilotFixtureCommand, type CopilotCommandMatch } from "./copilot-protection-evidence.js";
+import { matchCopilotFixtureCommand, validCopilotDenialSettlement, type CopilotDenialSettlement, type CopilotDenialSampleCursor, type CopilotCommandMatch } from "./copilot-protection-evidence.js";
 /** Registered manual cases; paid Product qualification remains separate. */
 export const copilotProtectionCases = [
   {
@@ -43,10 +43,12 @@ interface FileObservation {
   phase: "before-request" | "pending" | "after-decision" | "terminal" | "after-cleanup";
   observedAtMs: number;
   exists: boolean;
+  /** null only before dispatch/action publication; otherwise read before sampling. */
+  providerCursor: CopilotDenialSampleCursor | null;
 }
 export interface CopilotDeniedWriteEvidence extends Lifecycle {
   deliveredDecision: (TimedIdentity & { requestId: string; outcome: string }) | null;
-  cancellation: { requestedAtMs: number; acknowledged: boolean; scope: string } | null;
+  settlement: CopilotDenialSettlement | null;
   request: (TimedIdentity & { method: "session/request_permission"; requestId: string; targetRelativePath: string; offeredActions: string[] }) | null;
   decision: (TimedIdentity & { requestId: string; action: string; browserRequestId: string }) | null;
   requestId: string | null;
@@ -78,17 +80,35 @@ function lifecycle(e: Lifecycle, failures: string[], expectedStatus: "succeeded"
   if (!e.cleanup || e.cleanup.ownedProcessesRemaining !== 0 || !time(e.cleanup.observedAtMs) || !e.terminal || e.cleanup.observedAtMs < e.terminal.observedAtMs) failures.push("unsettled-cleanup");
 }
 export function gradeCopilotDeniedWrite(e: CopilotDeniedWriteEvidence): CopilotProtectionGrade {
-  const failures: string[] = []; lifecycle(e, failures, "cancelled");
-  if (!e.cancellation || !e.cancellation.acknowledged || !time(e.cancellation.requestedAtMs) || e.cancellation.scope !== "run" || !e.toolResult || e.cancellation.requestedAtMs < e.toolResult.observedAtMs || !e.terminal || e.cancellation.requestedAtMs > e.terminal.observedAtMs) failures.push("missing-explicit-settled-cancellation");
+  const failures: string[] = [];
+  // The provider, browser and observer clocks are independent. Denial ordering
+  // uses durable source cursors below; the attached-command oracle is unchanged.
+  if (!Object.values(e.expected).every(v => typeof v === "string" && v.length > 0)) failures.push("missing-origin-identity");
+  if (!e.terminal || e.terminal.runId !== e.expected.runId || e.terminal.turnId !== e.expected.turnId || e.terminal.status !== "cancelled" || !time(e.terminal.observedAtMs)) failures.push("missing-expected-origin-terminal");
+  if (!e.cleanup || e.cleanup.ownedProcessesRemaining !== 0 || !time(e.cleanup.observedAtMs)) failures.push("unsettled-cleanup");
+  const settlement = e.settlement;
+  if (!settlement || !validCopilotDenialSettlement(settlement) || !same(settlement, e.expected) || settlement.requestId !== e.requestId
+    || !e.terminal || e.terminal.observedAtMs !== settlement.providerTerminal.emittedAtMs) failures.push("missing-explicit-settled-run-stop");
   if (!/^(?:pc-denied-[a-zA-Z0-9]+\/)?copilot-denied-[a-z0-9-]+\.txt$/.test(e.expectedRelativePath) || !e.request || !same(e.request, e.expected) || e.request.method !== "session/request_permission" || e.request.requestId !== e.requestId || e.request.targetRelativePath !== e.expectedRelativePath || !e.request.offeredActions.includes("decline") || !time(e.request.observedAtMs)) failures.push("missing-exact-native-write-request");
-  if (!e.requestId || !e.decision || !same(e.decision, e.expected) || e.decision.requestId !== e.requestId || e.decision.browserRequestId !== e.requestId || e.decision.action !== "decline" || !time(e.decision.observedAtMs) || !e.request || e.decision.observedAtMs < e.request.observedAtMs) failures.push("missing-exact-browser-denial");
-  if (!e.deliveredDecision || !same(e.deliveredDecision, e.expected) || e.deliveredDecision.requestId !== e.requestId || e.deliveredDecision.outcome !== "reject_once" || !time(e.deliveredDecision.observedAtMs) || !e.decision || e.deliveredDecision.observedAtMs < e.decision.observedAtMs || !e.toolResult || e.deliveredDecision.observedAtMs > e.toolResult.observedAtMs) failures.push("missing-delivered-native-rejection");
-  if (!e.toolResult || !same(e.toolResult, e.expected) || e.toolResult.status !== "failed" || !time(e.toolResult.observedAtMs) || !e.decision || e.toolResult.observedAtMs < e.decision.observedAtMs || !e.terminal || e.toolResult.observedAtMs > e.terminal.observedAtMs) failures.push("missing-denied-tool-result-before-terminal");
+  if (!e.requestId || !e.decision || !same(e.decision, e.expected) || e.decision.requestId !== e.requestId || e.decision.browserRequestId !== e.requestId || e.decision.action !== "decline" || !time(e.decision.observedAtMs)) failures.push("missing-exact-browser-denial");
+  if (!e.deliveredDecision || !same(e.deliveredDecision, e.expected) || e.deliveredDecision.requestId !== e.requestId || e.deliveredDecision.outcome !== "reject_once" || !time(e.deliveredDecision.observedAtMs)) failures.push("missing-delivered-native-rejection");
+  if (!e.toolResult || !same(e.toolResult, e.expected) || e.toolResult.status !== "failed" || !time(e.toolResult.observedAtMs)) failures.push("missing-denied-tool-result-before-terminal");
   if (e.nativeAttemptsForTarget !== 1) failures.push("missing-or-retried-native-write");
   const phases = ["before-request", "pending", "after-decision", "terminal", "after-cleanup"] as const;
   if (phases.some(phase => !e.fileObservations.some(s => s.phase === phase)) || e.fileObservations.some(s => s.exists || !time(s.observedAtMs))) failures.push("missing-or-mutated-target-observation");
   const samples = phases.map(phase => e.fileObservations.find(s => s.phase === phase));
-  if (samples.some((s, i) => !s || (i > 0 && s.observedAtMs < samples[i - 1]!.observedAtMs)) || !e.request || !e.decision || !e.terminal || !e.cleanup || (samples[0]?.observedAtMs ?? Infinity) > e.request.observedAtMs || (samples[1]?.observedAtMs ?? -1) < e.request.observedAtMs || (samples[1]?.observedAtMs ?? Infinity) > e.decision.observedAtMs || (samples[2]?.observedAtMs ?? -1) < e.decision.observedAtMs || (samples[3]?.observedAtMs ?? -1) < e.terminal.observedAtMs || (samples[4]?.observedAtMs ?? -1) < e.cleanup.observedAtMs) failures.push("filesystem-observation-order-invalid");
+  const t = settlement?.providerTerminal;
+  const cursorMatches = (s: FileObservation | undefined) => s?.providerCursor && t && s.providerCursor.runId === e.expected.runId
+    && s.providerCursor.turnId === e.expected.turnId && s.providerCursor.normalizedSessionId === t.normalizedSessionId
+    && s.providerCursor.sourceInstanceId === t.sourceInstanceId && Number.isSafeInteger(s.providerCursor.sourceSeq);
+  if (e.fileObservations.length !== phases.length || samples.some((s, i) => !s || (i > 0 && s.observedAtMs < samples[i - 1]!.observedAtMs))
+    || samples[0]?.providerCursor !== null || !t || samples.slice(1).some(s => !cursorMatches(s))
+    || (samples[1]?.providerCursor?.sourceSeq ?? -1) < t.requestSourceSeq
+    || (samples[1]?.providerCursor?.sourceSeq ?? Infinity) >= t.resolvedSourceSeq
+    || (samples[2]?.providerCursor?.sourceSeq ?? -1) < t.failedNoticeSourceSeq
+    || (samples[3]?.providerCursor?.sourceSeq ?? -1) < t.sourceSeq || (samples[4]?.providerCursor?.sourceSeq ?? -1) < t.sourceSeq
+    || samples.slice(2).some((s, i) => (s?.providerCursor?.sourceSeq ?? -1) < (samples[i + 1]?.providerCursor?.sourceSeq ?? Infinity))
+    || !e.cleanup || samples[4]?.observedAtMs !== e.cleanup.observedAtMs) failures.push("filesystem-observation-order-invalid");
   const m = e.mutationObservation;
   if (!m || !m.complete || m.targetMutationCount !== 0 || !time(m.startedAtMs) || !time(m.endedAtMs) || !samples[0] || !samples[4] || m.startedAtMs > samples[0].observedAtMs || m.endedAtMs < samples[4].observedAtMs) failures.push("missing-or-mutated-filesystem-watch");
   return { passed: failures.length === 0, failures };

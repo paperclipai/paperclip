@@ -7,15 +7,19 @@ const terminal = { observedAtMs: 50, runId: "run", turnId: "turn", status: "succ
 const cleanup = { observedAtMs: 60, ownedProcessesRemaining: 0 };
 function denied(): CopilotDeniedWriteEvidence {
   return {
-    expected: identity, terminal: { ...terminal, status: "cancelled" }, cleanup, cancellation: { requestedAtMs: 40, acknowledged: true, scope: "run" }, requestId: "permission-0", expectedRelativePath: "copilot-denied-nonce.txt",
+    expected: identity, terminal: { ...terminal, status: "cancelled" }, cleanup, settlement: { schema: "paperclip.e2e.copilot-denial-settlement.v3", ...identity, requestId: "permission-0",
+      branch: "provider_cancelled_or_interrupted", providerCancellationTerminalObserved: true,
+      preStop: { schema: "paperclip.e2e.copilot-pre-stop-observation.v2" as const, ...identity, requestId: "permission-0", companyId: "company", normalizedSessionId: "normalized", sourceInstanceId: "runner", failedToolSourceSeq: 5, failedToolRowSha256: `sha256:${"a".repeat(64)}`, terminal: null, apiReadCompletedMonotonicNs: "10", cancellationRequestId: "11111111-1111-4111-8111-111111111111" }, stopDispatchMonotonicNs: "20",
+      providerTerminal: { rowSha256: `sha256:${"b".repeat(64)}`, failedToolRowSha256: `sha256:${"a".repeat(64)}`, eventType: "turn.cancelled", normalizedSessionId: "normalized", sourceInstanceId: "runner", requestSourceSeq: 1, resolvedSourceSeq: 2, deliveredSourceSeq: 3, failedNoticeSourceSeq: 4, failedToolSourceSeq: 5, failedToolRowCreatedAtMs: 31, sourceSeq: 6, emittedAtMs: 50, rowCreatedAtMs: 51 },
+      runStop: { companyId: "company", issueId: "issue", scope: "run", status: "cancelled", issueStatus: "in_progress", intentId: "native-cancellation:11111111-1111-4111-8111-111111111111", intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", requestedAtMs: 40, recordedAtMs: 41, acknowledgedAtMs: 52, finishedAtMs: 53 } }, requestId: "permission-0", expectedRelativePath: "copilot-denied-nonce.txt",
     request: { ...identity, observedAtMs: 10, method: "session/request_permission", requestId: "permission-0", targetRelativePath: "copilot-denied-nonce.txt", offeredActions: ["accept", "decline"] },
     decision: { ...identity, observedAtMs: 20, requestId: "permission-0", browserRequestId: "permission-0", action: "decline" },
     deliveredDecision: { ...identity, observedAtMs: 25, requestId: "permission-0", outcome: "reject_once" },
     toolResult: { ...identity, observedAtMs: 30, status: "failed" }, nativeAttemptsForTarget: 1,
     fileObservations: [
-      { phase: "before-request", observedAtMs: 0, exists: false }, { phase: "pending", observedAtMs: 15, exists: false },
-      { phase: "after-decision", observedAtMs: 25, exists: false }, { phase: "terminal", observedAtMs: 50, exists: false },
-      { phase: "after-cleanup", observedAtMs: 60, exists: false },
+      { phase: "before-request", observedAtMs: 0, exists: false, providerCursor: null }, { phase: "pending", observedAtMs: 15, exists: false, providerCursor: { runId: "run", turnId: "turn", normalizedSessionId: "normalized", sourceInstanceId: "runner", sourceSeq: 1 } },
+      { phase: "after-decision", observedAtMs: 25, exists: false, providerCursor: { runId: "run", turnId: "turn", normalizedSessionId: "normalized", sourceInstanceId: "runner", sourceSeq: 4 } }, { phase: "terminal", observedAtMs: 50, exists: false, providerCursor: { runId: "run", turnId: "turn", normalizedSessionId: "normalized", sourceInstanceId: "runner", sourceSeq: 6 } },
+      { phase: "after-cleanup", observedAtMs: 60, exists: false, providerCursor: { runId: "run", turnId: "turn", normalizedSessionId: "normalized", sourceInstanceId: "runner", sourceSeq: 6 } },
     ],
     mutationObservation: { startedAtMs: 0, endedAtMs: 60, complete: true, targetMutationCount: 0 },
   };
@@ -40,6 +44,51 @@ describe("Copilot protection Product oracles", () => {
   it("accepts an origin-bound browser denial with an independent continuous absence oracle", () => {
     expect(gradeCopilotDeniedWrite(denied())).toEqual({ passed: true, failures: [] });
   });
+  it("keeps every no-effect and cleanup gate for a completed-before-Stop settlement", () => {
+    const e = denied();
+    e.settlement!.branch = "provider_completed_observed_before_stop";
+    e.settlement!.providerCancellationTerminalObserved = false;
+    e.settlement!.providerTerminal.eventType = "turn.completed";
+    e.settlement!.preStop.terminal = { eventType: "turn.completed", sourceSeq: 6, rowSha256: e.settlement!.providerTerminal.rowSha256 };
+    expect(gradeCopilotDeniedWrite(e).passed).toBe(true);
+    for (const mutate of [
+      (v: CopilotDeniedWriteEvidence) => { v.cleanup!.ownedProcessesRemaining = 1; },
+      (v: CopilotDeniedWriteEvidence) => { v.nativeAttemptsForTarget = 2; },
+      (v: CopilotDeniedWriteEvidence) => { v.fileObservations[2]!.exists = true; },
+      (v: CopilotDeniedWriteEvidence) => { v.mutationObservation!.targetMutationCount = 1; },
+      (v: CopilotDeniedWriteEvidence) => { v.mutationObservation!.complete = false; },
+      (v: CopilotDeniedWriteEvidence) => { v.deliveredDecision = null; },
+      (v: CopilotDeniedWriteEvidence) => { v.toolResult!.status = "completed"; },
+      (v: CopilotDeniedWriteEvidence) => { v.settlement!.providerCancellationTerminalObserved = true; },
+      (v: CopilotDeniedWriteEvidence) => { v.settlement!.turnId = "foreign"; },
+    ]) { const bad = structuredClone(e); mutate(bad); expect(gradeCopilotDeniedWrite(bad).passed).toBe(false); }
+  });
+  it.each([-86_400_000, 86_400_000])("completed settlement does not compare provider, browser and filesystem clocks (%s)", skew => {
+    const e = denied();
+    e.settlement!.branch = "provider_completed_observed_before_stop";
+    e.settlement!.providerCancellationTerminalObserved = false;
+    e.settlement!.providerTerminal.eventType = "turn.completed";
+    e.settlement!.preStop.terminal = { eventType: "turn.completed", sourceSeq: 6, rowSha256: e.settlement!.providerTerminal.rowSha256 };
+    // Distinct positive clock domains, with either provider ahead or behind.
+    for (const n of [e.request!, e.deliveredDecision!, e.toolResult!, e.terminal!]) n.observedAtMs += 100_000_000 + skew;
+    e.settlement!.providerTerminal.emittedAtMs = e.terminal!.observedAtMs;
+    e.decision!.observedAtMs = 200_000_000;
+    expect(gradeCopilotDeniedWrite(e).passed).toBe(true);
+    e.fileObservations[1]!.providerCursor!.sourceSeq = e.settlement!.providerTerminal.resolvedSourceSeq;
+    expect(gradeCopilotDeniedWrite(e).failures).toContain("filesystem-observation-order-invalid");
+  });
+  it.each(["runId", "turnId", "normalizedSessionId", "sourceInstanceId"] as const)("rejects foreign sample %s despite plausible timestamps", field => {
+    const e = denied(); e.fileObservations[3]!.providerCursor![field] = "foreign";
+    expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
+  });
+  it("rejects missing, regressed and premature causal sample cursors", () => {
+    for (const mutate of [
+      (e: CopilotDeniedWriteEvidence) => { e.fileObservations[2]!.providerCursor = null; },
+      (e: CopilotDeniedWriteEvidence) => { e.fileObservations[2]!.providerCursor!.sourceSeq = 3; },
+      (e: CopilotDeniedWriteEvidence) => { e.fileObservations[3]!.providerCursor!.sourceSeq = 5; },
+      (e: CopilotDeniedWriteEvidence) => { e.fileObservations[4]!.providerCursor!.sourceSeq = 5; },
+    ]) { const e = denied(); mutate(e); expect(gradeCopilotDeniedWrite(e).passed).toBe(false); }
+  });
   it("requires the exact isolated target in native permission evidence", () => {
     const e = denied(); e.expectedRelativePath = "pc-denied-ABC123/copilot-denied-nonce.txt";
     expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
@@ -50,11 +99,11 @@ describe("Copilot protection Product oracles", () => {
       expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
     }
   });
-  it.each(["request", "decision", "deliveredDecision", "toolResult", "terminal", "cleanup", "mutationObservation"] as const)("rejects missing %s instead of treating no write as denial", field => {
+  it.each(["request", "decision", "deliveredDecision", "toolResult", "terminal", "cleanup", "mutationObservation", "settlement"] as const)("rejects missing %s instead of treating no write as denial", field => {
     const e = denied(); e[field] = null; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
   });
   it("requires explicit acknowledged cancellation for denial without relaxing successful settlement", () => {
-    const e = denied(); e.cancellation = null; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
+    const e = denied(); e.settlement = null; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
     const finished = denied(); finished.terminal!.status = "succeeded"; expect(gradeCopilotDeniedWrite(finished).passed).toBe(false);
     const cancelled = attached(); cancelled.terminal!.status = "cancelled"; expect(gradeCopilotAttachedSettlement(cancelled).passed).toBe(false);
   });
@@ -72,7 +121,7 @@ describe("Copilot protection Product oracles", () => {
     const retried = denied(); retried.nativeAttemptsForTarget = 2; expect(gradeCopilotDeniedWrite(retried).passed).toBe(false);
   });
   it("rejects a sample taken before the request as pending evidence", () => {
-    const e = denied(); e.fileObservations[1]!.observedAtMs = 5; expect(gradeCopilotDeniedWrite(e).failures).toContain("filesystem-observation-order-invalid");
+    const e = denied(); e.fileObservations[1]!.providerCursor!.sourceSeq = 0; expect(gradeCopilotDeniedWrite(e).failures).toContain("filesystem-observation-order-invalid");
   });
   it("rejects an unrelated request identity even when the chosen decision matches an outer ID", () => {
     const e = denied(); e.request!.requestId = "foreign-request"; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);

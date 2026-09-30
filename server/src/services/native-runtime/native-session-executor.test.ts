@@ -4916,9 +4916,13 @@ function cancellationDb(options?: {
     runId: string;
     assessmentId: string | null;
     decisionId?: string | null;
+    phase?: string;
+    failureCode?: string | null;
   } | null;
+  status?: string;
   failResultJsonUpdateAt?: number;
   ownershipHeld?: boolean;
+  resultJson?: Record<string, unknown>;
 }) {
   const initialRun = {
     id: execution.binding.runId,
@@ -4926,6 +4930,7 @@ function cancellationDb(options?: {
     companyId: execution.binding.companyId,
     nativeIssueId: execution.binding.issueId,
     runtimeMode: "native",
+    status: options?.status ?? "running",
     ...(options?.ownershipHeld
       ? {
           status: "running",
@@ -4938,6 +4943,7 @@ function cancellationDb(options?: {
   };
   let currentResultJson: Record<string, unknown> = {
     durableReceipt: { operationId: "operation-1" },
+    ...options?.resultJson,
   };
   const issue = {
     status: "in_progress",
@@ -4984,6 +4990,7 @@ function cancellationDb(options?: {
     set: (values: Record<string, unknown>) => ({
       where: () => {
         updates.push({ table, values });
+        if (table === nativeRunFinalizations && coordinator) Object.assign(coordinator, values);
         const updatesResultJson = "resultJson" in values;
         if (updatesResultJson) resultJsonUpdateCount += 1;
         const shouldFail =
@@ -5503,6 +5510,71 @@ describe("native session cancellation", () => {
       }),
     );
     expect(state.publishActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["terminal_failure", "observed", "committed"])("rejects retry phase %s that changed after caller reservation, before any native effect", async phase => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const persistence = cancellationDb({ status: "failed",
+      coordinator: { runId: execution.binding.runId, assessmentId: null, phase, failureCode: "board_recovery" },
+      resultJson: { startupCancellation: { cancellationRequestId: id, retryCancellation: true } } });
+    await expect(cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db,
+      scope: "run", cancellationRequestId: id })).rejects.toMatchObject({ status: 409, message: "Native retry is no longer cancellable" });
+    expect(persistence.updates).toEqual([]);
+    expect(state.cancel).not.toHaveBeenCalled();
+    expect(state.persistActivity).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake a recovered running attempt for the failed retry that reserved Stop", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const persistence = cancellationDb({ status: "running",
+      coordinator: { runId: execution.binding.runId, assessmentId: null, phase: "observed" },
+      resultJson: { startupCancellation: { cancellationRequestId: id, retryCancellation: true } } });
+    await expect(cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db,
+      scope: "run", cancellationRequestId: id })).rejects.toMatchObject({ status: 409 });
+    expect(persistence.updates).toEqual([]);
+    expect(state.cancel).not.toHaveBeenCalled();
+  });
+
+  it("fences a failed retry at dispatch and preserves the same audited intent on replay", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const persistence = cancellationDb({ status: "failed",
+      coordinator: { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure" },
+      resultJson: { startupCancellation: { cancellationRequestId: id, retryCancellation: true } } });
+    const first = await cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db, scope: "run", cancellationRequestId: id });
+    expect(persistence.updates).toContainEqual(expect.objectContaining({ table: nativeRunFinalizations,
+      values: expect.objectContaining({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null }) }));
+    const writes = persistence.getResultJsonUpdateCount();
+    await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db,
+      scope: "run", cancellationRequestId: id })).resolves.toMatchObject({ auditId: first.auditId });
+    expect(persistence.getResultJsonUpdateCount()).toBe(writes);
+  });
+
+  it("uses the reserved caller UUID and permits same-intent and default retries", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const persistence = cancellationDb({ resultJson: { startupCancellation: { cancellationRequestId: id } } });
+    await cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db, scope: "run", cancellationRequestId: id });
+    expect(persistence.getResultJson().nativeCancellation).toMatchObject({ intentId: `native-cancellation:${id}` });
+    const writes = persistence.getResultJsonUpdateCount();
+    await cancelNativeSession(execution.binding.runId, "same request", { db: persistence.db, scope: "run", cancellationRequestId: id });
+    await cancelNativeSession(execution.binding.runId, "default retry", { db: persistence.db, scope: "run" });
+    expect(persistence.getResultJsonUpdateCount()).toBe(writes);
+    await expect(cancelNativeSession(execution.binding.runId, "foreign caller", {
+      db: persistence.db, scope: "run", cancellationRequestId: "22222222-2222-4222-8222-222222222222",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(persistence.getResultJsonUpdateCount()).toBe(writes);
+  });
+
+  it.each([{}, { startupCancellation: { requestedAt: "prior" } },
+    { startupCancellation: { cancellationRequestId: "other" } },
+    { startupCancellation: { cancellationRequestId: "11111111-1111-4111-8111-111111111111" }, nativeCancellation: { intentId: "foreign" } },
+  ])("rejects missing or raced caller ownership under the intent lock: %j", async resultJson => {
+    const persistence = cancellationDb({ resultJson });
+    await expect(cancelNativeSession(execution.binding.runId, "operator Stop", {
+      db: persistence.db, scope: "run", cancellationRequestId: "11111111-1111-4111-8111-111111111111",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(persistence.getForUpdateCount()).toBe(1);
+    expect(persistence.updates).toEqual([]);
+    expect(state.cancel).not.toHaveBeenCalled();
   });
 
   it("recovers a post-dispatch persistence failure without cancelling the provider twice", async () => {

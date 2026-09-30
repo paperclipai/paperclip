@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ObservedStateTimeout, RemoteAdmissionReadError, RunnerApiHttpError, pollUntil } from "./api.js";
 import { classifyFailure } from "./failure-classifier.js";
-import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, type RemoteFixtureApi, type RemoteFixtureDaytona, type RemoteNativeFixture } from "./remote-native-fixtures.js";
+import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, remoteNativeFixtureDiagnostics, type RemoteFixtureApi, type RemoteFixtureDaytona, type RemoteNativeFixture } from "./remote-native-fixtures.js";
 
 type AdmissionEndpoint = "issue" | "run" | "leases";
 
@@ -194,7 +194,7 @@ export function createRemoteNativeBootstrap(input: {
         }
         try {
           await input.evidence(`remote-native-bootstrap-startup-${request.runId}.json`, {
-            ...lastState, deadlineReached: Date.now() >= input.deadlineAt,
+            ...lastState, fixtureDiagnostics: remoteNativeFixtureDiagnostics(error), deadlineReached: Date.now() >= input.deadlineAt,
             admissionDeadlineReached: Date.now() >= admissionDeadlineAt,
           });
         } catch (evidenceError) {

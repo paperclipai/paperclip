@@ -285,7 +285,22 @@ each with one run (120s
 provider timeout, 300s attempt budget). `native-permission-deny-write` denies one
 exact native edit through its browser card, waits for the delivered rejection and
 failed tool, then cancels through the public run API. Its expected outcome is a
-cancelled run and an unfinished task, not successful task completion. It rejects
+cancelled run and an unfinished task, not successful task completion.
+The retained `paperclip.e2e.copilot-denial-settlement.v3` proof separates the exact
+provider terminal from the audited controller Stop. It records either
+`provider_cancelled_or_interrupted` or `provider_completed_observed_before_stop`.
+The latter requires the exact terminal row to be returned by the operator API
+before Stop dispatch. The fixture awaits retention of its scoped row-hash receipt
+before sending Stop, then matches that receipt against the final durable rows.
+The same normalized session/source stream and a later source sequence than the
+failed edit are required. A fixed 2s observation window, inside the existing case
+deadline, allows natural completion. A normal terminal first seen after Stop is
+insufficient evidence. Database createdAt is transaction-start metadata; it cannot
+prove that an event committed before Stop acknowledgement. It cannot establish active-turn cancellation;
+a cancelled/interrupted terminal also does not by itself prove Stop reached active
+work. Dedicated cancellation coverage must retain its active-operation evidence.
+Missing, ambiguous, failed or foreign terminals and incomplete Stop receipts fail.
+This distinction does not regrade earlier failed attempts. The case rejects
 extra native operations/runs and observes the absent target through process
 retirement. Filesystem event loss or an unexplained parent-directory timestamp
 change makes no-effect coverage incomplete; stat polling alone cannot pass.
@@ -347,3 +362,73 @@ and order; any explicit canonical target must agree. Missing or conflicting
 attestations fail qualification. PRP retains only the first location and terminal
 updates may omit it, so canonical targets alone cannot prove bootstrap ownership.
 Neither tool titles nor output text supplies path evidence.
+
+Denial ordering uses canonical request, decline-resolution, delivery, failed-edit
+and terminal source sequences. Sample checkpoints retain the exact run/turn/source
+cursor. File samples and continuous-watch coverage compare only observer-local
+times. Provider emission, browser click and server persistence clocks are never
+compared to each other. Final remote samples use the sealed, independently verified
+process-retirement receipt; their timestamps are not relabeled as host time.
+This denial case does not qualify Stop during a definitely pending native request.
+That active-turn cancellation boundary needs a separate live case. The attached
+async-command oracle is unchanged by this denial-only correction.
+
+### Correlated native Stop API
+
+The board-only `POST /api/heartbeat-runs/:runId/cancel` accepts an optional
+`cancellationRequestId` UUID for native runs. Company access checks still apply.
+The server reserves it under the run-row lock before dispatch, uses
+`native-cancellation:<UUID>` as the durable intent ID, and returns HTTP409 for
+an earlier or different caller intent, an earlier uncorrelated Stop, or a
+terminal run without that same reserved intent. Malformed UUIDs return HTTP400.
+Repeating the same UUID from the same board actor is idempotent. A different
+actor receives HTTP409; local trusted board uses the `local-board` user ID.
+Default clients may omit the field; they preserve and join an existing reserved
+intent rather than overwrite it.
+
+The denial fixture generates its UUID before observation, retains it in
+`paperclip.e2e.copilot-pre-stop-observation.v2`, and requires the same intent in
+the response and final `paperclip.e2e.copilot-denial-settlement.v3` receipt.
+It refuses a non-running controller or existing Stop marker before dispatch.
+The completed-provider branch still requires a running controller that this
+request can stop; it does not accept a no-op Stop of an already terminal run.
+
+## Definitely-active native Stop
+
+`native-active-stop` / `pending-permission-stop` has four explicit-only cells:
+Cursor and Copilot, each local and Daytona. Its `native_active_stop` flow retains
+`paperclip.e2e.native-active-stop-pending.v1` from the public API while exactly one
+native permission remains pending, the exact controller run is running, and no
+Stop or answer marker exists. The receipt independently binds native session,
+normalized session, turn, source instance, request/tool IDs, source sequences and
+canonical row hashes. An awaited artifact write and fresh pending reread precede
+Stop dispatch; process-monotonic timestamps describe only these local observer
+boundaries. Remote provider clocks and database transaction timestamps never
+establish that ordering. The atomic caller UUID fence rejects an earlier racing
+Stop instead of borrowing its acknowledgement.
+
+`paperclip.e2e.native-active-stop-settlement.v1` accepts only
+`pending_permission_cancelled`: explicit-cancellation request closure with
+`replayAllowed:false`, then one exact `turn.cancelled`, plus the same scoped
+caller-owned native Stop acknowledgement. Missing, duplicate, foreign, failed,
+interrupted or normal terminal evidence fails. Only after this proof does the
+fixture attempt a stale public answer, requiring HTTP409 and an unanswerable
+browser card. It retains one cancelled run, issue `in_progress`, exact target
+absence through continuous observation, and all observed owned descendants
+retired. Local files require four fresh observations through cleanup. Daytona
+instead retains two live snapshots (baseline and pending) plus one automatic
+owned-process-retirement seal, with a continuous zero-mutation watcher and the
+same complete root/descendant journal. Suite version 2 retains this as
+`paperclip.e2e.native-active-stop-remote-retirement.v1`; it explicitly records
+`filesystemAfterRetirementObserved:false`. The per-turn observer seals itself
+when the owned tree retires, before the sandbox is released. Reading that receipt
+later is not a fresh post-UI or post-cleanup filesystem observation. Relabeled,
+reused, missing or out-of-order samples fail. The stale-answer and rendered UI
+checks remain separate, followed by fresh API cancellation/no-extra-run checks
+both after UI and in cleanup. Unproven cleanup fails independently. Only fully
+attested bootstrap reads may precede the one tested operation; alternate operations or attempts are rejected.
+
+The existing `copilot-protection` denial remains distinct: rejecting a permission
+before Stop does not exercise this pending-callback boundary. This new suite has
+pure calibration and wiring tests, not a paid qualification result. Provider
+process death is not simulated by substituting the chat runner-worker crash hook.

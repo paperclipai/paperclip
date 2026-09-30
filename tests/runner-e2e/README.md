@@ -1306,6 +1306,10 @@ and the limits of reconnect evidence.
 
 The manual `copilot-protection` suite selects two Copilot candidate cases on
 each of local and Daytona (four cells). Discover them with `pnpm test:e2e:runner -- --list --suite copilot-protection`.
+The denial case keeps provider-turn settlement separate from controller run Stop.
+A normal provider completion observed by API before Stop dispatch is not active-turn
+cancellation coverage; denial, no-effects, run cancellation and retirement remain
+required. Earlier failed attempts retain their original grade.
 See [Copilot native protection](./FIXTURES.md#copilot-native-protection) for the
 expected cancelled negative test, finite attached-process oracle, evidence limits,
 and required rebuilt runtime. Registration is not a qualification claim.
@@ -1350,9 +1354,18 @@ still fail. SDK 0.203.0, immutable image and executable digests, public run/leas
 ownership, sandbox labels and workspace sentinel are verified before execution.
 
 Bootstrap admission uses the existing authored case deadline, including cold
-snapshot provisioning, with the fixture’s existing 42-second installation and
-teardown reserve subtracted before admission. It does not impose a separate
+snapshot provisioning, with a 64-second minimum setup reserve subtracted before
+admission: 10 seconds for lease revalidation, 12 for the runtime-ready RPC,
+27 for installation, and 15 for teardown. A lease discovered later is not admitted
+with only installation/teardown time left. This does not impose a separate
 20-second lease deadline or extend the case budget.
+After lease admission, a read-only probe waits for the exact pinned runner
+process and runtime directory before installing the observer once. This uses
+the remaining case budget while preserving 27 seconds for installation and
+15 seconds for teardown. Installation and the first observation recheck the
+same process and directory identities before releasing the task instructions.
+Startup evidence retains only closed RPC phase/error codes; detached observer
+stderr is not collected, and a failed installation is not retried.
 Every poll rechecks task/run ownership and run status, and requires exactly one
 unambiguous active lease for that run and task. A stopped run fails as soon as its read completes, even if another endpoint
 fails or remains pending. At most three reads are outstanding, each with a
@@ -1393,3 +1406,65 @@ lease history. Each turn has a 120-second limit; each three-run cell has a
 420-second budget and must be reserved accordingly. Existing Codex warm cells
 remain separate. All these suites are excluded from `--all`, never automatically
 retry, and remain pending qualification until their paid evidence passes.
+
+Denial ordering uses canonical request, decline-resolution, delivery, failed-edit
+and terminal source sequences. Sample checkpoints retain the exact run/turn/source
+cursor. File samples and continuous-watch coverage compare only observer-local
+times. Provider emission, browser click and database transaction clocks are never
+compared to each other. Final remote samples use the sealed, independently verified
+process-retirement receipt; their timestamps are not relabeled as host time.
+This denial case does not qualify Stop during a definitely pending native request.
+That active-turn cancellation boundary needs a separate live case. The attached
+async-command oracle is unchanged by this denial-only correction.
+
+Copilot denial settlement v3 (suite definition v5) requires a retained pre-Stop API
+observation. The fixture awaits that artifact write before dispatching Stop and
+matches exact source identities and row hashes against final evidence. It waits
+at most 2s for natural settlement within the existing deadline. Normal completion
+first observed afterward cannot pass. A row's createdAt is transaction-start time,
+not proof of commit order. Older failed artifacts lack this observation and cannot
+establish a completed-before-Stop causal boundary; they remain failed.
+
+The Copilot denial Stop cell requires the controller run to remain `running`
+until its Stop request. A provider `turn.completed` can satisfy its completed
+branch while that controller run remains active. An already `succeeded` or
+`cancelled` controller run cannot satisfy this Stop-specific cell. Such a result
+is not evidence that the provider bypassed denial; natural completion without
+an active controller Stop needs separate coverage.
+
+Suite version 5 binds a fresh `cancellationRequestId` UUID in the retained
+pre-Stop observation to the public cancel request and its exact durable native
+intent. It rejects prior startup/Stop markers before dispatch and a competing
+request that wins after the last read. The server atomically reserves the caller
+identity; the fixture does not infer ownership from timestamps or HTTP success.
+
+## Stop during an unanswered native permission (explicit only)
+
+`--suite native-active-stop --task pending-permission-stop` selects Cursor and
+Copilot on local or Daytona, one run per cell. These four cells are excluded
+from `--all`. They use `approve-reads`, per-turn lifecycle and Cursor Agent mode;
+provider timeout is 120s and the attempt budget is 300s. The fixture asks for one
+exact native write, observes its unanswered permission card, then sends the
+public Stop request with a freshly retained caller UUID. It never denies or
+approves that callback before Stop.
+
+Passage requires a canonical cancelled request and cancelled provider turn,
+exact caller-intent acknowledgement, an unfinished task, rejection of a later
+stale answer, no follow-up run, continuous target no-effect observation and
+owned process retirement. Normal completion and interrupted/failed turns do
+not qualify this case. Native permission cards use runtime requests; ordinary
+issue-interaction rows are not substituted for their authority. Pending and final
+screenshots, `native-active-stop-pending.json`, `native-active-stop-settlement.json`
+and cleanup evidence retain the boundaries. Daytona also requires the exact
+owned lease and sealed remote observer proof before sandbox deletion. Suite
+version 2 records remote filesystem coverage only through verified retirement
+of the owned runner/provider tree, with no target or workspace mutations; it
+does not call a later read of the seal a fresh observation. Local cases retain
+four filesystem phases through cleanup. Remote UI/stale-answer checks and final
+API checks are separate from this lifetime-bound filesystem proof.
+
+This suite adds an active-work cancellation oracle; it does not reinterpret
+older denial or cancellation results. Current live qualification is pending.
+Provider death during a pending callback remains a separate uncovered case:
+the existing chat worker-crash hook targets a runner worker and cannot establish
+safe ownership of the native provider process in both environments.
