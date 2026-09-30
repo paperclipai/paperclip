@@ -8,6 +8,8 @@ import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@p
 import { artifactReviewDocumentKey } from "@paperclipai/shared";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
 import { ApiError } from "@/api/client";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
 
 const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(async (): Promise<unknown[]> => []),
@@ -159,6 +161,7 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
 describe("markdown work product review row", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  const openText = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -193,7 +196,9 @@ describe("markdown work product review row", () => {
     await act(async () =>
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
-          <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          <TextAttachmentContext.Provider value={openText}>
+            <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          </TextAttachmentContext.Provider>
         </QueryClientProvider>,
       ),
     );
@@ -233,6 +238,40 @@ describe("markdown work product review row", () => {
     ).toBe("document-1");
     expect(container.querySelector('[data-testid="markdown-body"]')?.textContent).toContain("Rendered body");
     expect(mockIssuesApi.ensureWorkProductReviewDocument).not.toHaveBeenCalled();
+  });
+
+  it("opens the attachment in a tab without replacing its review controls", async () => {
+    mockUseIssueDocuments.mockReturnValue({ data: [makeReviewDocument({ latestRevisionNumber: 3 })] });
+    await renderTab();
+
+    expect(container.textContent).toContain("revision 3");
+    expect(container.querySelector(`[data-testid="annotation-count-${REVIEW_KEY}"]`)).not.toBeNull();
+    const open = container.querySelector('button[aria-label="Open in tab: Verification report"]') as HTMLButtonElement;
+    expect(open).not.toBeNull();
+    await act(async () => open.click());
+    expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
+    expect(expandButton().getAttribute("aria-expanded")).toBe("false");
+    await act(async () => expandButton().click());
+    expect(container.querySelector(`[data-testid="annotation-surface-${REVIEW_KEY}"]`)).not.toBeNull();
+  });
+
+  it.each(["compact", "card"] as const)("keeps %s text-card downloads separate from opening a tab", async (variant) => {
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <TextAttachmentContext.Provider value={openText}>
+        <RichWorkProductCard workProduct={makeMarkdownWorkProduct()} href={`/api/attachments/${ATTACHMENT_ID}/content`} variant={variant} />
+      </TextAttachmentContext.Provider>,
+    ));
+    const download = container.querySelector('a[aria-label="Download: Verification report"]') as HTMLAnchorElement;
+    expect(download.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content?download=1`);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => { download.dispatchEvent(click); });
+    expect(click.defaultPrevented).toBe(false);
+    expect(openText).not.toHaveBeenCalled();
+    const open = container.querySelector('button[aria-label="Open in tab: Verification report"]') as HTMLButtonElement;
+    expect(open).not.toBeNull();
+    await act(async () => open.click());
+    expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
   });
 
   it("materializes the document on first expand", async () => {
@@ -326,6 +365,10 @@ describe("markdown work product review row", () => {
       (anchor) => anchor.getAttribute("download") === "loose-notes.md",
     );
     expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content?download=1");
+    const open = container.querySelector<HTMLButtonElement>('button[aria-label="Open in tab: loose-notes.md"]');
+    expect(open).not.toBeNull();
+    await act(async () => open!.click());
+    expect(openText).toHaveBeenCalledWith(loose.id, "loose-notes.md");
   });
 
   it("keeps non-markdown work products on the download row", async () => {

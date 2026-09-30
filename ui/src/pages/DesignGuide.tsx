@@ -8,6 +8,7 @@ import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWiz
 import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
+import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
 import { AnnouncementCard } from "@/components/AnnouncementCard";
 import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
@@ -2372,6 +2373,14 @@ export function DesignGuide() {
           <InlineBanner tone="info" compact>
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
+        </div>
+      </Section>
+
+      <Section title="Text attachment tabs">
+        <p className="text-sm text-muted-foreground">Uploaded text opens in a named task tab. Markdown offers Rendered and Raw icon controls; every text file has a download action.</p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextAttachmentPreview title="README.md" text={"# Project notes\n\nReview the **original** file."} markdown downloadUrl="data:text/markdown,%23%20Project%20notes" />
+          <TextAttachmentPreview title="notes.txt" text="Plain text stays literal: <example>" markdown={false} downloadUrl="data:text/plain,Plain%20text" />
         </div>
       </Section>
 

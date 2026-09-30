@@ -432,6 +432,7 @@ export interface DataCardProps extends ArtifactIdentity {
   rows: (string | number)[][];
   truncated?: boolean;
   downloadUrl?: string;
+  actions?: ReactNode;
 }
 function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
   return (
@@ -493,24 +494,27 @@ export function DataCard(props: DataCardProps) {
       <Footer
         {...props}
         action={
-          <Viewer
-            title={props.title}
-            description={props.filename}
-            action="View data"
-          >
-            <DataTable {...props} />
-            <Button asChild variant="outline" size="sm" className="w-fit">
-              <a
-                download={props.filename}
-                href={
-                  props.downloadUrl ||
-                  `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
-                }
-              >
-                Download CSV
-              </a>
-            </Button>
-          </Viewer>
+          <div className="flex flex-wrap items-center gap-2">
+            {props.actions}
+            <Viewer
+              title={props.title}
+              description={props.filename}
+              action="View data"
+            >
+              <DataTable {...props} />
+              <Button asChild variant="outline" size="sm" className="w-fit">
+                <a
+                  download={props.filename}
+                  href={
+                    props.downloadUrl ||
+                    `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
+                  }
+                >
+                  Download CSV
+                </a>
+              </Button>
+            </Viewer>
+          </div>
         }
       />
     </Card>

@@ -94,6 +94,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const highlightedIndexRef = useRef(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
+    const suppressNextTriggerFocusRef = useRef(false);
     const isPointerDownRef = useRef(false);
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
@@ -139,6 +140,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     return (
       <Popover
+        // Mobile sheets portal outside their parent dialog. Give the sheet its
+        // own scroll lock so the parent does not cancel touch drags in its list.
+        modal={mobileSelectorModal}
         open={open}
         onOpenChange={(next) => {
           if (disabled) return;
@@ -160,8 +164,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             onPointerDown={() => { isPointerDownRef.current = true; }}
             onFocus={() => {
               if (disabled) return;
-              if (openOnFocus && !isPointerDownRef.current) setOpen(true);
+              if (openOnFocus && !isPointerDownRef.current && !suppressNextTriggerFocusRef.current) setOpen(true);
               isPointerDownRef.current = false;
+              suppressNextTriggerFocusRef.current = false;
             }}
           >
             {renderTriggerValue
@@ -183,7 +188,15 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
-            if (!shouldPreventCloseAutoFocusRef.current) return;
+            if (!shouldPreventCloseAutoFocusRef.current) {
+              // Radix returns focus to the trigger on Escape/outside dismissal.
+              // That focus must not immediately reopen the picker.
+              suppressNextTriggerFocusRef.current = true;
+              // Non-modal outside dismissal may keep focus on the clicked
+              // element instead. Limit suppression to Radix's synchronous restore.
+              queueMicrotask(() => { suppressNextTriggerFocusRef.current = false; });
+              return;
+            }
             event.preventDefault();
             shouldPreventCloseAutoFocusRef.current = false;
           }}

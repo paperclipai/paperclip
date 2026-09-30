@@ -1228,7 +1228,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }, 120_000);
 
   it.each([
-    { caseName: "allows a non-assignee mention on completed work", targetAssignee: false, terminalStatus: "done", explicitResume: false },
     { caseName: "delivers explicit agent feedback after completion", targetAssignee: true, terminalStatus: "done", explicitResume: true },
     { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false },
     { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true },
@@ -1243,7 +1242,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const targetAgentId = targetAssignee ? assigneeAgentId : mentionedAgentId;
     const shouldReopen = targetAssignee && terminalStatus === "done" && explicitResume;
     const commentingAgentId = targetAssignee ? mentionedAgentId : assigneeAgentId;
-    const wakeReason = targetAssignee ? "issue_commented" : "issue_comment_mentioned";
+    const wakeReason = "issue_commented";
 
     try {
       await db.insert(companies).values({
@@ -3297,7 +3296,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 20_000);
 
-  it("defers mentioned-agent wakes while another agent is actively executing the same issue", async () => {
+  it("ignores mentions during another agent run without deferring work", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const primaryAgentId = randomUUID();
@@ -3417,46 +3416,19 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(mentionRun).toBeNull();
 
-      await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, mentionedAgentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        return Boolean(deferred);
-      });
-
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, mentionedAgentId))).toEqual([]);
       expect(gateway.getAgentPayloads()).toHaveLength(1);
-
       gateway.releaseFirstWait();
-
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, mentionedAgentId))
-          .orderBy(asc(heartbeatRuns.createdAt));
-        return runs.length === 1 && runs[0]?.status === "succeeded";
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, primaryAgentId));
+        // Terminal run status is persisted before comment policy and lock
+        // cleanup. Observe release before checking the final queue state.
+        const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded") && issue.executionRunId === null;
       }, 90_000);
-      expect(gateway.getAgentPayloads().length).toBeGreaterThanOrEqual(2);
-
-      const mentionedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, mentionedAgentId))
-        .orderBy(asc(heartbeatRuns.createdAt));
-
-      expect(mentionedRuns).toHaveLength(1);
-      expect(mentionedRuns[0]?.contextSnapshot).toMatchObject({
-        issueId,
-        wakeReason: "issue_comment_mentioned",
-      });
+      const mentionedRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, mentionedAgentId));
+      expect(mentionedRuns).toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, mentionedAgentId))).toEqual([]);
 
       const issueAfterMention = await db
         .select({
@@ -3469,7 +3441,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(issueAfterMention?.assigneeAgentId).toBe(primaryAgentId);
-      expect(issueAfterMention?.executionRunId).not.toBe(mentionedRuns[0]?.id);
+      expect(issueAfterMention?.executionRunId).toBeNull();
       expect(issueAfterMention?.executionAgentNameKey).not.toBe(
         "mentioned agent",
       );
@@ -3504,7 +3476,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not mark a direct mentioned-agent run as the issue execution owner", async () => {
+  it("ignores direct legacy mention wakes without creating a request or executing an adapter", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const primaryAgentId = randomUUID();
@@ -3605,8 +3577,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         requestedByActorId: "user-1",
       });
 
-      expect(mentionRun).not.toBeNull();
-      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      expect(mentionRun).toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, mentionedAgentId))).toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, mentionedAgentId))).toEqual([]);
+      expect(gateway.getAgentPayloads()).toEqual([]);
 
       const issueDuringMention = await db
         .select({
@@ -3624,31 +3598,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         executionAgentNameKey: null,
       });
 
-      gateway.releaseFirstWait();
-      await waitFor(async () => {
-        const run = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, mentionRun!.id))
-          .then((rows) => rows[0] ?? null);
-        return run?.status === "succeeded";
-      }, 90_000);
-
-      const issueAfterMention = await db
-        .select({
-          assigneeAgentId: issues.assigneeAgentId,
-          executionRunId: issues.executionRunId,
-          executionAgentNameKey: issues.executionAgentNameKey,
-        })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
-
-      expect(issueAfterMention).toMatchObject({
-        assigneeAgentId: primaryAgentId,
-        executionRunId: null,
-        executionAgentNameKey: null,
-      });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

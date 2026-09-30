@@ -542,6 +542,12 @@ V1 non-terminal liveness rule:
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
+For native ordinary tasks, answering a Board comment does not authorize an
+indefinite response wait when the structured result reports blocking remaining
+work. Without a recorded wait condition, reject the finish report or use the
+bounded incomplete-work recovery path. Preserve real governance and pause gates,
+conversation lifecycles, and protection against replaying superseded requests.
+
 ## 8.3 Approval Status
 
 - `pending -> approved | rejected | cancelled`
@@ -621,6 +627,11 @@ server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
+
+Agent @-mentions are context links only: they do not wake the mentioned agent,
+assign work, or forward comments to another task. Normal comment feedback still
+routes to the current assignee. Work for another agent requires explicit
+assignment, delegation, or a review request.
 
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
@@ -1723,21 +1734,10 @@ dismissal retries after withdrawal while rejecting caller-invented IDs. It
 stores no announcement content, account data or interaction events.
 See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.
 
-### Personal keyboard shortcut preference
+### Keyboard shortcuts
 
-Keyboard shortcuts are off by default and are enabled in Settings → Profile.
-The preference is stored on the signed-in user, applies across companies and
-devices, and does not require instance administrator access. The local trusted
-board user has the same preference. `GET /api/auth/preferences` returns only the
-current board user's preference. `PATCH /api/auth/preferences` updates only that
-user and requires an accessible `companyId` for the activity log, including viewer
-memberships. The preference and audit record commit in one transaction. Both
-requests require `expectedUserId` (GET query parameter or PATCH body) matching
-the authenticated actor, so a cookie change cannot mix accounts in the cache.
-Agents cannot
-read or change these preferences. The legacy instance general setting is retained
-for API compatibility but no longer controls shortcut behavior in the app;
-users opt in individually after the upgrade.
+Keyboard shortcuts are always enabled for every signed-in user. There is no
+instance setting and no personal preference that turns them off.
 
 ### Persistent managed agent files (2026-09-28)
 

@@ -73,6 +73,8 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
   WorkspaceFileBrowser: () => <div>Files browser</div>,
 }));
 
+vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
+
 vi.mock("./TaskDocumentPanel", () => ({
   TaskDocumentPanel: ({ documentKey }: { documentKey: string }) => <div>{`Document ${documentKey}`}</div>,
 }));
@@ -157,6 +159,28 @@ describe("TaskSidePanel", () => {
       />
     );
   }
+
+  it("opens, deduplicates, switches and closes text attachment tabs", async () => {
+    const onAttachmentOpened = vi.fn();
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 1 }, onAttachmentOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    expect(container.textContent).toContain("Text file file-1");
+    expect(onAttachmentOpened).toHaveBeenCalledOnce();
+    await render(panel({ openAttachment: { id: "file-2", title: "summary.txt", requestId: 2 } }));
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 3 } }));
+    expect(container.querySelectorAll('[data-side-panel-tab-target="attachment:file-1"]')).toHaveLength(1);
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close AGENTS.md"]')?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="attachment:file-1"]')).toBeNull();
+  });
+
+  it("lets an attachment request take focus from a workspace-file route", async () => {
+    routeFixture.location.search = "?file=README.md&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
+    expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
+  });
 
   it("opens Properties on first visit", async () => {
     await render(panel());

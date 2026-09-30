@@ -457,6 +457,36 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.exportId).toBeNull();
   });
 
+  it("keeps a stored sharing preference when the settings row still carries retired keys", async () => {
+    const { issueId, commentId } = await seedIssueWithAgentComment();
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: { feedbackDataSharingPreference: "not_allowed", keyboardShortcuts: true },
+      experimental: {},
+    });
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    expect(result.persistedSharingPreference).toBeNull();
+
+    const settings = await db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "default"))
+      .then((rows) => rows[0] ?? null);
+
+    expect(settings?.general).toMatchObject({
+      feedbackDataSharingPreference: "not_allowed",
+    });
+  });
+
   it("enables sharing metadata on the first consented vote and upserts subsequent votes", async () => {
     const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
 

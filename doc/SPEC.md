@@ -47,6 +47,11 @@ The Board has **unrestricted access** to the entire system at all times:
 
 The Board is not just an approval gate — it's a live control surface. The human can intervene at any level at any time.
 
+A Board status inquiry does not itself pause unfinished task execution. Native
+ordinary tasks that report blocking remaining work must continue, register a
+real wait, or surface a bounded recovery failure. Recorded approvals, questions,
+dependencies, and pauses remain authoritative; obsolete requests must not replay.
+
 #### Budget Delegation
 
 The Board sets Company-level budgets. The CEO can set budgets for Agents below them, and every manager Agent can do the same for their reports. How this cascading budget delegation works in practice is TBD, but the permission structure supports it. The Board can manually override any budget at any level.
@@ -415,6 +420,8 @@ Tasks use **single assignment** (one agent per task) with **atomic checkout**:
 
 No optimistic locking or CRDTs needed. The single-assignment model + atomic checkout prevents conflicts at the design level.
 
+Agent @-mentions provide context without waking agents or changing task ownership. New work requires explicit assignment, delegation, or a review request; ordinary issue comments can still wake the current assignee.
+
 Releasing a terminal task clears execution locks while preserving its assigned
 owner and final status. Assignment remains part of the work history after Done
 or Cancelled. Releasing unfinished work still relinquishes the agent assignment;
@@ -610,21 +617,10 @@ title matches lead; current conversation and document content supplies supportin
 evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
 matching contract and reproducible quality tests.
 
-### Personal keyboard shortcut preference
+### Keyboard shortcuts
 
-Keyboard shortcuts are off by default and are enabled in Settings → Profile.
-The preference is stored on the signed-in user, applies across companies and
-devices, and does not require instance administrator access. The local trusted
-board user has the same preference. `GET /api/auth/preferences` returns only the
-current board user's preference. `PATCH /api/auth/preferences` updates only that
-user and requires an accessible `companyId` for the activity log, including viewer
-memberships. The preference and audit record commit in one transaction. Both
-requests require `expectedUserId` (GET query parameter or PATCH body) matching
-the authenticated actor, so a cookie change cannot mix accounts in the cache.
-Agents cannot
-read or change these preferences. The legacy instance general setting is retained
-for API compatibility but no longer controls shortcut behavior in the app;
-users opt in individually after the upgrade.
+Keyboard shortcuts are always enabled for every signed-in user. There is no
+instance setting and no personal preference that turns them off.
 
 Managed agents own a persistent file directory across tasks and sessions. The
 Instructions Editor and stopped agent execution synchronize the same current

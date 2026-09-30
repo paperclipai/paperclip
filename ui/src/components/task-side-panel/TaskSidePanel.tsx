@@ -1,3 +1,5 @@
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import {
   useCallback,
   useEffect,
@@ -62,6 +64,7 @@ import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelArtifactsTab,
+  taskPanelAttachmentTab,
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
@@ -101,6 +104,8 @@ export interface TaskSidePanelProps {
   showSubtasksTab?: boolean;
   /** Optional related-work projection; the host still owns tab layout and state. */
   tasksTab?: { count: number; content: ReactNode; hasError?: boolean };
+  onAttachmentOpened?: () => void;
+  openAttachment?: { id: string; title: string; requestId: number } | null;
   openSkillId?: string | null;
   openSkillName?: string | null;
   onSkillOpened?: (skillId: string) => void;
@@ -113,6 +118,7 @@ function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
     case "properties": return <SlidersHorizontal />;
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
+    case "attachment": return <FileText />;
     case "files-browser": return <FolderOpen />;
     case "workspace-file": return <FileCode2 />;
     case "issue-document": return tab.payload.documentKey === "plan" ? <Lightbulb /> : <FileText />;
@@ -236,6 +242,8 @@ export function TaskSidePanel({
   streamlinedTabs = false,
   showSubtasksTab = false,
   tasksTab,
+  openAttachment,
+  onAttachmentOpened,
   openSkillId,
   openSkillName,
   onSkillOpened,
@@ -398,6 +406,15 @@ export function TaskSidePanel({
     controller.openTab(taskPanelArtifactsTab(), false);
     onArtifactsOpened?.(artifactsOpenRequestId);
   }, [artifactsOpenRequestId, controller.openTab, onArtifactsOpened]);
+
+  useEffect(() => {
+    if (!openAttachment) return;
+    userInteractedRef.current = true;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelAttachmentTab(openAttachment.id, openAttachment.title));
+    if (viewer.state || viewer.browse) viewer.close();
+    onAttachmentOpened?.();
+  }, [controller.openTab, openAttachment, onAttachmentOpened]);
 
   const recentFilesQuery = useQuery({
     queryKey: queryKeys.issues.fileResources(issue.id, {
@@ -656,7 +673,11 @@ export function TaskSidePanel({
       />
     );
   } else if (activeTab.payload.kind === "artifacts") {
-    content = <IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} />;
+    content = <TextAttachmentContext.Provider value={(id, title) => {
+      markInteracted();
+      controller.openTab(taskPanelAttachmentTab(id, title));
+      if (viewer.state || viewer.browse) viewer.close();
+    }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
     content = activeTab.payload.documentKey === "plan" ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />
@@ -667,6 +688,8 @@ export function TaskSidePanel({
         initialDocument={documentByKey.get(activeTab.payload.documentKey)}
       />
     );
+  } else if (activeTab.payload.kind === "attachment") {
+    content = <TaskAttachmentPanel key={activeTab.payload.attachmentId} issueId={issue.id} attachmentId={activeTab.payload.attachmentId} />;
   } else if (activeTab.payload.kind === "skill") {
     content = <TaskSkillPanel companyId={issue.companyId} skillId={activeTab.payload.skillId} />;
   } else if (activeTab.payload.kind === "files-browser") {

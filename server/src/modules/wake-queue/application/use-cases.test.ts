@@ -189,6 +189,23 @@ describe("releaseIssueExecution", () => {
     },
   );
 
+  it("preserves an accepted assignment when a legacy mention was coalesced last", async () => {
+    const assignedIssue = { ...ISSUE, assigneeAgentId: AGENT.id };
+    const queue = [wakeCandidate({
+      source: "assignment", reason: "issue_execution_deferred", wakeReason: "issue_comment_mentioned",
+      deferredContextSeed: { issueId: ISSUE.id, wakeReason: "issue_comment_mentioned", source: "comment.mention" },
+    })];
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => queue.shift() ?? null) });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, assignedIssue), recovery: createFakeRecovery(),
+    });
+    expect((await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() })).outcome.kind).toBe("promoted");
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledWith(expect.objectContaining({
+      source: "assignment", deferredAgent: expect.objectContaining({ id: AGENT.id }),
+    }));
+  });
+
   it("preserves the former owner's queue for handoff adoption while draining the new owner's wake", async () => {
     const stale = wakeCandidate({ agentId: RUN.agentId, queuedCommentIds: ["saved-user-direction"] });
     const current = wakeCandidate({ id: "wake-new-owner", agentId: "new-agent" });

@@ -326,6 +326,7 @@ import {
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
@@ -4566,9 +4567,6 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
-  onUnavailableAssignedConnections?: (
-    connections: Array<{ id: string; name: string }>,
-  ) => void | Promise<void>;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveProfilesForAgent(
@@ -4641,38 +4639,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ((Boolean(runIdentity?.activeIdentityContextId) &&
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github")) ||
+        connection.credentialPolicy === "per_user" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       (connection.transport === "mcp_remote" ||
         connection.transport === "local_stdio" || githubBotConnectionIds.has(connection.id)),
   );
-  const unhealthyConnections = resolvedInstalledConnections.filter(
-    (connection) =>
-      permittedConnectionIds.has(connection.id) &&
-      (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio") &&
-      (!connection.enabled ||
-        connection.status !== "active" ||
-        isToolConnectionAttentionHealth(connection.healthStatus)),
-  );
-  if (unhealthyConnections.length && input.onUnavailableAssignedConnections) {
-    try {
-      await input.onUnavailableAssignedConnections(
-        unhealthyConnections
-          .map(({ id, name }) => ({ id, name }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      );
-    } catch (error) {
-      logger.warn(
-        {
-          companyId: input.agent.companyId,
-          agentId: input.agent.id,
-          runId: input.runId,
-          err: error,
-        },
-        "failed to report unavailable runtime MCP connections",
-      );
-    }
-  }
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
   );
@@ -12784,12 +12755,13 @@ export function heartbeatService(
   function emitTerminalAgentTaskRun(
     updated: typeof heartbeatRuns.$inferSelect,
     previousStatus: string | null,
+    failureReport?: RunFailureReportOptions,
   ) {
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
     void emitAgentTaskRun(db, updated);
-    void reportRunFailure(db, updated);
+    void reportRunFailure(db, updated, failureReport);
   }
 
   async function setRunStatus(
@@ -12863,8 +12835,9 @@ export function heartbeatService(
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    failureReport?: RunFailureReportOptions,
   ) {
-    return setRunStatusFromLive(runId, status, ["running"], patch);
+    return setRunStatusFromLive(runId, status, ["running"], patch, failureReport);
   }
 
   // Move a run to a new status only when its current status is one of
@@ -12877,6 +12850,7 @@ export function heartbeatService(
     status: string,
     fromStatuses: string[],
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    failureReport?: RunFailureReportOptions,
   ) {
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
@@ -12946,7 +12920,7 @@ export function heartbeatService(
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
-      emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null, failureReport);
       return { run: updated, updated: true as const };
     }
 
@@ -20268,6 +20242,7 @@ export function heartbeatService(
       ReturnType<typeof traceStore.prepare>
     > | null = null;
     let providerTraceFinalized = false;
+    let readFailureReportSecrets: () => string[] = () => [];
 
     try {
       const agent = await getAgent(run.agentId);
@@ -21444,6 +21419,7 @@ export function heartbeatService(
           secretsSvc,
           trustPreset,
         });
+      readFailureReportSecrets = () => collectRunFailureSecretValues(resolvedConfig.env, secretKeys);
       if (aiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
@@ -21534,6 +21510,11 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
+      const resolvedFailureSecrets = readFailureReportSecrets();
+      readFailureReportSecrets = () => [
+        ...resolvedFailureSecrets,
+        ...collectRunFailureSecretValues(runtimeConfig.env, secretKeys),
+      ];
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,
@@ -24331,15 +24312,6 @@ export function heartbeatService(
               agent,
               runId: run.id,
               expectedAssignmentDigest: expectedNativeMcpDigest,
-              onUnavailableAssignedConnections: async (connections) => {
-                const names = connections
-                  .map((connection) => connection.name)
-                  .join(", ");
-                await onLog(
-                  "stderr",
-                  `[paperclip] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
-                );
-              },
             });
             if ("runtimeContext" in nativeExecution) {
               if (nativeMcpServers.length > 1)
@@ -25230,6 +25202,7 @@ export function heartbeatService(
           run.id,
           status,
           finalRunPatch,
+          { adapterErrorMeta: adapterResult.errorMeta, secretValues: readFailureReportSecrets() },
         );
         let persistedRun: typeof heartbeatRuns.$inferSelect | null =
           persistedRunWrite.run;
@@ -25869,7 +25842,7 @@ export function heartbeatService(
           logBytes: logSummary?.bytes,
           logSha256: logSummary?.sha256,
           logCompressed: logSummary?.compressed ?? false,
-        });
+        }, { error: err, phase: "execute", secretValues: readFailureReportSecrets() });
         if (
           !failedRunWrite.updated &&
           !(
@@ -26123,7 +26096,7 @@ export function heartbeatService(
             : setupFailureResultJson
               ? { resultJson: setupFailureResultJson }
               : {}),
-        }).catch(() => ({ run: null, updated: false as const }));
+        }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }).catch(() => ({ run: null, updated: false as const }));
         if (!setupFailureWrite.updated) {
           logger.info(
             {
@@ -26539,6 +26512,9 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    // Mentions only annotate comments. Ignore legacy callers before creating
+    // a run or deferred request; assignment and review have their own wakes.
+    if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
@@ -29290,7 +29266,12 @@ export function heartbeatService(
           }
 
           if (control) {
-            await waitForAdapterStop(control.settled);
+            await waitForAdapterStop(control.settled, undefined, {
+              runId: run.id,
+              adapterType: agent?.adapterType,
+              runtimeMode: run.runtimeMode,
+              abortRequested: control.controller.signal.aborted,
+            });
             const stopped = await getRun(run.id);
             if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
               if (
