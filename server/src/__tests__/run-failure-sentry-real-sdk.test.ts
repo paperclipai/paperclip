@@ -129,7 +129,11 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       code: "ECONNRESET", requestId: "request-123", status: 503,
       stack: "Error: upstream connection reset\n    at socketRead (/app/provider.js:19:7)",
       response: { body: "private-response" },
-    }) }), { stack: "Error: first run failed\n    at originalAdapter (/app/adapter.js:42:7)", request: { headers: "private-headers" } });
+    }) }), { stack: "Error: first run failed\n    at originalAdapter (/app/adapter.js:42:7)", request: { headers: "private-headers" },
+      code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT", workspaceRestoreLock: {
+        operation: "agent_directory_release", ownerState: "alive", ownerSameProcess: true, ownerPredatesProcess: true,
+        knownLocalHolder: false, ownerAgeMs: 120_000, waitMs: 30_001, path: "/private-lock-path",
+      } });
     const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({
       runtimeMode: "legacy", resultJson: { terminalSessionFailure: {
         category: "service", title: "Provider failed", details: "d".repeat(9000),
@@ -175,6 +179,9 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     expect(JSON.stringify(exceptions)).not.toContain("captureRunFailure");
     expect(JSON.stringify(captured(second.errorMessage)?.exception)).not.toContain("captureRunFailure");
     expect(firstCapture).toMatchObject({ contexts: {
+      run_execution: { restoreLockOperation: "agent_directory_release", restoreLockOwnerState: "alive", restoreLockOwnerSameProcess: true,
+        restoreLockOwnerPredatesProcess: true, restoreLockKnownLocalHolder: false,
+        restoreLockOwnerAgeMs: 120_000, restoreLockWaitMs: 30_001 },
       provider_failure: { category: "service", details: "d".repeat(9000) },
       run_exception_1: { code: "ECONNRESET", requestId: "request-123", status: 503 },
     } });
