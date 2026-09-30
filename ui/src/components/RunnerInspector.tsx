@@ -359,18 +359,6 @@ function buildOperations(
   return operations.sort((left, right) => left.timestamp - right.timestamp);
 }
 
-async function loadAllRunEvents(runId: string) {
-  const events: HeartbeatRunEvent[] = [];
-  let afterSeq = 0;
-  for (;;) {
-    const page = await heartbeatsApi.events(runId, afterSeq, 1_000);
-    events.push(...page);
-    if (page.length < 1_000) return events;
-    const nextSeq = page.at(-1)?.seq ?? afterSeq;
-    if (nextSeq <= afterSeq) return events;
-    afterSeq = nextSeq;
-  }
-}
 
 function jsonMatches(value: unknown, query: string): boolean {
   if (!query) return true;
@@ -656,6 +644,8 @@ export function RunnerInspector({
 }) {
   const [inspection, setInspection] = useState<ProviderTraceInspection | null>(null);
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [loadingEventPage, setLoadingEventPage] = useState(false);
+  const [viewingOlderEvents, setViewingOlderEvents] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<InspectorView>("pipeline");
@@ -671,6 +661,7 @@ export function RunnerInspector({
   const [rawTraceAccess, setRawTraceAccess] = useState<RawTraceAccess | null>(null);
   const rawTraceAccessRef = useRef<RawTraceAccess | null>(null);
   const rawTraceAccessEpochRef = useRef(0);
+  const isLiveRun = run?.status === "queued" || run?.status === "running";
   const canInspectRaw =
     open && rawTraceAccess?.runId === runId ? rawTraceAccess.allowed : null;
 
@@ -680,6 +671,8 @@ export function RunnerInspector({
     setRawTraceAccess(null);
     setInspection(null);
     setEvents([]);
+    setLoadingEventPage(false);
+    setViewingOlderEvents(false);
     setLoading(open);
     setError(null);
     setSelectedKey(null);
@@ -727,7 +720,7 @@ export function RunnerInspector({
     const loadEpoch = rawTraceAccessEpochRef.current;
     setLoading(true);
     setError(null);
-    Promise.all([accessApi.getCurrentBoardAccess(), loadAllRunEvents(runId)])
+    Promise.all([accessApi.getCurrentBoardAccess(), heartbeatsApi.events(runId, "tail", 1_000)])
       .then(async ([boardAccess, nextEvents]) => {
         if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
         const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
@@ -768,6 +761,40 @@ export function RunnerInspector({
       active = false;
     };
   }, [open, runId]);
+
+  const loadEventPage = useCallback(async (direction: "older" | "newer" | "latest") => {
+    if (loadingEventPage) return;
+    const epoch = rawTraceAccessEpochRef.current;
+    setLoadingEventPage(true);
+    setError(null);
+    try {
+      const page = await heartbeatsApi.events(
+        runId,
+        direction === "newer" ? events.at(-1)?.seq ?? 0 : "tail",
+        1_000,
+        direction === "older" ? { beforeSeq: events[0]?.seq } : undefined,
+      );
+      if (rawTraceAccessEpochRef.current !== epoch) return;
+      // Replace the window: browsing old history must not build an unbounded cache.
+      if (page.length > 0 || direction === "latest") {
+        setEvents(page);
+        setViewingOlderEvents(
+          direction === "older"
+            ? true
+            : direction === "latest"
+              ? false
+              : page.at(-1)?.historyAfter !== false,
+        );
+        setSelectedKey(null);
+      }
+    } catch (cause) {
+      if (rawTraceAccessEpochRef.current === epoch) {
+        setError(cause instanceof Error ? cause.message : "Run events could not be loaded");
+      }
+    } finally {
+      if (rawTraceAccessEpochRef.current === epoch) setLoadingEventPage(false);
+    }
+  }, [events, loadingEventPage, runId]);
 
   useEffect(() => {
     if (!open) return;
@@ -1000,6 +1027,8 @@ export function RunnerInspector({
       setRawTraceAccess(null);
       setInspection(null);
       setEvents([]);
+    setLoadingEventPage(false);
+    setViewingOlderEvents(false);
       setSelectedKey(null);
       setSelectedFrameId(null);
       setRevealed({});
@@ -1129,6 +1158,16 @@ export function RunnerInspector({
 
           {view === "pipeline" ? (
             <>
+              <div className="flex items-center gap-2 border-b border-border p-2">
+                <span className="mr-auto text-xs text-muted-foreground">
+                  {viewingOlderEvents ? "Earlier activity" : "Recent activity"} · {events.length.toLocaleString()} events
+                </span>
+                <Button size="sm" variant="outline" disabled={loadingEventPage || !(events[0]?.historyBefore ?? viewingOlderEvents)} onClick={() => void loadEventPage("older")}>Older events</Button>
+                {viewingOlderEvents ? <>
+                  <Button size="sm" variant="outline" disabled={loadingEventPage || events.at(-1)?.historyAfter === false} onClick={() => void loadEventPage("newer")}>Newer events</Button>
+                </> : null}
+                {viewingOlderEvents || isLiveRun ? <Button size="sm" variant="outline" disabled={loadingEventPage} onClick={() => void loadEventPage("latest")}>Latest events</Button> : null}
+              </div>
               <div className="grid gap-2 border-b border-border p-3 sm:grid-cols-2 xl:grid-cols-(--gtc-runner-inspector-filters)">
                 <div className="relative"><Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search operations, fields, and events" /></div>
                 <Select value={direction} onValueChange={setDirection}><SelectTrigger><SelectValue placeholder="Direction" /></SelectTrigger><SelectContent><SelectItem value="all">All directions</SelectItem><SelectItem value="client_to_provider">Client → provider</SelectItem><SelectItem value="provider_to_client">Provider → client</SelectItem><SelectItem value="provider_stderr">Provider stderr</SelectItem></SelectContent></Select>

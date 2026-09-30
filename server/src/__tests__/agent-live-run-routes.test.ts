@@ -17,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  listEventPage: vi.fn(),
+  listTranscriptContext: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -38,9 +40,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
   redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
-  redactForRun: vi.fn(
-    async (_companyId: string, _runId: string, value: unknown) => value,
-  ),
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
 }));
 
 const mockProviderTraceStore = vi.hoisted(() => ({
@@ -372,6 +372,14 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       status: "succeeded",
     });
+    mockHeartbeatService.listEventPage.mockResolvedValue({
+      events: [],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+      direction: "forward",
+      limit: 200,
+    });
+    mockHeartbeatService.listTranscriptContext.mockResolvedValue([]);
     mockWorkspaceOperationService.getById.mockResolvedValue({
       id: "operation-1",
       companyId: "company-1",
@@ -392,6 +400,126 @@ describe("agent live run routes", () => {
       skipped: 0,
       skipReasons: [],
     });
+  });
+
+  it("supports bounded tail and older heartbeat event pages while preserving redaction", async () => {
+    const app = await createApp();
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const event = (seq: number) => ({
+      id: seq,
+      companyId: "company-1",
+      runId,
+      agentId: "agent-1",
+      seq,
+      eventType: "stdout",
+      stream: "stdout" as const,
+      level: null,
+      color: null,
+      message: `event ${seq}`,
+      payload: { token: "secret" },
+      createdAt: new Date("2026-04-10T09:30:00.000Z"),
+    });
+    mockHeartbeatService.listEventPage.mockResolvedValueOnce({
+      events: [event(9), event(10)],
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      direction: "tail",
+      limit: 2,
+    });
+    const tail = await requestApp(app, (url) =>
+      request(url).get(`/api/heartbeat-runs/${runId}/events?afterSeq=tail&limit=2`),
+    );
+    expect(tail.status, JSON.stringify(tail.body)).toBe(200);
+    expect(mockHeartbeatService.listEventPage).toHaveBeenLastCalledWith(runId, {
+      afterSeq: "tail",
+      beforeSeq: undefined,
+      limit: 2,
+    });
+    expect(tail.body.map((row: { seq: number }) => row.seq)).toEqual([9, 10]);
+    expect(tail.body[0].historyBefore).toBe(true);
+    expect(tail.body[1].historyAfter).toBe(false);
+    expect(mockRunSecretRedactionRegistry.redactForRun).toHaveBeenCalledWith(
+      "company-1",
+      runId,
+      expect.arrayContaining([expect.objectContaining({ payload: { token: "***REDACTED***" } })]),
+    );
+
+    mockHeartbeatService.listEventPage.mockResolvedValueOnce({
+      events: [event(7), event(8)],
+      hasMoreBefore: true,
+      hasMoreAfter: true,
+      direction: "tail",
+      limit: 2,
+    });
+    const older = await requestApp(app, (url) =>
+      request(url).get(`/api/heartbeat-runs/${runId}/events?afterSeq=tail&beforeSeq=9&limit=2`),
+    );
+    expect(older.status, JSON.stringify(older.body)).toBe(200);
+    expect(mockHeartbeatService.listEventPage).toHaveBeenLastCalledWith(runId, {
+      afterSeq: "tail",
+      beforeSeq: 9,
+      limit: 2,
+    });
+    expect(older.body.map((row: { seq: number }) => row.seq)).toEqual([7, 8]);
+    expect(older.body[0].historyBefore).toBe(true);
+    expect(older.body[1].historyAfter).toBe(true);
+  });
+
+  it("keeps numeric forward event paging and rejects malformed cursors", async () => {
+    const app = await createApp();
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockHeartbeatService.listEventPage.mockResolvedValueOnce({
+      events: [{ seq: 11, eventType: "stdout" }],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+      direction: "forward",
+      limit: 200,
+    });
+    const forward = await requestApp(app, (url) =>
+      request(url).get(`/api/heartbeat-runs/${runId}/events?afterSeq=10`),
+    );
+    expect(forward.status).toBe(200);
+    expect(mockHeartbeatService.listEventPage).toHaveBeenLastCalledWith(runId, {
+      afterSeq: 10,
+      beforeSeq: undefined,
+      limit: 200,
+    });
+    expect(forward.body).toEqual([{ seq: 11, eventType: "stdout", payload: null, historyBefore: false, historyAfter: false }]);
+
+    for (const query of ["afterSeq=-1", "afterSeq=1.5", "afterSeq=tail&beforeSeq=-1", "limit=1001"]) {
+      const invalid = await requestApp(app, (url) =>
+        request(url).get(`/api/heartbeat-runs/${runId}/events?${query}`),
+      );
+      expect(invalid.status, query).toBe(400);
+    }
+  });
+
+  it("loads transcript context through run telemetry access and redaction", async () => {
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const context = [{
+      id: 44,
+      companyId: "company-1",
+      runId,
+      agentId: "agent-1",
+      seq: 44,
+      eventType: "runtime_request.created",
+      stream: "system" as const,
+      level: "info" as const,
+      color: null,
+      message: null,
+      payload: { prpEvent: { eventType: "runtime_request.created" } },
+      createdAt: new Date("2026-04-10T09:30:00.000Z"),
+    }];
+    mockHeartbeatService.listTranscriptContext.mockResolvedValue(context);
+    const app = await createApp();
+    const res = await requestApp(app, (url) =>
+      request(url).get(`/api/heartbeat-runs/${runId}/events?view=context`),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.listTranscriptContext).toHaveBeenCalledWith(runId, "company-1");
+    expect(mockHeartbeatService.listEventPage).not.toHaveBeenCalled();
+    expect(mockRunSecretRedactionRegistry.redactForRun).toHaveBeenCalledWith("company-1", runId, context);
+    expect(res.body).toMatchObject([{ seq: 44, eventType: "runtime_request.created" }]);
   });
 
   describe("heartbeat run ID validation", () => {
@@ -635,6 +763,7 @@ describe("agent live run routes", () => {
         "/api/companies/company-1/live-runs",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=context",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations",
         "/api/workspace-operations/operation-1/log",
@@ -647,6 +776,7 @@ describe("agent live run routes", () => {
       }
 
       expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.listTranscriptContext).not.toHaveBeenCalled();
       expect(mockWorkspaceOperationService.readLog).not.toHaveBeenCalled();
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "company_scope:read",

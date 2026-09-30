@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunnerInspector } from "./RunnerInspector";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const accessMock = vi.hoisted(() => vi.fn());
 const eventsMock = vi.hoisted(() => vi.fn());
@@ -109,6 +110,25 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function eventPage(sequences: number[], markers: Partial<Pick<HeartbeatRunEvent, "historyBefore" | "historyAfter">> = {}) {
+  return sequences.map((seq, index) => ({
+    id: seq,
+    companyId: "company-1",
+    runId: "run-1",
+    agentId: "agent-1",
+    seq,
+    eventType: `event-${seq}`,
+    stream: null,
+    level: null,
+    color: null,
+    message: null,
+    payload: null,
+    createdAt: new Date(`2026-08-22T12:00:0${index}.000Z`),
+    ...(index === 0 && markers.historyBefore !== undefined ? { historyBefore: markers.historyBefore } : {}),
+    ...(index === sequences.length - 1 && markers.historyAfter !== undefined ? { historyAfter: markers.historyAfter } : {}),
+  })) as HeartbeatRunEvent[];
+}
+
 describe("RunnerInspector", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -167,6 +187,122 @@ describe("RunnerInspector", () => {
     );
     flushSync(() => rerunButton?.click());
     expect(rerun).toHaveBeenCalledOnce();
+  });
+
+  it("replaces event pages while paging older, newer, and back to latest", async () => {
+    eventsMock
+      .mockResolvedValueOnce(eventPage([10, 11], { historyBefore: true, historyAfter: false }))
+      .mockResolvedValueOnce(eventPage([8, 9], { historyBefore: true, historyAfter: true }))
+      .mockResolvedValueOnce(eventPage([10, 11], { historyBefore: false, historyAfter: true }))
+      .mockResolvedValueOnce(eventPage([98, 99], { historyBefore: true, historyAfter: false }));
+    flushSync(() => root.render(
+      <RunnerInspector
+        runId="run-1"
+        run={{ status: "succeeded", resultJson: null }}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    ));
+    await flush();
+    expect(eventsMock).toHaveBeenNthCalledWith(1, "run-1", "tail", 1_000);
+    expect(container.textContent).toContain("Recent activity · 2 events");
+
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.trim() === label)!;
+    flushSync(() => button("Older events").click());
+    await flush();
+    expect(eventsMock).toHaveBeenNthCalledWith(2, "run-1", "tail", 1_000, { beforeSeq: 10 });
+    expect(container.textContent).toContain("Earlier activity · 2 events");
+
+    flushSync(() => button("Newer events").click());
+    await flush();
+    expect(eventsMock).toHaveBeenNthCalledWith(3, "run-1", 9, 1_000, undefined);
+    expect(container.textContent).toContain("Earlier activity · 2 events");
+
+    flushSync(() => button("Latest events").click());
+    await flush();
+    expect(eventsMock).toHaveBeenNthCalledWith(4, "run-1", "tail", 1_000, undefined);
+    expect(container.textContent).toContain("Recent activity · 2 events");
+  });
+
+  it("labels a newer page as recent when its history marker shows it reached the latest page", async () => {
+    const latestPage = eventPage([20, 21], { historyBefore: true, historyAfter: false });
+    expect(latestPage.at(-1)?.historyAfter).toBe(false);
+    eventsMock
+      .mockResolvedValueOnce(eventPage([20, 21], { historyBefore: true, historyAfter: false }))
+      .mockResolvedValueOnce(eventPage([18, 19], { historyBefore: true, historyAfter: true }))
+      .mockResolvedValueOnce(latestPage);
+    flushSync(() => root.render(
+      <RunnerInspector
+        runId="run-1"
+        run={{ status: "succeeded", resultJson: null }}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    ));
+    await flush();
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.trim() === label)!;
+    flushSync(() => button("Older events").click());
+    await flush();
+    expect(container.textContent).toContain("Earlier activity · 2 events");
+
+    flushSync(() => button("Newer events").click());
+    await flush();
+    expect(eventsMock).toHaveBeenNthCalledWith(3, "run-1", 19, 1_000, undefined);
+    expect(container.textContent).toContain("Recent activity · 2 events");
+    expect(Array.from(container.querySelectorAll("button")).some((item) => item.textContent?.trim() === "Latest events")).toBe(false);
+  });
+
+  it("keeps latest events refreshable while a live run is already at the latest page", async () => {
+    eventsMock
+      .mockResolvedValueOnce(eventPage([20, 21], { historyBefore: true, historyAfter: false }))
+      .mockResolvedValueOnce(eventPage([22, 23], { historyBefore: true, historyAfter: false }));
+    flushSync(() => root.render(
+      <RunnerInspector
+        runId="run-1"
+        run={{ status: "running", resultJson: null }}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    ));
+    await flush();
+
+    const latestButton = () => Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.trim() === "Latest events");
+    expect(latestButton()).toBeDefined();
+    expect(container.textContent).toContain("event-21");
+
+    flushSync(() => latestButton()?.click());
+    await flush();
+
+    expect(eventsMock).toHaveBeenNthCalledWith(2, "run-1", "tail", 1_000, undefined);
+    expect(container.textContent).toContain("event-23");
+  });
+
+  it("ignores an older-page response after switching runs", async () => {
+    const olderPage = deferred<HeartbeatRunEvent[]>();
+    eventsMock.mockImplementation((runId: string, _cursor: unknown, _limit: number, options?: { beforeSeq?: number }) => {
+      if (runId === "run-1" && options?.beforeSeq) return olderPage.promise;
+      return Promise.resolve(eventPage(runId === "run-1" ? [10, 11] : [90], { historyBefore: true, historyAfter: false }));
+    });
+    const renderInspector = (runId: string) => root.render(
+      <RunnerInspector
+        runId={runId}
+        run={{ status: "succeeded", resultJson: null }}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    flushSync(() => renderInspector("run-1"));
+    await flush();
+    const olderButton = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.trim() === "Older events")!;
+    flushSync(() => olderButton.click());
+    flushSync(() => renderInspector("run-2"));
+    await flush();
+    olderPage.resolve(eventPage([1, 2], { historyBefore: false, historyAfter: true }));
+    await flush();
+
+    expect(container.textContent).toContain("Recent activity · 1 events");
+    expect(container.textContent).not.toContain("Earlier activity");
+    expect(eventsMock).toHaveBeenCalledWith("run-2", "tail", 1_000);
   });
 
   it("shows redacted frames by default and warns before exact reveal", async () => {

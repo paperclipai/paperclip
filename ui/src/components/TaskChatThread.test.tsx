@@ -17,6 +17,7 @@ import type {
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import { resolveIssueChatTranscriptRuns } from "@/lib/issueChatTranscriptRuns";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -3493,6 +3494,87 @@ describe("TaskChatThread mobile composer dock (PAP-495)", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("keeps all live runs within the 20-run budget while preserving older comments and readiness", () => {
+    const linkedRuns = Array.from({ length: 26 }, (_, index) => ({
+      runId: `history-${index}`,
+      runtimeMode: "native" as const,
+      status: "succeeded",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: new Date(`2026-09-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`),
+      startedAt: new Date(`2026-09-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`),
+    }));
+    const liveRuns = ["live-a", "live-b"].map((id) => ({
+      id,
+      status: "running" as const,
+      invocationSource: "issue",
+      triggerDetail: null,
+      startedAt: "2026-09-29T12:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-09-29T12:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      runtimeMode: "native" as const,
+    }));
+    const activeRun = {
+      id: "active-run",
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-09-29T12:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-09-29T12:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      runtimeMode: "native" as const,
+    };
+    const retainedHistoryCount = 20 - liveRuns.length - 1;
+    const retainedIds = [
+      ...liveRuns.map((run) => run.id),
+      activeRun.id,
+      ...linkedRuns.slice(-retainedHistoryCount).map((run) => run.runId),
+    ];
+    nativeTranscriptState.hydratedRunIds = new Set(retainedIds);
+    const oldComment = {
+      id: "old-canonical-comment",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "agent" as const,
+      authorAgentId: "agent-1",
+      authorUserId: null,
+      body: "Older canonical answer remains visible.",
+      presentation: null,
+      metadata: null,
+      runId: linkedRuns[0].runId,
+      createdAt: new Date("2026-09-01T12:01:00.000Z"),
+      updatedAt: new Date("2026-09-01T12:01:00.000Z"),
+    };
+
+    const selected = resolveIssueChatTranscriptRuns({ linkedRuns, liveRuns, activeRun });
+    expect(selected.map((run) => run.id).sort()).toEqual(retainedIds.sort());
+
+    render(
+      <TaskChatThread
+        issueId="issue-1"
+        comments={[oldComment]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        linkedRuns={linkedRuns}
+        liveRuns={liveRuns}
+        activeRun={activeRun}
+      />,
+    );
+
+    const observedRuns = transcriptHookRuns.native.at(-1) as Array<{ id: string }>;
+    expect(observedRuns.map((run) => run.id).sort()).toEqual(retainedIds.sort());
+    expect(container.textContent).toContain("Older canonical answer remains visible.");
+    expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  });
+
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
     nativeTranscriptState.transcriptByRun.set("run-status", [
       {

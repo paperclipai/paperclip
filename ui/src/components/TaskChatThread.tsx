@@ -1,3 +1,4 @@
+import { resolveIssueChatTranscriptRuns } from "@/lib/issueChatTranscriptRuns";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
 import type { ActivityEvent, TaskBrowser } from "@paperclipai/shared";
@@ -61,6 +62,7 @@ import type {
   TaskChatRuntimeRequestDecision,
   TaskChatRuntimeRequestItem,
   TaskChatTurnItem,
+  TaskChatMarkerItem,
 } from "@/components/task-chat/task-chat-model";
 import {
   latestPendingRuntimeRequest,
@@ -245,6 +247,26 @@ export function shouldRepeatTaskChatBlockers(items: TaskChatItem[]): boolean {
       (item.kind === "message" && !item.interstitial),
   );
   return conversationItems.length >= LONG_THREAD_BLOCKER_REPEAT_COUNT;
+}
+
+const EMPTY_COLLAPSED_RUN_IDS: ReadonlySet<string> = new Set();
+
+function collapsedNativeHistoryMarker(
+  runId: string,
+  agentId: string | null | undefined,
+  agentUrlKey: string | undefined,
+): TaskChatMarkerItem {
+  return {
+    id: `${runId}:history-collapsed`,
+    kind: "marker",
+    variant: "turn_boundary",
+    tone: "neutral",
+    collapsible: true,
+    label: "Earlier activity",
+    detail: "Recent activity is shown here. Open run details to browse older activity.",
+    runId,
+    ...(agentId ? { runHref: `/agents/${encodeURIComponent(agentUrlKey ?? agentId)}/runs/${encodeURIComponent(runId)}` } : {}),
+  };
 }
 
 function isNativePaperclipRunnerRun(
@@ -879,9 +901,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
+  const transcriptRuns = useMemo(() => {
+    const selected = new Set(resolveIssueChatTranscriptRuns({ linkedRuns, liveRuns, activeRun }).map((run) => run.id));
+    return runs.filter((run) => selected.has(run.id));
+  }, [runs, linkedRuns, liveRuns, activeRun]);
+  const omittedTranscriptRunIds = useMemo(() => {
+    const selected = new Set(transcriptRuns.map((run) => run.id));
+    return new Set(runs.filter((run) => !selected.has(run.id)).map((run) => run.id));
+  }, [runs, transcriptRuns]);
   const nativeRuns = useMemo(
-    () => runs.filter((run) => run.runtimeMode === "native"),
-    [runs],
+    () => transcriptRuns.filter((run) => run.runtimeMode === "native"),
+    [transcriptRuns],
   );
   const {
     transcriptByRun: logTranscriptByRun,
@@ -893,7 +923,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Native events are authoritative, but the persisted/live log remains a
     // compatibility source when an upgraded server has no event history or
     // the native event endpoint is temporarily unavailable.
-    runs,
+    runs: transcriptRuns,
     companyId,
   });
   const {
@@ -901,6 +931,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     errorsByRun: nativeTranscriptErrorsByRun,
     isInitialHydrating: nativeEventsAreInitiallyHydrating,
     hydratedRunIds: hydratedNativeRunIds,
+    historyCollapsedRunIds: collapsedNativeHistoryRunIds = EMPTY_COLLAPSED_RUN_IDS,
     retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
   const fallbackByRunRef = useRef(
@@ -1469,6 +1500,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      if (omittedTranscriptRunIds.has(source.id) || (source.runtimeMode === "native" && collapsedNativeHistoryRunIds.has(source.id))) {
+        const id = `${source.id}:history-collapsed`;
+        entriesWithFailures.push({
+          ms: toMs(meta?.startedAt ?? meta?.createdAt ?? entries[0]?.ts),
+          order: 2,
+          id,
+          item: collapsedNativeHistoryMarker(
+            source.id,
+            meta?.agentId,
+            meta?.agentId ? agentMap?.get(meta.agentId)?.urlKey : undefined,
+          ),
+        });
+      }
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
       if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
@@ -2087,6 +2131,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     runs,
     liveRun,
     transcriptByRun,
+    collapsedNativeHistoryRunIds,
+    omittedTranscriptRunIds,
     linkedRunMetaById,
     lastCommentIdByRun,
     comments,
@@ -2289,6 +2335,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     linkedRunMetaById.get(tailRunId ?? "")?.agentId ??
     issueAssigneeAgentId;
   const tailAgent = tailAgentId ? agentMap?.get(tailAgentId) : undefined;
+  const tailHistoryCollapsed = Boolean(tailRunId && collapsedNativeHistoryRunIds.has(tailRunId));
   const visibleTailAgentName = tailAgentName ?? tailAgent?.name ?? null;
   const visibleTailAgentIcon = tailAgent?.icon ?? null;
   const tailItems = useMemo(
@@ -2299,9 +2346,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentName: tailAgentName,
         running: tailStreaming,
       });
-      return tailPlanItem
+      const visibleItems = tailPlanItem
         ? embedPlanDocumentAtWriteBoundary(parsed, tailPlanItem)
         : parsed;
+      return tailHistoryCollapsed
+        ? [collapsedNativeHistoryMarker(tailRunId, tailAgentId, tailAgent?.urlKey), ...visibleItems]
+        : visibleItems;
     },
     // tailEntries is a fresh array each render; tailContentKey tracks its content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2311,6 +2361,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       tailStreaming,
       tailAgentName,
       tailPlanContentKey,
+      tailHistoryCollapsed,
+      tailAgentId,
+      tailAgent?.urlKey,
     ],
   );
   const tailTurnStatus = useMemo(
@@ -2764,6 +2817,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      if (omittedTranscriptRunIds.has(run.id)) return false;
       // A scheduled retry has not started and has no log to hydrate yet.
       if (run.status === "scheduled_retry") return false;
       if (

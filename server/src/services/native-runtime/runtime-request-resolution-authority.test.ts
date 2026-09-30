@@ -1,10 +1,12 @@
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   assertNativeRuntimeRequestResolverAuthorized,
   NativeRuntimeRequestResolutionAuthorizationError,
   readPendingNativeRuntimeRequest,
+  readPendingNativeRuntimeRequestEvents,
   type PendingNativeRuntimeRequest,
 } from "./runtime-request-resolution-authority.js";
 
@@ -49,6 +51,50 @@ function createdEvent(requestKind: string) {
 }
 
 describe("native runtime request resolution authority", () => {
+  it("returns only DB-filtered latest pending creations per request identity", async () => {
+    const pending = {
+      id: 1,
+      companyId: binding.companyId,
+      runId: binding.runId,
+      agentId: "agent-1",
+      seq: 10,
+      eventType: "runtime_request.created",
+      stream: "system",
+      level: "info",
+      color: null,
+      message: null,
+      payload: createdEvent("user_input").payload,
+      createdAt: new Date("2026-04-10T09:30:00.000Z"),
+    };
+    const predicates: unknown[] = [];
+    const subquery = { name: "latest_runtime_requests" };
+    const inner = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      as: vi.fn(() => subquery),
+    };
+    const outer = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn((condition: unknown) => {
+        predicates.push(condition);
+        return outer;
+      }),
+      then: (resolve: (rows: typeof pending[]) => unknown) => Promise.resolve([pending]).then(resolve),
+    };
+    const db = {
+      selectDistinctOn: vi.fn(() => inner),
+      select: vi.fn(() => outer),
+    } as unknown as Db;
+
+    await expect(readPendingNativeRuntimeRequestEvents(db, binding)).resolves.toEqual([pending]);
+    expect(db.selectDistinctOn).toHaveBeenCalledTimes(1);
+    expect(inner.as).toHaveBeenCalledWith("latest_runtime_requests");
+    const query = new PgDialect().sqlToQuery(predicates[0] as never);
+    expect(query.params).toContain("runtime_request.created");
+    expect(query.sql).toContain("request,status}' = 'pending'");
+  });
+
   it("derives privileged approval policy from the durable canonical request", async () => {
     await expect(
       readPendingNativeRuntimeRequest(

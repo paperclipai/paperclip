@@ -52,13 +52,13 @@ export function resolveIssueChatTranscriptRuns(args: {
   // Live/active runs above are always retained; fill the remaining slots with
   // the most recently created linked runs so the retained set is bounded.
   const remainingLinked = [...linkedRuns]
-    .filter((run) => !combined.has(run.runId) && run.adapterType)
+    .filter((run) => !combined.has(run.runId) && (run.adapterType || run.runtimeMode === "native"))
     .sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt));
 
   for (const run of remainingLinked) {
     if (combined.size >= limit) break;
-    const adapterType = run.adapterType;
-    if (!adapterType) continue;
+    const adapterType = run.adapterType ?? "";
+    if (!adapterType && run.runtimeMode !== "native") continue;
     combined.set(run.runId, {
       id: run.runId,
       status: run.status,

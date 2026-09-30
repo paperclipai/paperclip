@@ -7128,7 +7128,15 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: z.object({
+      view: z.literal("context").optional(),
+      afterSeq: z.union([z.literal("tail"), z.coerce.number().int().nonnegative()]).optional(),
+      beforeSeq: z.coerce.number().int().nonnegative().optional(),
+      limit: z.coerce.number().int().min(1).max(1000).optional(),
+    }),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 

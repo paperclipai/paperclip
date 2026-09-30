@@ -5,6 +5,32 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Browser history windows
+
+`GET /heartbeat-runs/:runId/events` retains its ascending numeric `afterSeq`
+contract. `afterSeq=tail` returns the newest page in chronological order;
+`beforeSeq=N` with `tail` selects the preceding page. Pages contain at most
+1,000 events and approximately 2 MiB of redacted JSON, except that one larger
+individual event is returned intact. `historyBefore` on the first event and
+`historyAfter` on the last event indicate more history. Consumers must advance
+from the returned sequence, including when the byte budget shortens a page.
+
+`view=context` on this route returns current pending runtime requests, the
+latest final assistant message, up to two accepted-result records, and the
+latest terminal record. This preserves unanswered permissions and the final
+response independently of the visible history window. It uses the same access
+and redaction checks as event pages. PostgreSQL selects the latest lifecycle
+row per request before filtering for pending requests; this does not create a
+new state store. These context queries may still scan retained event history.
+
+The task view hydrates at most 20 run transcripts, while always including live
+and active runs. Native transcripts start at the latest page, retain a window
+of 1,000 events or approximately 2 MiB (plus current context), and jump to the
+latest page after four catch-up pages. Older activity has a visible link to run
+details. The run inspector replaces its current page when browsing older or
+newer events, so browsing does not accumulate every page in memory. Persisted
+comments and stored run events are not deleted by these browser limits.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound

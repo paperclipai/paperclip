@@ -119,6 +119,7 @@ import {
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
 import { RunnerInspector } from "../components/RunnerInspector";
+import { mergeRunEvents, retainEventTail } from "../lib/run-event-pagination";
 import { HoneycombRunLink } from "../components/HoneycombRunLink";
 import {
   ProviderTraceStatusBadge,
@@ -3961,7 +3962,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       })()}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={run} adapterType={adapterType} onOpenInspector={() => setInspectorOpen(true)} />
       <ScrollToBottom />
       <RunnerInspector
         runId={run.id}
@@ -3980,9 +3981,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
 /* ---- Log Viewer ---- */
 
-export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType, onOpenInspector }: { run: HeartbeatRun; adapterType: string; onOpenInspector?: () => void }) {
   const { visible } = usePageVisibility();
-  const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [eventState, setEventState] = useState({ events: [] as HeartbeatRunEvent[], historyOmitted: false });
+  const { events, historyOmitted: eventHistoryOmitted } = eventState;
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
@@ -4063,12 +4065,20 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   // Fetch events
   const { data: initialEvents } = useQuery({
     queryKey: ["run-events", run.id],
-    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    queryFn: () => heartbeatsApi.events(run.id, "tail", 200),
   });
 
   useEffect(() => {
+    setEventState({ events: [], historyOmitted: false });
+  }, [run.id]);
+
+  useEffect(() => {
     if (initialEvents) {
-      setEvents(initialEvents);
+      const retained = retainEventTail(initialEvents);
+      setEventState({
+        events: retained.events,
+        historyOmitted: retained.collapsed || initialEvents[0]?.historyBefore === true,
+      });
       setLoading(false);
     }
   }, [initialEvents]);
@@ -4236,7 +4246,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
         if (cancelled) return;
         if (newEvents.length > 0) {
-          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
+          setEventState((prev) => {
+            const retained = retainEventTail(mergeRunEvents(prev.events, newEvents));
+            return { events: retained.events, historyOmitted: prev.historyOmitted || retained.collapsed };
+          });
         }
       } catch {
         // ignore polling errors
@@ -4377,9 +4390,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           createdAt: new Date(event.createdAt),
         };
 
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
+        setEventState((prev) => {
+          const retained = retainEventTail(mergeRunEvents(prev.events, [liveEvent]));
+          return { events: retained.events, historyOmitted: prev.historyOmitted || retained.collapsed };
         });
       };
 
@@ -4599,6 +4612,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       {events.length > 0 && (
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          {eventHistoryOmitted && (
+            <div className="mb-2 text-xs text-muted-foreground" data-testid="run-event-history-notice">
+              Recent activity is shown here. Open the <button type="button" className="underline underline-offset-2" onClick={onOpenInspector}>run inspector</button> to browse older activity.
+            </div>
+          )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color

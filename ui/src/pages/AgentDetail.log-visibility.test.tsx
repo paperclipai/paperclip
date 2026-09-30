@@ -6,11 +6,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
 
-const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async () => []), empty: [] }));
+const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(() => []), empty: [] }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
 vi.mock("@tanstack/react-query", async (original) => ({
   ...await original<typeof import("@tanstack/react-query")>(),
-  useQuery: () => ({ data: empty }),
+  useQuery: ({ queryKey, queryFn }: { queryKey: unknown[]; queryFn: () => unknown }) => ({
+    data: queryKey[0] === "run-events" ? queryFn() : empty,
+  }),
 }));
 vi.mock("../adapters", () => ({
   getUIAdapter: () => null,
@@ -22,6 +24,79 @@ vi.mock("../components/transcript/RunTranscriptView", () => ({
 }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); });
+
+it.each([LogViewer, ProductionLogViewer])("starts from the recent event tail and bounds retained history (%#)", async (Viewer) => {
+  const eventRows = Array.from({ length: 1_005 }, (_, seq) => ({
+    id: seq,
+    companyId: "company-1",
+    runId: "run-1",
+    agentId: "agent-1",
+    seq,
+    eventType: "event",
+    stream: "system" as const,
+    level: "info" as const,
+    color: null,
+    message: `event-${seq}`,
+    payload: null,
+    createdAt: new Date("2026-09-10T12:00:00Z"),
+    ...(seq === 0 ? { historyBefore: true } : {}),
+    ...(seq === 1_004 ? { historyAfter: false } : {}),
+  }));
+  events.mockReturnValue(eventRows as never[]);
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "succeeded", logRef: null } as HeartbeatRun;
+  const onOpenInspector = vi.fn();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" onOpenInspector={onOpenInspector} />));
+    expect(events).toHaveBeenCalledWith("run-1", "tail", 200);
+    expect(container.textContent).toContain("Events (1000)");
+    expect(container.textContent).not.toContain("event-0");
+    expect(container.textContent).toContain("event-5");
+    expect(container.textContent).toContain("event-1004");
+    const notice = container.querySelector('[data-testid="run-event-history-notice"]');
+    expect(notice?.textContent).toContain("browse older activity");
+    await act(async () => (notice?.querySelector("button") as HTMLButtonElement).click());
+    expect(onOpenInspector).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it.each([LogViewer, ProductionLogViewer])("shows the omission notice from the tail page's historyBefore marker (%#)", async (Viewer) => {
+  const eventRow = {
+    id: 10,
+    companyId: "company-1",
+    runId: "run-1",
+    agentId: "agent-1",
+    seq: 10,
+    eventType: "event",
+    stream: "system" as const,
+    level: "info" as const,
+    color: null,
+    message: "recent event",
+    payload: null,
+    createdAt: new Date("2026-09-10T12:00:00Z"),
+    historyBefore: true as const,
+    historyAfter: false,
+  };
+  events.mockReturnValue([eventRow] as never[]);
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "succeeded", logRef: null } as HeartbeatRun;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" onOpenInspector={vi.fn()} />));
+    expect(events).toHaveBeenCalledWith("run-1", "tail", 200);
+    expect(container.textContent).toContain("Events (1)");
+    expect(container.querySelector('[data-testid="run-event-history-notice"]')?.textContent).toContain("browse older activity");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
 
 it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
