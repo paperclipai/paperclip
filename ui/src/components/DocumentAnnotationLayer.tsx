@@ -296,6 +296,7 @@ export function DocumentAnnotationLayer({
     }) => {
       const ranges = rangesForNormalizedSpan({
         container,
+        markdown,
         selectedText: run.selectedText,
         normalizedStart: run.selector?.position.normalizedStart,
       });

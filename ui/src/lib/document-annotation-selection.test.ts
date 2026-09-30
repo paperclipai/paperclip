@@ -149,4 +149,22 @@ describe("rangesForNormalizedSpan", () => {
     expect(ranges).toHaveLength(1);
     expect(ranges[0]?.startContainer).toBe(secondText);
   });
+
+  it("converts markdown positions before finding a duplicate in adjacent paragraphs", () => {
+    const markdown = "x\n\nx\n\nx";
+    const container = document.createElement("div");
+    container.innerHTML = "<p>x</p><p>x</p><p>x</p>";
+    document.body.appendChild(container);
+    const secondText = container.querySelectorAll("p")[1]!.firstChild as Text;
+
+    const ranges = rangesForNormalizedSpan({
+      container,
+      markdown,
+      selectedText: "x",
+      normalizedStart: 2,
+    });
+
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.startContainer).toBe(secondText);
+  });
 });

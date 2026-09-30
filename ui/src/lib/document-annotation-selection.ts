@@ -109,6 +109,7 @@ function pickClosestOccurrence(occurrences: number[], expected: number): number 
  */
 export function rangesForNormalizedSpan(input: {
   container: HTMLElement;
+  markdown?: string;
   selectedText: string;
   normalizedStart?: number;
 }): Range[] {
@@ -117,16 +118,23 @@ export function rangesForNormalizedSpan(input: {
   const containerText = input.container.textContent ?? "";
   const normalizedContainerText = normalizeAnchorText(containerText);
   const occurrences = findAllOccurrences(normalizedContainerText, normalizedNeedle);
-  const positionMatchesSelection = input.normalizedStart !== undefined
-    && normalizedContainerText.slice(
+  const renderedStart = input.normalizedStart !== undefined && input.markdown !== undefined
+    ? mapProjectionOffsetToRenderedOffset(
+      projectMarkdownToText(input.markdown).text,
+      normalizedContainerText,
       input.normalizedStart,
-      input.normalizedStart + normalizedNeedle.length,
+    )
+    : input.normalizedStart;
+  const positionMatchesSelection = renderedStart !== undefined
+    && normalizedContainerText.slice(
+      renderedStart,
+      renderedStart + normalizedNeedle.length,
     ) === normalizedNeedle;
   const containerOccurrenceIndex = positionMatchesSelection
-    ? input.normalizedStart ?? -1
+    ? renderedStart ?? -1
     : input.normalizedStart === undefined
       ? occurrences[0] ?? -1
-      : pickClosestOccurrence(occurrences, input.normalizedStart ?? 0) ?? -1;
+      : pickClosestOccurrence(occurrences, renderedStart ?? input.normalizedStart) ?? -1;
   if (containerOccurrenceIndex === -1) return [];
 
   // Convert from normalized container offset back to raw container offset
@@ -143,6 +151,32 @@ export function rangesForNormalizedSpan(input: {
   const rawStart = rawIndex;
   const rawEnd = rawIndex + rawNeedleLength;
   return buildRangesForRawSpan(input.container, rawStart, rawEnd);
+}
+
+function mapProjectionOffsetToRenderedOffset(
+  projectionText: string,
+  renderedText: string,
+  projectionOffset: number,
+): number | null {
+  if (projectionOffset < 0 || projectionOffset > projectionText.length) return null;
+
+  let projectionCursor = 0;
+  let renderedCursor = 0;
+  while (projectionCursor < projectionOffset) {
+    const projected = projectionText[projectionCursor];
+    const rendered = renderedText[renderedCursor];
+    if (projected === rendered) {
+      projectionCursor += 1;
+      renderedCursor += 1;
+    } else if (projected === " ") {
+      projectionCursor += 1;
+    } else if (rendered === " ") {
+      renderedCursor += 1;
+    } else {
+      return null;
+    }
+  }
+  return renderedCursor;
 }
 
 function mapNormalizedOffsetToRaw(rawText: string, normalizedOffset: number): number {

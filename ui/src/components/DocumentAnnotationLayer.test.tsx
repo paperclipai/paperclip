@@ -145,6 +145,42 @@ describe("DocumentAnnotationLayer", () => {
     expect(container.querySelector(".paperclip-doc-annotation-hit-target")).toBeNull();
   });
 
+  it("preserves saved positions for persisted and composer duplicate overlays", async () => {
+    const body = document.createElement("div");
+    body.innerHTML = "<p>x</p><p>x</p><p>x</p>";
+    const selector = {
+      quote: { exact: "x", prefix: "x ", suffix: " x" },
+      position: { normalizedStart: 2, normalizedEnd: 3, markdownStart: 3, markdownEnd: 4 },
+    };
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DocumentAnnotationLayer
+          containerRef={{ current: body }}
+          markdown="x\n\nx\n\nx"
+          threads={[{ id: "persisted", selectedText: "x", selector, status: "open", anchorState: "active" }]}
+          focusedThreadId="persisted"
+          onThreadFocus={vi.fn()}
+          pendingAnchor={null}
+          onPendingAnchorChange={vi.fn()}
+          onRequestComment={vi.fn()}
+          pendingHighlightText="x"
+          pendingHighlightSelector={selector}
+        />,
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(mockRangesForNormalizedSpan).toHaveBeenCalledTimes(2);
+    expect(mockRangesForNormalizedSpan).toHaveBeenCalledWith({
+      container: body,
+      markdown: "x\n\nx\n\nx",
+      selectedText: "x",
+      normalizedStart: 2,
+    });
+  });
+
   it("does not capture annotation comments from editable selections", async () => {
     const body = document.createElement("div");
     const editable = document.createElement("div");
