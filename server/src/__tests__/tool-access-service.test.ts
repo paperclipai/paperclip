@@ -11749,6 +11749,65 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each([false, true])("finishes a second Asana account with a colliding profile name (installed: %s)", async (installed) => {
+    const company = await createCompany(db);
+    const userId = "asana-owner";
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const actor = { actorType: "user" as const, actorId: userId };
+    const credentials = {
+      v: 1 as const, accessToken: "asana-access", refreshToken: "asana-refresh", tokenType: "Bearer",
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      refreshTokenExpiresAt: null, scopes: ["default"], subject: userId, companyId: company.id,
+      instanceId: "test-instance", environment: "staging" as const,
+      provider: "asana" as const, profile: "asana.mcp" as const,
+    };
+    const connector: PaperclipCloudConnector = {
+      getCapabilities: vi.fn(async () => ["asana.mcp"]),
+      startAuthorization: vi.fn(async ({ returnState }) => ({
+        authorizationUrl: `https://app.asana.com/-/oauth_authorize?state=${encodeURIComponent(returnState)}`,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      })),
+      claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
+      revoke: vi.fn(async () => undefined),
+    };
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const custom = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const first = await service.finishGalleryAppConnection(company.id, custom.connectionId, {
+      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [] },
+    }, actor);
+    await service.updateConnection(custom.connectionId, { name: "Asana custom app" });
+    const managed = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "managed", name: "Asana", grantKind: "user",
+      applicationId: custom.application.id,
+    }, actor);
+    expect(managed.connection.name).toBe("Asana");
+    if (installed) await service.putConnectionInstalls(managed.connectionId, {
+      installs: [{ targetType: "agent", targetId: agent.id }],
+    }, actor);
+    const started = await service.startOAuth(company.id, managed.connectionId, {
+      redirectUri: "https://tenant.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    mockToolsList([{ name: "get_me", annotations: { readOnlyHint: true } }]);
+    const completed = await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "asana-claim", actor,
+    });
+    expect(completed.connection).toMatchObject({ status: "active", enabled: true });
+    expect(completed.catalog).toEqual([expect.objectContaining({ toolName: "get_me", status: "active" })]);
+    const repeat = await service.finishGalleryAppConnection(company.id, managed.connectionId, {
+      enabledCatalogEntryIds: completed.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [],
+      access: { agentIds: installed ? [agent.id] : [] },
+    }, actor);
+    expect(repeat.profile.name).not.toBe(first.profile.name);
+    expect(repeat.profileBindings.map((binding) => binding.targetId)).toEqual(installed ? [agent.id] : []);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).toHaveLength(2);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.id, first.profile.id)))
+      .toEqual([expect.objectContaining({ name: first.profile.name })]);
+  });
+
   it("resumes personal Asana client credentials with database timestamp precision", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -15591,18 +15650,8 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
 
-    await db.insert(toolProfiles).values({
-      companyId: company.id,
-      profileKey: `conflict-${randomUUID()}`,
-      name: "Conflicting app profile",
-      status: "active",
-      defaultAction: "deny",
-    });
-    await db
-      .update(toolConnections)
-      .set({ name: "Conflicting app profile", updatedAt: new Date() })
-      .where(eq(toolConnections.id, connect.connectionId));
-
+    // An absent actor trips the binding's foreign key after profile state is
+    // replaced. Profile-name collisions are now resolved during finalization.
     await expect(
       service.finishGalleryAppConnection(
         company.id,
@@ -15612,7 +15661,7 @@ describeEmbeddedPostgres("tool access service", () => {
           askFirstCatalogEntryIds: [updateEntry.id],
           access: { agentIds: [agent.id] },
         },
-        { actorType: "user", actorId: "board" },
+        { actorType: "agent", actorId: randomUUID() },
       ),
     ).rejects.toThrow();
 

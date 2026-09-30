@@ -13397,6 +13397,19 @@ export function toolAccessService(
           ),
         )
         .limit(1);
+      // A renamed connection can leave its old profile name in use. Resolve
+      // names against profiles too, including when finalizing an installed draft.
+      const otherProfiles = await tx
+        .select({ name: toolProfiles.name })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, companyId),
+          ne(toolProfiles.profileKey, profileKey),
+        ));
+      const profileName = nextAvailableConnectionName(
+        connection.name,
+        otherProfiles.map((profile) => profile.name),
+      );
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -13476,7 +13489,7 @@ export function toolAccessService(
         const [updated] = await tx
           .update(toolProfiles)
           .set({
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -13495,7 +13508,7 @@ export function toolAccessService(
           .values({
             companyId,
             profileKey,
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",

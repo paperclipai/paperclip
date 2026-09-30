@@ -50,3 +50,7 @@ workspace selection succeed, tools load, and a read-only tool such as **Get me**
 works through **Test** as an installed agent. Also verify canceled/interrupted
 setup can resume, and that refresh works after token expiration. Never place
 provider tokens or client secrets in screenshots or test fixtures.
+
+Also connect a second account after renaming the first connection. Both custom
+and shared app connections must finish with separate permission profiles, even
+when the first profile still uses the provider's original name.
