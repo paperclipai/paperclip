@@ -9165,7 +9165,7 @@ async function executePaperclipNativeSessionWithinScope(
     const retainSession = native.terminal.runTerminalState === "succeeded";
     const instructionCopy = input.instructionWorkingCopy;
     const ownedSession = warmNativeSessions.get(warmSessionId);
-    const collectInstructions = Boolean(retainSession && instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
+    const collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
       (instructionCopy.checkpointWarm ? !await instructionCopy.checkpointWarm() : await instructionCopy.hasChanges()));
     const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped;
     if (collectInstructions && ownedSession) {
