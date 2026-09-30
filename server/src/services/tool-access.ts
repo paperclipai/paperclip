@@ -8406,6 +8406,27 @@ export function toolAccessService(
     return oauthClientConfig(provider);
   }
 
+  async function annotateSavedOAuthClientSecret(connections: ToolConnection[], viewerUserId?: string) {
+    const personal = connections.filter((connection) => connection.authKind === "oauth" && connection.credentialPolicy === "per_user");
+    const grants = viewerUserId && personal.length > 0
+      ? await db.select({ connectionId: connectionGrants.connectionId, refs: connectionGrants.credentialSecretRefs })
+        .from(connectionGrants)
+        .where(and(
+          inArray(connectionGrants.companyId, [...new Set(personal.map((connection) => connection.companyId))]),
+          inArray(connectionGrants.connectionId, personal.map((connection) => connection.id)),
+          eq(connectionGrants.kind, "user"),
+          eq(connectionGrants.subjectUserId, viewerUserId),
+          eq(connectionGrants.status, "active"),
+        ))
+      : [];
+    const savedPersonal = new Set(grants.filter((grant) => grant.refs.some((ref) => ref.configPath === "oauth.client_secret")).map((grant) => grant.connectionId));
+    for (const connection of connections) {
+      connection.hasSavedOAuthClientSecret = connection.credentialPolicy === "per_user"
+        ? savedPersonal.has(connection.id)
+        : connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.client_secret");
+    }
+  }
+
   async function oauthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
@@ -9652,13 +9673,34 @@ export function toolAccessService(
    * reusing them across a moved binding would let a re-pointed endpoint borrow
    * another server's registration.
    */
+  function reviewedOAuthClientBinding(connection: typeof toolConnections.$inferSelect, endpoints: OAuthProviderEndpoints) {
+    const oauth = oauthConfig(connection);
+    // Only repair the known Asana v1 discovery mistake. Retain company and
+    // callback checks, and never carry a secret to an arbitrary new issuer.
+    if (connection.config.sourceTemplateKey === "asana"
+      && connection.config.connectionMethodKey === "mcp-own-oauth"
+      && connection.config.url === "https://mcp.asana.com/v2/mcp"
+      && oauth.clientRegistrationSource === "manual"
+      && connection.ownership !== "dcr"
+      && endpoints.issuer === "https://app.asana.com"
+      && endpoints.authorizationUrl === "https://app.asana.com/-/oauth_authorize"
+      && endpoints.tokenUrl === "https://app.asana.com/-/oauth_token"
+      && endpoints.resource === "https://mcp.asana.com/v2/mcp"
+      && [undefined, null, "https://mcp.asana.com", "https://app.asana.com"].includes(oauth.clientIssuer as string | null | undefined)
+      && [undefined, null, "https://mcp.asana.com", "https://mcp.asana.com/v2/mcp"].includes(oauth.clientResource as string | null | undefined)
+      && (oauth.clientIssuer === "https://mcp.asana.com" || oauth.clientResource === "https://mcp.asana.com")) {
+      return { ...oauth, clientIssuer: endpoints.issuer, clientResource: endpoints.resource };
+    }
+    return oauth;
+  }
+
   function oauthClientBindingMatches(
     connection: typeof toolConnections.$inferSelect,
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
     clientIdMetadataDocumentUrl: string | null,
   ): boolean {
-    const oauth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     if (typeof oauth.clientId !== "string" || !oauth.clientId.trim())
       return false;
     const source =
@@ -9723,7 +9765,8 @@ export function toolAccessService(
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
   ): Promise<typeof toolConnections.$inferSelect> {
-    const oauth = oauthConfig(connection);
+    const originalOAuth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     const nextBinding = {
       clientRedirectUri: redirectUri,
       clientIssuer:
@@ -9740,7 +9783,7 @@ export function toolAccessService(
           : connection.companyId,
     };
     const unchanged = Object.entries(nextBinding).every(
-      ([key, value]) => oauth[key] === value,
+      ([key, value]) => originalOAuth[key] === value,
     );
     if (unchanged) return connection;
     const nextConfig = {
@@ -17200,6 +17243,7 @@ export function toolAccessService(
       }
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
+      await annotateSavedOAuthClientSecret(connections, viewerUserId);
       return connections;
     },
 
@@ -17304,6 +17348,7 @@ export function toolAccessService(
       );
       await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
+      await annotateSavedOAuthClientSecret([connection], viewerUserId);
       return connection;
     },
 

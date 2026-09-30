@@ -2389,8 +2389,7 @@ function StandardConnectionSetupFlow({
           canReuseOAuthClientSecret={Boolean(
             identityConnection?.config?.oauth
             && (identityConnection.config.oauth as Record<string, unknown>).clientId === curatedOAuthClientId.trim()
-            && (identityConnection.credentialPolicy === "per_user"
-              || identityConnection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.client_secret"))
+            && identityConnection.hasSavedOAuthClientSecret
           )}
           onOAuthClientSecretChange={setCuratedOAuthClientSecret}
           credentialSource={credentialSource}

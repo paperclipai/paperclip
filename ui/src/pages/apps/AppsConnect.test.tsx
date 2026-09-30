@@ -1001,6 +1001,25 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("requires the acting user's saved Asana client secret for reuse (%s)", async (hasSavedOAuthClientSecret) => {
+    mockSearch.value = "source=asana&resume=conn-asana";
+    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-asana", status: "draft", metadata: { sourceTemplateKey: "asana" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: "conn-asana", applicationId: "app-asana", name: "Asana", authKind: "oauth",
+      credentialPolicy: "per_user", status: "draft", credentialSecretRefs: [], hasSavedOAuthClientSecret,
+      config: { sourceTemplateKey: "asana", connectionMethodKey: "mcp-own-oauth", oauth: { clientId: "saved-asana-client", clientRegistrationSource: "manual" } },
+      transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")?.value).toBe("saved-asana-client");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(!hasSavedOAuthClientSecret);
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "different-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+  });
+
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
     listGalleryMock.mockResolvedValue({ apps: [BOX] });
     mockParams.appKey = "box";

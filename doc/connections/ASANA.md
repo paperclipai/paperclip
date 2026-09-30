@@ -29,6 +29,10 @@ Asana's live v2 resource challenge points to
 `https://mcp.asana.com/.well-known/oauth-protected-resource/v2`. The root metadata
 still describes the retired v1 issuer. The curated method pins the v2 discovery
 URL and re-resolves it for saved connections, repairing drafts that cached v1.
+Saved manual-client bindings from that exact v1 issuer/resource are repaired for
+Asana v2 while preserving company and callback checks. Other binding changes
+still require new credentials. Secret reuse is shown only when the requesting
+user has an active grant with a saved client-secret reference.
 Authorization and token exchange use `https://app.asana.com/-/oauth_authorize`
 and `https://app.asana.com/-/oauth_token`, with PKCE S256.
 

@@ -11630,7 +11630,9 @@ describeEmbeddedPostgres("tool access service", () => {
       ...connection.config,
       oauth: { ...connection.config.oauth as Record<string, unknown>,
         issuer: "https://mcp.asana.com", authorizationUrl: "https://mcp.asana.com/authorize",
-        tokenUrl: "https://mcp.asana.com/token", resource: "https://mcp.asana.com" },
+        tokenUrl: "https://mcp.asana.com/token", resource: "https://mcp.asana.com",
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback" },
     } }).where(eq(toolConnections.id, connected.connectionId));
     const calls: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
@@ -11662,6 +11664,27 @@ describeEmbeddedPostgres("tool access service", () => {
       "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
       "https://app.asana.com/.well-known/oauth-authorization-server",
     ]);
+    const migrated = await service.getConnection(connected.connectionId, company.id);
+    expect(migrated.config?.oauth).toMatchObject({
+      clientIssuer: "https://app.asana.com", clientResource: "https://mcp.asana.com/v2/mcp",
+    });
+    expect(migrated.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+    for (const invalidBinding of [
+      { clientIssuer: "https://other.example" },
+      { clientResource: "https://other.example/mcp" },
+      { clientCompanyId: randomUUID() },
+      { clientRedirectUri: "https://other.example/api/tools/oauth/callback" },
+    ]) {
+      await db.update(toolConnections).set({ config: { ...connection.config, oauth: {
+        ...connection.config.oauth as Record<string, unknown>,
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback", ...invalidBinding,
+      } } }).where(eq(toolConnections.id, connection.id));
+      await expect(service.startOAuth(company.id, connection.id, {
+        redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      })).rejects.toMatchObject({ status: 422, details: { code: "oauth_manual_client_rebinding_required" } });
+    }
     const missingSecret = await service.connectGalleryApp(company.id, {
       galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
       oauthClient: { clientId: "another-client" },
@@ -11746,6 +11769,14 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(after.grants).toHaveLength(1);
     expect(after.grants[0]!.credentialSecretRefs).toEqual(grant.credentialSecretRefs);
     expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.listConnections(company.id, actor.actorId))[0].hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.getConnection(connected.connectionId, company.id, "another-user")).hasSavedOAuthClientSecret).toBe(false);
+    expect((await service.getConnection(connected.connectionId, company.id)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "active", credentialSecretRefs: [] }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
   });
 
   it("does not retain a customer OAuth secret when the client id changes", async () => {
