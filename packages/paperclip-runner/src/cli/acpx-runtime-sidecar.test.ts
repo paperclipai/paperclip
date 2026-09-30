@@ -94,23 +94,47 @@ describe("qualified ACPX runtime sidecar", () => {
     const end = source.indexOf("\nasync function waitForInput", start);
     expect(start).toBeGreaterThan(0);
     const permissions = new Map<string, unknown>();
-    const emitted: Array<{ choices: Array<{ key: string }> }> = [];
+    const emitted: Array<{ choices: Array<{ key: string }>; origin: unknown }> = [];
     const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
       `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
        const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
-       return async function(activeTurnId, request, context, toolEvidence) { ${source.slice(start, end)}`)(
-      permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }> }) => emitted.push(payload),
+       return async function(activeTurnId, agent, request, context, toolEvidence) { ${source.slice(start, end)}`)(
+      permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }>; origin: unknown }) => emitted.push(payload),
     );
     const abort = new AbortController();
-    const pending = wait("turn-1", { sessionId: "session", inferredKind: "edit", raw: {
+    const pending = wait("turn-1", agent, { sessionId: "session", inferredKind: "edit", raw: {
       sessionId: "session", toolCall: { toolCallId: "call", title: "Edit file" },
       options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ kind, optionId: kind, name: kind })),
     } }, { signal: abort.signal, responseDelivery: Promise.resolve() });
+    expect(emitted[0]!.origin).toEqual({ adapter: "acpx-runtime-sidecar", provider: agent, method: "session/request_permission" });
     expect(emitted[0]!.choices.some(choice => choice.key === "accept_for_session")).toBe(agent === "pi" || agent === "copilot");
     abort.abort();
     await expect(pending).resolves.toEqual({ outcome: "cancel" });
     expect(permissions.size).toBe(0);
   });
+  it("returns the sidecar retirement flag only after cancellation settlement and rejects stale turns", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf('    const expected = boundedIdentity', source.indexOf('if (request.command === "turn.cancel")'));
+    const end = source.indexOf('\n  if (request.command === "permission.resolve")', start);
+    let settle!: () => void;
+    const cleanup = new Promise<void>(resolve => { settle = resolve; });
+    let closed = false;
+    const host = { interruptActiveTurn: vi.fn(async () => { await cleanup; closed = true; }), isClosed: () => closed };
+    const cancel = new Function("requireHost", `
+      const turnId = "active-turn";
+      const boundedIdentity = x => x, boundedOptionalText = (x, fallback) => x ?? fallback;
+      return async function(request) { ${source.slice(start, end)}
+    `)(() => host);
+    await expect(cancel({ params: { turnId: "stale" } })).rejects.toThrow("stale");
+    expect(host.interruptActiveTurn).not.toHaveBeenCalled();
+    const pending = cancel({ params: { turnId: "active-turn", reason: "Stop" } });
+    let acknowledged = false; void pending.then(() => { acknowledged = true; });
+    await Promise.resolve(); expect(acknowledged).toBe(false);
+    settle(); await expect(pending).resolves.toEqual({ cancelled: true, sessionClosed: true });
+    host.interruptActiveTurn.mockRejectedValueOnce(new Error("provider cleanup incomplete"));
+    await expect(cancel({ params: { turnId: "active-turn" } })).rejects.toThrow("cleanup incomplete");
+  });
+
   it("emits permission delivery evidence only after the actual response write settles", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf('    const requestId = boundedIdentity', source.indexOf('if (request.command === "permission.resolve")'));

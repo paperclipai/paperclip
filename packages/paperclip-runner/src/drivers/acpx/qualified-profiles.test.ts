@@ -63,10 +63,11 @@ describe("qualified ACPX profiles", () => {
   });
 });
 
-it("binds Cursor v5 to inspectable native instructions, closures and exact ACPX guard patch", () => {
-  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v5-identity.json", import.meta.url), "utf8"));
+it("binds Cursor v6 to inspectable native instructions, closures and exact ACPX guard patch", () => {
+  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v6-identity.json", import.meta.url), "utf8"));
   const distribution = JSON.parse(readFileSync(new URL("../../../cursor-distributions.json", import.meta.url), "utf8"));
   expect(identity.declaration.distribution).toEqual(distribution);
+  expect(identity.declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");
   expect(identity.declaration.sessionModeAdmission).toBe("native-config-ack-recovery-bound-v1");
   expect(identity.declaration.sessionModes).toEqual(["agent", "plan", "ask"]);
   expect(identity.declaration.defaultSessionMode).toBe("agent");

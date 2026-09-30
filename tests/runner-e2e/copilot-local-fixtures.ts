@@ -3,31 +3,71 @@ import { createHash, randomBytes } from "node:crypto";
 import { watch, lstatSync, type FSWatcher } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 
 export const sha256 = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 export async function exists(path: string): Promise<boolean> {
   try { await lstat(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
+/** Allocate before dispatch; ordinary workspace startup cannot mutate this parent. */
+export async function createDeniedTargetFixture(workspacePath: string, name: string) {
+  if (!name || basename(name) !== name || name === "." || name === "..") throw new Error("Invalid denied target name");
+  const directory = await mkdtemp(join(workspacePath, "pc-denied-"));
+  const targetPath = join(directory, name);
+  return { directory, targetPath, targetRelativePath: relative(workspacePath, targetPath), watcher: watchDeniedTarget(directory, name) };
+}
+
+/** Substitute the one authored target, never append a contradictory second path. */
+export function bindDeniedTargetPrompt(prompt: string, original: string, target: string): string {
+  const parts = prompt.split(original);
+  if (parts.length !== 2) throw new Error("Denied prompt must name its exact target once");
+  return parts.join(target);
+}
+
 export function watchDeniedTarget(directory: string, name: string) {
-  const startedAtMs = Date.now(); let complete = true, targetMutationCount = 0;
+  if (!name || basename(name) !== name || name === "." || name === "..") throw new Error("Invalid denied target name");
+  const startedAtMs = Date.now(); let targetMutationCount = 0;
+  const reasons = new Set<string>();
   const before = lstatSync(directory, { bigint: true });
-  let final: { startedAtMs: number; endedAtMs: number; complete: boolean; targetMutationCount: number } | undefined;
-  const watcher: FSWatcher = watch(directory, (_kind, filename) => {
-    if (filename === null) complete = false;
-    else if (String(filename) === name) targetMutationCount++;
+  if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("Denied target parent must be a real directory");
+  const targetAbsent = () => { try { lstatSync(join(directory, name)); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
+  if (!targetAbsent()) throw new Error("Denied target must initially be absent");
+  const identity = (stat: import("node:fs").BigIntStats) => ({ dev: String(stat.dev), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) });
+  const events: Array<{ sequence: number; observedAtMs: number; kind: string; target: boolean; filenameKnown: boolean }> = [];
+  let eventCount = 0, lastEventAtMs = startedAtMs, closing = false;
+  let final: { startedAtMs: number; endedAtMs: number; complete: boolean; targetMutationCount: number; reasons: string[]; initialParent: ReturnType<typeof identity>; finalParent: ReturnType<typeof identity> | null; events: typeof events } | undefined;
+  const watcher: FSWatcher = watch(directory, (kind, filename) => {
+    const observedAtMs = Date.now();
+    if (observedAtMs < lastEventAtMs) reasons.add("event-order-invalid");
+    lastEventAtMs = observedAtMs;
+    const target = filename !== null && String(filename) === name;
+    if (filename === null) reasons.add("event-filename-missing");
+    if (target) targetMutationCount++;
+    if (++eventCount <= 128) events.push({ sequence: eventCount, observedAtMs, kind, target, filenameKnown: filename !== null });
+    else reasons.add("event-journal-overflow");
   });
-  watcher.on("error", () => { complete = false; });
+  watcher.on("error", () => { reasons.add("watch-error"); });
+  watcher.on("close", () => { if (!closing) reasons.add("watch-closed-before-finish"); });
+  // Pin both identity and directory version across watcher installation.
+  try {
+    const armed = lstatSync(directory, { bigint: true });
+    if (!armed.isDirectory() || armed.dev !== before.dev || armed.ino !== before.ino) reasons.add("parent-identity-changed-during-arm");
+    if (armed.mtimeNs !== before.mtimeNs || armed.ctimeNs !== before.ctimeNs || !targetAbsent()) reasons.add("coverage-gap-during-arm");
+  } catch { reasons.add("parent-unavailable-during-arm"); }
   return { finish() {
     if (final) return final;
     let after: import("node:fs").BigIntStats | undefined;
-    try { after = lstatSync(directory, { bigint: true }); } catch { complete = false; }
+    try { after = lstatSync(directory, { bigint: true }); } catch { reasons.add("parent-unavailable-at-finish"); }
     // FSEvents may coalesce a rapid create/delete. A changed directory version
     // with no attributed event is a coverage gap, never proof of no mutation.
-    if (!after || after.dev !== before.dev || after.ino !== before.ino || !after.isDirectory()) complete = false;
-    if (after && (after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) && targetMutationCount === 0) complete = false;
-    final = { startedAtMs, endedAtMs: Date.now(), complete, targetMutationCount }; watcher.close(); return final;
+    if (after && (after.dev !== before.dev || after.ino !== before.ino || !after.isDirectory())) reasons.add("parent-identity-changed");
+    if (after && (after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) && targetMutationCount === 0) reasons.add("coverage-gap-parent-version-changed");
+    try { if (!targetAbsent() && targetMutationCount === 0) reasons.add("coverage-gap-unobserved-target"); } catch { reasons.add("target-unavailable-at-finish"); }
+    const endedAtMs = Date.now();
+    if (endedAtMs < lastEventAtMs) reasons.add("event-order-invalid");
+    final = { startedAtMs, endedAtMs, complete: reasons.size === 0, targetMutationCount, reasons: [...reasons], initialParent: identity(before), finalParent: after ? identity(after) : null, events };
+    closing = true; watcher.close(); return final;
   } };
 }
 interface ProcessIdentity { pid: number; parent: number; start: string }

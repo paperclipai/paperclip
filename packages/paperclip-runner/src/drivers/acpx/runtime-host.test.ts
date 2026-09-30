@@ -1372,7 +1372,7 @@ describe("ACPX runtime host", () => {
         onExtensionRequest,
         onExtensionNotification,
       }),
-    ).toBe(turn);
+    ).toMatchObject({ requestId: turn.requestId });
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
@@ -1388,11 +1388,39 @@ describe("ACPX runtime host", () => {
     expect(turn.cancel).toHaveBeenCalledWith({ reason: "user interrupt" });
 
     await host.close({ reason: "shutdown" });
-    expect(turn.cancel).toHaveBeenCalledWith({ reason: "shutdown" });
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(turn.cancel).toHaveBeenCalledTimes(2);
+    expect(runtime.close).toHaveBeenCalledExactlyOnceWith({ reason: "user interrupt" });
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
     );
+  });
+
+  it("keeps host shutdown independent of a concurrent managed turn cancellation", async () => {
+    const fixture = await hostFixture();
+    const raw = runtimeTurn(); // Native cancel acknowledges, but never resolves result.
+    const runtime = runtimePort({ startTurn: () => raw });
+    const host = await AcpxRuntimeHost.open(
+      {
+        ...fixture.options,
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "approve-reads",
+        environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      },
+      fixture.dependencies({ openRuntime: async () => runtime }),
+    );
+    const managed = host.startTurn({ text: "Work", requestId: "turn-1" });
+    // The host retains raw.cancel, so its shutdown cannot wait on the managed
+    // cancellation which falls back to that same host's close promise.
+    const closed = host.close({ reason: "controller shutdown" });
+    const cancelled = managed.cancel({ reason: "operator stop" });
+    await expect(Promise.all([closed, cancelled])).resolves.toEqual([undefined, undefined]);
+    await expect(managed.result).resolves.toEqual({
+      status: "cancelled", stopReason: "cancelled_after_runtime_close",
+    });
+    expect(host.isClosed()).toBe(true);
+    expect(runtime.close).toHaveBeenCalledExactlyOnceWith({ reason: "controller shutdown" });
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("clones ephemeral capabilities and fences steering controls to an acknowledged active turn", async () => {

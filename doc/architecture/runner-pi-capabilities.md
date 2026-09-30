@@ -1,6 +1,8 @@
 # Pi rich ACP runtime
 
-Status: implementation candidate, 2026-09-29. Current profile version 8 repairs
+Current checkpoint (2026-09-30): **Pi profile v9 remains unqualified**. Native runtime source is `e822b614fc368043f4b3d5e34a8d9bbda644e055`, with verified macOS ARM64/x64 and Linux x64 packaging. No paid profile-v9 pass is claimed. A credential with a verifiable spend limit is still needed for the remaining paid qualification. The optional transport-budget candidate is frozen on a separate branch and is not integrated or a live spending guarantee. See the [comparative capability report](runner-rich-acp-capabilities.md) for the current source identities, qualification requirements and field audit. The dated observations below retain their original profile identities.
+
+Historical implementation candidate, 2026-09-29: profile version 8 repairs
 native assistant-message attribution. Real SDK `message_start` and `message_end`
 boundaries, including empty messages, carry occurrence IDs through ACPX, the
 sidecar and both terminal reducers. Tool-use, error and aborted messages remain
@@ -463,7 +465,7 @@ that those targets have executed successfully.
 
 ### Installation authority and token semantics
 
-`verifyPiInstallation(profile)` admits only profile version 8 and the source-owned
+`verifyPiInstallation(profile)` admits only the current declared profile version and the source-owned
 Pi identity. It resolves `provider-assets/pi/<platform>-<arch>` inside the verified
 Runner package, checks the complete runtime against source-pinned closure hashes,
 and opens a guarded immutable native snapshot. The snapshot bootstrap binds Node,
@@ -561,13 +563,21 @@ require a new pack build and source-pinned admission record.
 The candidate preserves the core request/response paths. It does not preserve
 every field in Pi's native event stream. These are explicit follow-ups:
 
-- **P1 — retry and compaction notices.** Progress currently becomes assistant text. The wrapper
-  does not retain all structured `attempt`, `maxAttempts`, `delayMs`,
-  `errorMessage`, `success`, `finalError`, `reason`, and `willRetry` fields. A
-  follow-up should emit bounded provider notices with source-event provenance
-  and test its metadata. The `auto_retry_end` display distinguishes explicit
-  success, failure, and unknown outcomes. A patched-process regression covers
-  each result and confirms that terminal assistant failure still fails the prompt.
+- **P1 — retry/compaction field completeness and end-to-end evidence.** At source
+  `41503eb38f03c436b1569f9f0204625bb4d58782`, the wrapper emits bounded
+  `paperclip/pi_notice` activity instead of assistant text. The adapter preserves
+  source provenance, `attempt`, `maxAttempts`, `delayMs`, `success`, `aborted`,
+  `willRetry`, `enabled`, and bounded `reason`/`errorMessage` fields when supplied.
+  The UI renders the notice details. `finalError` is not forwarded, and
+  summarization retry currently has summary-only data. Package regressions cover
+  retry success/failure/unknown and compaction usage; adapter tests cover bounded
+  metadata and redaction. Extend field-by-field wrapper/canonical/browser parity
+  without giving notices terminal authority or treating deterministic tests as
+  paid qualification. See the [wrapper patch](https://github.com/paperclipai/paperclip/blob/41503eb38f03c436b1569f9f0204625bb4d58782/patches/pi-acp%400.0.33.patch#L381),
+  [notice adapter](https://github.com/paperclipai/paperclip/blob/41503eb38f03c436b1569f9f0204625bb4d58782/packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter.ts#L22),
+  [package regressions](https://github.com/paperclipai/paperclip/blob/41503eb38f03c436b1569f9f0204625bb4d58782/packages/paperclip-runner/test/pi-acp-package-contract.test.mjs#L225),
+  [adapter regressions](https://github.com/paperclipai/paperclip/blob/41503eb38f03c436b1569f9f0204625bb4d58782/packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter.test.ts#L5),
+  and [UI details](https://github.com/paperclipai/paperclip/blob/41503eb38f03c436b1569f9f0204625bb4d58782/ui/src/components/task-chat/TaskChatProtocolActivityRow.tsx#L283).
 - **P1 — native queue state.** `queue_update` contains steering and follow-up queues. Extension calls
   acknowledge RPC acceptance, but the wrapper does not project that event into
   durable queued/delivered state. Do not treat `{accepted: true}` as proof that

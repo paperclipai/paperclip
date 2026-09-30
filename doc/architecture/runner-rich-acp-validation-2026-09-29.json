@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.rich-acp-validation-checkpoint.v1",
-  "updatedAt": "2026-09-29T20:58:14.579734+00:00",
+  "updatedAt": "2026-09-29T21:39:23.883903+00:00",
   "qualificationStatus": "pending",
   "runtimeSource": "bd4cc29c3017ed5e1484423e842fd48e3b2f49f3",
   "validationSourcePatches": [
@@ -180,7 +180,47 @@
       "runnerTypecheck": "passed",
       "sidecarAndProviderPackBuild": "passed",
       "daemonBuild": "passed; bytes unchanged",
-      "paidQualification": "four-cell batch running; not yet passed"
+      "paidQualification": "Four cells/seven runs completed: question, plan and controller-restart passed; file case failed exact final response5/7 despite correct file bytes and successful task/run."
     }
-  ]
+  ],
+  "incrementalIntegrationChecks": {
+    "copilotProjectionSidecarTests": 57,
+    "mergedPiCopilotProductAndCatalogTests": 77,
+    "daytonaImageTests": 8,
+    "runnerTypescriptBuild": "passed",
+    "productTypecheck": "passed after rebuilding stale runner declaration output",
+    "typescriptBuildLogSha256": "41a44b38a17d1b6a23ccfb51891372f3da9c9bafc94230771bee103baea9e2f1",
+    "productTypecheckLogSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "note": "Targeted integration checks, not a new full-suite or final-source qualification."
+  },
+  "latestIncrementalValidation": {
+    "source": "65b19549e0aac0cc7809142be9f33fb63e0a634c",
+    "fullRepositoryGates": "pending_on_new_source",
+    "runnerTypeScript": {
+      "passed": 389,
+      "skipped": 1,
+      "failed": 0,
+      "filesPassed": 13,
+      "logSha256": "aca4d7ae2b05c06674dfae5e492434ce36fcefc8f1c5082fd753cd04d107ca11"
+    },
+    "rustAcpxUnits": {
+      "passed": 30,
+      "failed": 0
+    },
+    "serverModeRecovery": {
+      "passed": 19,
+      "skipped": 549,
+      "failed": 0
+    },
+    "runnerTypeScriptBuild": "passed",
+    "serverTypecheck": "passed",
+    "exactLockedAcpxPackageContracts": {
+      "passed": 22,
+      "failed": 0,
+      "acpxPatchSha256": "79aad2d688b03362e8cfcbf7a08f78a8383869f6882a9c9ed66f1d18efb94f2b",
+      "sdkVersion": "1.4.0",
+      "logSha256": "a3e60463b4bab0541aadd7f0dda3db91c3013137cf3828f8fb92b817e008d37a"
+    },
+    "scope": "Incremental checks only. Historical broad test failure remains failed; fresh source still requires full repository gates and authenticated qualification."
+  }
 }

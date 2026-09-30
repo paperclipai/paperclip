@@ -1,18 +1,20 @@
+import { matchCopilotFixtureCommand } from "./copilot-protection-evidence.js";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { readFile, mkdtemp, rm, writeFile, unlink, rename, mkdir } from "node:fs/promises";
+import { readFile, mkdtemp, rm, writeFile, unlink, rename, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createCopilotToolEvidence } from "../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js";
 import { validateAcpxRichEvent } from "../../packages/paperclip-runner/src/drivers/acpx/profile-extensions.js";
 import { copilotOrigin, readCopilotToolEvidence } from "./copilot-evidence.js";
-import { gradeCopilotAttachedSettlement, gradeCopilotDeniedWrite } from "./copilot-protection-cases.js";
-import { createAttachedCommandFixture, watchDeniedTarget, exists, isPerTurnRunProcess } from "./copilot-local-fixtures.js";
+import { copilotProtectionCases, gradeCopilotAttachedSettlement, gradeCopilotDeniedWrite } from "./copilot-protection-cases.js";
+import { createAttachedCommandFixture, createDeniedTargetFixture, bindDeniedTargetPrompt, watchDeniedTarget, exists, isPerTurnRunProcess } from "./copilot-local-fixtures.js";
 import { runnerMatrix } from "./catalog.js";
 import { selectRunnerExecutions, parseRunnerSelectors } from "./selectors.js";
 
 const fixture = JSON.parse(await readFile(new URL("../../packages/paperclip-runner/src/drivers/acpx/fixtures/copilot-tool-evidence.json", import.meta.url), "utf8"));
-function projected(name: string) {
-  const frames = fixture[name], rows: any[] = []; let clock = 10;
+function projected(name: string, target = "copilot-denied-nonce.txt") {
+  const frames = JSON.parse(JSON.stringify(fixture[name]).replaceAll("copilot-denied-nonce.txt", target)), rows: any[] = []; let clock = 10;
   const projector = createCopilotToolEvidence({ sessionId: frames[0].params.sessionId, turnId: "turn", workingDirectory: "/fixture/workspace", active: () => true,
     emit: event => { validateAcpxRichEvent(event); rows.push({ seq: rows.length + 1, eventType: event.eventType, payload: { prpEvent: { schema: "paperclip.prp.event.v1", sourceKind: "runner", eventType: event.eventType, runId: "run", turnId: "turn", emittedAt: new Date(clock++).toISOString(), payload: event.payload } } }); } });
   for (const frame of frames) {
@@ -22,23 +24,24 @@ function projected(name: string) {
   return { rows, notices: readCopilotToolEvidence(rows, "run") };
 }
 describe("Copilot Product protection integration", () => {
-  it("registers exactly two explicit local cells with honest terminal expectations", () => {
+  it("registers two explicit cases on both environments with honest terminal expectations", () => {
     const cells = runnerMatrix.filter(x => x.suite.id === "copilot-protection");
-    expect(cells).toHaveLength(2); expect(cells.every(c => c.environment.id === "local" && c.profile.qualificationCandidate === "copilot" && c.task.expectedRunCount === 1)).toBe(true);
+    expect(cells).toHaveLength(4); expect(new Set(cells.map(c => c.environment.id))).toEqual(new Set(["local", "daytona"]));
+    expect(cells.every(c => c.profile.qualificationCandidate === "copilot" && c.task.expectedRunCount === 1)).toBe(true);
     expect(cells.find(c => c.task.id === "native-permission-deny-write")!.task.expectedTerminalState).toEqual({ issue: "in_progress", run: "cancelled" });
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(x => x.suite.id === "copilot-protection")).toBe(false);
   });
-  it("feeds actual native denied-edit wire through canonical persistence shape and the Product oracle", () => {
-    const { notices } = projected("deny-write");
+  it.each(["copilot-denied-nonce.txt", "pc-denied-ABC123/copilot-denied-nonce.txt"])("feeds native denied-edit wire through canonical persistence and exact target oracle: %s", target => {
+    const { notices } = projected("deny-write", target);
     const request = notices.find(n => n.stage === "permission_requested")!, delivered = notices.find(n => n.stage === "permission_delivered")!, failed = notices.find(n => n.status === "failed")!;
-    const e = { expected: copilotOrigin(request), requestId: "permission", expectedRelativePath: "copilot-denied-nonce.txt",
+    const e = { expected: copilotOrigin(request), requestId: "permission", expectedRelativePath: target,
       request: { ...request, requestId: "permission", method: "session/request_permission" as const, targetRelativePath: request.target!, offeredActions: request.declineOffered ? ["decline"] : [] },
       decision: { ...delivered, requestId: "permission", browserRequestId: "permission", action: delivered.outcome === "reject_once" ? "decline" : "accept" },
       deliveredDecision: { ...delivered, requestId: "permission", outcome: delivered.outcome! },
       toolResult: { ...failed, status: "failed" as const }, terminal: { runId: "run", turnId: "turn", observedAtMs: 50, status: "cancelled" as const }, cancellation: { requestedAtMs: 40, scope: "run", acknowledged: true },
       cleanup: { observedAtMs: 60, ownedProcessesRemaining: 0 }, nativeAttemptsForTarget: 1,
       fileObservations: (["before-request", "pending", "after-decision", "terminal", "after-cleanup"] as const).map((phase, index) => ({ phase, observedAtMs: [0, request.observedAtMs, 30, 50, 60][index]!, exists: false })), mutationObservation: { startedAtMs: 0, endedAtMs: 60, complete: true, targetMutationCount: 0 } };
-    expect(request.target).toBe("copilot-denied-nonce.txt");
+    expect(request.target).toBe(target);
     expect(gradeCopilotDeniedWrite(e).passed).toBe(true);
     e.request.targetRelativePath = "foreign.txt"; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
     e.request.targetRelativePath = e.expectedRelativePath; e.cancellation.acknowledged = false; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
@@ -46,7 +49,7 @@ describe("Copilot Product protection integration", () => {
   it("feeds actual attached wire through canonical notices and rejects early terminal or missing linkage", () => {
     const { notices } = projected("attached-shell"); const call = notices.find(n => n.commandSha256)!;
     const started = notices.find(n => n.shellState === "started")!, result = notices.find(n => n.shellState === "completed")!;
-    const e = { expected: copilotOrigin(call), nativeCall: { ...call, operation: call.operation!, mode: call.mode!, detach: call.detach!, commandSha256: call.commandSha256! }, expectedCommandSha256: call.commandSha256!, expectedShellId: started.shellId!,
+    const e = { expected: copilotOrigin(call), nativeCall: { ...call, operation: call.operation!, mode: call.mode!, detach: call.detach!, commandSha256: call.commandSha256! }, expectedCommand: fixture["attached-shell"][0].params.update.rawInput.command, commandMatch: matchCopilotFixtureCommand(fixture["attached-shell"][0].params.update.rawInput.command, call.commandSha256!), expectedCommandSha256: call.commandSha256!, expectedShellId: started.shellId!,
       commandExit: { observedAtMs: result.observedAtMs - 1, code: 0, ownedProcessIdentityVerified: true, commandSha256: call.commandSha256! },
       nativeShellResult: { ...result, shellId: result.shellId!, commandToolCallId: result.commandToolCallId!, status: result.status!, exitCode: result.exitCode! },
       terminal: { observedAtMs: 50, runId: "run", turnId: "turn", status: "succeeded" as const }, cleanup: { observedAtMs: 60, ownedProcessesRemaining: 0 }, terminalMarkerMatches: true, afterCleanupMarkerMatches: true };
@@ -64,6 +67,43 @@ describe("Copilot Product protection integration", () => {
     ]) { const { rows } = projected("attached-shell"); mutate(rows[0]); expect(() => readCopilotToolEvidence(rows, "run")).toThrow(); }
     expect(readCopilotToolEvidence([], "run")).toEqual([]); // Missing proof never fabricates an event.
   });
+  it("isolates the denied parent from unrelated workspace startup churn and binds the prompt", async () => {
+    const root = await mkdtemp("/tmp/pc-denial-isolated-");
+    const fixture = await createDeniedTargetFixture(root, "copilot-denied-nonce.txt");
+    try {
+      const prompt = bindDeniedTargetPrompt(copilotProtectionCases[0].prompt("nonce"), "copilot-denied-nonce.txt", fixture.targetRelativePath);
+      expect(prompt).toContain(`creating ${fixture.targetRelativePath} with DENIED-nonce`);
+      expect(fixture.targetRelativePath).toMatch(/^pc-denied-[a-zA-Z0-9]+\/copilot-denied-nonce\.txt$/);
+      await mkdir(join(root, "startup")); await writeFile(join(root, "startup", "runtime.json"), "{}");
+      await writeFile(join(root, "transient"), "x"); await unlink(join(root, "transient"));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(fixture.watcher.finish()).toMatchObject({ complete: true, targetMutationCount: 0, reasons: [] });
+    } finally { fixture.watcher.finish(); await rm(root, { recursive: true, force: true }); }
+  });
+  it("retains a coverage gap when create/delete occurs before callbacks can arrive", async () => {
+    const root = await mkdtemp("/tmp/pc-denial-gap-");
+    const fixture = await createDeniedTargetFixture(root, "denied");
+    try {
+      writeFileSync(fixture.targetPath, "x"); unlinkSync(fixture.targetPath);
+      const receipt = fixture.watcher.finish();
+      expect(receipt).toMatchObject({ complete: false, targetMutationCount: 0 });
+      expect(receipt.reasons).toContain("coverage-gap-parent-version-changed");
+      expect(receipt.finalParent).not.toEqual(receipt.initialParent);
+      expect(fixture.watcher.finish()).toBe(receipt);
+    } finally { fixture.watcher.finish(); await rm(root, { recursive: true, force: true }); }
+  });
+  it("refuses a preexisting target, symlink parent and ambiguous prompt", async () => {
+    const root = await mkdtemp("/tmp/pc-denial-invalid-");
+    try {
+      await writeFile(join(root, "denied"), "present");
+      expect(() => watchDeniedTarget(root, "denied")).toThrow(/initially be absent/);
+      await symlink(root, join(root, "link"));
+      expect(() => watchDeniedTarget(join(root, "link"), "absent")).toThrow(/real directory/);
+      expect(() => watchDeniedTarget(root, "../denied")).toThrow(/Invalid/);
+      expect(() => bindDeniedTargetPrompt("no target", "denied", "pc-denied-a/denied")).toThrow(/exact target once/);
+      expect(() => bindDeniedTargetPrompt("denied and denied", "denied", "pc-denied-a/denied")).toThrow(/exact target once/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("observes a transient create/delete even when final stat is absent", async () => {
     const root = await mkdtemp("/tmp/pc-copilot-watch-"); const watcher = watchDeniedTarget(root, "denied");
     try { await writeFile(join(root, "denied"), "x"); await unlink(join(root, "denied")); await new Promise(r => setTimeout(r, 30)); const proof = watcher.finish(); expect(proof.targetMutationCount > 0 || !proof.complete).toBe(true); expect(await exists(join(root, "denied"))).toBe(false); }
@@ -72,10 +112,10 @@ describe("Copilot Product protection integration", () => {
   it("rejects replacement or disappearance of the watched parent directory", async () => {
     const base = await mkdtemp("/tmp/pc-copilot-parent-"); const root = join(base, "workspace"); await mkdir(root);
     const watcher = watchDeniedTarget(root, "denied");
-    try { await rename(root, join(base, "old")); await mkdir(root); expect(watcher.finish().complete).toBe(false); }
+    try { await rename(root, join(base, "old")); await mkdir(root); expect(watcher.finish().complete).toBe(false); expect(watcher.finish().reasons).toContain("parent-identity-changed"); }
     finally { watcher.finish(); await rm(base, { recursive: true, force: true }); }
     const gone = await mkdtemp("/tmp/pc-copilot-parent-"); const deleted = watchDeniedTarget(gone, "denied");
-    await rm(gone, { recursive: true }); expect(deleted.finish().complete).toBe(false);
+    await rm(gone, { recursive: true }); expect(deleted.finish().complete).toBe(false); expect(deleted.finish().reasons).toContain("parent-unavailable-at-finish");
   });
   it("binds cleanup to the exact per-turn runner PID/start/run, never a warm or reused process", () => {
     const startedAt = new Date(1_700_000_000_000).toISOString();
@@ -97,4 +137,11 @@ describe("Copilot Product protection integration", () => {
       expect(await readFile(join(root, "marker"), "utf8")).toBe(fixture.marker);
     } finally { await fixture.close(); await rm(root, { recursive: true, force: true }); }
   });
+});
+
+it("rejects remote protection before any API access without bootstrap and pre-teardown authority", async () => {
+  const { runCopilotProtectionFlow } = await import("./copilot-protection-flow.js");
+  let calls = 0;
+  await expect(runCopilotProtectionFlow({ execution: { environment: { id: "daytona" }, profile: { qualificationCandidate: "copilot" }, task: { id: "native-permission-deny-write" } }, api: { get: async () => { calls++; } } } as any)).rejects.toThrow(/bootstrap and pre-teardown/);
+  expect(calls).toBe(0);
 });

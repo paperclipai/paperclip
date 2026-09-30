@@ -359,6 +359,7 @@ async function dispatch(
     if (!runId) throw new Error("attach a run before starting an ACPX turn");
     if (turnId) throw new Error("ACPX sidecar already has an active turn");
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
+    const activeAgent = openParams!.agent;
     turnId = currentTurnId;
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
@@ -391,7 +392,7 @@ async function dispatch(
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
-          waitForPermission(currentTurnId, providerRequest, context, toolEvidence),
+          waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
       });
     } catch (error) {
       turnId = null;
@@ -421,14 +422,15 @@ async function dispatch(
   if (request.command === "turn.cancel") {
     const expected = boundedIdentity(request.params.turnId, "turnId");
     if (expected !== turnId) throw new Error("cannot cancel a stale ACPX turn");
-    await requireHost().interruptActiveTurn(
+    const activeHost = requireHost();
+    await activeHost.interruptActiveTurn(
       boundedOptionalText(
         request.params.reason,
         "Paperclip cancellation",
         4_000,
       ),
     );
-    return { cancelled: true };
+    return { cancelled: true, sessionClosed: activeHost.isClosed() };
   }
   if (request.command === "permission.resolve") {
     const requestId = boundedIdentity(request.params.requestId, "requestId");
@@ -758,6 +760,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
 
 async function waitForPermission(
   activeTurnId: string,
+  agent: QualifiedAcpxAgent,
   request: AcpPermissionRequest,
   context: { signal: AbortSignal; responseDelivery?: Promise<void> },
   toolEvidence?: CopilotToolEvidence | CursorToolEvidence,
@@ -766,7 +769,7 @@ async function waitForPermission(
   if (turnId !== activeTurnId || signal.aborted || permissions.size >= MAX_PENDING_INPUTS) {
     return { outcome: "cancel" };
   }
-  const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(openParams?.agent ?? "") ? { allowAlwaysScope: "session" } : {});
+  const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(agent) ? { allowAlwaysScope: "session" } : {});
   const responseDelivery = requireAcpxResponseDelivery(context);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, normalized.toolCallId);
   return await new Promise((settle) => {
@@ -785,6 +788,7 @@ async function waitForPermission(
     emit("runtime.permission_requested", {
       requestId, kind: normalized.kind, title: normalized.title,
       toolCallId: normalized.toolCallId, choices: normalized.choices,
+      origin: { adapter: "acpx-runtime-sidecar", provider: agent, method: "session/request_permission" },
     }, activeTurnId);
   });
 }

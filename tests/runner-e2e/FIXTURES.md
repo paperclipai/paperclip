@@ -260,8 +260,9 @@ is explicit-only. No private control-plane hooks or direct database writes are u
 
 ## Pi native boundaries
 
-The explicit-only `pi-native` suite has three local candidate cells and no automatic
-retries. `native-questions` answers the real runner-owned Pi select, confirm, input
+The explicit-only `pi-native` suite has four local and three Daytona candidate
+cells, with no automatic retries. The remote suite excludes automatic deny-all
+because its initial native file read is itself denied. `native-questions` answers the real runner-owned Pi select, confirm, input
 and editor tool through four durable browser cards, reloading before every answer.
 Undisclosed text and independent workspace JSON prove delivery to the same live run.
 Pi's SDK cannot distinguish negative confirmation from dismissal; the expected
@@ -279,7 +280,8 @@ no database writes, private hooks, or fabricated provider results are allowed.
 
 ## Copilot native protection
 
-The explicit-only `copilot-protection` suite has two local, one-run cells (120s
+The explicit-only `copilot-protection` suite has two cases on local and Daytona,
+each with one run (120s
 provider timeout, 300s attempt budget). `native-permission-deny-write` denies one
 exact native edit through its browser card, waits for the delivered rejection and
 failed tool, then cancels through the public run API. Its expected outcome is a
@@ -290,7 +292,7 @@ change makes no-effect coverage incomplete; stat polling alone cannot pass.
 
 `attached-async-settlement` starts a fixed finite command with explicit async mode
 and `detach:false`, then asks the model to attempt immediate completion. A one-shot
-private local socket accepts only the fixture nonce, never an executable or command;
+private socket in the tested environment accepts only the fixture nonce, never an executable or command;
 the test owns/reaps a predeclared child and records its actual exit before releasing
 the provider-launched client. The independent marker, client retirement, native shell
 linkage and actual durable turn terminal must agree. Fixture resources close in a
@@ -314,10 +316,34 @@ retained warm daemon as a leaked per-run process or signals an API-provided PID.
 Directory-watch coverage also rejects parent device/inode replacement or removal.
 
 
-The manual `cursor-native` suite has four local Cursor candidate cells with
+The manual `cursor-native` suite has four cases on each of local and Daytona with
 one expected provider run each and a 120-second provider deadline. Browser
 choices, rejection feedback, native origin/decision receipts, workspace checks
 and provider retirement are independently checked. Failed or missing cleanup
 assertions fail the final report even if the native interaction passed. No
 native callback, private-HOME artifact export, or paid qualification is inferred
 from a semantic question or plan result.
+
+
+### Remote native proof scope
+
+Remote native cells require the exact authenticated lease, run, immutable image
+and executable bindings documented in [the runbook](README.md#remote-native-evidence-and-warm-continuation).
+Action publication follows observer readiness and a saved baseline. The observer
+seals before environment destruction and retains file bytes on the host; no
+post-deletion RPC or host-copy-back evidence may satisfy remote no-effect or
+retirement checks. Runtime-internal files are an explicit scoped exclusion.
+`human-permission-denial` requires native request/tool correlation, the browser's
+exact Decline, delivered denial and failed write, and unchanged file evidence
+through retirement. All normal project and company boundaries apply.
+
+Cursor and Copilot may exempt a bootstrap read only when every native notice for
+that completed tool origin carries the single-path attestation matching the
+observer's exact random action file. The passive projector derives this digest
+from one explicit scalar native input path, rejects ambiguous/multiple paths,
+and checks subsequent input/location updates for changes. Durable canonical
+execution receipts must match the same run, turn, execution identity, status,
+and order; any explicit canonical target must agree. Missing or conflicting
+attestations fail qualification. PRP retains only the first location and terminal
+updates may omit it, so canonical targets alone cannot prove bootstrap ownership.
+Neither tool titles nor output text supplies path evidence.

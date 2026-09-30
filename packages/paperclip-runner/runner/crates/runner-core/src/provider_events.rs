@@ -224,6 +224,12 @@ pub fn project_acpx_state_event(
                     ));
                 }
             }
+            let origin = match details.get("origin") {
+                Some(origin) => project_runtime_request_origin(Some(origin))?,
+                None => {
+                    json!({"adapter":"acpx-runtime-sidecar", "provider":"acpx", "method":"session/request_permission"})
+                }
+            };
             one(
                 "runtime_request.created",
                 EventPriority::P0,
@@ -232,7 +238,7 @@ pub fn project_acpx_state_event(
                     "requestId":request_id, "turnId":context.turn_id, "itemId":context.item_id,
                     "type":"permission", "status":"pending", "prompt":title, "choices":choices,
                     "details":details,
-                    "origin":{"adapter":"acpx-runtime-sidecar","provider":"acpx","method":"session/request_permission"},
+                    "origin":origin,
                 }}),
             )
         }

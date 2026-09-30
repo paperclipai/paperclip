@@ -375,7 +375,7 @@ function EnvironmentVariablesEditorShowcase() {
     NODE_ENV: { type: "plain", value: "production" },
     GH_TOKEN: { type: "secret_ref", secretId: "dg-github", version: "latest" },
     DB_URL: { type: "secret_ref", secretId: "dg-db", version: 3 },
-    STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
+    STRIPE_API_KEY: { type: "plain", value: "demo-value-not-a-credential" },
   });
   return (
     <div className="max-w-(--sz-640px) rounded-md border border-border p-4">

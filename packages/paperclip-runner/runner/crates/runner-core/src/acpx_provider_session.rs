@@ -10,7 +10,8 @@ use crate::acpx_provider_state::{
 };
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
-    GeneratedAcpxSidecarCommand, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+    GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{
@@ -278,6 +279,7 @@ pub struct AcpxProviderSession {
     working_directory: PathBuf,
     closed: bool,
     transport_terminated: bool,
+    runtime_retired: bool,
 }
 
 impl AcpxProviderSession {
@@ -312,7 +314,12 @@ impl AcpxProviderSession {
             working_directory: config.working_directory.clone(),
             closed: false,
             transport_terminated: false,
+            runtime_retired: false,
         })
+    }
+
+    pub fn runtime_retired(&self) -> bool {
+        self.runtime_retired
     }
 
     pub fn process_id(&self) -> u32 {
@@ -360,6 +367,11 @@ impl AcpxProviderSession {
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
+        if self.runtime_retired {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider runtime was retired by cancellation",
+            ));
+        }
         validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         validate_turn_message(message)?;
         if working_directory != self.working_directory {
@@ -526,6 +538,9 @@ impl AcpxProviderSession {
                 "ACPX sidecar did not confirm turn cancellation",
             )));
         }
+        // Polling still owns the terminal frame queued before this response.
+        // Only future prompt admission is revoked by the confirmed close.
+        self.runtime_retired = response.get("sessionClosed").and_then(Value::as_bool) == Some(true);
         Ok(response)
     }
 
@@ -538,9 +553,27 @@ impl AcpxProviderSession {
             Ok(event) => event,
             Err(error) => return Err(self.fail_closed(error)),
         };
-        let Some(event) = event else {
+        let Some(mut event) = event else {
             return Ok(None);
         };
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimePermissionRequested {
+            // Authority comes from this admitted connection's profile. A sidecar
+            // claim cannot relabel another provider; old frames may omit origin.
+            let origin = json!({"adapter":"acpx-runtime-sidecar", "provider":self.config.agent,
+                "method":"session/request_permission"});
+            if event
+                .payload
+                .get("origin")
+                .is_some_and(|claimed| claimed != &origin)
+            {
+                return Err(self.fail_closed(LocalRunnerError::invalid(
+                    "ACPX permission origin conflicts with the admitted provider profile",
+                )));
+            }
+            if let Some(payload) = event.payload.as_object_mut() {
+                payload.insert("origin".to_owned(), origin);
+            }
+        }
         let mut next_state = self.state.clone();
         let events = match next_state.accept_event(&event) {
             Ok(events) => events,

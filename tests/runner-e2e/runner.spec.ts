@@ -1,5 +1,6 @@
 import { runCursorNativeFlow } from "./cursor-native-flow.js";
-import { verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
+import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
+import { runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
 import { runPiNativeFlow } from "./pi-native-flow.js";
 import { completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
@@ -597,6 +598,15 @@ for (const execution of executions) {
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
     const cleanupAssertions: CleanupAssertion[] = [];
+    const beforeEnvironmentTeardownAssertions: CleanupAssertion[] = [];
+    const registerCleanupAssertion = (assertion: CleanupAssertion) => {
+      if (cleanupAssertions.length >= 8) throw new Error("Cleanup assertion bound exceeded");
+      cleanupAssertions.push(assertion);
+    };
+    const registerBeforeEnvironmentTeardownAssertion = (assertion: CleanupAssertion) => {
+      if (beforeEnvironmentTeardownAssertions.length >= 8) throw new Error("Remote cleanup assertion bound exceeded");
+      beforeEnvironmentTeardownAssertions.push(assertion);
+    };
 
     const capturePrivateScreenshot = async (id: string, file: string) => {
       const screenshotPath = path.join(privateDir, file);
@@ -835,6 +845,18 @@ for (const execution of executions) {
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
       });
 
+      const remoteBootstrap = execution.environment.id === "daytona"
+        && ["cursor_native", "pi_native", "copilot_protection"].includes(execution.task.flow)
+        ? createRemoteNativeBootstrap({
+          api, daytona: await createRemoteFixtureClient(credentials.DAYTONA_API_KEY ?? ""),
+          companyId: fixtures.company.id, environmentId: fixtures.environment.id, agentId: fixtures.agent.id,
+          image: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE ?? "",
+          nodeSha256: process.env.PAPERCLIP_E2E_DAYTONA_NODE_SHA256 ?? "",
+          runnerdSha256: process.env.PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256 ?? "",
+          deadlineAt: startedAtMs + deadlineMs,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        }) : undefined;
+
       if (execution.suite.id === "api-response-reading") {
         const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
           title: `Synthetic diagnostic evidence ${nonce}`,
@@ -897,10 +919,7 @@ for (const execution of executions) {
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
-          registerCleanupAssertion: assertion => {
-            if (cleanupAssertions.length >= 8) throw new Error("Cleanup assertion bound exceeded");
-            cleanupAssertions.push(assertion);
-          },
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -911,6 +930,7 @@ for (const execution of executions) {
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion: remoteBootstrap ? registerBeforeEnvironmentTeardownAssertion : registerCleanupAssertion,
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -920,6 +940,7 @@ for (const execution of executions) {
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerBeforeEnvironmentTeardownAssertion,
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `copilotProtection.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -1529,7 +1550,7 @@ for (const execution of executions) {
               (execution.task.turnTimeoutMs ?? 10 * 60_000),
           );
           const waitingState = await pollUntil({
-            label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
+            label: `warm ${execution.environment.id} turn ${completedTurn} review state for issue ${issue.id}`,
             deadlineAt: turnDeadlineAt,
             load: loadTaskState,
             accept: ({ currentIssue, taskRuns, interactions }) => {
@@ -1577,78 +1598,81 @@ for (const execution of executions) {
           const completedRunIds = new Set(
             chronologicalRuns.map((candidate) => candidate.id),
           );
-          const retainedTurnLeases = await pollUntil({
-            label: `retained Daytona leases after warm turn ${completedTurn}`,
-            deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
-            intervalMs: 500,
-            load: () =>
-              api.get<EnvironmentLeaseRecord[]>(
-                `/api/environments/${fixtures!.environment.id}/leases`,
-              ),
-            accept: (leases) => {
-              const runOrder = new Map(
-                chronologicalRuns.map((candidate, index) => [
-                  candidate.id,
-                  index,
-                ]),
-              );
-              const completed = leases
-                .filter(
-                  (lease) =>
-                    lease.heartbeatRunId &&
-                    completedRunIds.has(lease.heartbeatRunId),
-                )
-                .sort(
-                  (left, right) =>
-                    (runOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-                    (runOrder.get(right.heartbeatRunId ?? "") ?? 0),
+          let completedLeases: EnvironmentLeaseRecord[] = [];
+          if (execution.environment.id === "daytona") {
+            const retainedTurnLeases = await pollUntil({
+              label: `retained Daytona leases after warm turn ${completedTurn}`,
+              deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
+              intervalMs: 500,
+              load: () =>
+                api.get<EnvironmentLeaseRecord[]>(
+                  `/api/environments/${fixtures!.environment.id}/leases`,
+                ),
+              accept: (leases) => {
+                const runOrder = new Map(
+                  chronologicalRuns.map((candidate, index) => [
+                    candidate.id,
+                    index,
+                  ]),
                 );
-              return (
-                completed.length === completedTurn &&
-                completed
-                  .slice(0, -1)
-                  .every(
+                const completed = leases
+                  .filter(
                     (lease) =>
-                      lease.status === "expired" &&
-                      lease.cleanupStatus === "success",
-                  ) &&
-                completed.at(-1)?.status === "retained" &&
-                completed.every(
-                  (lease) =>
-                    lease.leasePolicy === "reuse_by_environment" &&
-                    typeof lease.providerLeaseId === "string" &&
-                    record(lease.metadata).sandboxState === "started",
-                ) &&
-                completed
-                  .slice(1)
-                  .every(
-                    (lease) =>
-                      record(lease.metadata).resumedFromState === "started",
+                      lease.heartbeatRunId &&
+                      completedRunIds.has(lease.heartbeatRunId),
                   )
+                  .sort(
+                    (left, right) =>
+                      (runOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                      (runOrder.get(right.heartbeatRunId ?? "") ?? 0),
+                  );
+                return (
+                  completed.length === completedTurn &&
+                  completed
+                    .slice(0, -1)
+                    .every(
+                      (lease) =>
+                        lease.status === "expired" &&
+                        lease.cleanupStatus === "success",
+                    ) &&
+                  completed.at(-1)?.status === "retained" &&
+                  completed.every(
+                    (lease) =>
+                      lease.leasePolicy === "reuse_by_environment" &&
+                      typeof lease.providerLeaseId === "string" &&
+                      record(lease.metadata).sandboxState === "started",
+                  ) &&
+                  completed
+                    .slice(1)
+                    .every(
+                      (lease) =>
+                        record(lease.metadata).resumedFromState === "started",
+                    )
+                );
+              },
+            });
+            const turnRunOrder = new Map(
+              chronologicalRuns.map((candidate, index) => [candidate.id, index]),
+            );
+            completedLeases = retainedTurnLeases
+              .filter(
+                (lease) =>
+                  lease.heartbeatRunId &&
+                  completedRunIds.has(lease.heartbeatRunId),
+              )
+              .sort(
+                (left, right) =>
+                  (turnRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                  (turnRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
               );
-            },
-          });
-          const turnRunOrder = new Map(
-            chronologicalRuns.map((candidate, index) => [candidate.id, index]),
-          );
-          const completedLeases = retainedTurnLeases
-            .filter(
-              (lease) =>
-                lease.heartbeatRunId &&
-                completedRunIds.has(lease.heartbeatRunId),
-            )
-            .sort(
-              (left, right) =>
-                (turnRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-                (turnRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
-            );
-          if (
-            new Set(completedLeases.map((lease) => lease.providerLeaseId))
-              .size !== 1
-          ) {
-            throw new Error(
-              `Warm turn ${completedTurn} replaced its Daytona sandbox`,
-            );
+            if (
+              new Set(completedLeases.map((lease) => lease.providerLeaseId))
+                .size !== 1
+            ) {
+              throw new Error(
+                `Warm turn ${completedTurn} replaced its Daytona sandbox`,
+              );
+            }
           }
           turnEvidence.push({
             turn: completedTurn,
@@ -1663,7 +1687,7 @@ for (const execution of executions) {
           );
           await captureScreenshot(
             `warm-turn-${completedTurn}`,
-            `Warm Daytona turn ${completedTurn} awaiting review`,
+            `Warm ${execution.environment.id} turn ${completedTurn} awaiting review`,
             `warm-turn-${completedTurn}.png`,
           );
           turnSubmissionTimesMs.push(
@@ -2144,22 +2168,24 @@ for (const execution of executions) {
         const executionWorkspaceIds = selectedRuns.map(
           (candidate) => record(candidate.contextSnapshot).executionWorkspaceId,
         );
-        if (
-          leaseIds.some(
-            (leaseId) => typeof leaseId !== "string" || leaseId.length === 0,
-          )
-        ) {
-          invariantFailures.push(
-            `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
-          );
-        }
-        if (
-          JSON.stringify(acquisitionOutcomes) !==
-          JSON.stringify(["created", "resumed", "resumed"])
-        ) {
-          invariantFailures.push(
-            `expected warm lease outcomes created,resumed,resumed; observed ${JSON.stringify(acquisitionOutcomes)}`,
-          );
+        if (execution.environment.id === "daytona") {
+          if (
+            leaseIds.some(
+              (leaseId) => typeof leaseId !== "string" || leaseId.length === 0,
+            )
+          ) {
+            invariantFailures.push(
+              `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
+            );
+          }
+          if (
+            JSON.stringify(acquisitionOutcomes) !==
+            JSON.stringify(["created", "resumed", "resumed"])
+          ) {
+            invariantFailures.push(
+              `expected warm lease outcomes created,resumed,resumed; observed ${JSON.stringify(acquisitionOutcomes)}`,
+            );
+          }
         }
         if (
           !fixtures.project?.primaryWorkspace?.id ||
@@ -2242,71 +2268,76 @@ for (const execution of executions) {
             `warm turn timing data was incomplete or exceeded its structural deadline: ${JSON.stringify(turnTimings)}`,
           );
         }
-        const retainedLeases = await pollUntil({
-          label: `terminal warm Daytona lease history for issue ${issue.id}`,
-          deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
-          intervalMs: 500,
-          load: () =>
-            api.get<EnvironmentLeaseRecord[]>(
-              `/api/environments/${fixtures!.environment.id}/leases`,
-            ),
-          accept: (leases) => {
-            const warmLeases = leases.filter(
+        let warmLeases: EnvironmentLeaseRecord[] = [];
+        let providerLeaseIds: Array<string | null | undefined> = [];
+        let resumedFromStates: unknown[] = [];
+        if (execution.environment.id === "daytona") {
+          const retainedLeases = await pollUntil({
+            label: `terminal warm Daytona lease history for issue ${issue.id}`,
+            deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+            intervalMs: 500,
+            load: () =>
+              api.get<EnvironmentLeaseRecord[]>(
+                `/api/environments/${fixtures!.environment.id}/leases`,
+              ),
+            accept: (leases) => {
+              const warmLeases = leases.filter(
+                (lease) =>
+                  lease.issueId === issue!.id &&
+                  selectedRuns.some(
+                    (candidate) => candidate.id === lease.heartbeatRunId,
+                  ),
+              );
+              return (
+                warmLeases.length === 3 &&
+                warmLeases.every((lease) => {
+                  const runIndex = selectedRuns.findIndex(
+                    (candidate) => candidate.id === lease.heartbeatRunId,
+                  );
+                  return (
+                    lease.status ===
+                      (runIndex === selectedRuns.length - 1
+                        ? "retained"
+                        : "expired") &&
+                    lease.cleanupStatus === "success" &&
+                    lease.leasePolicy === "reuse_by_environment" &&
+                    typeof lease.providerLeaseId === "string" &&
+                    record(lease.metadata).sandboxState === "started"
+                  );
+                })
+              );
+            },
+          });
+          const selectedRunOrder = new Map(
+            selectedRuns.map((candidate, index) => [candidate.id, index]),
+          );
+          warmLeases = retainedLeases
+            .filter(
               (lease) =>
                 lease.issueId === issue!.id &&
-                selectedRuns.some(
-                  (candidate) => candidate.id === lease.heartbeatRunId,
-                ),
+                selectedRunOrder.has(lease.heartbeatRunId ?? ""),
+            )
+            .sort(
+              (left, right) =>
+                (selectedRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                (selectedRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
             );
-            return (
-              warmLeases.length === 3 &&
-              warmLeases.every((lease) => {
-                const runIndex = selectedRuns.findIndex(
-                  (candidate) => candidate.id === lease.heartbeatRunId,
-                );
-                return (
-                  lease.status ===
-                    (runIndex === selectedRuns.length - 1
-                      ? "retained"
-                      : "expired") &&
-                  lease.cleanupStatus === "success" &&
-                  lease.leasePolicy === "reuse_by_environment" &&
-                  typeof lease.providerLeaseId === "string" &&
-                  record(lease.metadata).sandboxState === "started"
-                );
-              })
+          providerLeaseIds = warmLeases.map(
+            (lease) => lease.providerLeaseId,
+          );
+          resumedFromStates = warmLeases
+            .slice(1)
+            .map((lease) => record(lease.metadata).resumedFromState);
+          if (
+            new Set(providerLeaseIds).size !== 1 ||
+            typeof providerLeaseIds[0] !== "string" ||
+            JSON.stringify(resumedFromStates) !==
+              JSON.stringify(["started", "started"])
+          ) {
+            invariantFailures.push(
+              `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
             );
-          },
-        });
-        const selectedRunOrder = new Map(
-          selectedRuns.map((candidate, index) => [candidate.id, index]),
-        );
-        const warmLeases = retainedLeases
-          .filter(
-            (lease) =>
-              lease.issueId === issue!.id &&
-              selectedRunOrder.has(lease.heartbeatRunId ?? ""),
-          )
-          .sort(
-            (left, right) =>
-              (selectedRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-              (selectedRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
-          );
-        const providerLeaseIds = warmLeases.map(
-          (lease) => lease.providerLeaseId,
-        );
-        const resumedFromStates = warmLeases
-          .slice(1)
-          .map((lease) => record(lease.metadata).resumedFromState);
-        if (
-          new Set(providerLeaseIds).size !== 1 ||
-          typeof providerLeaseIds[0] !== "string" ||
-          JSON.stringify(resumedFromStates) !==
-            JSON.stringify(["started", "started"])
-        ) {
-          invariantFailures.push(
-            `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
-          );
+          }
         }
         warmLifecycleEvidence = {
           ...(warmLifecycleEvidence ?? {}),
@@ -2656,13 +2687,22 @@ for (const execution of executions) {
           });
         });
         try {
-          await cancelActiveRunsForCleanup();
-          if (companyRunFlow) {
-            const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
-            selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
-            await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
-          }
-          await fixtures.teardown();
+          const verification = await runCleanupWithObservers({
+            retireRuns: async () => {
+              await cancelActiveRunsForCleanup();
+              if (companyRunFlow) {
+                const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`);
+                selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+                await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
+              }
+            },
+            assertions: beforeEnvironmentTeardownAssertions,
+            teardown: () => fixtures!.teardown(),
+          });
+          matcherResults.push(...verification.checks.map(check => ({
+            matcher: { kind: "json_path" as const, path: `remoteCleanup.${check.id}`, expected: true }, passed: check.passed, detail: check.detail,
+          })));
+          if (verification.errors.length) throw new AggregateError(verification.errors, "Cleanup or remote retirement verification failed");
           cleanup = "passed";
         } catch (error) {
           cleanup = "failed";

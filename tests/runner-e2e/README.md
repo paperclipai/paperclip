@@ -124,6 +124,7 @@ Shell variables take precedence over the local file. The recognized names are:
 - `CURSOR_AUTH_TOKEN` (extended Cursor candidate)
 - `COPILOT_GITHUB_TOKEN` (extended Copilot candidate)
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
+- `PAPERCLIP_E2E_DAYTONA_NODE_SHA256` and `PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256` (native Cursor/Pi/Copilot Daytona fixtures; exact `sha256:...` executable digests from that image)
 
 The image must be an immutable `image@sha256:...` reference. The launcher
 reports missing variable names but never prints values. It passes raw provider
@@ -1280,8 +1281,10 @@ mock control plane. Neither suite substitutes for the other.
 
 ### Pi native Product fixtures
 
-The separate `pi-native` suite defines three explicit local Pi cells:
-`native-questions`, `agent-files-fresh-run`, and `restrictive-denial`. It uses the
+The separate `pi-native` suite defines seven explicit Pi cells: native questions,
+agent-file persistence and browser permission denial on local and Daytona, plus
+a local-only automatic `restrictive-denial` case. The latter cannot use the remote
+setup read under `deny-all`, so it is explicitly excluded there. It uses the
 pinned candidate profile and exact OpenRouter model. It is excluded from `--all`,
 never automatically retries, and retains qualification as pending until live proof.
 Reserve and reconcile each paid cell just as for `extended-harnesses`.
@@ -1296,19 +1299,31 @@ the durable browser form bridge. The existing five extended-harness journeys
 continue to prove semantic Paperclip questions and planning separately. Personal
 file persistence uses two fresh task runs and independent byte checks; restrictive
 denial uses one run and requires both a failed tool receipt and no file effect.
+`human-permission-denial` additionally requires the exact browser Decline response,
+delivered native denial and independent file/process observation through retirement.
 See [the fixture contract](FIXTURES.md#pi-native-boundaries) for the exact oracles
 and the limits of reconnect evidence.
 
-The manual `copilot-protection` suite selects only two local Copilot candidate
-cells. Discover them with `pnpm test:e2e:runner -- --list --suite copilot-protection`.
+The manual `copilot-protection` suite selects two Copilot candidate cases on
+each of local and Daytona (four cells). Discover them with `pnpm test:e2e:runner -- --list --suite copilot-protection`.
 See [Copilot native protection](./FIXTURES.md#copilot-native-protection) for the
 expected cancelled negative test, finite attached-process oracle, evidence limits,
 and required rebuilt runtime. Registration is not a qualification claim.
 
+Local human-denial cases for Copilot, Cursor and Pi create a fresh fixture-owned
+`pc-denied-*` directory before dispatch and watch its parent identity throughout
+the attempt. This keeps unrelated workspace startup writes outside the target
+watch. Exact prompt/native target correlation, complete watcher coverage and
+zero target mutations remain required. Evidence includes coverage failure
+reasons, parent device/inode changes and a bounded timestamped event journal;
+an absent final file cannot hide an incomplete watch or transient mutation.
+Remote cases retain their existing sealed observers.
+
 
 ### Cursor native interactions (candidate)
 
-The explicit-only local `cursor-native` suite exercises the native Cursor
+The explicit-only `cursor-native` suite has eight local/Daytona cells exercising
+the native Cursor
 question callback, plan rejection/revision/acceptance, plan cancellation, and
 permission denial across browser reload. List it with
 `pnpm test:e2e:runner -- --list --suite cursor-native`. The fixture configures
@@ -1323,3 +1338,38 @@ responsibility. These cases remain unqualified until paid runs pass.
 The full native plan text is retained in the interaction card. Exporting a plan
 file from Cursor's private HOME as a downloadable Paperclip artifact remains a
 separate capability gap; these callback tests do not claim that export works.
+
+
+### Remote native evidence and warm continuation
+
+All three native suites use an operator-published instruction file to withhold
+actual work until independent observers are armed inside the exact owned Daytona
+sandbox. The initial task only reads that file. Explicitly typed setup reads are
+separate from the native operation under test; unknown or extra writes/commands
+still fail. SDK 0.203.0, immutable image and executable digests, public run/lease
+ownership, sandbox labels and workspace sentinel are verified before execution.
+
+The observer watches registered targets (including transient create/delete), user
+workspace changes and the exact runner process plus descendants. The single
+controller-owned `.paperclip-runtime/paperclip-runner` subtree is excluded from
+user-file inventory and mutation counts: it holds the binary, provider pack,
+context and active runtime state. Its location and identity remain checked, and
+test targets cannot use it. This exclusion is recorded in evidence; it does not
+claim that runtime-internal writes are covered by the user-file oracle.
+
+A sealed receipt and bounded file bytes must reach the host before lease cleanup.
+Missing receipts, incomplete watches, ambiguous or reused process identities, and
+unproven retirement fail the cell. Sandbox deletion and host file copy-back cannot
+substitute for remote proof. The observed PRP environment identifier is retained
+as unverified metadata; the remote process is bound through the exact sandbox,
+run ID, lifecycle, process group and executable digest. Same-UID observer isolation
+is not an adversarial operating-system sandbox test.
+
+`--suite rich-acp-warm-continuity` adds six explicit cells: all three providers on
+local and Daytona. Three browser-driven turns must preserve native session,
+provider session, runner instance, PID/start identity and project workspace.
+Daytona also requires one continuously running sandbox and created/resumed/resumed
+lease history. Each turn has a 120-second limit; each three-run cell has a
+420-second budget and must be reserved accordingly. Existing Codex warm cells
+remain separate. All these suites are excluded from `--all`, never automatically
+retry, and remain pending qualification until their paid evidence passes.

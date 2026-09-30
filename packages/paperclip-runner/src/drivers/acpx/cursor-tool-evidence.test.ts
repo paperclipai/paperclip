@@ -68,6 +68,8 @@ it("preserves execute denial evidence after valid edit and read permission input
   expect(s.unavailable()).toBe(false);
   expect(s.fields().some(row => row.stage === "evidence_incomplete")).toBe(false);
   expect(s.fields().filter(row => row.toolCallId !== "tool").every(row => row.commandSha256 === undefined)).toBe(true);
+  expect(s.fields().filter(row => row.toolCallId === "read").every(row => row.operation === "read")).toBe(true);
+  expect(s.fields().filter(row => row.toolCallId === "edit").every(row => row.operation === undefined)).toBe(true);
   const shell = s.fields().filter(row => row.toolCallId === "tool");
   expect(shell.map(row => row.stage)).toEqual(["tool", "permission_requested", "permission_delivered", "tool"]);
   expect(shell[2].outcome).toBe("reject_once"); expect(shell[3].status).toBe("failed");

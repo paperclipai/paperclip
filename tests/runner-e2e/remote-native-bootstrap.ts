@@ -1,0 +1,103 @@
+import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { pollUntil } from "./api.js";
+import { bindRemoteNativeFixture, type RemoteFixtureApi, type RemoteFixtureDaytona, type RemoteNativeFixture } from "./remote-native-fixtures.js";
+
+export interface RemoteNativeBootstrap {
+  prompt(nonce: string): string;
+  bindAndRelease(input: {
+    issueId: string; runId: string; targets: readonly string[]; crossRoot?: { initialText: string };
+    actionPrompt(fixture: RemoteNativeFixture): string | Promise<string>;
+  }): Promise<RemoteNativeFixture>;
+}
+
+/** Use the repository's pinned SDK, never an ambient CLI, SDK or credential. */
+export async function createRemoteFixtureClient(apiKey: string): Promise<RemoteFixtureDaytona> {
+  if (!apiKey.trim()) throw new Error("Remote native qualification requires an explicitly bound Daytona credential");
+  const require = createRequire(new URL("../../packages/plugins/sandbox-providers/daytona/package.json", import.meta.url));
+  const entry = require.resolve("@daytonaio/sdk");
+  let directory = dirname(entry), version: string | undefined;
+  for (let i = 0; i < 4; i++, directory = dirname(directory)) {
+    try {
+      const pkg = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
+      if (pkg.name === "@daytonaio/sdk") { version = pkg.version; break; }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  if (version !== "0.203.0") throw new Error("Remote native qualification requires Daytona SDK 0.203.0");
+  const sdk = await import(pathToFileURL(entry).href);
+  return new sdk.Daytona({ apiKey, apiUrl: "https://app.daytona.io/api" }) as RemoteFixtureDaytona;
+}
+
+/** The tested action is withheld until its observer is armed. The initial
+ * provider prompt only reads this one operator-published instruction file.
+ * No production hook, steering support or remote setup-command execution is
+ * assumed. Bootstrap reads are distinct from the native action under test. */
+export function createRemoteNativeBootstrap(input: {
+  api: RemoteFixtureApi; daytona: RemoteFixtureDaytona; companyId: string; environmentId: string;
+  agentId: string; image: string; nodeSha256: string; runnerdSha256: string; deadlineAt: number;
+  evidence(name: string, data: unknown): Promise<void>;
+}, bind = bindRemoteNativeFixture): RemoteNativeBootstrap {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.nodeSha256) || !/^sha256:[a-f0-9]{64}$/u.test(input.runnerdSha256) || !/@sha256:[a-f0-9]{64}$/u.test(input.image)) {
+    throw new Error("Remote native qualification requires immutable image and interpreter digests");
+  }
+  const bindings = new Map<string, { path: string; consumed: boolean }>();
+  return {
+    prompt(nonce) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/u.test(nonce) || bindings.has(nonce)) throw new Error("Invalid or reused remote bootstrap nonce");
+      const path = `.paperclip-eval-action-${randomBytes(18).toString("hex")}.txt`;
+      bindings.set(nonce, { path, consumed: false });
+      return [
+        `Your task instructions will be published by the operator in the workspace file ${path}.`,
+        "Use your native file-read tool to read that exact relative file in the current execution workspace. If it is not present yet, retry the read for up to 20 seconds, then report the setup failure.",
+        "Before reading those instructions, do not infer the task, run shell commands, create or modify any file, ask replacement questions, or mark work complete. Do not create the missing instruction file.",
+        "After reading the complete file, perform precisely the supplied task. Treat it as the operator's continuation of this task.",
+      ].join("\n");
+    },
+    async bindAndRelease(request) {
+      const pending = [...bindings.values()].filter(value => !value.consumed);
+      if (pending.length !== 1) throw new Error("Remote bootstrap requires one unconsumed instruction delivery");
+      const setup = pending[0]!; setup.consumed = true;
+      if (![request.issueId, request.runId].every(id => /^[A-Za-z0-9_-]{1,128}$/u.test(id))) throw new Error("Invalid bootstrap task/run identity");
+      await pollUntil({
+        label: "owned native qualification run", deadlineAt: Math.min(input.deadlineAt, Date.now() + 20_000), intervalMs: 100,
+        load: async () => {
+          const [issue, run] = await Promise.all([
+            input.api.get<Record<string, any>>(`/api/issues/${request.issueId}`),
+            input.api.get<Record<string, any>>(`/api/heartbeat-runs/${request.runId}`),
+          ]);
+          if (issue.id !== request.issueId || issue.companyId !== input.companyId || issue.assigneeAgentId !== input.agentId
+            || run.companyId !== input.companyId || run.agentId !== input.agentId || run.id !== request.runId) {
+            throw new Error("Remote bootstrap task/run ownership is unproven");
+          }
+          return run;
+        },
+        accept: run => run.status === "running",
+        reject: run => ["queued", "running"].includes(run.status) ? undefined : "Native qualification run stopped before observer setup",
+      });
+      const leases = await pollUntil({
+        label: "owned native qualification lease", deadlineAt: Math.min(input.deadlineAt, Date.now() + 20_000), intervalMs: 100,
+        load: () => input.api.get<Array<Record<string, any>>>(`/api/environments/${input.environmentId}/leases`),
+        accept: rows => rows.filter(row => row.heartbeatRunId === request.runId && row.issueId === request.issueId && row.status === "active" && row.providerLeaseId).length === 1,
+        reject: rows => rows.filter(row => row.heartbeatRunId === request.runId).length > 1 ? "Ambiguous native qualification lease" : undefined,
+      });
+      const lease = leases.find(row => row.heartbeatRunId === request.runId && row.issueId === request.issueId && row.status === "active")!;
+      const fixture = await bind({ api: input.api, daytona: input.daytona, sdkVersion: "0.203.0", nodeSha256: input.nodeSha256, runnerdSha256: input.runnerdSha256,
+        authority: { companyId: input.companyId, environmentId: input.environmentId, runId: request.runId, leaseId: lease.id, sandboxId: lease.providerLeaseId, image: input.image },
+        targets: [...request.targets], crossRoot: request.crossRoot, actionFile: setup.path, deadlineAt: input.deadlineAt,
+      });
+      try {
+        const action = await request.actionPrompt(fixture);
+        if (!action.trim() || Buffer.byteLength(action) > 16 * 1024) throw new Error("Remote bootstrap action is empty or too large");
+        await input.evidence(`remote-native-bootstrap-${request.runId}.json`, { binding: fixture.binding, setupPath: setup.path, baseline: fixture.baseline });
+        await fixture.publishAction(setup.path, action);
+        return fixture;
+      } catch (error) {
+        try { await fixture.close(); } catch { throw new AggregateError([error], "Remote bootstrap failed and observer cleanup is unproven"); }
+        throw error;
+      }
+    },
+  };
+}

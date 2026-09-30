@@ -207,7 +207,7 @@ impl AcpxProviderDescriptor {
                 "0.0.33",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
-                "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
+                "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
             ),
             "cursor" => (
                 self.model.as_str(),
@@ -215,7 +215,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+                "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -223,7 +223,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
+                "sha256:0fe49c2f8a2b144344d0de745fed1e4568df305de3a26c3a121dec21c8d4b751",
             ),
             "grok" => (
                 "grok-4.7",
@@ -1906,7 +1906,16 @@ impl AcpxCommandExecutor {
                 }
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
-                    state.lifecycle = "session_open".to_owned();
+                    state.lifecycle = if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.runtime_retired())
+                    {
+                        "closed"
+                    } else {
+                        "session_open"
+                    }
+                    .to_owned();
                     provider_turn_settled = true;
                     // An ACP goal has session lifetime, not prompt lifetime.
                     // Out-of-prompt goal updates remain observable after quiescence.
@@ -2794,7 +2803,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+                "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b",
                 None,
                 None,
                 "explicit-model",
@@ -2803,7 +2812,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
+                "sha256:0fe49c2f8a2b144344d0de745fed1e4568df305de3a26c3a121dec21c8d4b751",
                 None,
                 None,
                 "explicit-model",
@@ -2812,7 +2821,7 @@ mod tests {
                 "pi",
                 "pi-acp",
                 "0.0.33",
-                "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
+                "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
                 "openrouter/deepseek/deepseek-v4-flash-0731",
@@ -2834,6 +2843,18 @@ mod tests {
             }
             let valid: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
             valid.validate(&context()).unwrap();
+            let mut previous_contract = value.clone();
+            previous_contract["commandDigest"] = json!(match agent {
+                "cursor" =>
+                    "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+                "copilot" =>
+                    "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
+                "pi" => "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
+                _ => unreachable!(),
+            });
+            let previous_contract: AcpxProviderDescriptor =
+                serde_json::from_value(previous_contract).unwrap();
+            assert!(previous_contract.validate(&context()).is_err());
             if agent == "cursor" {
                 assert_eq!(valid.public_descriptor(None)["cursorMode"], json!("agent"));
                 let mut previous_v4 = value.clone();

@@ -1,5 +1,7 @@
 # Copilot 1.0.88 rich ACP capability audit
 
+Current checkpoint (2026-09-30): **Copilot profile v6 remains unqualified**. The latest paid controller and Product harness source is `81c20ad22723a2d35d7bd693cc6a47002fb46125`; native runtime source remains `e822b614fc368043f4b3d5e34a8d9bbda644e055`. Current local restrictive-denial evidence passed all ten Product checks and an additive screenshot-reader reconciliation, including denial delivery, no file mutation, explicit cancellation and owned process cleanup. The first attached-command attempt failed supervision. The new controller81 attempt reached task Done but failed exact native-command digest correlation; its cleanup and full end audit passed. The command differs by one leading ASCII space; the bounded fixture-only correction preserves raw digests and exact command content. That original case remains failed because independent settlement observations were not retained before the assertion. Two provider text bursts also produced a doubled final marker, and their native message boundaries remain under investigation. A visible Done status does not prove command settlement. This does not qualify the provider. See the [comparative capability report](runner-rich-acp-capabilities.md) for current evidence and remaining cases. The dated observations below retain their original source/profile identities.
+
 Initially audited 2026-09-28 against repository base `c65fc9e3c81c41aafe421aa90a00514b84343285`;
 updated 2026-09-29. Status remains **candidate, not qualified**. On frozen source
 `bd4cc29c3017ed5e1484423e842fd48e3b2f49f3`, profile v4 local hello, question/answer,
@@ -8,7 +10,7 @@ one native `gpt-5.6-luna` run with six matchers on immutable image
 `sha256:bff4c3f291087a0eeae37e4c20dd51857b92833eaf73ba3aca4157f37de1e109`.
 Earlier question-marker, recovery, startup-timeout and PostgreSQL failures remain
 retained; later success does not establish causes for unresolved earlier failures.
-The current admission identity is profile **v5**, binding shared ACPX patch
+The earlier 2026-09-29 admission identity was profile **v5**, binding shared ACPX patch
 `79aad2d688b03362e8cfcbf7a08f78a8383869f6882a9c9ed66f1d18efb94f2b`.
 The native Copilot binary and permission/instruction policy are unchanged. The
 new digest rejects old warm sessions; v4 paid receipts remain historical evidence,
@@ -120,7 +122,7 @@ is a separate lifecycle operation.
 
 ### Native instruction delivery
 
-The current candidate is profile v4. Its declaration binds native personal-file
+The initial candidate was profile v4. Its declaration binds native personal-file
 instruction delivery, including replacement under the provider lifetime lease before native launch. The isolated
 `COPILOT_HOME/copilot-instructions.md` is written atomically with mode 0600 under
 the protected provider home, and empty instructions replace any stale content.

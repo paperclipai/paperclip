@@ -1,3 +1,4 @@
+import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import { resolveCursorSessionMode, type CursorSessionMode } from "./cursor-mode.js";
 import { dirname, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
@@ -286,6 +287,7 @@ export class AcpxRuntimeHost {
   readonly #claudeSkillNames: readonly string[];
   readonly #assertAgentFilesHeld: (() => void) | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
+  #activeTurnInterruption: AcpxRuntimeTurn["cancel"] | null = null;
   #closingStarted = false;
   #closePromise: Promise<void> | null = null;
   #closed = false;
@@ -802,26 +804,30 @@ export class AcpxRuntimeHost {
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
     });
     this.#activeTurn = turn;
-    void turn.result
+    const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);
+    this.#activeTurnInterruption = managed.cancel;
+    void managed.result
       .finally(() => {
         // Once shutdown owns this turn, retain its cancellation handle until
         // runtime cleanup succeeds. The result may settle while cleanup is
         // failing, and a later close must still be able to retry cancellation.
         if (this.#activeTurn === turn && !this.#closingStarted) {
           this.#activeTurn = null;
+          this.#activeTurnInterruption = null;
         }
       })
       .catch(() => undefined);
-    return turn;
+    return managed;
+  }
+
+  isClosed(): boolean {
+    return this.#closed;
   }
 
   async interruptActiveTurn(reason: string): Promise<void> {
     const turn = this.#activeTurn;
     if (!turn) throw new Error("ACPX runtime host has no active turn");
-    const cancellationError = await boundedCancellation(
-      turn.cancel({ reason: boundedReason(reason) }),
-    );
-    if (cancellationError) throw cancellationError;
+    await this.#activeTurnInterruption!({ reason: boundedReason(reason) });
   }
 
   async close(input: { reason: string }): Promise<void> {

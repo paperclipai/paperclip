@@ -49,7 +49,7 @@ import {
   type MatrixExecution,
   type RunnerE2EResult,
 } from "./types.js";
-import { assertRunnerE2EPrerequisites } from "./prerequisites.js";
+import { assertRemoteNativeEvidencePrerequisites, assertRunnerE2EPrerequisites } from "./prerequisites.js";
 import {
   reapNewDetachedDarwinSharedMemory,
   snapshotDarwinSharedMemory,
@@ -1100,6 +1100,7 @@ async function main() {
   assertRunnerE2EPrerequisites(executions);
 
   await loadLocalEnvironment(process.env);
+  assertRemoteNativeEvidencePrerequisites(executions, process.env);
   const missingCredentials = [
     ...new Set(
       executions.flatMap((execution) => execution.requiredCredentials),

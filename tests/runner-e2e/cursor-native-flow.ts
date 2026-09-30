@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -5,14 +7,55 @@ import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { collectRunEvents } from "./run-observations.js";
 import { createTaskThroughUi } from "./user-actions.js";
-import { observeRunProcesses, watchDeniedTarget } from "./copilot-local-fixtures.js";
-import { cursorDeniedCommand, hasCursorDeniedCommand, hasCursorCancellation, readCursorToolEvidence, type CursorToolNotice } from "./cursor-native-evidence.js";
+import { observeRunProcesses, createDeniedTargetFixture } from "./copilot-local-fixtures.js";
+import { cursorDeniedCommand, hasCursorDeniedCommand, hasCursorCancellation, readCursorToolEvidence, assertCursorRemoteSnapshot, cursorRemoteDeniedSample, hasCursorRemoteRetirement, hasCursorRemoteWorkspaceUnchanged, type CursorRemoteSnapshot, type CursorRemoteBinding, type CursorToolNotice } from "./cursor-native-evidence.js";
 import { cursorNativeCaseDesigns, cursorNativePlanArtifactGate, hasCursorDenialBoundary, hasCursorPlanDecision, hasDeliveredCursorNativeRequest, hasExactCursorNativeResponse, type CursorNativeMethod } from "./cursor-native-cases.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
 type Row = Record<string, any>;
 type Check = { id: string; passed: boolean; detail: string };
+
+/** Select only the exact native callback, including either production ACPX bridge. */
+export function findCursorNativeRequest(rows: Row[], method: CursorNativeMethod, requestId?: string): Row | undefined {
+  return rows.map(row => row.payload?.prpEvent).find(event => event?.eventType === "runtime_request.created"
+    && hasAcpxNativeOrigin(event.payload?.request?.origin, "cursor", method)
+    && (!requestId || event.payload.request.requestId === requestId));
+}
+
+/** JSON object key order may change during persistence; array order and values may not. */
+export function hasCursorNativeCardBinding(card: Row, event: Row, runId: string): boolean {
+  return card.sourceRunId === runId && card.continuationPolicy === "none"
+    && isDeepStrictEqual(card.payload.questionSet, event.payload.request.input);
+}
+
+export interface CursorRemoteNativeFixture {
+  binding: CursorRemoteBinding; remoteCwd: string; actionFile: string;
+  snapshot(label: string): Promise<CursorRemoteSnapshot>;
+  finish(): Promise<CursorRemoteSnapshot>;
+  close(): Promise<void>;
+}
+export interface CursorRemoteBootstrap {
+  prompt(nonce: string): string;
+  bindAndRelease(input: { issueId: string; runId: string; targets: string[];
+    actionPrompt(fixture: CursorRemoteNativeFixture): Promise<string> | string }): Promise<CursorRemoteNativeFixture>;
+}
+
+
+/** Runs inside the awaited bootstrap callback, before action publication. */
+export async function prepareCursorRemoteAction(input: {
+  fixture: CursorRemoteNativeFixture; companyId: string; environmentId: string; runId: string;
+  prompt: string; deniedRelative?: string;
+}) {
+  const { fixture } = input;
+  if (fixture.binding.runId !== input.runId || fixture.binding.companyId !== input.companyId || fixture.binding.environmentId !== input.environmentId || fixture.remoteCwd !== fixture.binding.remoteCwd) throw new Error("Cursor bootstrap lease belongs to another run or workspace");
+  const baseline = await fixture.snapshot("before-action-publication");
+  assertCursorRemoteSnapshot(baseline, fixture.binding);
+  const initial = input.deniedRelative ? cursorRemoteDeniedSample(baseline, fixture.binding, input.deniedRelative, "before-request") : null;
+  if (initial && !initial.absent) throw new Error("Remote denied target was present before action publication");
+  const command = initial ? cursorDeniedCommand(initial.path) : null;
+  return { baseline, initial, command, prompt: input.prompt + (command ? `\nExact native shell command (copy verbatim):\n${command.command}` : "") };
+}
 
 /** Match canonical omission of an unanswered optional feedback field. */
 export function cursorNativePlanResponse(planId: string, decision: "accept" | "reject" | "cancel", feedback: string) {
@@ -45,36 +88,58 @@ export async function runCursorNativeFlow(input: {
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, data: unknown): Promise<void>;
   registerCleanupAssertion?(assertion: () => Promise<Check[]>): void;
+  registerBeforeEnvironmentTeardownAssertion?(assertion: () => Promise<Check[]>): void;
+  remoteBootstrap?: CursorRemoteBootstrap;
 }) {
   const { page, api, fixtures, execution, nonce } = input;
   const design = cursorNativeCaseDesigns.find(value => value.id === execution.task.id);
-  if (!design || execution.environment.id !== "local" || execution.profile.qualificationCandidate !== "cursor") throw new Error("Cursor native fixtures require the explicit isolated local Cursor candidate");
-  if (design.id === "native-write-deny-reconnect" && !input.registerCleanupAssertion) throw new Error("Cursor denial requires authoritative post-cleanup verification");
+  const remote = execution.environment.id === "daytona";
+  if (!design || !["local", "daytona"].includes(execution.environment.id) || execution.profile.qualificationCandidate !== "cursor") throw new Error("Cursor native fixtures require an explicit isolated Cursor candidate");
+  if (remote && (!input.remoteBootstrap || !input.registerBeforeEnvironmentTeardownAssertion)) throw new Error("Cursor Daytona requires an owned pre-action observer and pre-teardown verification");
+  if (!remote && design.id === "native-write-deny-reconnect" && !input.registerCleanupAssertion) throw new Error("Cursor denial requires authoritative post-cleanup verification");
   const checks: Check[] = []; let issue: Row = {}; let runs: Row[] = [];
   const check = (id: string, passed: boolean, detail: string) => { checks.push({ id, passed, detail }); expect(passed, detail).toBe(true); };
   const events = (runId: string) => collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
   const absent = async (path: string) => { try { await lstat(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
   const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
-  const configured = await api.patch<Row>(`/api/agents/${fixtures.agent.id}`, { adapterConfig: { ...agent.adapterConfig, acpxSessionMode: design.cursorMode, acpxPermissionMode: design.permissionMode, ...(design.id === "native-write-deny-reconnect" ? { lifecycleMode: "per_turn", timeoutSec: 120 } : {}) } });
+  const configured = await api.patch<Row>(`/api/agents/${fixtures.agent.id}`, { adapterConfig: { ...agent.adapterConfig, acpxSessionMode: design.cursorMode, acpxPermissionMode: design.permissionMode, ...(remote || design.id === "native-write-deny-reconnect" ? { lifecycleMode: "per_turn", timeoutSec: 120 } : {}) } });
   check("explicit-mode-policy", configured.adapterConfig.acpxSessionMode === design.cursorMode && configured.adapterConfig.acpxPermissionMode === design.permissionMode, "Public agent configuration selected mode and permission policy separately before provider startup");
-  if (design.id === "native-write-deny-reconnect") check("per-turn-process-authority", configured.adapterConfig.lifecycleMode === "per_turn" && configured.adapterConfig.timeoutSec === 120, "Public configuration admits a bounded per-turn provider process before startup");
+  if (remote || design.id === "native-write-deny-reconnect") check("per-turn-process-authority", configured.adapterConfig.lifecycleMode === "per_turn" && configured.adapterConfig.timeoutSec === 120, "Public configuration admits a bounded per-turn provider process before startup");
   await input.evidence("cursor-native-contract.json", { caseId: design.id, mode: design.cursorMode, permissionMode: design.permissionMode, method: design.method, expectedRunCount: 1, nativeCallbackRequired: true, artifactGate: cursorNativePlanArtifactGate });
   const project = await api.post<Row>(`/api/companies/${fixtures.company.id}/projects`, {
     name: `Cursor native workspace ${nonce}`, executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", sharedWorkspaceConcurrency: "serialize", allowIssueOverride: false, environmentId: fixtures.environment.id, workspaceStrategy: { type: "project_primary" } },
     workspace: { name: "Primary", sourceType: "local_path", cwd: input.workspacePath, isPrimary: true },
   });
-  const baseline = await cursorNativeWorkspaceSnapshot(input.workspacePath);
+  const baseline = remote ? null : await cursorNativeWorkspaceSnapshot(input.workspacePath);
+  let remoteFixture: CursorRemoteNativeFixture | null = null; let remoteFinal: CursorRemoteSnapshot | null = null; let remoteBaseline: CursorRemoteSnapshot | null = null;
+  let remoteParent: { dev: string; ino: string } | undefined;
   const sampleWorkspace = async (phase: string) => {
+    if (remote) {
+      if (!remoteFixture) throw new Error("Cursor remote workspace observer is absent");
+      const current = remoteFinal ?? await remoteFixture.snapshot(phase);
+      await input.evidence(`cursor-workspace-${phase}.json`, { baseline: remoteBaseline, current });
+      check(`workspace-unchanged-${phase}`, hasCursorRemoteWorkspaceUnchanged(current, remoteBaseline!), "Owned remote workspace hashes and continuous mutation journal remain unchanged");
+      return;
+    }
     const current = await cursorNativeWorkspaceSnapshot(input.workspacePath);
     await input.evidence(`cursor-workspace-${phase}.json`, { baseline, current });
     check(`workspace-unchanged-${phase}`, JSON.stringify(current) === JSON.stringify(baseline), "Independent workspace bytes remain unchanged by a pending/rejected/cancelled native plan or question");
   };
-  const deniedPath = join(input.workspacePath, `cursor-denied-${nonce}.txt`);
-  const deniedCommand = cursorDeniedCommand(deniedPath);
-  let denialNotices: CursorToolNotice[] = []; let denialTurnId = ""; let cancelRequestedAt = NaN; let cancellationProven = false;
+  const localDeniedTarget = !remote && design.id === "native-write-deny-reconnect" ? await createDeniedTargetFixture(input.workspacePath, `cursor-denied-${nonce}.txt`) : null;
+  const deniedRelative = localDeniedTarget?.targetRelativePath ?? `cursor-denied-${nonce}.txt`;
+  let deniedPath = remote ? "" : join(input.workspacePath, deniedRelative);
+  let deniedCommand = remote ? null : cursorDeniedCommand(deniedPath);
+  let denialNotices: CursorToolNotice[] = []; let denialRunEvents: Row[] = []; let denialTurnId = ""; let cancelRequestedAt = NaN; let cancellationProven = false;
   const samples: Array<{ phase: string; path: string; absent: boolean; observedAt: number }> = [];
-  const sampleDenied = async (phase: string) => { const sample = { phase, path: deniedPath, absent: await absent(deniedPath), observedAt: Date.now() }; samples.push(sample); await input.evidence("cursor-denial-samples.json", samples); check(`denied-absent-${phase}`, sample.absent, "Independent denied target remains absent"); };
-  const processObserver = observeRunProcesses(); let processAuthority: string | null = null; let processObservationError = false;
+  const sampleDenied = async (phase: string, retained?: CursorRemoteSnapshot) => {
+    let sample: { phase: string; path: string; absent: boolean; observedAt: number };
+    if (remote) {
+      if (!remoteFixture) throw new Error("Cursor remote denied-target observer is absent");
+      sample = cursorRemoteDeniedSample(retained ?? remoteFinal ?? await remoteFixture.snapshot(phase), remoteFixture.binding, deniedRelative, phase, remoteParent);
+    } else sample = { phase, path: deniedPath, absent: await absent(deniedPath), observedAt: Date.now() };
+    samples.push(sample); await input.evidence("cursor-denial-samples.json", samples); check(`denied-absent-${phase}`, sample.absent, "Independent denied target remains absent");
+  };
+  const processObserver = remote ? null : observeRunProcesses(); let processAuthority: string | null = null; let processObservationError = false;
   const observeProcesses = () => {
     const run = runs[0];
     const authority = run?.processPid ? { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt, runId: run.id } : undefined;
@@ -83,12 +148,12 @@ export async function runCursorNativeFlow(input: {
       if (processAuthority !== null && processAuthority !== key) processObservationError = true;
       processAuthority ??= key;
     }
-    return processObserver.sample(authority);
+    return processObserver ? processObserver.sample(authority) : { captured: false, journal: [], live: [] };
   };
   let processes = observeProcesses();
   let deniedRequest: Row | null = null;
   let processTimer: ReturnType<typeof setInterval> | undefined;
-  const watch = design.id === "native-write-deny-reconnect" ? watchDeniedTarget(input.workspacePath, `cursor-denied-${nonce}.txt`) : null;
+  const watch = localDeniedTarget?.watcher ?? null;
   if (watch) {
     processTimer = setInterval(() => { try { processes = observeProcesses(); } catch { processObservationError = true; } }, 250);
     input.registerCleanupAssertion!(async () => {
@@ -108,16 +173,38 @@ export async function runCursorNativeFlow(input: {
         finalCheck("denied-absent-after-cleanup", finalSample.absent, "Independent target remains absent after observed provider retirement");
         const journal = watch.finish();
         finalCheck("continuous-denial-observation", journal.complete && journal.targetMutationCount === 0, "Continuous target watcher observed no create/delete mutation and retained directory identity");
-        finalCheck("complete-native-denial-boundary", Boolean(deniedRequest) && hasCursorDenialBoundary({ request: deniedRequest, expectedRequestId: deniedRequest?.requestId ?? "", expectedToolCallId: deniedRequest?.details.toolCallId ?? "", path: deniedPath, samples, notices: denialNotices, runId: runs[0]?.id ?? "", turnId: denialTurnId }), "Supported native denial preserved the target through all six independent boundaries");
-        await input.evidence("cursor-native-denial-final.json", { request: deniedRequest, samples, notices: denialNotices, commandSha256: deniedCommand.commandSha256, cancellationProven, cancelRequestedAt, processes, processObservationError, watcher: journal, checks: cleanupChecks });
+        finalCheck("complete-native-denial-boundary", Boolean(deniedRequest) && hasCursorDenialBoundary({ request: deniedRequest, expectedRequestId: deniedRequest?.requestId ?? "", expectedToolCallId: deniedRequest?.details.toolCallId ?? "", path: deniedPath, bootstrapReadProof: remoteFixture ? { actionFile: remoteFixture.actionFile, events: denialRunEvents } : undefined, samples, notices: denialNotices, runId: runs[0]?.id ?? "", turnId: denialTurnId }), "Supported native denial preserved the target through all six independent boundaries");
+        await input.evidence("cursor-native-denial-final.json", { request: deniedRequest, samples, notices: denialNotices, commandSha256: deniedCommand!.commandSha256, cancellationProven, cancelRequestedAt, processes, processObservationError, watcher: journal, checks: cleanupChecks });
         if (cleanupChecks.some(row => !row.passed)) throw new Error("Cursor native denial cleanup proof is incomplete or observed an effect");
         return cleanupChecks;
       } finally {
         clearInterval(processTimer);
-        await input.evidence("cursor-native-denial-cleanup-attempt.json", { request: deniedRequest, samples, notices: denialNotices, commandSha256: deniedCommand.commandSha256, cancellationProven, cancelRequestedAt, processes, processObservationError, watcher: watch.finish(), checks: cleanupChecks });
+        await input.evidence("cursor-native-denial-cleanup-attempt.json", { request: deniedRequest, samples, notices: denialNotices, commandSha256: deniedCommand!.commandSha256, cancellationProven, cancelRequestedAt, processes, processObservationError, watcher: watch.finish(), checks: cleanupChecks });
       }
     });
   }
+  if (remote) input.registerBeforeEnvironmentTeardownAssertion!(async () => {
+    const cleanupChecks: Check[] = []; let snapshot: CursorRemoteSnapshot | null = null;
+    const finalCheck = (id: string, passed: boolean, detail: string) => { cleanupChecks.push({ id, passed, detail }); };
+    try {
+      if (!remoteFixture) throw new Error("Cursor remote observer never acquired authoritative baseline");
+      if (issue.id) await load();
+      snapshot = remoteFinal ?? await remoteFixture.finish(); remoteFinal = snapshot;
+      finalCheck("remote-provider-retired", runs.length === 1 && remoteBaseline !== null && snapshot.observedAtMs >= remoteBaseline.observedAtMs && hasCursorRemoteRetirement(snapshot, remoteFixture.binding), "Exact remote run PID/start/boot identity and all observed descendants retired before the retained receipt sealed");
+      if (design.id === "native-write-deny-reconnect") {
+        await sampleDenied("after-cleanup", snapshot);
+        finalCheck("remote-cancel-terminal", cancellationProven && runs[0]?.status === "cancelled" && issue.status === "in_progress", "Explicit native cancellation remains durable without false task completion");
+        finalCheck("remote-no-denied-effect", snapshot.watcher.targetMutationCount === 0 && Boolean(deniedRequest) && hasCursorDenialBoundary({ request: deniedRequest, expectedRequestId: deniedRequest?.requestId ?? "", expectedToolCallId: deniedRequest?.details.toolCallId ?? "", path: deniedPath, bootstrapReadProof: remoteFixture ? { actionFile: remoteFixture.actionFile, events: denialRunEvents } : undefined, samples, notices: denialNotices, runId: runs[0]?.id ?? "", turnId: denialTurnId }), "Exact denied native command caused no remote file effect through provider retirement");
+      } else if (design.id !== "native-plan-reject-revise-accept") {
+        finalCheck("remote-no-workspace-effects", hasCursorRemoteWorkspaceUnchanged(snapshot, remoteBaseline!), "Native question or cancelled plan caused no remote workspace mutation through retirement");
+      }
+      if (cleanupChecks.some(row => !row.passed)) throw new Error("Cursor remote cleanup evidence is incomplete or observed an effect");
+      return cleanupChecks;
+    } finally {
+      try { await input.evidence("cursor-remote-cleanup.json", { snapshot, samples, notices: denialNotices, cancellationProven, checks: cleanupChecks }); }
+      finally { await remoteFixture?.close(); }
+    }
+  });
   const load = async () => {
     issue = await api.get<Row>(`/api/issues/${issue.id}`);
     const listed = await api.get<Row[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
@@ -126,18 +213,17 @@ export async function runCursorNativeFlow(input: {
     if (watch) processes = observeProcesses();
     const interactions = await api.get<Row[]>(`/api/issues/${issue.id}/interactions`);
     const runEvents = runs.length === 1 ? await events(runs[0]!.id) : [];
-    if (watch && runs.length === 1) denialNotices = readCursorToolEvidence(runEvents, runs[0]!.id);
+    if (design.id === "native-write-deny-reconnect" && runs.length === 1) { denialRunEvents = runEvents; denialNotices = readCursorToolEvidence(runEvents, runs[0]!.id); }
     return { issue, runs, interactions, runEvents };
   };
   const reject = (state: Awaited<ReturnType<typeof load>>) => state.runs.length > 1 ? "Unexpected extra Cursor provider run" : state.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Cursor provider run failed" : undefined;
-  const createdRequest = (rows: Row[], method: CursorNativeMethod, requestId?: string) => rows.map(row => row.payload?.prpEvent).find(event => event?.eventType === "runtime_request.created" && event.payload?.request?.origin?.adapter === "acpx-runtime" && event.payload.request.origin.provider === "cursor" && event.payload.request.origin.method === method && (!requestId || event.payload.request.requestId === requestId));
   async function pending(seen: Set<string>) {
     const state = await pollUntil({ label: "exact native Cursor callback", deadlineAt: input.deadlineAt, load,
       reject: state => reject(state) ?? (state.runs.some(run => run.status === "succeeded") ? "Native Cursor callback was not observed before completion; qualification remains pending" : undefined),
-      accept: state => state.interactions.some(card => card.status === "pending" && !seen.has(card.id) && card.payload?.runtimeRequestId && createdRequest(state.runEvents, design!.method, card.payload.runtimeRequestId)) });
+      accept: state => state.interactions.some(card => card.status === "pending" && !seen.has(card.id) && card.payload?.runtimeRequestId && findCursorNativeRequest(state.runEvents, design!.method, card.payload.runtimeRequestId)) });
     const cards = state.interactions.filter(card => card.status === "pending"); check("single-native-request", cards.length === 1 && state.runs.length === 1, "Exactly one native request belongs to one original provider run");
-    const card = cards[0]!; const event = createdRequest(state.runEvents, design!.method, card.payload.runtimeRequestId)!;
-    check("native-card-binding", card.sourceRunId === state.runs[0]!.id && card.continuationPolicy === "none" && JSON.stringify(card.payload.questionSet) === JSON.stringify(event.payload.request.input), "Durable card retains complete native input and exact source run");
+    const card = cards[0]!; const event = findCursorNativeRequest(state.runEvents, design!.method, card.payload.runtimeRequestId)!;
+    check("native-card-binding", hasCursorNativeCardBinding(card, event, state.runs[0]!.id), "Durable card retains complete native input and exact source run");
     await input.evidence(`cursor-native-${seen.size}-pending.json`, { card, event });
     await page.reload(); const reloaded = (await load()).interactions.find(row => row.id === card.id);
     check("browser-reconnect-identity", reloaded?.status === "pending" && reloaded?.payload.runtimeRequestId === card.payload.runtimeRequestId, "Browser reconnect preserves exact outstanding native request");
@@ -153,14 +239,35 @@ export async function runCursorNativeFlow(input: {
   }
   let expectedMarker = execution.task.buildVisibleMarker(nonce);
   try {
-    if (design.id === "native-write-deny-reconnect") await sampleDenied("before-request");
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: execution.task.buildPrompt(nonce) + (watch ? `\nExact native shell command (copy verbatim):\n${deniedCommand.command}` : ""), workMode: "standard", projectName: project.name });
+    if (!remote && design.id === "native-write-deny-reconnect") await sampleDenied("before-request");
+    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: remote ? input.remoteBootstrap!.prompt(nonce) : execution.task.buildPrompt(nonce) + (watch ? `\nExact native shell command (copy verbatim):\n${deniedCommand!.command}` : ""), workMode: "standard", projectName: project.name });
     issue = await pollUntil({ label: "browser-created Cursor task", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(row => row.title === execution.task.buildTitle(nonce)), accept: Boolean }) ?? {};
     if (!issue.id) throw new Error("Browser-created Cursor task is absent");
+    if (remote) {
+      const started = await pollUntil({ label: "exact Cursor bootstrap run", deadlineAt: input.deadlineAt, load, reject,
+        accept: state => state.runs.length === 1 });
+      const runId = started.runs[0]!.id;
+      const boundFixture = await input.remoteBootstrap!.bindAndRelease({ issueId: issue.id, runId,
+        targets: design.id === "native-write-deny-reconnect" ? [deniedRelative] : [],
+        actionPrompt: async fixture => {
+          if (remoteFixture) throw new Error("Cursor remote action was published more than once");
+          remoteFixture = fixture;
+          const prepared = await prepareCursorRemoteAction({ fixture, runId, companyId: fixtures.company.id, environmentId: fixtures.environment.id,
+            prompt: execution.task.buildPrompt(nonce), ...(design.id === "native-write-deny-reconnect" ? { deniedRelative } : {}) });
+          remoteBaseline = prepared.baseline;
+          if (prepared.initial && prepared.command) {
+            deniedPath = prepared.initial.path; deniedCommand = prepared.command; remoteParent = prepared.initial.parent; samples.push(prepared.initial);
+          }
+          return prepared.prompt;
+        } });
+      if (!remoteFixture || boundFixture !== remoteFixture || boundFixture.binding.runId !== runId) throw new Error("Cursor remote observer is missing its run binding");
+      await input.evidence("cursor-remote-baseline.json", remoteBaseline);
+    }
     await page.goto(`/${fixtures.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`);
     const seen = new Set<string>();
     if (design.id === "native-question-reconnect") {
       const { card, event } = await pending(seen); const questions = card.payload.questionSet.questions;
+      if (remote) await sampleWorkspace("question-pending");
       check("native-question-shape", questions.length === 2 && questions[0].answerMode === "single_select" && questions[1].answerMode === "multi_select", "Native single/multiple choice shape is preserved");
       const color = randomBytes(1)[0]! % 2 === 0 ? "Cobalt" : "Amber";
       const trees = randomBytes(1)[0]! % 2 === 0 ? ["Cedar", "Maple"] : ["Maple"];
@@ -197,13 +304,13 @@ export async function runCursorNativeFlow(input: {
       await input.evidence("cursor-native-artifact-gap.json", cursorNativePlanArtifactGate);
     } else {
       const state = await pollUntil({ label: "native Cursor permission with exact command provenance", deadlineAt: input.deadlineAt, load, reject,
-        accept: state => denialNotices.some(notice => notice.stage === "permission_requested" && notice.commandSha256 === deniedCommand.commandSha256
-          && Boolean(createdRequest(state.runEvents, "session/request_permission", notice.requestId))) });
-      const native = denialNotices.find(notice => notice.stage === "permission_requested" && notice.commandSha256 === deniedCommand.commandSha256)!;
-      const event = createdRequest(state.runEvents, "session/request_permission", native.requestId)!; const request = event.payload.request; deniedRequest = request; denialTurnId = event.turnId;
+        accept: state => denialNotices.some(notice => notice.stage === "permission_requested" && notice.commandSha256 === deniedCommand!.commandSha256
+          && Boolean(findCursorNativeRequest(state.runEvents, "session/request_permission", notice.requestId))) });
+      const native = denialNotices.find(notice => notice.stage === "permission_requested" && notice.commandSha256 === deniedCommand!.commandSha256)!;
+      const event = findCursorNativeRequest(state.runEvents, "session/request_permission", native.requestId)!; const request = event.payload.request; deniedRequest = request; denialTurnId = event.turnId;
       check("native-permission-identity", state.runs.length === 1 && request.details?.toolCallId === native.toolCallId && native.turnId === event.turnId && native.declineOffered && request.choices.some((choice: Row) => choice.key === "decline"), "Presented native permission is bound to the exact absolute-target command and supported denial choice");
       await sampleDenied("pending"); await page.reload();
-      const reloaded = await load(); check("permission-reconnect", Boolean(createdRequest(reloaded.runEvents, "session/request_permission", request.requestId)) && !reloaded.runEvents.some(row => row.payload?.prpEvent?.eventType === "runtime_request.resolved"), "Reconnect preserves the unresolved native permission");
+      const reloaded = await load(); check("permission-reconnect", Boolean(findCursorNativeRequest(reloaded.runEvents, "session/request_permission", request.requestId)) && !reloaded.runEvents.some(row => row.payload?.prpEvent?.eventType === "runtime_request.resolved" && row.payload.prpEvent.payload?.requestId === request.requestId), "Reconnect preserves the unresolved native permission");
       await sampleDenied("browser-reconnected"); await input.capture("cursor-permission", "Native write permission awaiting denial", "cursor-permission.png");
       const card = page.getByTestId("task-chat-runtime-request").filter({ visible: true }); await expect(card).toHaveCount(1);
       const label = request.choices.find((choice: Row) => choice.key === "decline").label;
@@ -213,23 +320,26 @@ export async function runCursorNativeFlow(input: {
       check("browser-exact-denial", posted.turnId === event.turnId && posted.requestKind === "permission_approval" && posted.resolution?.action === "decline", "Browser denied the exact native run/request/turn");
       const identity = { runId: native.runId, turnId: event.turnId, requestId: request.requestId, method: "session/request_permission" as const, action: "decline" as const };
       await pollUntil({ label: "native denial delivered and exact command failed", deadlineAt: input.deadlineAt, load, reject, accept: state => hasDeliveredCursorNativeRequest({ ...identity, events: state.runEvents })
-        && hasCursorDeniedCommand({ notices: denialNotices, ...identity, toolCallId: native.toolCallId, commandSha256: deniedCommand.commandSha256 }) });
+        && hasCursorDeniedCommand({ notices: denialNotices, ...identity, toolCallId: native.toolCallId, commandSha256: deniedCommand!.commandSha256, bootstrapReadProof: remoteFixture ? { actionFile: remoteFixture.actionFile, events: denialRunEvents } : undefined }) });
       await sampleDenied("after-decision");
       cancelRequestedAt = Date.now(); await api.post(`/api/heartbeat-runs/${native.runId}/cancel`);
       const cancelled = await pollUntil({ label: "explicit native cancellation", deadlineAt: input.deadlineAt, load,
         reject: state => state.runs.length !== 1 || ["failed", "succeeded", "timed_out"].includes(state.runs[0]?.status) ? "Cursor denial did not remain cancellable" : undefined,
         accept: state => hasCursorCancellation({ run: state.runs[0], issue: state.issue, events: state.runEvents, runId: native.runId, turnId: event.turnId, requestedAt: cancelRequestedAt }) });
-      cancellationProven = true; await sampleDenied("after-terminal");
+      cancellationProven = true;
+      if (remote) remoteFinal = await remoteFixture!.finish();
+      await sampleDenied("after-terminal", remoteFinal ?? undefined);
       check("negative-task-unfinished", cancelled.issue.status === "in_progress" && cancelled.runs[0]?.status === "cancelled" && cancelled.runs[0]?.runtimeMode === "native", "Native cancellation was acknowledged and the task does not falsely claim completion");
       await page.reload();
       await expect(page.getByTestId("issue-detail-header").getByRole("button", { name: "Change status (current: In Progress)", exact: true })).toBeVisible();
       const comments = await api.get<Row[]>(`/api/issues/${issue.id}/comments`);
-      await input.evidence("api-state.json", { ...cancelled, run: runs[0], comments, checks, notices: denialNotices, commandSha256: deniedCommand.commandSha256, cancelRequestedAt, runEventsByRun: [{ runId: native.runId, events: cancelled.runEvents }] });
+      await input.evidence("api-state.json", { ...cancelled, run: runs[0], comments, checks, notices: denialNotices, commandSha256: deniedCommand!.commandSha256, cancelRequestedAt, runEventsByRun: [{ runId: native.runId, events: cancelled.runEvents }] });
       await input.capture("final-state", "Cursor denied command cancelled; task remains unfinished", "final-state.png");
       return { issue, runs, checks };
     }
     const final = await pollUntil({ label: "Cursor native completion", deadlineAt: input.deadlineAt, load, reject,
       accept: state => state.issue.status === "done" && state.runs.length === 1 && state.runs[0]!.status === "succeeded" && !state.interactions.some(card => card.status === "pending") });
+    if (remote) remoteFinal = await remoteFixture!.finish();
     check("one-native-run", final.runs[0]!.runtimeMode === "native", "Decision and completion remained in the original native provider run");
     if (design.id === "native-plan-cancel" || design.id === "native-question-reconnect") await sampleWorkspace("native-terminal");
     await page.reload(); await expect(page.getByText(expectedMarker, { exact: true }).last()).toBeVisible();

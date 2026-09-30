@@ -33,3 +33,30 @@ it("fails closed on symlinks or oversized proof input", async () => {
     await expect(cursorNativeWorkspaceSnapshot(root)).rejects.toThrow(/byte bound/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it("awaits owned remote baseline before returning the exact remote denial command", async () => {
+  const { prepareCursorRemoteAction } = await import("./cursor-native-flow.js");
+  const binding = { companyId: "company", environmentId: "environment", runId: "run", leaseId: "lease", sandboxId: "sandbox", remoteCwd: "/home/daytona/paperclip-workspace", image: `runner@sha256:${"a".repeat(64)}` };
+  const snapshot = { binding, observedAtMs: 50, complete: true, workspace: {}, targets: { "denied.txt": { absent: true, sha256: null, parent: { dev: "1", ino: "2" }, mutationCount: 0, complete: true } }, watcher: { complete: true, targetMutationCount: 0, workspaceMutationCount: 0 }, processes: { captured: true, root: { pid: 51, startTicks: "3021", bootId: "12345678-1234-1234-1234-123456789abc" }, journal: [], live: [51] } };
+  const order: string[] = [];
+  const fixture = { binding, actionFile: `.paperclip-eval-action-${"a".repeat(36)}.txt`, remoteCwd: binding.remoteCwd, snapshot: async (label: string) => { order.push(label); await Promise.resolve(); order.push("baseline-ready"); return snapshot; }, finish: async () => snapshot, close: async () => {} };
+  const prepared = await prepareCursorRemoteAction({ fixture, ...binding, deniedRelative: "denied.txt", prompt: "Perform the actual test" });
+  order.push("publish-action");
+  expect(order).toEqual(["before-action-publication", "baseline-ready", "publish-action"]);
+  expect(prepared.prompt).toContain("printf 'MUST_NOT_EXIST' > '/home/daytona/paperclip-workspace/denied.txt'");
+  expect(prepared.initial).toMatchObject({ phase: "before-request", absent: true });
+  expect(prepared.command?.commandSha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+  await expect(prepareCursorRemoteAction({ fixture, ...binding, runId: "wrong-run", deniedRelative: "denied.txt", prompt: "test" })).rejects.toThrow(/another run/);
+  snapshot.targets["denied.txt"].absent = false;
+  await expect(prepareCursorRemoteAction({ fixture, ...binding, deniedRelative: "denied.txt", prompt: "test" })).rejects.toThrow(/present before/);
+});
+
+it("refuses remote native execution before touching API when bootstrap or cleanup authority is missing", async () => {
+  const { runCursorNativeFlow } = await import("./cursor-native-flow.js");
+  let apiCalls = 0;
+  await expect(runCursorNativeFlow({
+    execution: { task: { id: "native-question-reconnect" }, profile: { qualificationCandidate: "cursor" }, environment: { id: "daytona" } },
+    api: { get: async () => { apiCalls++; throw new Error("must not call"); } },
+  } as any)).rejects.toThrow(/owned pre-action observer/);
+  expect(apiCalls).toBe(0);
+});

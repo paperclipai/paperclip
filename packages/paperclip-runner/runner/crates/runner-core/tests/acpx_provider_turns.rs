@@ -779,3 +779,28 @@ fn lazy_warm_handshake_updates_live_turn_control_discovery() {
         .unwrap();
     session.shutdown("verified live handshake").unwrap();
 }
+
+#[test]
+fn forced_cancellation_retirement_preserves_terminal_polling_but_rejects_live_reuse() {
+    for mode in ["turns-retired", "turns-retired-terminal-first"] {
+        let mut session = AcpxProviderSession::start(&config(mode)).unwrap();
+        session
+            .start_turn("turn-1", "Please help", &std::env::temp_dir())
+            .unwrap();
+        session
+            .interrupt_turn("turn-1", "Stop stuck provider")
+            .unwrap();
+        assert!(session.runtime_retired());
+        let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(terminal.last().unwrap(), AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1")
+        );
+        assert!(session.state().active_turn_id().is_none());
+        assert!(session
+            .start_turn("turn-2", "Must not reuse", &std::env::temp_dir())
+            .unwrap_err()
+            .to_string()
+            .contains("runtime was retired"));
+        session.shutdown("test complete").unwrap();
+    }
+}

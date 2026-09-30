@@ -5,28 +5,35 @@ import { buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
 describe("Pi native Product qualification", () => {
-  it("selects three explicit local Pi cases and preserves the basic extended matrix", () => {
+  it("selects four local and three remote Pi cases without changing the basic extended matrix", () => {
     const suite = runnerSuites.find(row => row.id === "pi-native")!;
-    expect(suite.manualOnly).toBe(true); expect(suite.expectedMatrixSize).toBe(3);
+    expect(suite.manualOnly).toBe(true); expect(suite.expectedMatrixSize).toBe(7);
     const cells = runnerMatrix.filter(row => row.suite.id === suite.id);
-    expect(cells).toHaveLength(3);
-    expect(cells.every(row => row.environment.id === "local" && row.profile.qualificationCandidate === "pi")).toBe(true);
-    expect(cells.map(row => row.task.expectedRunCount)).toEqual([1, 2, 1]);
+    expect(cells).toHaveLength(7);
+    expect(cells.every(row => row.profile.qualificationCandidate === "pi")).toBe(true);
+    expect(cells.filter(row => row.environment.id === "local").map(row => [row.task.id, row.task.expectedRunCount])).toEqual([
+      ["native-questions", 1], ["agent-files-fresh-run", 2], ["restrictive-denial", 1], ["human-permission-denial", 1],
+    ]);
+    expect(cells.filter(row => row.environment.id === "daytona").map(row => [row.task.id, row.task.expectedRunCount])).toEqual([
+      ["native-questions", 1], ["agent-files-fresh-run", 2], ["human-permission-denial", 1],
+    ]);
+    expect(cells.reduce((sum, row) => sum + row.task.expectedRunCount, 0)).toBe(9);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.suite.id === suite.id)).toBe(false);
     expect(runnerMatrix.filter(row => row.suite.id === "extended-harnesses")).toHaveLength(30);
     expect(piNativeTasks[0]!.buildPrompt("fixture")).toContain("paperclip_native_question");
     expect(piNativeTasks[1]!.buildPrompt("fixture")).toContain("AGENT_HOME");
   });
 
-  it("admits only the explicit local Pi native candidate and discards ambient admission", () => {
+  it("admits explicit local and remote Pi native candidates and discards ambient admission", () => {
     const cell = runnerMatrix.find(row => row.suite.id === "pi-native")!;
     const source = { PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" };
     expect(JSON.parse(buildRunnerE2EProcessEnvironment(source, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "pi", model: cell.profile.model }]);
+    const remote = runnerMatrix.find(row => row.suite.id === "pi-native" && row.environment.id === "daytona")!;
+    expect(JSON.parse(buildRunnerE2EProcessEnvironment(source, [remote]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "pi", model: remote.profile.model }]);
     expect(buildRunnerE2EProcessEnvironment(source, []).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     for (const changed of [
       { ...cell, suite: { ...cell.suite, manualOnly: false } },
       { ...cell, suite: { ...cell.suite, id: "implicit" } },
-      { ...cell, environment: { ...cell.environment, id: "daytona" as const } },
       { ...cell, profile: { ...cell.profile, qualificationCandidate: "copilot" as const } },
     ]) expect(() => buildRunnerE2EProcessEnvironment(source, [changed])).toThrow("explicit provider qualification suite");
   });

@@ -1,15 +1,15 @@
 import { parsePaperclipQuestionResponse } from "../../packages/paperclip-runner/src/contracts/question-set.js";
 import { normalizeCursorPlanRequest } from "../../packages/paperclip-runner/src/drivers/acpx/cursor-extensions.js";
-import { cursorNativePlanResponse } from "./cursor-native-flow.js";
+import { cursorNativePlanResponse, findCursorNativeRequest, hasCursorNativeCardBinding } from "./cursor-native-flow.js";
 import { cursorDeniedCommand, type CursorToolNotice } from "./cursor-native-evidence.js";
 import { describe, expect, it } from "vitest";
 import { cursorNativeCaseDesigns, cursorNativePrompt, hasDeliveredCursorNativeRequest, hasCursorPlanDecision, hasCursorDenialBoundary, CURSOR_DENIAL_SAMPLE_PHASES, hasExactCursorNativeResponse } from "./cursor-native-cases.js";
 
-const proof = () => {
+const proof = (adapter = "acpx-runtime") => {
   const wrap = (eventType: string, sourceSeq: number, payload: unknown) => ({ runId: "run", protocolSchemaVersion: 1, payload: { prpEvent: {
     schema: "paperclip.prp.event.v1", schemaVersion: 1, runId: "run", turnId: "turn", eventType, sourceSeq, payload,
   } } });
-  return [wrap("runtime_request.created", 1, { request: { requestId: "request", turnId: "turn", type: "input", status: "pending", origin: { adapter: "acpx-runtime", provider: "cursor", method: "cursor/ask_question" } } }),
+  return [wrap("runtime_request.created", 1, { request: { requestId: "request", turnId: "turn", type: "input", status: "pending", origin: { adapter, provider: "cursor", method: "cursor/ask_question" } } }),
     wrap("runtime_request.resolved", 2, { requestId: "request", turnId: "turn", action: "submit" })];
 };
 const grade = (events: unknown[]) => hasDeliveredCursorNativeRequest({ events, runId: "run", turnId: "turn", requestId: "request", method: "cursor/ask_question", action: "submit" });
@@ -44,13 +44,16 @@ it("binds plan decisions to the full revision and rejects stale answers", () => 
   expect(hasCursorPlanDecision({ questions: [{ id: `plan-${"b".repeat(64)}` }] }, answer, "accept")).toBe(false);
   expect(hasCursorPlanDecision(questionSet, answer, "reject")).toBe(false);
 });
-it("requires supported denial choices, native IDs and complete no-effect boundaries", () => {
+it.each(["acpx-runtime", "acpx-runtime-sidecar"])("requires supported denial choices, native IDs and complete no-effect boundaries via %s", adapter => {
   const input = { request: { requestId: "request", turnId: "turn", type: "permission", status: "pending", details: { toolCallId: "tool" },
-    origin: { adapter: "acpx-runtime", provider: "cursor", method: "session/request_permission" },
+    origin: { adapter, provider: "cursor", method: "session/request_permission" },
     choices: [{ key: "accept" }, { key: "decline" }, { key: "cancel" }] }, expectedRequestId: "request", expectedToolCallId: "tool", path: "/fixture/denied.txt", runId: "run", turnId: "turn",
     notices: ([{ stage: "tool", status: "pending" }, { stage: "permission_requested", requestId: "request", declineOffered: true }, { stage: "permission_delivered", requestId: "request", outcome: "reject_once" }, { stage: "tool", status: "failed" }].map((row, index) => ({ ...row, seq: index + 1, runId: "run", sessionId: "session", turnId: "turn", toolCallId: "tool", operation: "execute", commandSha256: cursorDeniedCommand("/fixture/denied.txt").commandSha256 })) as CursorToolNotice[]),
     samples: CURSOR_DENIAL_SAMPLE_PHASES.map((phase, observedAt) => ({ phase, observedAt, absent: true, path: "/fixture/denied.txt" })) };
   expect(hasCursorDenialBoundary(input)).toBe(true);
+  for (const origin of [{ ...input.request.origin, adapter: "semantic" }, { ...input.request.origin, provider: "pi" }, { ...input.request.origin, method: "request_human_input" }]) {
+    expect(hasCursorDenialBoundary({ ...input, request: { ...input.request, origin } })).toBe(false);
+  }
   expect(hasCursorDenialBoundary({ ...input, samples: input.samples.slice(1) })).toBe(false);
   expect(hasCursorDenialBoundary({ ...input, expectedToolCallId: "foreign" })).toBe(false);
   input.samples[2]!.absent = false; expect(hasCursorDenialBoundary(input)).toBe(false); input.samples[2]!.absent = true;
@@ -84,4 +87,50 @@ it.each(["accept", "cancel", "reject"] as const)("recognizes canonical delivered
     expect(delivered.answers).not.toHaveProperty("reason");
     expect(hasExactCursorNativeResponse({ ...input, response: { ...response, answers: { ...response.answers, reason: {} } } })).toBe(false);
   }
+});
+
+// Retained paid sidecar plan callback exposed both origin and JSONB key-order drift.
+it.each(["acpx-runtime", "acpx-runtime-sidecar"])("recognizes a native plan and its durable card via %s", adapter => {
+  const input = normalizeCursorPlanRequest({ toolCallId: "native-plan", name: "Fixture plan", plan: "Verify complete Markdown.", todos: [{ id: "first", content: "Read", status: "pending" }, { id: "second", content: "Check", status: "pending" }] }).questionSet;
+  const rows = proof(adapter);
+  const request = (rows[0]!.payload.prpEvent.payload as any).request;
+  request.origin.method = "cursor/create_plan";
+  request.input = input;
+  const event = findCursorNativeRequest(rows, "cursor/create_plan", "request")!;
+  expect(event).toBe(rows[0]!.payload.prpEvent);
+  expect(hasDeliveredCursorNativeRequest({ events: rows, runId: "run", turnId: "turn", requestId: "request", method: "cursor/create_plan", action: "submit" })).toBe(true);
+  const reorder = (value: any): any => Array.isArray(value) ? value.map(reorder) : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value).reverse().map(([key, nested]) => [key, reorder(nested)])) : value;
+  const card = { sourceRunId: "run", continuationPolicy: "none", payload: { runtimeRequestId: "request", questionSet: reorder(input) } };
+  expect(JSON.stringify(card.payload.questionSet)).not.toBe(JSON.stringify(input));
+  expect(hasCursorNativeCardBinding(card, event, "run")).toBe(true);
+  expect(hasCursorNativeCardBinding(card, event, "other-run")).toBe(false);
+  expect(hasCursorNativeCardBinding({ ...card, continuationPolicy: "resume" }, event, "run")).toBe(false);
+  const changed = structuredClone(card);
+  changed.payload.questionSet.questions[0].options[0].label = "Changed choice";
+  expect(hasCursorNativeCardBinding(changed, event, "run")).toBe(false);
+  const reordered = structuredClone(card);
+  reordered.payload.questionSet.questions[0].options.reverse();
+  expect(hasCursorNativeCardBinding(reordered, event, "run")).toBe(false);
+  expect(findCursorNativeRequest(rows, "cursor/create_plan", "other-request")).toBeUndefined();
+  expect(findCursorNativeRequest(rows, "cursor/ask_question", "request")).toBeUndefined();
+});
+
+it.each(["acpx-runtime", "acpx-runtime-sidecar"])("rejects foreign native request identity or origin via %s", adapter => {
+  for (const patch of [{ adapter: "unknown" }, { adapter: "acpx-runtime-sidecar-unknown" }, { adapter: "semantic" }, { provider: "pi" }, { method: "request_human_input" }]) {
+    const rows = proof(adapter);
+    Object.assign((rows[0]!.payload.prpEvent.payload as any).request.origin, patch);
+    expect(grade(rows)).toBe(false);
+    expect(findCursorNativeRequest(rows, "cursor/ask_question", "request")).toBeUndefined();
+  }
+  for (const patch of [{ requestId: "foreign" }, { turnId: "stale" }]) {
+    const rows = proof(adapter);
+    Object.assign((rows[0]!.payload.prpEvent.payload as any).request, patch);
+    expect(grade(rows)).toBe(false);
+  }
+  const rows = proof(adapter);
+  expect(grade([...rows, rows[0]!])).toBe(false);
+  expect(grade([...rows, rows[1]!])).toBe(false);
+  rows[1]!.payload.prpEvent.turnId = "stale";
+  expect(grade(rows)).toBe(false);
 });

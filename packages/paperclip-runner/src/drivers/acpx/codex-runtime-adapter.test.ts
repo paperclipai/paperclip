@@ -71,6 +71,44 @@ describe("Codex ACPX runtime adapter", () => {
     await expect(created.onPermissionRequest!({ sessionId: "forged", raw: {}, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
     pending.settle(); await turn.result; await port.close({ reason: "session checks complete" });
   });
+  it("cancels an outstanding native permission callback on the exact active turn", async () => {
+    const pending = pendingExtensionTurn("turn-1");
+    const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    let callbackSignal!: AbortSignal;
+    const handler = vi.fn((_request, context) => new Promise<{ outcome: "cancel" }>(resolve => {
+      callbackSignal = context.signal;
+      context.signal.addEventListener("abort", () => resolve({ outcome: "cancel" }), { once: true });
+    }));
+    const turn = port.startTurn({ text: "Write", requestId: "turn-1", onPermissionRequest: handler });
+    const permission = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    expect(callbackSignal.aborted).toBe(false);
+    const oldMode = options.permissionMode;
+    options.permissionMode = "approve-all";
+    const expiredContext = new AbortController(); expiredContext.abort();
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: expiredContext.signal })).resolves.toEqual({ outcome: "cancel" });
+    options.permissionMode = oldMode;
+    await turn.cancel();
+    expect(callbackSignal.aborted).toBe(true);
+    await expect(permission).resolves.toEqual({ outcome: "cancel" });
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    expect(handler).toHaveBeenCalledOnce();
+    pending.settle(); await turn.result;
+    // The active-turn pointer has been cleared. Even full-auto policy cannot
+    // authorize a late callback from the retired turn.
+    options.permissionMode = "approve-all";
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    await port.close({ reason: "test complete" });
+  });
+
   it("fails Cursor adapter admission when the provider never acknowledges instructions", async () => {
     const runtime = fakeRuntime();
     const options = openOptions(fakeCommand());

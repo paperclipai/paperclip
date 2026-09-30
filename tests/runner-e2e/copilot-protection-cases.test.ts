@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { matchCopilotFixtureCommand } from "./copilot-protection-evidence.js";
 import { describe, expect, it } from "vitest";
 import { copilotProtectionCases, gradeCopilotAttachedSettlement, gradeCopilotDeniedWrite, type CopilotAttachedSettlementEvidence, type CopilotDeniedWriteEvidence } from "./copilot-protection-cases.js";
 const identity = { runId: "run", sessionId: "session", turnId: "turn", toolCallId: "tool" };
@@ -19,9 +21,10 @@ function denied(): CopilotDeniedWriteEvidence {
   };
 }
 function attached(): CopilotAttachedSettlementEvidence {
-  const digest = `sha256:${"a".repeat(64)}`;
+  const command = "'/pinned/node' '/fixture/client.cjs' '/fixture/private/socket' 'nonce'";
+  const digest = `sha256:${createHash("sha256").update(command).digest("hex")}`;
   return {
-    expected: identity, terminal: { ...terminal }, cleanup: { ...cleanup }, expectedCommandSha256: digest, expectedShellId: "0",
+    expected: identity, terminal: { ...terminal }, cleanup: { ...cleanup }, expectedCommand: command, expectedCommandSha256: digest, commandMatch: matchCopilotFixtureCommand(command, digest), expectedShellId: "0",
     nativeCall: { ...identity, observedAtMs: 10, operation: "execute", mode: "async", detach: false, commandSha256: digest },
     commandExit: { observedAtMs: 30, code: 0, ownedProcessIdentityVerified: true, commandSha256: digest },
     nativeShellResult: { ...identity, toolCallId: "read-shell-tool", commandToolCallId: "tool", observedAtMs: 40, shellId: "0", status: "completed", exitCode: 0 },
@@ -36,6 +39,16 @@ describe("Copilot protection Product oracles", () => {
   });
   it("accepts an origin-bound browser denial with an independent continuous absence oracle", () => {
     expect(gradeCopilotDeniedWrite(denied())).toEqual({ passed: true, failures: [] });
+  });
+  it("requires the exact isolated target in native permission evidence", () => {
+    const e = denied(); e.expectedRelativePath = "pc-denied-ABC123/copilot-denied-nonce.txt";
+    expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
+    e.request!.targetRelativePath = e.expectedRelativePath;
+    expect(gradeCopilotDeniedWrite(e).passed).toBe(true);
+    for (const path of ["../copilot-denied-nonce.txt", "other/copilot-denied-nonce.txt", "pc-denied-ABC123/../copilot-denied-nonce.txt"]) {
+      e.expectedRelativePath = path; e.request!.targetRelativePath = path;
+      expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
+    }
   });
   it.each(["request", "decision", "deliveredDecision", "toolResult", "terminal", "cleanup", "mutationObservation"] as const)("rejects missing %s instead of treating no write as denial", field => {
     const e = denied(); e[field] = null; expect(gradeCopilotDeniedWrite(e).passed).toBe(false);
@@ -66,6 +79,26 @@ describe("Copilot protection Product oracles", () => {
   });
   it("accepts attached async completion using a separately correlated read_bash call", () => {
     expect(gradeCopilotAttachedSettlement(attached())).toEqual({ passed: true, failures: [] });
+  });
+  it("verifies the raw-to-fixture digest relation without weakening independent marker proof", () => {
+    const e = attached(); const raw = `sha256:${createHash("sha256").update(" " + e.expectedCommand).digest("hex")}`;
+    e.nativeCall!.commandSha256 = raw; e.commandMatch = matchCopilotFixtureCommand(e.expectedCommand, raw);
+    expect(e.commandMatch?.leadingWhitespace).toBe(" ");
+    expect(gradeCopilotAttachedSettlement(e).passed).toBe(true);
+    expect(e.nativeCall!.commandSha256).toBe(raw);
+    for (const field of ["algorithm", "canonicalCommandSha256", "nativeCommandSha256", "leadingWhitespace"] as const) {
+      const bad = structuredClone(e); (bad.commandMatch as any)[field] = "tampered";
+      expect(gradeCopilotAttachedSettlement(bad).passed).toBe(false);
+    }
+    const missing = structuredClone(e); missing.commandMatch = null; expect(gradeCopilotAttachedSettlement(missing).passed).toBe(false);
+    const forged = structuredClone(e); forged.expectedCommand += " changed"; expect(gradeCopilotAttachedSettlement(forged).passed).toBe(false);
+    const unbound = structuredClone(e); unbound.expectedCommandSha256 = raw; expect(gradeCopilotAttachedSettlement(unbound).passed).toBe(false);
+    const wrongExit = structuredClone(e); wrongExit.commandExit!.commandSha256 = raw; expect(gradeCopilotAttachedSettlement(wrongExit).passed).toBe(false);
+    e.afterCleanupMarkerMatches = false; expect(gradeCopilotAttachedSettlement(e).passed).toBe(false);
+  });
+  it.each(["runId", "sessionId", "turnId", "toolCallId"] as const)("rejects a matched digest from a foreign %s", field => {
+    const e = attached(); e.nativeCall![field] = "foreign";
+    expect(gradeCopilotAttachedSettlement(e).passed).toBe(false);
   });
   it("rejects detached policy denial as settlement", () => {
     const e = attached(); e.nativeCall!.detach = true; expect(gradeCopilotAttachedSettlement(e).failures).toContain("missing-exact-attached-async-call");

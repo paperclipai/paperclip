@@ -1,3 +1,4 @@
+import { matchCopilotFixtureCommand, type CopilotCommandMatch } from "./copilot-protection-evidence.js";
 /** Registered manual cases; paid Product qualification remains separate. */
 export const copilotProtectionCases = [
   {
@@ -59,7 +60,9 @@ export interface CopilotDeniedWriteEvidence extends Lifecycle {
 export interface CopilotAttachedSettlementEvidence extends Lifecycle {
   /** Requires origin-correlated native input; a prompt/title is not evidence. */
   nativeCall: (TimedIdentity & { operation: string; mode: string; detach: boolean; commandSha256: string }) | null;
+  expectedCommand: string;
   expectedCommandSha256: string;
+  commandMatch: CopilotCommandMatch | null;
   commandExit: { observedAtMs: number; code: number; ownedProcessIdentityVerified: boolean; commandSha256: string } | null;
   nativeShellResult: (TimedIdentity & { shellId: string; commandToolCallId: string; status: string; exitCode: number }) | null;
   expectedShellId: string;
@@ -77,7 +80,7 @@ function lifecycle(e: Lifecycle, failures: string[], expectedStatus: "succeeded"
 export function gradeCopilotDeniedWrite(e: CopilotDeniedWriteEvidence): CopilotProtectionGrade {
   const failures: string[] = []; lifecycle(e, failures, "cancelled");
   if (!e.cancellation || !e.cancellation.acknowledged || !time(e.cancellation.requestedAtMs) || e.cancellation.scope !== "run" || !e.toolResult || e.cancellation.requestedAtMs < e.toolResult.observedAtMs || !e.terminal || e.cancellation.requestedAtMs > e.terminal.observedAtMs) failures.push("missing-explicit-settled-cancellation");
-  if (!/^copilot-denied-[a-z0-9-]+\.txt$/.test(e.expectedRelativePath) || !e.request || !same(e.request, e.expected) || e.request.method !== "session/request_permission" || e.request.requestId !== e.requestId || e.request.targetRelativePath !== e.expectedRelativePath || !e.request.offeredActions.includes("decline") || !time(e.request.observedAtMs)) failures.push("missing-exact-native-write-request");
+  if (!/^(?:pc-denied-[a-zA-Z0-9]+\/)?copilot-denied-[a-z0-9-]+\.txt$/.test(e.expectedRelativePath) || !e.request || !same(e.request, e.expected) || e.request.method !== "session/request_permission" || e.request.requestId !== e.requestId || e.request.targetRelativePath !== e.expectedRelativePath || !e.request.offeredActions.includes("decline") || !time(e.request.observedAtMs)) failures.push("missing-exact-native-write-request");
   if (!e.requestId || !e.decision || !same(e.decision, e.expected) || e.decision.requestId !== e.requestId || e.decision.browserRequestId !== e.requestId || e.decision.action !== "decline" || !time(e.decision.observedAtMs) || !e.request || e.decision.observedAtMs < e.request.observedAtMs) failures.push("missing-exact-browser-denial");
   if (!e.deliveredDecision || !same(e.deliveredDecision, e.expected) || e.deliveredDecision.requestId !== e.requestId || e.deliveredDecision.outcome !== "reject_once" || !time(e.deliveredDecision.observedAtMs) || !e.decision || e.deliveredDecision.observedAtMs < e.decision.observedAtMs || !e.toolResult || e.deliveredDecision.observedAtMs > e.toolResult.observedAtMs) failures.push("missing-delivered-native-rejection");
   if (!e.toolResult || !same(e.toolResult, e.expected) || e.toolResult.status !== "failed" || !time(e.toolResult.observedAtMs) || !e.decision || e.toolResult.observedAtMs < e.decision.observedAtMs || !e.terminal || e.toolResult.observedAtMs > e.terminal.observedAtMs) failures.push("missing-denied-tool-result-before-terminal");
@@ -93,7 +96,14 @@ export function gradeCopilotDeniedWrite(e: CopilotDeniedWriteEvidence): CopilotP
 export function gradeCopilotAttachedSettlement(e: CopilotAttachedSettlementEvidence): CopilotProtectionGrade {
   const failures: string[] = []; lifecycle(e, failures);
   const call = e.nativeCall;
-  if (!/^sha256:[a-f0-9]{64}$/.test(e.expectedCommandSha256) || !call || !same(call, e.expected) || call.operation !== "execute" || call.mode !== "async" || call.detach !== false || call.commandSha256 !== e.expectedCommandSha256 || !time(call.observedAtMs)) failures.push("missing-exact-attached-async-call");
+  const match = call ? matchCopilotFixtureCommand(e.expectedCommand, call.commandSha256) : null;
+  const relationValid = match !== null && e.commandMatch != null
+    && match.canonicalCommandSha256 === e.expectedCommandSha256
+    && e.commandMatch.algorithm === match.algorithm
+    && e.commandMatch.canonicalCommandSha256 === match.canonicalCommandSha256
+    && e.commandMatch.nativeCommandSha256 === match.nativeCommandSha256
+    && e.commandMatch.leadingWhitespace === match.leadingWhitespace;
+  if (!/^sha256:[a-f0-9]{64}$/.test(e.expectedCommandSha256) || !call || !same(call, e.expected) || call.operation !== "execute" || call.mode !== "async" || call.detach !== false || !relationValid || !time(call.observedAtMs)) failures.push("missing-exact-attached-async-call");
   const exit = e.commandExit;
   if (!exit || !exit.ownedProcessIdentityVerified || exit.commandSha256 !== e.expectedCommandSha256 || exit.code !== 0 || !time(exit.observedAtMs) || !call || exit.observedAtMs < call.observedAtMs || !e.terminal || exit.observedAtMs >= e.terminal.observedAtMs) failures.push("command-not-settled-before-terminal");
   const result = e.nativeShellResult;

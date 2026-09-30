@@ -268,8 +268,9 @@ export async function openQualifiedAcpxRuntime(
   );
   const permissionBoundary: {
     active: AbortController | null;
+    hasAdmittedTurn: boolean;
     handler?: AcpRuntimeOptions["onPermissionRequest"];
-  } = { active: null };
+  } = { active: null, hasAdmittedTurn: false };
   const extensionProfile = ACPX_CAPABILITY_PROFILES[options.profile.agent];
   const extensionRequests = new Set(extensionProfile.extensionRequests);
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
@@ -374,6 +375,8 @@ export async function openQualifiedAcpxRuntime(
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
         return { outcome: "reject_once" };
       }
+      if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
+        || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -387,15 +390,16 @@ export async function openQualifiedAcpxRuntime(
       );
       if (disposition === "delegate") {
         const active = permissionBoundary.active;
+        const turn = extensionBoundary.active;
         const handler = permissionBoundary.handler;
-        if (active && handler && !active.signal.aborted && !context.signal.aborted) {
+        if (active && turn && handler && !active.signal.aborted && !turn.signal.aborted && !context.signal.aborted) {
           // Capture this turn's callback before awaiting. A session-lifetime
           // callback must never acquire the next turn's approval authority.
           const decision = await handler(request, {
-            signal: AbortSignal.any([active.signal, context.signal]),
+            signal: AbortSignal.any([active.signal, turn.signal, context.signal]),
             responseDelivery: context.responseDelivery,
           });
-          if (permissionBoundary.active !== active || active.signal.aborted || context.signal.aborted) {
+          if (permissionBoundary.active !== active || extensionBoundary.active !== turn || active.signal.aborted || turn.signal.aborted || context.signal.aborted) {
             return { outcome: "cancel" };
           }
           return decision ?? { outcome: "cancel" };
@@ -1013,7 +1017,7 @@ function runtimePort(
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
   commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
-  permissionBoundary: { active: AbortController | null; handler?: AcpRuntimeOptions["onPermissionRequest"] },
+  permissionBoundary: { active: AbortController | null; hasAdmittedTurn: boolean; handler?: AcpRuntimeOptions["onPermissionRequest"] },
   extensionBoundary: AcpxRuntimeExtensionBoundary,
   assertPromptPolicy?: (text: string) => void,
 ): AcpxRuntimePort {
@@ -1388,6 +1392,7 @@ function runtimePort(
         controller.abort(new Error("ACPX extension turn expired"));
         if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
       };
+      permissionBoundary.hasAdmittedTurn = true;
       permissionBoundary.active = approval;
       permissionBoundary.handler = input.onPermissionRequest;
       const finishOwnershipAdmission =

@@ -4,15 +4,15 @@ export interface CopilotToolNotice {
   observedAtMs: number; seq: number;
   stage: "tool" | "permission_requested" | "permission_delivered";
   status?: "pending" | "in_progress" | "completed" | "failed";
-  operation?: "edit" | "execute"; target?: string; requestId?: string;
+  operation?: "edit" | "execute" | "read"; target?: string; requestId?: string;
   declineOffered?: boolean; outcome?: "allow_once" | "allow_always" | "reject_once" | "cancel";
-  commandSha256?: string; mode?: "sync" | "async"; detach?: boolean;
+  commandSha256?: string; readTargetSha256?: string; mode?: "sync" | "async"; detach?: boolean;
   shellId?: string; commandToolCallId?: string; shellState?: "started" | "completed"; exitCode?: number;
 }
 const rec = (v: unknown): Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, any> : {};
 const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v) && !v.includes("[REDACTED]");
-const enums = { stage: ["tool", "permission_requested", "permission_delivered"], status: ["pending", "in_progress", "completed", "failed"], operation: ["edit", "execute"], outcome: ["allow_once", "allow_always", "reject_once", "cancel"], mode: ["sync", "async"], shellState: ["started", "completed"] };
-const names = new Set(["stage", "toolCallId", "status", "operation", "target", "requestId", "declineOffered", "outcome", "commandSha256", "mode", "detach", "shellId", "commandToolCallId", "shellState", "exitCode"]);
+const enums = { stage: ["tool", "permission_requested", "permission_delivered"], status: ["pending", "in_progress", "completed", "failed"], operation: ["edit", "execute", "read"], outcome: ["allow_once", "allow_always", "reject_once", "cancel"], mode: ["sync", "async"], shellState: ["started", "completed"] };
+const names = new Set(["stage", "toolCallId", "status", "operation", "target", "requestId", "declineOffered", "outcome", "commandSha256", "readTargetSha256", "mode", "detach", "shellId", "commandToolCallId", "shellState", "exitCode"]);
 export function readCopilotToolEvidence(rows: readonly unknown[], expectedRunId: string): CopilotToolNotice[] {
   const result: CopilotToolNotice[] = [];
   for (const row of rows) {
@@ -38,6 +38,7 @@ export function readCopilotToolEvidence(rows: readonly unknown[], expectedRunId:
       if (!fields.target || fields.target.startsWith("/") || /[\\:\u0000-\u001f\u007f]/u.test(fields.target) || fields.target.split("/").some(x => x === "." || x === ".." || !x)) throw new Error("Invalid Copilot evidence target");
       notice.target = fields.target;
     }
+    if (fields.readTargetSha256 !== undefined) { if (!/^sha256:[a-f0-9]{64}$/u.test(fields.readTargetSha256)) throw new Error("Invalid read digest"); notice.readTargetSha256 = fields.readTargetSha256; }
     if (fields.commandSha256 !== undefined) { if (!/^sha256:[a-f0-9]{64}$/u.test(fields.commandSha256)) throw new Error("Invalid command digest"); notice.commandSha256 = fields.commandSha256; }
     if (fields.shellId !== undefined) { if (!/^[A-Za-z0-9_.-]{1,80}$/u.test(fields.shellId)) throw new Error("Invalid shell identity"); notice.shellId = fields.shellId; }
     if (fields.exitCode !== undefined) { if (!/^-?\d{1,10}$/u.test(fields.exitCode) || !Number.isSafeInteger(Number(fields.exitCode))) throw new Error("Invalid exit code"); notice.exitCode = Number(fields.exitCode); }

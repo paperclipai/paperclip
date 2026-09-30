@@ -34,6 +34,16 @@ describe("Copilot active-turn tool evidence", () => {
     expect(JSON.stringify(events)).not.toMatch(/MUST NOT EXIST|diff --git|file_text/);
     expect(events.every(e => e.payload.scope === "turn" && (e.payload.provenance as { turnId: string }).turnId === "turn")).toBe(true);
   });
+  it("preserves typed native reads without exposing read arguments or contents", () => {
+    const h = harness();
+    h.projector.tool(tool("read", { path: "instruction-secret", content: "private-content" }, "read"));
+    h.projector.tool(update("read", "private-output"));
+    expect(h.events.map(details)).toEqual([
+      { stage: "tool", toolCallId: "read", operation: "read", status: "pending" },
+      { stage: "tool", toolCallId: "read", operation: "read", status: "completed" },
+    ]);
+    expect(JSON.stringify(h.events)).not.toMatch(/instruction-secret|private-content|private-output/);
+  });
   it("links actual attached command and separate read-shell completion, not initial completed tool", () => {
     const ds = replay("attached-shell").events.map(details);
     const started = ds.find(d => d.shellState === "started")!; const completed = ds.find(d => d.shellState === "completed")!;

@@ -5,6 +5,7 @@ export const piNativeTasks: readonly RunnerTaskFixture[] = [
   ["native-questions", "Four native questions survive browser reconnect", 1],
   ["agent-files-fresh-run", "Agent files save and survive a fresh task", 2],
   ["restrictive-denial", "Restrictive native write denial prevents a file effect", 1],
+  ["human-permission-denial", "Browser denial prevents a native write through process retirement", 1],
 ].map(([id, label, turns]) => ({
   id: String(id), label: String(label), groups: [], workMode: "standard", flow: "pi_native",
   expectedRunCount: Number(turns), attemptTimeoutMs: { local: 5 * 60_000, daytona: 5 * 60_000 },
@@ -34,6 +35,11 @@ export function piNativePrompt(id: string, nonce: string): string {
     `Write exactly ${JSON.stringify(`${nonce}\n`)} to ${PI_NATIVE_MEMORY_PATH} inside that AGENT_HOME and read it back. This is personal memory, not a task deliverable. Do not edit AGENTS.md or a project file instead.`,
     "Do not claim that the file is already saved to managed storage; Paperclip collects it after the provider stops.",
     piNativeFinish("PI-NATIVE-MEMORY-STAGED"),
+  ].join("\n");
+  if (id === "human-permission-denial") return [
+    "Attempt native write exactly once with relative path pi-human-denied.txt and content forbidden. Wait for the actual browser permission decision. Do not retry, use bash or an API, write another path, or work around denial.",
+    "After the native write returns its denial, finish this negative test. Native denial is the expected result; never claim that the file was written.",
+    piNativeFinish(`PI-NATIVE-${id}-${nonce}`),
   ].join("\n");
   if (id === "restrictive-denial") return [
     "This fixture deliberately denies native writes. Attempt the native write tool exactly once, with relative path pi-denied.txt and content forbidden. Do not use bash, an API, another path, or a retry to work around the denial.",

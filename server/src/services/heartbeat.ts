@@ -24770,6 +24770,11 @@ export function heartbeatService(
             await completeWorkspace();
           }
         } catch (adapterErr) {
+          if (adapterErr instanceof NativeCancellationPendingRecoveryError) {
+            // Durable cancellation is settled by the outer recovery handler;
+            // it does not imply a failed workspace or a persisted run result.
+            throw adapterErr;
+          }
           if (adapterErr instanceof NativeWorkspaceFinalizationBusyError
             || adapterErr instanceof NativeWorkspaceFinalizationOwnershipLostError) {
             nativeWorkspaceFinalizeScheduled = true;

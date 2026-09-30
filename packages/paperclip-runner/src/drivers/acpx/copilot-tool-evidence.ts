@@ -1,3 +1,4 @@
+import { updateSingleReadEvidence, type SingleReadEvidence } from "./single-read-evidence.js";
 import { createHash } from "node:crypto";
 import { redactPaperclipSemanticValue } from "../../semantic-tools/redaction.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
@@ -6,7 +7,7 @@ import { safeAcpxLocations } from "./safe-locations.js";
 const LIMIT = 256;
 const CATEGORY = "copilot_tool_evidence_v1";
 type Fields = Record<string, string | number | boolean>;
-interface Tool { kind?: string; input?: string; fields: Fields; invalid?: boolean }
+interface Tool { kind?: string; input?: string; fields: Fields; invalid?: boolean; read?: SingleReadEvidence }
 const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const identity = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v);
 const shellIdentity = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_.-]{1,80}$/u.test(v);
@@ -106,6 +107,7 @@ export function createCopilotToolEvidence(binding: {
         if (state.kind && state.kind !== call.kind) { state.invalid = true; notice("evidence_incomplete", id, { reason: "changed_tool_kind" }); return; }
         state.kind = call.kind;
       }
+      if (state.kind === "read") state.read = updateSingleReadEvidence(state.read, call, binding.workingDirectory);
       if (call.rawInput !== undefined) {
         const fields = inputFields({ ...call, kind: state.kind });
         const fingerprint = JSON.stringify(fields);
@@ -114,8 +116,8 @@ export function createCopilotToolEvidence(binding: {
       }
       const status = ["pending", "in_progress", "completed", "failed"].includes(String(call.status)) ? String(call.status) : undefined;
       if (!status) return;
-      const fields: Fields = { ...state.fields, status };
-      if (state.kind === "edit") fields.operation = "edit";
+      const fields: Fields = { ...state.fields, status, ...(state.read?.targetSha256 ? { readTargetSha256: state.read.targetSha256 } : {}) };
+      if (state.kind === "edit" || state.kind === "read") fields.operation = state.kind;
       const output = record(call.rawOutput).content;
       // Parse only the pinned native wrapper, never substrings in command output.
       if (status === "completed" && typeof output === "string" && output.length <= 256) {
@@ -144,7 +146,7 @@ export function createCopilotToolEvidence(binding: {
       if (permissionTools.has(call.toolCallId) || permissionTools.size >= LIMIT) { notice("evidence_incomplete", call.toolCallId, { reason: "ambiguous_permission_origin" }); return undefined; }
       permissionTools.add(call.toolCallId);
       const fields: Fields = { requestId, ...inputFields(call) };
-      if (call.kind === "edit") fields.operation = "edit";
+      if (call.kind === "edit" || call.kind === "read") fields.operation = call.kind;
       fields.declineOffered = offeredActions.includes("decline");
       notice("permission_requested", call.toolCallId, fields, "session/request_permission");
       let delivered = false;

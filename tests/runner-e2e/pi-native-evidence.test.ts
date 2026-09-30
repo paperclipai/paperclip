@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runnerMatrix } from "./catalog.js";
+import { piNativeTasks } from "./pi-native-cases.js";
 import { packageEvidence } from "./evidence.js";
 import { runPiNativeFlow } from "./pi-native-flow.js";
 import { sanitizeJson } from "./redaction.js";
@@ -22,16 +22,16 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 type FlowInput = Parameters<typeof runPiNativeFlow>[0];
-async function fixture(options: { failComments?: boolean } = {}) {
+async function fixture(options: { failComments?: boolean; remote?: boolean; incompleteRemote?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pi-native-evidence-")); roots.push(root);
   const privateDir = join(root, "private"); const uploadDir = join(root, "upload");
   const workspacePath = join(root, "workspace"); const snapshots = join(privateDir, "snapshots");
   for (const directory of [workspacePath, snapshots, join(privateDir, "html-report"), join(privateDir, "blob-report")]) await mkdir(directory, { recursive: true });
-  const execution = runnerMatrix.find(row => row.id === "pi-native.runner-acpx-pi.local.native-questions")!;
+  const execution = { id: "pi-native.runner-acpx-pi.local.native-questions", environment: { id: options.remote ? "daytona" : "local" }, profile: { qualificationCandidate: "pi" }, task: piNativeTasks.find(row => row.id === "native-questions")! } as FlowInput["execution"];
   const issue = { id: "issue-fixture", identifier: "PI-1", title: execution.task.buildTitle("fixture"), status: "done" };
   const run = { id: "run-fixture", status: "succeeded", runtimeMode: "native", createdAt: "2026-09-29T00:00:00Z" };
   const headers = ["Pi native color", "Pi native confirmation", "Pi native name", "Pi native draft"];
-  let answered = 0; const typed: string[] = [];
+  let answered = 0; const typed: string[] = []; let answerProof = ""; let remoteFinished = false; const cleanupAssertions: Array<() => Promise<unknown>> = [];
   const interactions = () => headers.slice(0, Math.min(4, answered + 1)).map((header, index) => ({
     id: `question-${index}`, kind: "ask_user_questions", status: index < answered ? "answered" : "pending",
     sourceRunId: run.id, continuationPolicy: "none",
@@ -70,24 +70,38 @@ async function fixture(options: { failComments?: boolean } = {}) {
     getByRole: (role: string) => ({ last: () => ({ click: async () => {
       if (role !== "button") return;
       answered += 1;
-      if (answered === 4) await writeFile(join(workspacePath, "pi-native-answers.json"), JSON.stringify([
+      if (answered === 4) { answerProof = JSON.stringify([
         { status: "answered", optionId: "blue" }, { status: "negative_or_cancelled", confirmed: false },
         { status: "answered", value: typed[0] }, { status: "answered", value: typed[1] },
-      ]));
+      ]); await writeFile(join(workspacePath, "pi-native-answers.json"), options.remote ? "WRONG HOST COPYBACK" : answerProof); }
     } }) }),
   };
   const evidence = async (name: string, data: unknown) => { await writeFile(join(snapshots, name), JSON.stringify(sanitizeJson(data, [secret]))); };
   const capture = vi.fn(async (_id: string, _label: string, file: string) => { await writeFile(join(privateDir, file), "fixture screenshot boundary"); });
+  const remoteRoot = { pid: 10, ppid: 1, startTicks: "100", bootId: "boot" };
+  const remoteSnapshot = { observedAtMs: 2, complete: !options.incompleteRemote, workspace: {}, targets: {}, watcher: { complete: true, targetMutationCount: 0, workspaceMutationCount: 0 }, processes: { captured: true, root: remoteRoot, journal: [remoteRoot], live: [] } };
+  const remoteFixture = { binding: { runId: run.id }, remoteCwd: "/owned/remote", outsideTarget: null,
+    snapshot: async () => remoteSnapshot,
+    finish: async () => { remoteFinished = true; return remoteSnapshot; },
+    readFile: async (path: string) => { expect(remoteFinished).toBe(true); expect(path).toBe("pi-native-answers.json"); return Buffer.from(answerProof); },
+    close: vi.fn(async () => {}),
+  };
   const input = {
     page: page as unknown as FlowInput["page"], api: api as unknown as FlowInput["api"],
     fixtures: { company: { id: "company-fixture", issuePrefix: "PI" }, agent: { name: "Pi fixture" }, environment: { id: "environment-fixture" } } as FlowInput["fixtures"],
     execution, nonce: "fixture", workspacePath, deadlineAt: Date.now() + 5000,
     restart: async () => { throw new Error("Unexpected restart"); }, observe: () => {}, capture, evidence,
+    ...(options.remote ? { registerCleanupAssertion: (fn: () => Promise<unknown>) => cleanupAssertions.push(fn), remoteBootstrap: {
+      prompt: () => "Read the bootstrap file only",
+      bindAndRelease: async (value: { targets: string[]; actionPrompt(fixture: any): Promise<string> | string }) => {
+        expect(value.targets).toEqual(["pi-native-answers.json"]); const prompt = await value.actionPrompt(remoteFixture); expect(prompt).toContain("paperclip_native_question"); return remoteFixture;
+      },
+    } } : {}),
   };
   for (const [file, content] of [["result.json", "{}"], ["snapshots/fixtures.json", "{}"], ["junit.xml", "<testsuites/>"], ["html-report/index.html", "fixture report"]]) await writeFile(join(privateDir, file!), content!);
   const blob = join(privateDir, "blob-report"); await writeFile(join(blob, "fixture.txt"), "unit fixture");
   execFileSync("zip", ["-q", "report.zip", "fixture.txt"], { cwd: blob });
-  return { input, privateDir, uploadDir, snapshots, paths, capture, issue, run, secret };
+  return { input: input as FlowInput, privateDir, uploadDir, snapshots, paths, capture, issue, run, secret, cleanupAssertions };
 }
 
 describe("Pi native terminal evidence", () => {
@@ -126,4 +140,16 @@ describe("Pi native terminal evidence", () => {
     const packaged = await packageEvidence({ privateDir: f.privateDir, uploadDir: f.uploadDir, secrets: [f.secret], expectPassScreenshot: true });
     expect(packaged.missing).toEqual(["final-state.png", "snapshots/api-state.json"]);
   });
+});
+
+
+it("uses sealed remote answer bytes rather than host copyback and requires independent retirement", async () => {
+  const f = await fixture({ remote: true }); const result = await runPiNativeFlow(f.input);
+  expect(result.checks.every(check => check.passed)).toBe(true); expect(f.cleanupAssertions).toHaveLength(1); await f.cleanupAssertions[0]!();
+  const retained = JSON.parse(await readFile(join(f.snapshots, "pi-remote-1-questions-final.json"), "utf8")); expect(retained.snapshot.processes.live).toEqual([]);
+});
+it("cannot replace missing remote retirement proof with a succeeded Product run", async () => {
+  const f = await fixture({ remote: true, incompleteRemote: true });
+  await expect(runPiNativeFlow(f.input)).rejects.toThrow("retirement is unproven");
+  await expect(f.cleanupAssertions[0]!()).rejects.toThrow("retirement proof incomplete");
 });

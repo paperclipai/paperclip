@@ -10,6 +10,16 @@ import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.j
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
 
+/** Fence live ACPX owners when shared runtime semantics change, even if the
+ * underlying native executable/profile did not change. Undefined preserves
+ * the existing configuration digest for other provider transports.
+ */
+export function nativeRuntimeContractForProvider(
+  provider: NativeExecutionInput["provider"],
+): string | undefined {
+  return provider.kind === "acpx" ? "paperclip.acpx-runtime-contract.v1" : undefined;
+}
+
 /**
  * Persisted provider threads retain their dynamic-tool declarations. This
  * fingerprint is part of checkpoint compatibility and must change whenever

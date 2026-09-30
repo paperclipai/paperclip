@@ -54,6 +54,7 @@ import {
 } from "./native-harness-backup-stamp.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import * as nativeSessionResume from "./native-session-resume.js";
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -7061,7 +7062,7 @@ describe("native warm session supervision", () => {
     });
   });
 
-  it.each(["permission", "managed credential"])("replaces an idle warm provider session when its %s changes", async (change) => {
+  it.each(["permission", "managed credential", "ACPX runtime contract", "unchanged Codex runtime contract"])("checks warm owner compatibility for %s", async (change) => {
     const firstClose = vi.fn(async () => undefined);
     const secondClose = vi.fn(async () => undefined);
     const firstSession = { close: firstClose };
@@ -7069,7 +7070,9 @@ describe("native warm session supervision", () => {
     const base = {
       ...execution,
       schema: "paperclip.native-execution-input.v4",
-      provider: { kind: "codex", model: null, approvalPolicy: "never" },
+      provider: change === "ACPX runtime contract"
+        ? { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all" }
+        : { kind: "codex", model: null, approvalPolicy: "never" },
       binding: {
         ...execution.binding,
         runId: "run-permission-never",
@@ -7083,7 +7086,7 @@ describe("native warm session supervision", () => {
       },
       session: {
         normalizedSessionId: "session-warm-permission",
-        driverKind: "codex_app_server" as const,
+        driverKind: change === "ACPX runtime contract" ? "acpx_runtime" as const : "codex_app_server" as const,
         protocolVersion: 1 as const,
         lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
       },
@@ -7106,6 +7109,12 @@ describe("native warm session supervision", () => {
       highestContiguousSourceSeq: 1,
       usage: null,
     };
+    const runtimeChange = change === "ACPX runtime contract" || change === "unchanged Codex runtime contract";
+    const keepsOwner = change === "unchanged Codex runtime contract";
+    const currentRuntimeContract = nativeSessionResume.nativeRuntimeContractForProvider(base.provider);
+    const contract = runtimeChange
+      ? vi.spyOn(nativeSessionResume, "nativeRuntimeContractForProvider").mockReturnValue(undefined)
+      : undefined;
     state.execute
       .mockReset()
       .mockImplementationOnce(async (options) => {
@@ -7114,8 +7123,8 @@ describe("native warm session supervision", () => {
         return result;
       })
       .mockImplementationOnce(async (options) => {
-        expect(options.existingSession).toBeUndefined();
-        options.onSession?.(secondSession);
+        expect(options.existingSession).toBe(keepsOwner ? firstSession : undefined);
+        if (!keepsOwner) options.onSession?.(secondSession);
         return result;
       });
 
@@ -7129,21 +7138,22 @@ describe("native warm session supervision", () => {
         managedAiCredentialIdentity: "first-identity",
         runnerInstanceId: "runner",
       });
+      contract?.mockReturnValue(currentRuntimeContract);
       await executePaperclipNativeSession({
         db: leaseDb(lowered),
         execution: lowered,
         managedAiCredentialIdentity: change === "managed credential" ? "second-identity" : "first-identity",
         runnerInstanceId: "runner",
       });
-      expect(firstClose).toHaveBeenCalledWith({
-        reason: "warm native session configuration changed",
-      });
+      if (keepsOwner) expect(firstClose).not.toHaveBeenCalled();
+      else expect(firstClose).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
       expect(secondClose).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(20);
-      expect(secondClose).toHaveBeenCalledWith({
+      expect(keepsOwner ? firstClose : secondClose).toHaveBeenCalledWith({
         reason: "warm native session idle timeout",
       });
     } finally {
+      contract?.mockRestore();
       vi.useRealTimers();
     }
   });

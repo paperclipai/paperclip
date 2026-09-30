@@ -20,3 +20,18 @@ export async function verifyCleanupAssertions(assertions: readonly CleanupAssert
   }
   return { checks, errors };
 }
+
+/** Collect remote proof before destroying its environment, even if cancellation
+ * fails. A missing proof fails qualification but never skips owned teardown. */
+export async function runCleanupWithObservers(input: {
+  retireRuns(): Promise<void>;
+  assertions: readonly CleanupAssertion[];
+  teardown(): Promise<void>;
+}) {
+  const errors: unknown[] = [];
+  try { await input.retireRuns(); } catch (error) { errors.push(error); }
+  const verification = await verifyCleanupAssertions(input.assertions);
+  errors.push(...verification.errors);
+  try { await input.teardown(); } catch (error) { errors.push(error); }
+  return { checks: verification.checks, errors };
+}

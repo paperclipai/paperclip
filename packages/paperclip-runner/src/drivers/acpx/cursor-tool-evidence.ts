@@ -1,3 +1,4 @@
+import { updateSingleReadEvidence, type SingleReadEvidence } from "./single-read-evidence.js";
 import { createHash } from "node:crypto";
 import { redactPaperclipSemanticValue } from "../../semantic-tools/redaction.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
@@ -6,7 +7,7 @@ const rec = (v: unknown): Record<string, unknown> => v !== null && typeof v === 
 const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v);
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 type Fields = Record<string, string | boolean>;
-type Tool = { kind?: string; commandSha256?: string };
+type Tool = { kind?: string; commandSha256?: string; read?: SingleReadEvidence };
 type Permission = { requestId: string; kind?: string; hasInput: boolean; commandSha256?: string; declineOffered: boolean; requested?: boolean; outcome?: string; delivered?: boolean };
 
 /** Passive, bounded evidence from the active prompt iterator only. Cursor's
@@ -51,7 +52,7 @@ export function createCursorToolEvidence(binding: {
     // Their bounded identity/status evidence must not disable later shell proof.
     if (state.kind === "execute" && permission.hasInput && (!permission.commandSha256 || permission.commandSha256 !== state.commandSha256)) throw new Error("Conflicting permission input");
     const fields: Fields = { requestId: permission.requestId, declineOffered: permission.declineOffered };
-    if (state.kind === "execute") fields.operation = "execute";
+    if (state.kind === "execute" || state.kind === "read") fields.operation = state.kind;
     if (state.commandSha256) fields.commandSha256 = state.commandSha256;
     if (!permission.requested) { notice("permission_requested", toolId, fields, "session/request_permission"); permission.requested = true; }
     if (permission.outcome && !permission.delivered) { notice("permission_delivered", toolId, { ...fields, outcome: permission.outcome }, "session/request_permission"); permission.delivered = true; }
@@ -72,6 +73,7 @@ export function createCursorToolEvidence(binding: {
         if (state.kind && state.kind !== call.kind) throw new Error("Changed tool kind");
         state.kind = call.kind;
       }
+      if (state.kind === "read") state.read = updateSingleReadEvidence(state.read, call, binding.workingDirectory);
       if (call.rawInput !== undefined && state.kind === "execute") {
         const hash = command(call);
         if (!hash || (call.tag !== "tool_call" && !state.commandSha256) || (state.commandSha256 && state.commandSha256 !== hash)) throw new Error("Changed or missing command");
@@ -80,7 +82,7 @@ export function createCursorToolEvidence(binding: {
       if (!["pending", "in_progress", "completed", "failed"].includes(String(call.status))) return;
       // Publish queued permission delivery before its terminal tool result.
       if (call.tag !== "tool_call") flush(toolId);
-      notice("tool", toolId, { status: String(call.status), ...(state.kind === "execute" ? { operation: "execute" } : {}), ...(state.commandSha256 ? { commandSha256: state.commandSha256 } : {}) });
+      notice("tool", toolId, { status: String(call.status), ...(["execute", "read"].includes(state.kind ?? "") ? { operation: state.kind! } : {}), ...(state.commandSha256 ? { commandSha256: state.commandSha256 } : {}), ...(state.read?.targetSha256 ? { readTargetSha256: state.read.targetSha256 } : {}) });
       flush(toolId);
     }); },
     permission(request: unknown, requestId: string, offeredActions: readonly string[]) {

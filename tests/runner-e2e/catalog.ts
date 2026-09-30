@@ -970,7 +970,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
       { kind: "issue_status", expected: "done" },
       { kind: "run_status", expected: "succeeded" },
       { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
-      { kind: "environment", expected: "daytona" },
+      { kind: "environment", expected: execution.environment.id },
     ];
   },
 };
@@ -1035,22 +1035,36 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "cursor-native", label: "Cursor native interactions", manualOnly: true,
     description: "Native question continuation, revision-bound plan decisions and restrictive permission denial with independent process and file evidence.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
-    environments: [localEnvironment], tasks: cursorNativeTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.cursor.agentProfileVersion, modeAdmission: "native-config-ack", artifactExport: "pending-private-home" },
+    environments: runnerEnvironments, tasks: cursorNativeTasks, expectedMatrixSize: 8,
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.cursor.agentProfileVersion, modeAdmission: "native-config-ack", artifactExport: "pending-private-home", remoteEvidence: "owned-lease-sealed-observer" },
   },
   {
     id: "pi-native", label: "Pi native boundaries", manualOnly: true,
-    description: "Explicit local Pi native forms, registered agent files and restrictive permission qualification.",
+    description: "Pi native forms, registered agent files and human permission denial on local and Daytona execution; automatic deny-all remains local-only.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "pi"),
-    environments: [localEnvironment], tasks: piNativeTasks, expectedMatrixSize: 3,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion },
+    environments: runnerEnvironments, tasks: piNativeTasks, expectedMatrixSize: 7,
+    excludedExecutionIds: ["pi-native.runner-acpx-pi.daytona.restrictive-denial"],
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, remoteDenyAll: "unsupported-native-bootstrap-read-is-denied", remoteEvidence: "owned-lease-sealed-observer" },
   },
   {
     id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
     description: "Exact native denial with explicit operator cancellation, and attached command settlement with independent process evidence.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
-    environments: [localEnvironment], tasks: copilotProtectionTasks, expectedMatrixSize: 2,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "explicit-public-cancellation", settlement: "attached-finite-command-only" },
+    environments: runnerEnvironments, tasks: copilotProtectionTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "explicit-public-cancellation", settlement: "attached-finite-command-only", remoteEvidence: "owned-lease-sealed-observer" },
+  },
+  {
+    id: "rich-acp-warm-continuity", label: "Rich ACP warm continuity", manualOnly: true,
+    description: "Three browser-driven turns with stable native session, runner process and workspace identity for Cursor, Copilot and Pi.",
+    groups: ["native", "warm"],
+    profiles: extendedHarnessProfiles.map(profile => ({ ...profile, buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      return { ...agent, adapterConfig: { ...agent.adapterConfig as Record<string, unknown>, lifecycleMode: "warm", idleTimeoutMs: 300_000 } };
+    } })),
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [{ ...daytonaWarmContinuityTask, turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } }],
+    expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start" },
   },
   {
     id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,

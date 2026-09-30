@@ -138,7 +138,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
@@ -5210,6 +5210,7 @@ function nativeSessionConfigDigest(
         // without newly required tools.
         nativeToolContractFingerprint:
           nativeToolContractFingerprintForTarget(executionTargetKind),
+        runtimeContract: nativeRuntimeContractForProvider(execution.provider),
       }),
     )
     .digest("hex")}`;

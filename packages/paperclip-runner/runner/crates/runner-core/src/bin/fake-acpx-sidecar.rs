@@ -232,6 +232,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "permissions-forged-origin"
+            | "turns-retired"
+            | "turns-retired-terminal-first"
             | "permissions-interactive"
             | "permissions-wrong-ack"
             | "resolutions"
@@ -242,6 +245,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
+                    let turn_id = request
+                        .pointer("/params/turnId")
+                        .and_then(Value::as_str)
+                        .unwrap();
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"interrupted"}),
+                    )?;
+                    next_sequence += 1;
+                }
                 write_json(
                     &mut stdout,
                     &bootstrap_success(id, command, &request, mode, profile_digest),
@@ -398,7 +416,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if command == "turn.start"
                     && matches!(
                         mode,
-                        "turns-permission" | "permissions-interactive" | "permissions-wrong-ack"
+                        "turns-permission"
+                            | "permissions-interactive"
+                            | "permissions-wrong-ack"
+                            | "permissions-forged-origin"
                     )
                 {
                     write_turn_event(
@@ -407,12 +428,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "runtime.permission_requested",
                         "run-1",
                         turn_id,
-                        json!({
-                            "requestId":"permission-1",
-                            "kind":"execute",
-                            "title":"Run a command?",
-                            "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
-                        }),
+                        if mode == "permissions-forged-origin" {
+                            json!({
+                                "requestId":"permission-1", "kind":"execute", "title":"Run a command?",
+                                "choices":[{"key":"cancel","label":"Cancel"}],
+                                "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"session/request_permission"},
+                            })
+                        } else {
+                            json!({
+                                "requestId":"permission-1",
+                                "kind":"execute",
+                                "title":"Run a command?",
+                                "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
+                            })
+                        },
                     )?;
                     next_sequence += 1;
                 }
@@ -654,7 +683,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         next_sequence += 1;
                     }
                 }
-                if command == "turn.cancel" && mode == "turns" {
+                if command == "turn.cancel" && matches!(mode, "turns" | "turns-retired") {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
@@ -731,6 +760,7 @@ fn bootstrap_success(
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
+                    "cursorMode": params.get("cursorMode"),
                     "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
@@ -749,7 +779,9 @@ fn bootstrap_success(
             "accepted": true, "turnId": params.get("turnId"), "controlId": params.get("controlId"),
             "mode": if mode == "controls-wrong-ack" { json!("wrong") } else { params["mode"].clone() },
         }),
-        "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
+        "turn.cancel" => {
+            json!({"cancelled":mode != "turns-wrong-cancel", "sessionClosed":matches!(mode, "turns-retired" | "turns-retired-terminal-first")})
+        }
         "session.suspend" => json!({
             "suspended":mode != "suspend-wrong-ack",
             "identity": if mode == "suspend-missing-identity" { Value::Null } else { json!({

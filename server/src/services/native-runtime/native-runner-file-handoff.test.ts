@@ -8,6 +8,8 @@ import {
   link,
   mkdir,
   readFile,
+  readdir,
+  rm,
   symlink,
   unlink,
   writeFile,
@@ -39,6 +41,7 @@ import { issueService } from "../issues.js";
 import { findHeartbeatRunCompletionComment, resolveHeartbeatRunResponse } from "../heartbeat-run-summary.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
+  stageNativeRunnerAttachmentBytes,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -194,6 +197,91 @@ describe("native runner file handoff", () => {
       verification: [], attentionRequests: [], artifacts: [],
     };
   }
+
+  async function stageEmptyWake(root: string, boundCompanyId = companyId) {
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, runId));
+    return stageNativeRunnerWakeAttachments({
+      db,
+      binding: {
+        companyId: boundCompanyId, issueId, runId, agentId,
+        workspaceRoot: root, executionTargetKind: "local",
+      },
+    });
+  }
+
+  it("leaves an empty workspace unchanged for an empty wake and permits later explicit staging", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-"));
+    try {
+      const wake = await stageEmptyWake(root);
+      expect(wake.attachments).toEqual([]);
+      await wake.cleanup();
+      await expect(readdir(root)).resolves.toEqual([]);
+
+      const explicit = await stageNativeRunnerAttachmentBytes({ workspaceRoot: root, body: Buffer.from("later authorized bytes") });
+      await expect(readFile(path.join(root, explicit.workspaceRelativePath), "utf8"))
+        .resolves.toBe("later authorized bytes");
+      await explicit.cleanup();
+      await expect(readFile(path.join(root, explicit.workspaceRelativePath)))
+        .resolves.toEqual(Buffer.alloc(0));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scrubs inactive staging bytes on an empty wake without creating another directory", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-residue-"));
+    try {
+      const previous = await stageNativeRunnerAttachmentBytes({ workspaceRoot: root, body: Buffer.from("previous attachment") });
+      await previous.cleanup();
+      const slot = path.join(root, previous.workspaceRelativePath);
+      await writeFile(slot, "stale bytes after an interrupted owner");
+      const directories = await readdir(path.join(root, ".paperclip-inbound"));
+
+      const wake = await stageEmptyWake(root);
+      expect(wake.attachments).toEqual([]);
+      await wake.cleanup();
+      await expect(readFile(slot)).resolves.toEqual(Buffer.alloc(0));
+      await expect(readdir(path.join(root, ".paperclip-inbound"))).resolves.toEqual(directories);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["root-file", "root-symlink", "entry-symlink"] as const)(
+    "rejects unsafe %s staging on an empty wake without changing outside bytes",
+    async (kind) => {
+      const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-unsafe-"));
+      const outside = await mkdtemp(path.join(temporaryRoot, "empty-wake-outside-"));
+      try {
+        await writeFile(path.join(outside, "keep.txt"), "outside bytes");
+        const inbound = path.join(root, ".paperclip-inbound");
+        if (kind === "root-file") await writeFile(inbound, "not a directory");
+        else if (kind === "root-symlink") await symlink(outside, inbound);
+        else {
+          await mkdir(inbound);
+          await symlink(outside, path.join(inbound, "untrusted-owner"));
+        }
+        await expect(stageEmptyWake(root)).rejects.toThrow(/staging_(?:path|residue)_denied/);
+        await expect(readFile(path.join(outside, "keep.txt"), "utf8")).resolves.toBe("outside bytes");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("still authorizes an empty wake before touching its workspace", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-unauthorized-"));
+    try {
+      await expect(stageEmptyWake(root, "00000000-0000-4000-8000-000000009199"))
+        .rejects.toThrow("paperclip_runner_attachment_staging_not_authorized");
+      await expect(readdir(root)).resolves.toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("rejects a workspace-only file completion and invented delivery receipts without asking the user to approve completion", async () => {
     for (const ref of ["launch-checklist.md", "./out/report.pdf", "/workspace/answer.txt", "file:out/report.csv", "deliverable:00000000-0000-4000-8000-000000000001"]) {
