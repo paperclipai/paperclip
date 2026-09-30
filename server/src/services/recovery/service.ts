@@ -1,3 +1,4 @@
+import { activeRecoveryActionCompanyCondition } from "./active-recovery-scope.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
@@ -3400,7 +3401,11 @@ export function recoveryService(
           eq(issues.companyId, issueRecoveryActions.companyId),
         ),
       )
-      .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      .innerJoin(
+        companies,
+        eq(companies.id, issueRecoveryActions.companyId),
+      )
+      .where(activeRecoveryActionCompanyCondition());
 
     const result = {
       requeued: 0,
