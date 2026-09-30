@@ -1996,6 +1996,34 @@
       "when": 1790607525758,
       "tag": "0286_complete_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1790611116286,
+      "tag": "0287_serious_tinkerer",
+      "breakpoints": true
+    },
+    {
+      "idx": 288,
+      "version": "7",
+      "when": 1790690265758,
+      "tag": "0288_glorious_jamie_braddock",
+      "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1790727655506,
+      "tag": "0289_drop_user_keyboard_shortcuts",
+      "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1790768845200,
+      "tag": "0290_browser_use_cloud",
+      "breakpoints": true
     }
   ]
 }

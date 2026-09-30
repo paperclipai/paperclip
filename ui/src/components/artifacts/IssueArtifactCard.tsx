@@ -5,6 +5,7 @@ import {
   type IssueWorkProduct,
 } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import {
   RichWorkProductCard,
@@ -13,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
-import { attachmentDownloadPath } from "@/lib/issue-attachments";
+import { attachmentDownloadPath, isTextAttachment } from "@/lib/issue-attachments";
 import { workProductHref } from "@/lib/issue-artifacts";
 import { formatDateTime } from "@/lib/utils";
 import {
@@ -38,6 +39,7 @@ import {
 
 export interface IssueArtifactFileProps extends ArtifactIdentity {
   id: string;
+  attachmentId?: string;
   filename: string;
   contentType: string;
   contentPath: string;
@@ -49,8 +51,22 @@ export interface IssueArtifactFileProps extends ArtifactIdentity {
 
 /** Shared by uploads and promoted uploads; both use the issue's existing gallery. */
 export function IssueArtifactFile(props: IssueArtifactFileProps) {
-  const { metadata = null } = props;
+  const { metadata = null, attachmentId } = props;
   const openGallery = useContext(IssueGalleryContext);
+  const openTextAttachment = useContext(TextAttachmentContext);
+  const openTextAction = openTextAttachment && attachmentId && isTextAttachment({
+    contentType: props.contentType,
+    originalFilename: props.filename,
+  }) ? (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-label={`Open in tab: ${props.title}`}
+      onClick={() => openTextAttachment(attachmentId, props.filename)}
+    >
+      Open in tab
+    </Button>
+  ) : null;
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [csvRequested, setCsvRequested] = useState(false);
   const image = isImageLikeOutput(props.contentType, props.filename);
@@ -115,8 +131,27 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
       </>
     );
   }
-  if (localCsv && !tooLarge && data.data)
-    return <DataCard {...props} {...data.data} downloadUrl={downloadPath} />;
+  if (localCsv && !tooLarge && data.data) {
+    return (
+      <DataCard
+        {...props}
+        {...data.data}
+        downloadUrl={downloadPath}
+        actions={
+          <>
+            {openTextAction}
+            {downloadPath ? (
+              <Button asChild size="sm" variant="outline">
+                <a href={downloadPath} download={props.filename}>
+                  Download file
+                </a>
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+    );
+  }
   return (
     <div className="flex flex-col gap-2">
       <FileCard
@@ -126,16 +161,19 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
         downloadUrl={downloadPath}
         openUrl={artifactUrl(props.openPath) || contentPath}
         actions={
-          localCsv && !tooLarge && !data.isError ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={data.isFetching}
-              onClick={() => setCsvRequested(true)}
-            >
-              {data.isFetching ? "Loading preview…" : "Preview data"}
-            </Button>
-          ) : undefined
+          <>
+            {openTextAction}
+            {localCsv && !tooLarge && !data.isError ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={data.isFetching}
+                onClick={() => setCsvRequested(true)}
+              >
+                {data.isFetching ? "Loading preview…" : "Preview data"}
+              </Button>
+            ) : null}
+          </>
         }
       />
       {csv && (tooLarge || data.isError || !localCsv) && (
@@ -257,6 +295,7 @@ export function IssueWorkProductArtifactCard({
       <IssueArtifactFile
         {...identity}
         id={wp.id}
+        attachmentId={attachment?.attachmentId}
         filename={text(m, "originalFilename") || wp.title}
         contentType={text(m, "contentType")}
         contentPath={contentPath}

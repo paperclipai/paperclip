@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -33,7 +32,6 @@ import { SecondarySidebar } from "./SecondarySidebar";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { useDialogActions } from "../context/DialogContext";
-import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -241,7 +239,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
 
   useLayoutEffect(() => {
     setForceCollapsed(!streamlinedUiEnabled && hasSecondarySidebar);
@@ -450,7 +447,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
-    enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
@@ -615,7 +611,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
   return (
     <ChatSetupSidebarProvider>
-    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
         "bg-background text-foreground pt-(--sz-safe-top)",
@@ -790,7 +785,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <AnnouncementWell health={health} />
       <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
-    </GeneralSettingsProvider>
     </ChatSetupSidebarProvider>
   );
 }

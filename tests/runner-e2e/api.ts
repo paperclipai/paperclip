@@ -56,6 +56,24 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  /** Use the public revision fence when configuring a fixture's instruction entry. */
+  async saveAgentInstructions(agentId: string, content: string): Promise<void> {
+    const path = `/api/agents/${agentId}/instructions-bundle/file`;
+    const current = await this.request.get(`${path}?path=AGENTS.md`);
+    let baseHash: string | null = null;
+    if (current.ok()) {
+      const detail = await current.json();
+      if (typeof detail.contentHash !== "string" || !detail.contentHash) {
+        throw new Error("Existing fixture instructions have no revision hash");
+      }
+      baseHash = detail.contentHash;
+    } else if (current.status() !== 404) {
+      throw new Error(await failureMessage(current, "GET"));
+    }
+    const saved = await this.request.put(path, { data: { path: "AGENTS.md", content, baseHash } });
+    if (!saved.ok()) throw new Error(await failureMessage(saved, "PUT"));
+  }
+
   async delete(
     path: string,
     options?: { allowNotFound?: boolean },

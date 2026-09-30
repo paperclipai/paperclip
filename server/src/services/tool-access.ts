@@ -1,3 +1,6 @@
+import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
+import { browserUseService } from "./browser-use.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "./cognee-connection.js";
 import { isMemoryConnectorId, isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -2358,6 +2361,9 @@ export function classifyRisk(
     if (verbMatches(tool.name, "delete|remove|destroy|unpublish")) return "destructive";
     if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
     return reviewedReads.has(tool.name) ? "read" : "write";
+  }
+  if (sourceTemplateKey === "browser-use-cloud") {
+    return BROWSER_USE_TOOLS.find(t => t.name === tool.name)?.annotations.readOnlyHint ? "read" : "destructive";
   }
   if (sourceTemplateKey === "railway") {
     const reviewed = railwayRisk(normalizedToolName);
@@ -6438,6 +6444,12 @@ export function toolAccessService(
     });
     emitConnectionUpdated(archived.connection, connection, "archive");
 
+    // Hosted work needs its credential to stop. Agent/viewer access is already
+    // revoked above; retain cleanup authority until provider shutdown confirms.
+    if (isBrowserUseConnection(connection)) {
+      await browserUseService(db, options.remoteHttpRequest).stopBeforeCredentialRemoval(connection.companyId, connection.id);
+    }
+
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
     // provider error leaves an unresolvable secret and a resumable removal
@@ -7101,6 +7113,11 @@ export function toolAccessService(
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
+    if (isBrowserUseConnection(connection)) {
+      const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);
+      await browserUseClient(headers, (url, init) => requestRemoteHttpEndpoint(new URL(url), init), connection.id).probe();
+      return BROWSER_USE_TOOLS;
+    }
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
       return [];
@@ -7251,6 +7268,8 @@ export function toolAccessService(
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
+      } else if (isBrowserUseConnection(connection)) {
+        await discoverTools(connection, undefined, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
@@ -7283,6 +7302,8 @@ export function toolAccessService(
         config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
+          : isBrowserUseConnection(connection)
+            ? "Browser Use API key is connected."
           : isAgentMailConnection(connection)
             ? "AgentMail API key is connected."
             : connection.transport === "local_stdio"
@@ -12347,7 +12368,7 @@ export function toolAccessService(
         ? splitRemoteUrlCredential(input.link)
         : null;
     const baseConfig =
-      transport === "mcp_remote"
+      (transport === "mcp_remote" || transport === "rest_api")
         ? {
             url:
               (remoteMcpConnector ? remoteUrlCredential?.publicUrl : undefined) ??
@@ -12701,7 +12722,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "rest_api" && galleryEntry?.slug === "browser-use-cloud" ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -17448,7 +17469,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isBrowserUseConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })
@@ -19485,6 +19506,7 @@ export function toolAccessService(
         input.connectionId,
         input.companyId,
       );
+      if (isBrowserUseConnection(connection)) throw forbidden("Browser Use credentials stay in the governed tool gateway and cannot be exported.");
       if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);

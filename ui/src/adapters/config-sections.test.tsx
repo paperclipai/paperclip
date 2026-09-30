@@ -60,13 +60,26 @@ describe("adapter configuration sections", () => {
       "runPolicy",
       config,
     );
-    expect(adapter).toContain("ACPX Claude");
+    expect(adapter).toContain('<option value="acpx">ACP agents</option>');
     expect(adapter).not.toContain("Runner lifecycle");
     expect(configuration).not.toContain("Permission mode");
     expect(configuration).not.toContain("Runner lifecycle");
     expect(policy).toContain("Runner lifecycle");
     expect(policy).toContain('value="45000"');
-    expect(policy).not.toContain("ACPX Claude");
+    expect(policy).not.toContain("ACP agents");
+  });
+
+  it("keeps ACP agent admission choices in the adapter section", () => {
+    const config = { provider: "acpx", acpxAgent: "claude" };
+    const adapter = renderSection(CodexLocalConfigFields, "paperclip_runner", "adapter", config);
+    const policy = renderSection(CodexLocalConfigFields, "paperclip_runner", "runPolicy", config);
+
+    expect(adapter).toContain('<option value="claude" selected="">Claude</option>');
+    expect(adapter).toContain('<option value="pi" disabled="">Pi — qualification pending</option>');
+    expect(adapter).not.toContain("Runner lifecycle");
+    expect(policy).toContain("Runner lifecycle");
+    expect(policy).not.toContain("ACP agent");
+    expect(policy).not.toContain("qualification pending");
   });
 
   it.each([

@@ -1,5 +1,7 @@
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
-import { modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
+import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
+import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
+import { DEFAULT_KIMI_LOCAL_MODEL, modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
 import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 
 export type ModelOption = { id: string; label: string; detail?: string };
@@ -10,6 +12,7 @@ export type ComposerAgent = {
   harness: string;
   adapterType: string;
   provider?: string;
+  engine?: string;
   defaultModel?: string;
   defaultLabel?: string;
   models: ModelOption[];
@@ -42,7 +45,7 @@ export const composerAgents: ComposerAgent[] = [
     { id: "openrouter/anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6", detail: "OpenRouter" },
     { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", detail: "OpenAI" },
   ], manualPattern: "provider/model" },
-  { id: "kimi", name: "Kimi", role: "Planning", harness: "Kimi Code", adapterType: "kimi_local", provider: "CLI engine", defaultModel: "kimi-code/k3", models: [
+  { id: "kimi", name: "Kimi", role: "Planning", harness: "Kimi Code", adapterType: "kimi_local", provider: "CLI engine", engine: "cli", defaultModel: "kimi-code/k3", models: [
     { id: "kimi-code/k3", label: "K3", detail: "Supports effort on CLI" },
     { id: "kimi-code/kimi-for-coding", label: "K2.8 Preview", detail: "Supports effort on CLI" },
     { id: "kimi-code/kimi-for-coding-highspeed", label: "K2.7 Coding Highspeed", detail: "Uses model default" },
@@ -60,12 +63,29 @@ export const composerAgents: ComposerAgent[] = [
   ], manualPattern: "Cursor model ID" },
   { id: "cursor-cloud", name: "Cloudy", role: "Remote engineering", harness: "Cursor Cloud", adapterType: "cursor_cloud", defaultLabel: "Account default", models: [], manualPattern: "Cursor Cloud model ID" },
   { id: "runner", name: "Runa", role: "Operations", harness: "Paperclip Runner", adapterType: "paperclip_runner", provider: "Codex profile", defaultModel: "gpt-5.6-sol", models: codexModels, manualPattern: "Codex model ID" },
-  { id: "grok", name: "Grok", role: "Investigation", harness: "Grok CLI", adapterType: "grok_local", defaultModel: "grok-build", models: [{ id: "grok-build", label: "Grok Build" }], manualPattern: "Grok model ID" },
+  { id: "grok", name: "Grok", role: "Investigation", harness: "Grok CLI", adapterType: "grok_local", defaultModel: "grok-build", models: [
+    { id: "grok-build", label: "Grok Build" },
+    { id: "grok-4.7", label: "Grok 4.7" },
+    { id: "grok-4.6", label: "Grok 4.6" },
+    { id: "grok-4.5", label: "Grok 4.5" },
+  ], manualPattern: "Grok model ID" },
   { id: "hermes", name: "Hermes", role: "Operations", harness: "Hermes CLI", adapterType: "hermes_local", defaultModel: "auto", models: [{ id: "auto", label: "Auto" }], manualPattern: "Hermes model ID" },
   { id: "process", name: "Relay", role: "Automation", harness: "Process", adapterType: "process", models: [], noModelReason: "This agent runs a command. Its harness does not expose a model or effort setting." },
   { id: "http", name: "Hook", role: "Integration", harness: "HTTP", adapterType: "http", models: [], noModelReason: "This agent calls an HTTP endpoint. The destination service chooses its model." },
   { id: "openclaw", name: "Ollie", role: "Support", harness: "OpenClaw Gateway", adapterType: "openclaw_gateway", models: [], noModelReason: "This gateway chooses its model remotely; Paperclip has no model catalog or per-message setting for it." },
   { id: "hermes-gateway", name: "Hera", role: "Remote operations", harness: "Hermes Gateway", adapterType: "hermes_gateway", models: [], noModelReason: "This Hermes gateway chooses its model remotely; Paperclip cannot override it here." },
+  { id: "kimi-acp", name: "Kima", role: "Planning", harness: "Kimi Code", adapterType: "kimi_local", provider: "ACP engine", engine: "acp", defaultModel: "kimi-code/k3", models: [
+    { id: "kimi-code/k3", label: "K3" },
+    { id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" },
+  ], manualPattern: "kimi-code/model" },
+  { id: "grok-default", name: "Grok Default", role: "Investigation", harness: "Grok CLI", adapterType: "grok_local", models: [
+    { id: "grok-build", label: "Grok Build" },
+    { id: "grok-4.7", label: "Grok 4.7" },
+  ], manualPattern: "Grok model ID" },
+  { id: "kimi-cli-default", name: "Kimi Default", role: "Planning", harness: "Kimi Code", adapterType: "kimi_local", provider: "CLI engine", engine: " CLI ", models: [
+    { id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" },
+    { id: "kimi-code/k3", label: "K3" },
+  ], manualPattern: "kimi-code/model" },
 ];
 
 /** Share the capsule-avatar palettes used by the agent persona stories. */
@@ -79,18 +99,21 @@ export const effortLabels: Record<string, string> = {
 };
 
 export function effortChoices(agent: ComposerAgent, model: string): readonly string[] {
-  if (agent.adapterType === "codex_local" || agent.id === "runner") return isCodexLocalKnownModel(model) ? codexLocalReasoningEffortsForModel(model) : [];
-  if (!agent.models.some((option) => option.id === model)) return [];
-  if (agent.adapterType === "claude_local") return ["low", "medium", "high"];
+  const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
+    : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
+  if (agent.adapterType === "codex_local" || agent.id === "runner") return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
+  if (!agent.models.some((option) => option.id === effectiveModel)) return [];
+  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(effectiveModel);
+  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
-  if (agent.adapterType === "kimi_local" && modelSupportsEffort(model)) return KIMI_SUPPORTED_EFFORTS;
+  if (agent.adapterType === "kimi_local" && agent.engine?.trim().toLowerCase() === "cli" && modelSupportsEffort(effectiveModel)) return KIMI_SUPPORTED_EFFORTS;
   // The current model API only returns id/label. OpenCode/OpenRouter variants are
   // model-specific, so a guessed generic slider would send unsupported values.
   return [];
 }
 
 export function fastModeAvailable(agent: ComposerAgent, model: string): boolean {
-  return (agent.adapterType === "codex_local" || agent.id === "runner")
+  return agent.adapterType === "codex_local"
     && isCodexLocalKnownModel(model)
     && isCodexLocalFastModeSupported(model);
 }

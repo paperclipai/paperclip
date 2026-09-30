@@ -74,7 +74,8 @@
             "type": "object",
             "required": ["sessionGoals"],
             "properties": {
-              "sessionGoals": { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability" }
+              "sessionGoals": { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability" },
+              "turnControls": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json#/$defs/turnControls" }
             },
             "additionalProperties": true
           }

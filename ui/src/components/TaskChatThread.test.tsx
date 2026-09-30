@@ -12,6 +12,7 @@ import type {
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
+  TaskBrowser,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
@@ -148,6 +149,43 @@ function render(ui: ReactElement) {
     ),
   );
 }
+
+it.each([true, false])("interleaves browser sessions with their requests and preserves position on status updates (streamlined=%s)", (streamlined) => {
+  streamlinedState.enabled = streamlined;
+  const onOpenBrowser = vi.fn();
+  const comments = [0, 2, 4].map((minute) => ({
+    id: `comment-${minute}`, companyId: "company", issueId: "issue",
+    authorType: "user" as const, authorAgentId: null, authorUserId: "board",
+    body: `Request at minute ${minute}`, presentation: null, metadata: null,
+    createdAt: new Date(`2026-09-29T12:0${minute}:00Z`), updatedAt: new Date(`2026-09-29T12:0${minute}:00Z`),
+  }));
+  const browsers: TaskBrowser[] = [1, 3].map((minute) => ({
+    id: `browser-${minute}`, sessionId: `session-${minute}`, issueId: "issue",
+    status: "idle" as const, runStatus: "completed" as const, progress: null,
+    costCents: 0, error: null, idleDeadline: null, expiresAt: null,
+    createdAt: `2026-09-29T12:0${minute}:00Z`,
+  }));
+  const show = (next = browsers) => render(<TaskChatThread comments={comments} browsers={next} onOpenBrowser={onOpenBrowser} threadHeader={<div>Task title</div>} onAdd={async () => {}} />);
+  show();
+  const anchors = () => Array.from(container.querySelectorAll('[data-thread-anchor]')).map(el => el.getAttribute('data-thread-anchor'));
+  const expected = ['comment-0', 'browser:session-1', 'comment-2', 'browser:session-3', 'comment-4'];
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-testid="task-chat-thread-header"]')?.textContent).toBe("Task title");
+  const row = container.querySelector('[data-thread-anchor="browser:session-1"]');
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenCalledWith('browser-1');
+  // Provider IDs can become available after startup; session identity stays put.
+  show([{ ...browsers[0], id: 'provider-browser-1', status: 'closed' }, browsers[1]]);
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-thread-anchor="browser:session-1"]')).toBe(row);
+  expect(row?.textContent).toContain("View session");
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenLastCalledWith('provider-browser-1');
+  render(<TaskChatThread comments={comments.slice(1)} browsers={browsers} hasOlderComments onAdd={async () => {}} />);
+  expect(anchors()).toEqual(['comment-2', 'browser:session-3', 'comment-4']);
+  show();
+  expect(anchors()).toEqual(expected);
+});
 
 it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
   const props = {
@@ -782,6 +820,75 @@ describe("TaskChatThread runtime transcript selection", () => {
       ),
     ];
     expect(rows.findIndex((row) => row.contains(preview))).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { name: "write_document", anchored: true },
+    { name: "mcp__paperclip__write_document", anchored: false },
+  ])("anchors a settled ACP Plan only at the normalized display name $name", ({ name, anchored }) => {
+    const runId = "acpx-plan";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    const events = ["started", "completed"].map((phase, index) => ({
+      id: index + 1,
+      companyId: "company-1",
+      agentId: "agent-1",
+      stream: "system",
+      level: "info",
+      color: null,
+      message: null,
+      runId,
+      seq: index + 1,
+      eventType: `tool.execution.${phase}`,
+      createdAt: new Date(`2026-08-25T18:00:0${index + 1}.000Z`),
+      payload: {
+        prpEvent: {
+          schema: "paperclip.prp.event.v1",
+          schemaVersion: 1,
+          runId,
+          eventType: `tool.execution.${phase}`,
+          sourceEventId: `acpx-write-${index + 1}`,
+          sourceKind: "runner",
+          sourceInstanceId: "runner-1",
+          sourceSeq: index + 1,
+          normalizedSessionId: "session-1",
+          emittedAt: `2026-08-25T18:00:0${index + 1}.000Z`,
+          payload: {
+            schema: "paperclip.tool.execution.v1",
+            executionId: "write-plan",
+            transport: anchored ? "mcp" : "builtin",
+            namespace: anchored ? "paperclip" : null,
+            name,
+            operation: "execute",
+            readOnly: false,
+            status: phase === "completed" ? "completed" : "running",
+            output: null,
+            outputBytes: 0,
+            outputTruncated: false,
+            outputDigest: null,
+          },
+        },
+      },
+    } satisfies HeartbeatRunEvent));
+    // Exercise persisted ACP display events, without native raw arguments or
+    // a fabricated semantic-tool receipt, through the actual transcript parser.
+    nativeTranscriptState.transcriptByRun.set(runId, nativeRunEventsToTranscript(events));
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" linkedRuns={[{
+      runId,
+      runtimeMode: "native",
+      status: "succeeded",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: "2026-08-25T18:00:00.000Z",
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: "2026-08-25T18:00:03.000Z",
+    }]} />);
+    const preview = container.querySelector('[data-testid="task-chat-plan-preview"]');
+    const fallback = container.querySelector('[data-testid="task-chat-plan-preview-fallback"]');
+    expect(Boolean(preview)).toBe(anchored);
+    expect(Boolean(fallback)).toBe(!anchored);
+    expect((preview ?? fallback)?.textContent).toContain("Preview the Plan");
+    expect((preview ?? fallback)?.closest('[data-testid="task-chat-turn"][data-settled="true"]')).not.toBeNull();
   });
 
   it("retains a native Plan as a visible fallback while its write boundary is unavailable", () => {

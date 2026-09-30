@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "browser-use-cloud",
+  "name": "Browser Use Cloud",
+  "description": "Delegate browser tasks and watch them live in Paperclip.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/browser-use.svg"
+  },
+  "urlPatterns": [
+    "https://cloud.browser-use.com/*"
+  ],
+  "methods": [
+    {
+      "key": "cloud-v4",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {
+        "serverUrl": "https://api.browser-use.com/api/v4"
+      },
+      "guidanceMd": "Create an API key in [Browser Use settings](https://cloud.browser-use.com/settings) and paste it below. Your agents can browse websites while you watch and interact from the task's Browser tab.",
+      "riskTier": "S3",
+      "label": "Browser Use Cloud",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "bu_…",
+          "secret": true,
+          "helperMd": "Open Browser Use → Settings → API keys. Create a key for the project agents should use."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "X-Browser-Use-API-Key"
+      },
+      "consoleLinks": {
+        "keys": "https://cloud.browser-use.com/settings",
+        "docs": "https://docs.browser-use.com/cloud/api-v4-overview"
+      }
+    }
+  ],
+  "docsUrl": "https://docs.browser-use.com/cloud/api-v4-overview"
+}

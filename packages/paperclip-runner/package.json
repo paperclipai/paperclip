@@ -74,7 +74,7 @@
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm run test:typescript && pnpm run test:rust",
     "test:typescript": "pnpm run test:typescript:prep && vitest run",
-    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs",
+    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs test/acpx-rich-extensions-package-contract.test.mjs test/acpx-pi-receipt-package-contract.test.mjs test/acpx-response-delivery-package-contract.test.mjs scripts/candidate-provider-pack.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs",
     "test:typescript:vitest": "node ./scripts/run-pr-vitest-lane.mjs",
     "test:rust": "cargo test --release --manifest-path runner/Cargo.toml --locked --workspace",
     "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",

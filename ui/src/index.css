@@ -88,7 +88,7 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -3154,4 +3154,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .plugin-app-shell-overlay { pointer-events: auto; }
 @media (max-width: 767px) {
   .plugin-app-shell-overlays { bottom: var(--plugin-shell-mobile-bottom); }
+}
+
+:root {
+  /* Browser Use live viewer chrome: 30px tab strip + 40px navigation bar.
+     Provider integration measurement (2026-09-29), not Paperclip spacing.
+     Keep navigation visible; the cross-origin viewer exposes no sizing message. */
+  --browser-use-viewer-chrome-height: 70px;
 }

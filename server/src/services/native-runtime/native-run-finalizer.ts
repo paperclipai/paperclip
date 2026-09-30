@@ -2,6 +2,7 @@ import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
+import { issueTreeControlService } from "../issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -969,7 +970,7 @@ export async function repairCommittedNativeChatResponse(
         input.issueId,
         resolved.text,
         { agentId: run.agentId, runId: run.id },
-        { authorizationReason: CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON },
+        { authorizationReason: CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, completionReply: true },
         tx,
       );
       const presentationDecision = {
@@ -1235,7 +1236,7 @@ export async function finalizeNativeRun(input: {
           boardResponseWaitOrigin,
         )
       : null;
-    const [dependencyReadiness, resolvedInteraction] = await Promise.all([
+    const [dependencyReadiness, resolvedInteraction, pauseHold] = await Promise.all([
       issueService(input.db).getDependencyReadiness(
         authoritativeIssue.id,
         input.db,
@@ -1246,6 +1247,13 @@ export async function finalizeNativeRun(input: {
         issueId: authoritativeIssue.id,
         runId: run.id,
       }),
+      assessment.reportedDisposition === "yielded" &&
+      assessment.continuation?.kind === "response_wake" &&
+      assessment.hasBlockingRemainingWork
+        ? issueTreeControlService(input.db).getActivePauseHoldGate(
+            run.companyId, authoritativeIssue.id,
+          )
+        : Promise.resolve(null),
     ]);
     const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
     const nativeReview = reviewContext ? await getNativeReviewAssignment(input.db, {
@@ -1270,6 +1278,8 @@ export async function finalizeNativeRun(input: {
       externalChatResponseWaitAuthorization,
       boardResponseWaitAuthorized: boardResponseWait !== null,
       boardResponseWaitOrigin: boardResponseWaitOrigin !== null,
+      isConversation: isConversation(authoritativeIssue),
+      hasActivePauseHold: pauseHold !== null,
       reviewOwnerUserId:
         authoritativeIssue.responsibleUserId ??
         authoritativeIssue.createdByUserId ??
@@ -1313,6 +1323,10 @@ export async function finalizeNativeRun(input: {
         ),
       );
     try {
+      const repairBoardResponseWait =
+        boardResponseWait !== null &&
+        assessment.hasBlockingRemainingWork &&
+        ["completion_evidence_incomplete", "prior_status_preserved_no_live_path"].includes(decision.reasonCode ?? "");
       const committed = await commitNativeStatusDecision({
         db: input.db,
         companyId: run.companyId,
@@ -1324,12 +1338,13 @@ export async function finalizeNativeRun(input: {
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
         requireBoardResponseWaitSource:
-          decision.reasonCode === "board_response_waiting"
+          decision.reasonCode === "board_response_waiting" || repairBoardResponseWait
             ? boardResponseWait?.source
             : undefined,
         requireBoardResponseWaitOrigin:
           decision.reasonCode === "board_response_waiting" ||
-          decision.reasonCode === "board_response_wait_superseded"
+          decision.reasonCode === "board_response_wait_superseded" ||
+          repairBoardResponseWait
             ? (boardResponseWaitOrigin ?? undefined)
             : undefined,
         requireExternalChatResponseWaitAuthorization:

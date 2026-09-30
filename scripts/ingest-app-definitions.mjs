@@ -818,6 +818,16 @@ const apps = [
       },
     ),
   ],
+  ["browser-use-cloud", "Browser Use Cloud", "Delegate browser tasks and watch them live in Paperclip.", "productivity", "browser-use.com", ["https://cloud.browser-use.com/*"],
+    method("cloud-v4", "rest_api", "api_key", { serverUrl: "https://api.browser-use.com/api/v4" }, "S3",
+      "Create an API key in [Browser Use settings](https://cloud.browser-use.com/settings) and paste it below. Your agents can browse websites while you watch and interact from the task's Browser tab.", {
+        label: "Browser Use Cloud",
+        credentialFields: [{ ...field("apiKey", "API key", "bu_…"), helperMd: "Open Browser Use → Settings → API keys. Create a key for the project agents should use." }],
+        keyPlacement: { location: "header", name: "X-Browser-Use-API-Key" },
+        consoleLinks: { keys: "https://cloud.browser-use.com/settings", docs: "https://docs.browser-use.com/cloud/api-v4-overview" },
+      }),
+    { docsUrl: "https://docs.browser-use.com/cloud/api-v4-overview" },
+  ],
 ].map(
   ([
     slug,

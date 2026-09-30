@@ -538,6 +538,10 @@ interface IssueChatComposerProps {
 }
 
 interface IssueChatThreadProps {
+  /** Browser sessions are placed chronologically by the default task thread. */
+  browsers?: import("@paperclipai/shared").TaskBrowser[];
+  onOpenBrowser?: (browserId: string) => void;
+  hasOlderComments?: boolean;
   comments: IssueChatComment[];
   interactions?: IssueThreadInteraction[];
   /** App-authoritative resources interleaved by the default task thread. */

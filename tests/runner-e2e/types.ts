@@ -6,6 +6,8 @@ export const CREDENTIAL_NAMES = [
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "DAYTONA_API_KEY",
+  "CURSOR_AUTH_TOKEN",
+  "COPILOT_GITHUB_TOKEN",
 ] as const;
 
 export type CredentialName = (typeof CREDENTIAL_NAMES)[number];
@@ -25,7 +27,8 @@ export type RunnerTaskFlow =
   | "plan_revision_acceptance"
   | "question_resume_completion"
   | "plan_approval_completion"
-  | "warm_three_turn";
+  | "warm_three_turn"
+  | "instruction_persistence";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -63,9 +66,11 @@ export interface RunnerProfileFixture {
     source:
       | "adapter_constant"
       | "qualified_runner_profile"
+      | "candidate_runner_profile"
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
+  qualificationCandidate?: "cursor" | "copilot" | "pi";
   ranking?: {
     rank: number;
     canonicalModelId: string;
@@ -315,6 +320,7 @@ export interface RunnerE2EResult {
     sha256?: string;
   }>;
   firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  completionQuality?: import("./completion-quality.js").CompletionQualityRecord[];
   firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
   cleanup: "not_started" | "passed" | "failed";
 }

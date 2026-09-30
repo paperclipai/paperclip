@@ -1,5 +1,5 @@
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or } from "drizzle-orm";
 import {
   type Db,
@@ -373,7 +373,7 @@ export function aiConnectionService(db: Db) {
       } satisfies AiConnectionAttribution,
     };
   }
-  async function credential(row: Awaited<ReturnType<typeof select>>) {
+  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">) {
     const ref = row.grant.credentialSecretRefs.find(
       (r) => r.configPath === "ai.credential",
     );
@@ -775,5 +775,49 @@ export function aiConnectionService(db: Db) {
       return { connectionId: id, grantId };
     });
   }
-  return { list, select, credential, save, setDefault, membership };
+  /** A late failure must never invalidate credentials that were refreshed or reconnected meanwhile. */
+  async function markAuthenticationFailed(input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    runStartedAt: Date;
+    attribution: AiConnectionAttribution & { identity: string };
+  }) {
+    return db.transaction(async (tx) => {
+      const { attribution } = input;
+      const [grant] = await tx.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, input.companyId),
+        eq(connectionGrants.id, attribution.grantId),
+        eq(connectionGrants.connectionId, attribution.connectionId),
+      )).for("update");
+      if (!grant || grant.status !== "active" || grant.updatedAt > input.runStartedAt) return;
+      const [connection] = await tx.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, input.companyId),
+        eq(toolConnections.id, attribution.connectionId),
+        eq(toolConnections.connectionPurpose, "ai"),
+      ));
+      if (!connection) return;
+      const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
+      if (!metadata.success || metadata.data.provider !== attribution.provider || metadata.data.method !== attribution.method) return;
+      const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === "ai.credential");
+      if (!ref) return;
+      await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
+        eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, ref.secretId),
+      )).for("update");
+      const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
+      const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
+      if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
+      await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
+        .where(eq(connectionGrants.id, grant.id));
+      await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
+        .where(eq(toolConnections.id, connection.id));
+      await logActivity(tx as unknown as Db, {
+        companyId: input.companyId, actorType: "system", actorId: "heartbeat",
+        agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failed",
+        entityType: "tool_connection", entityId: connection.id,
+        details: { provider: attribution.provider, grantId: grant.id },
+      });
+    });
+  }
+  return { list, select, credential, save, setDefault, membership, markAuthenticationFailed };
 }

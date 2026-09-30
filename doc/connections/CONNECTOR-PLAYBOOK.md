@@ -497,6 +497,13 @@ registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
 consumer. This registry describes bundled server implementations, not executable
 code or skill URLs supplied by a credential or external message.
 
+Optional connector instructions must not be placed in the universal `skills/`
+directory, which adapters can enumerate for every agent. A trusted contribution
+can provide `skillMarkdown` from its connector module; the server then materializes
+`SKILL.md` only for authorized assignments. Browser Use Cloud uses this path with
+the app key and skill name `browser-use-cloud`, leaving generic browser skill
+names available to other integrations.
+
 For each contribution, declare its connector key, bundled skill, namespaced tool
 definitions, resource-assignment resolver, and execution handler. Use names such
 as `agentmail_send` rather than extending core tools with provider-specific
@@ -2190,6 +2197,16 @@ Collect end-to-end evidence using the production validation matrix above:
 - Revocation removes Notion tools and blocks execution.
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
+
+## Reviewed REST browser connection
+
+[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API through the same
+connection grants, catalog, policies, approvals and audit gateway. Its
+`provider_rest` execution path is limited to the reviewed Browser Use adapter;
+adding `rest_api` to a catalog entry does not enable arbitrary HTTP execution.
+The task Browser panel is a human-only credential viewer, separate from agent
+tool results. Follow that guide for lifecycle, profile scope, cost accounting,
+cleanup and the required live acceptance pass.
 
 ## Slack task tools
 

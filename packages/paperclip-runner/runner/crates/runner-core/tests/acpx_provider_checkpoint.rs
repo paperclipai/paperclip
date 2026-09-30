@@ -51,6 +51,7 @@ fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
         working_directory: directory.to_owned(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: AuthorizedToolSet {

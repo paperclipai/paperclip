@@ -23,6 +23,9 @@ class ResizeObserverStub {
 
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
+vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
+vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
 const fixture = vi.hoisted(() => ({
   documents: [] as IssueDocument[] | undefined,
   plan: null as IssueDocument | null | undefined,
@@ -73,6 +76,8 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
   WorkspaceFileBrowser: () => <div>Files browser</div>,
 }));
 
+vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
+
 vi.mock("./TaskDocumentPanel", () => ({
   TaskDocumentPanel: ({ documentKey }: { documentKey: string }) => <div>{`Document ${documentKey}`}</div>,
 }));
@@ -111,6 +116,8 @@ describe("TaskSidePanel", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    browserFixture.data = [];
+    browserFixture.control.mockClear();
     fixture.documents = [];
     fixture.plan = null;
     routeFixture.location.search = "";
@@ -158,10 +165,104 @@ describe("TaskSidePanel", () => {
     );
   }
 
+  it("opens, deduplicates, switches and closes text attachment tabs", async () => {
+    const onAttachmentOpened = vi.fn();
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 1 }, onAttachmentOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    expect(container.textContent).toContain("Text file file-1");
+    expect(onAttachmentOpened).toHaveBeenCalledOnce();
+    await render(panel({ openAttachment: { id: "file-2", title: "summary.txt", requestId: 2 } }));
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 3 } }));
+    expect(container.querySelectorAll('[data-side-panel-tab-target="attachment:file-1"]')).toHaveLength(1);
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close AGENTS.md"]')?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="attachment:file-1"]')).toBeNull();
+  });
+
+  it("lets an attachment request take focus from a workspace-file route", async () => {
+    routeFixture.location.search = "?file=README.md&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
+    expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
+  });
+
+  it("keeps a live browser mounted across tab switches and only hides it on close", async () => {
+    const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    browserFixture.data = [{ id, sessionId: id, issueId: "task-1", status: "running", runStatus: "running", progress: null, error: null, costCents: 0, idleDeadline: null, expiresAt: null, createdAt: new Date().toISOString() }];
+    await render(panel({ openBrowserId: id }));
+    const iframe = container.querySelector("iframe");
+    expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(iframe?.getAttribute("src")).toContain("test-viewer");
+    await render(panel());
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(container.querySelector("iframe")).toBe(iframe);
+    expect(iframe?.closest("[hidden]")).toBeTruthy();
+    expect(localStorage.getItem("paperclip:task-side-panel:v1:user-1:company-1")).not.toContain("test-viewer");
+    await act(async () => container.querySelector<HTMLButtonElement>(`[id="side-panel-tab-browser:${id}"]`)?.click());
+    const close = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.getAttribute("aria-label")?.startsWith("Close Browser"));
+    expect(close).toBeTruthy();
+    await act(async () => close?.click());
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(browserFixture.control).not.toHaveBeenCalled();
+  });
+
+  it("commits a follow-up browser before acknowledging the open request", async () => {
+    const first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const acknowledged = vi.fn(() => {
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe(`side-panel-tab-browser:${next}`);
+      expect(localStorage.getItem("paperclip:task-side-panel:v1:user-1:company-1")).toContain(next);
+    });
+    await render(panel({ openBrowserId: first }));
+    await render(panel({ openBrowserId: next, onBrowserOpened: acknowledged }));
+    expect(acknowledged).toHaveBeenCalledTimes(1);
+    await render(panel());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe(`side-panel-tab-browser:${next}`);
+  });
+
   it("opens Properties on first visit", async () => {
     await render(panel());
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it("does not acknowledge a browser selection that could not be persisted", async () => {
+    const acknowledged = vi.fn();
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage")!;
+    const storage = window.localStorage;
+    const write = vi.fn(() => { throw new Error("storage full"); });
+    // jsdom Storage instances ignore an own-method spy. Replace the surface
+    // explicitly so this failure injection also works with native Storage.
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: { getItem: storage.getItem.bind(storage), setItem: write },
+    });
+    try {
+      await render(panel({ openBrowserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", onBrowserOpened: acknowledged }));
+      expect(write).toHaveBeenCalled();
+      expect(acknowledged).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(window, "localStorage", descriptor); }
+  });
+
+  it("offers the existing live browser from a closed tab and distinguishes session tabs", async () => {
+    const first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const shared = { issueId: "task-1", runStatus: "completed" as const, progress: null, error: null, costCents: 0, idleDeadline: null, expiresAt: null, createdAt: new Date().toISOString() };
+    browserFixture.data = [
+      { ...shared, id: first, sessionId: first, status: "closed" },
+      { ...shared, id: next, sessionId: next, status: "idle" },
+    ];
+    await render(panel({ openBrowserId: first }));
+    await render(panel());
+    expect(container.textContent).toContain("Another browser is still open");
+    expect(container.textContent).not.toContain("Send a task message");
+    const recovery = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Open active browser')!;
+    await act(async () => recovery.click());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Browser 2");
+    expect(container.querySelector('[role="tab"][aria-selected="false"]')?.textContent).toBe("Properties");
+    expect(container.querySelector('iframe')).toBeTruthy();
+    expect(browserFixture.control).not.toHaveBeenCalled();
   });
 
   it("adds Artifacts on arrival while preserving the selected tab", async () => {

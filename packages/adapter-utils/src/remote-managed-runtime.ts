@@ -113,6 +113,8 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
@@ -139,13 +141,15 @@ export async function prepareRemoteManagedRuntime(input: {
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
         onProgress: input.onProgress,
+        workspaceFileMode: input.workspaceFileMode,
+        workspaceExclude: input.workspaceExclude,
       })
     : null;
   const baselineSnapshot = preparedWorkspace
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
         exclude: preparedWorkspace.gitBacked
           ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
-          : [".paperclip-runtime"],
+          : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
       })
     : null;
 

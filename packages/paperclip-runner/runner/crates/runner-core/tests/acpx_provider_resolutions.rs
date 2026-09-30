@@ -50,6 +50,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
@@ -259,4 +260,43 @@ fn fails_closed_when_a_resolution_is_not_acknowledged() {
         .to_string();
     assert!(error.contains("did not confirm tool resolution"), "{error}");
     assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
+fn interactive_permission_requires_an_offered_action_and_acknowledgement() {
+    for mode in ["permissions-interactive", "permissions-wrong-ack"] {
+        let mut cfg = config(mode);
+        cfg.agent = "claude".to_owned();
+        cfg.model = "claude-sonnet-5".to_owned();
+        let mut session = AcpxProviderSession::start(&cfg).unwrap();
+        session
+            .start_turn("turn-1", "Run validation", &std::env::temp_dir())
+            .unwrap();
+        session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(session.state().pending_permission("permission-1").is_some());
+        assert!(session
+            .resolve_permission("permission-1", "old-turn", &json!({"action":"accept"}))
+            .is_err());
+        assert!(session
+            .resolve_permission(
+                "permission-1",
+                "turn-1",
+                &json!({"action":"accept_for_session"})
+            )
+            .is_err());
+        assert!(session.state().pending_permission("permission-1").is_some());
+        let result =
+            session.resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}));
+        if mode == "permissions-wrong-ack" {
+            assert!(result.is_err());
+            assert!(session.state().pending_permission("permission-1").is_some());
+        } else {
+            result.unwrap();
+            assert!(session.state().pending_permission("permission-1").is_none());
+            assert!(session
+                .resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}))
+                .is_err());
+        }
+        session.shutdown("verified").unwrap();
+    }
 }
