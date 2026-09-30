@@ -207,7 +207,13 @@ A callback rejected before business dispatch can report
 unknown outcome; the controller must not invent a failure or execute it again.
 After controller restart, an already committed input without a result remains
 unsettled. It requires authoritative reconciliation, not an automatic retry.
-This change does not repair legacy journals containing contradictory receipts.
+A different case is a runner crash after the controller saved the result but
+before its delivery command completed. Codex/OpenCode explicitly opt in to
+reconciling that exact `semantic_tool.result` command through their durable tool
+receipt. The full command fingerprint must match. This delivers the saved
+answer without executing the business operation. Unsupported providers and all
+other indeterminate commands remain non-reexecutable. This change does not
+repair legacy journals already containing contradictory or failed receipts.
 
 `update_agent_instructions` and `restore_agent_instructions` use a durable,
 company/run-scoped mutation receipt keyed by call ID. Concurrent identical
@@ -242,6 +248,7 @@ model or rely on an LLM choosing the desired timing.
 | --- | --- | --- |
 | Stop before/after server result; restart before late delivery | No invented failure; pending identity survives; late result accepted | Rust `provider_bridge`, `codex_provider` |
 | Provider terminal before tool completion | New turn blocked until actual result; safe replay and later reuse | Rust `acpx_provider_turns`, `acpx_provider_state` |
+| Crash before/after applying a saved delivery receipt, before command completion | Exact result delivery recovers only for opted-in providers; changed commands and ordinary operations never replay | Rust durable runner tests |
 | Lost result acknowledgement; conflicting redelivery | Identical result accepted; changed result rejected with IDs and digests | Rust `codex_provider`, `provider_bridge` |
 | Concurrent writes held at filesystem commit; authority restart | One write, one audit record, same receipt; revoked authorization rejected | Server `agent-instruction-tools.integration.test.ts` |
 | Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |

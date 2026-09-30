@@ -775,6 +775,28 @@ impl DurableState {
         Ok(CommandDisposition::Execute)
     }
 
+    pub(crate) fn resume_result_delivery(
+        &mut self,
+        command: &Command,
+    ) -> Result<(), DurableRunnerError> {
+        if command.command_type != "semantic_tool.result"
+            || !matches!(self.begin_command(command)?, CommandDisposition::Replay(ref prior) if prior.status == "indeterminate")
+        {
+            return Err(DurableRunnerError::invalid(
+                "only exact indeterminate result delivery can resume",
+            ));
+        }
+        self.processed_commands
+            .get_mut(&command.command_id)
+            .expect("validated retained delivery receipt")
+            .status = "pending".to_owned();
+        self.record_diagnostic(format!(
+            "reconciling semantic result delivery command {}",
+            command.command_id
+        ));
+        Ok(())
+    }
+
     pub fn complete_command(
         &mut self,
         command: &Command,
