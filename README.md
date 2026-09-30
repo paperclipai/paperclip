@@ -565,6 +565,8 @@ Telemetry is **enabled by default** and can be disabled with any of the followin
 
 We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
 
+**[We're hiring](https://paperclip.ing/about/#careers)**
+
 <br/>
 
 ## Community
