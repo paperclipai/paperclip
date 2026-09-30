@@ -5524,16 +5524,22 @@ describe("daytona native file-sync hooks", () => {
     const sandbox = createMockSandbox({ id: "sandbox-123" });
     // Hold the inbound upload and the outbound download open at the same time, so
     // the shared lease has two active sync calls when teardown starts.
+    let uploadArrived!: () => void;
+    const uploadStarted = new Promise<void>((resolve) => { uploadArrived = resolve; });
     let releaseUpload!: () => void;
     sandbox.fs.uploadFiles.mockImplementation(async () => {
       await new Promise<void>((resolve) => {
         releaseUpload = resolve;
+        uploadArrived();
       });
     });
+    let downloadArrived!: () => void;
+    const downloadStarted = new Promise<void>((resolve) => { downloadArrived = resolve; });
     let releaseDownload!: () => void;
     sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination: string }>) => {
       await new Promise<void>((resolve) => {
         releaseDownload = resolve;
+        downloadArrived();
       });
       return Promise.all(
         requests.map(async (request) => {
@@ -5550,9 +5556,9 @@ describe("daytona native file-sync hooks", () => {
     const outboundCall = plugin.definition.onEnvironmentSyncOut?.(
       syncOutParams({ operationId: "out-active", sourcePath: `${REMOTE_DIR}/out.txt`, targetPath: outboundTarget }),
     );
-    // Let both sync calls register on the activity gate and reach their hung
-    // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Wait for the actual transfers. One event-loop tick does not guarantee
+    // that the inbound filesystem reads have finished on a busy runner.
+    await Promise.all([uploadStarted, downloadStarted]);
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",
