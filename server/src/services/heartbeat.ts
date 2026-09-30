@@ -370,7 +370,6 @@ import {
 } from "./chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
-  FALSE_LIVENESS_ERROR_REASON,
   FALSE_LIVENESS_SCAN_LIMIT,
   FALSE_LIVENESS_STREAK_THRESHOLD,
   resolveFalseLivenessEscalation,
@@ -18071,82 +18070,64 @@ export function heartbeatService(
     // a status written there is overwritten by the `idle` below. This is the
     // write, so it cannot be clobbered.
     //
-    // Only a finalization that could ENTER the fault may decide it, and that
-    // same condition governs leaving it. Both conjuncts are about evidence:
-    // `succeeded` is the detector's whole premise — a run that CLAIMED success
-    // while the provider reported nothing — and `running` means another run of
-    // this agent is in flight and must not be stomped. A finalization outside
-    // that cell is evidence of neither death nor life, exactly as a
-    // non-`succeeded` ROW is skipped by falseLivenessStreak, so it abstains.
-    const decidesFalseLiveness =
-      baseStatus === "idle" && outcome === "succeeded";
-    const falseLivenessEscalation = decidesFalseLiveness
-      ? resolveFalseLivenessEscalation(
-          await readRecentSucceededRunUsage(existing.companyId, agentId),
-          existing.errorReason,
-        )
-      : null;
+    // EVERY finalization re-derives the fault from run history (ALM-9552). The
+    // streak lives in `heartbeat_runs`, which no finalization mutates, so every
+    // finalization of this agent computes the same answer regardless of the
+    // order they run in or what any of them writes. The finalizing run's own
+    // outcome is deliberately NOT a condition here: which rows count toward the
+    // streak is already decided inside `falseLivenessStreak`, which skips every
+    // non-`succeeded` row. Gating the decision on the outcome as well read that
+    // one rule twice and reached a different answer the second time.
+    //
+    // What that gate cost, measured at `9ecb7a765`: the decision was reserved
+    // for `baseStatus === "idle" && outcome === "succeeded"`, and every other
+    // finalization merely carried forward a marker some earlier finalization
+    // had written to `agents.errorReason`. So the fault was unreachable until
+    // one landed in that cell. A succeeded run finalizing beside an in-flight
+    // sibling abstained for the sibling; the sibling's `cancelled` then
+    // abstained on the outcome; and a streak-5 agent sat at `{idle, null}` —
+    // advertised healthy while dead — until some later succeeded run happened
+    // to finalize alone. Deriving rather than holding also settles ALM-9541:
+    // two concurrent finalizations can no longer disagree about the fault,
+    // because neither one reads the other's write in order to decide.
+    const falseLivenessEscalation = resolveFalseLivenessEscalation(
+      await readRecentSucceededRunUsage(existing.companyId, agentId),
+      existing.errorReason,
+    );
 
-    // Abstaining carries an existing fault forward; it does not drop it
-    // (ALM-9523). The `errorReason` write below clears on every status that is
-    // not `error`, so recovery used to be strictly wider than escalation:
-    // measured at `cb53af60b`, a tripped agent whose streak still held was
-    // reset to `{idle, null}` by an `interrupted` or a `cancelled`
-    // finalization, and to `{running, null}` whenever another of its runs was
-    // in flight. A graceful shutdown drains every in-flight run as
-    // `interrupted`, and `error` is an invokable status, so each deploy did
-    // this to every tripped agent.
+    // `idle` advertises the agent as healthy, so a tripped agent goes to
+    // `error`. `running` is left alone and only the reason is carried: another
+    // run of this agent is in flight and its status is not ours to write. That
+    // is already how a tripped agent looks mid-run, because the run-start write
+    // flips status to `running` without touching `errorReason`. A finalization
+    // landing in `error` on its own needs no status change and takes the
+    // detector's reason for the same purpose the other two branches do.
     //
-    // Scoped to this detector's own reason on purpose: an ordinary failure
-    // reason belongs to the run that produced it and is still cleared when the
-    // agent leaves error.
-    //
-    // The hold reaches a finalization landing in `error` too, and that is the
-    // whole of the ALM-9534 fix. An earlier version excluded `baseStatus ===
-    // "error"` so a failing run's own message would survive — but that branch
-    // is the one that OVERWRITES the column this condition keys on, so it
-    // destroyed the marker and the next `interrupted` or `cancelled`
-    // finalization found nothing to hold. Measured at `8aa82b276`: a tripped
-    // agent, failed exit 1, then interrupted -> `{idle, null}`, advertised
-    // healthy while still dead. Two hops, both ordinary — an agent with a
-    // broken adapter fails constantly, and a deploy interrupts every run.
-    //
-    // The cost is accepted and real: while the marker is held, the agent row
-    // shows the credential/config fault instead of the failing run's own
-    // message. That message is still on the run row and in run events, the
-    // agent is unavailable under either string, and a durable agent-level
-    // fault is the more useful thing on the agent page than one run's exit
-    // code. Composing the two strings was rejected — the marker is an equality
-    // key (`===` here, and the ALM-8037 class-B undo keys on the same bytes),
-    // so anything but the exact reason breaks the hold it exists to drive.
-    const holdsFalseLivenessFault =
-      !decidesFalseLiveness &&
-      existing.errorReason === FALSE_LIVENESS_ERROR_REASON;
-
-    // `idle` advertises the agent as healthy, so a held fault keeps it in
-    // `error`. `running` is left alone and only the reason is carried, which is
-    // already how a tripped agent looks mid-run: the run-start write flips
-    // status to `running` without touching `errorReason`. `error` needs no
-    // status change and carries the reason for the same purpose the other two
-    // do — so that the marker survives to be read by the finalization after
-    // this one.
+    // A tripped agent keeps this reason on the `error` branch instead of the
+    // failing run's own message, and that cost is accepted (ALM-9534). The run
+    // message is still on the run row and in run events; the agent is
+    // unavailable under either string; and a durable agent-level fault is the
+    // more useful thing on the agent page than one run's exit code. Composing
+    // the two was rejected — the reason is an equality key (the ALM-8037
+    // class-B undo keys on these exact bytes), so anything but the exact string
+    // breaks the tooling that reads it.
     const nextStatus =
-      falseLivenessEscalation?.status ??
-      (holdsFalseLivenessFault && baseStatus === "idle" ? "error" : baseStatus);
+      falseLivenessEscalation && baseStatus !== "running"
+        ? falseLivenessEscalation.status
+        : baseStatus;
     const resolvedFailureReason =
-      falseLivenessEscalation?.errorReason ??
-      (holdsFalseLivenessFault ? FALSE_LIVENESS_ERROR_REASON : failureReason);
+      falseLivenessEscalation?.errorReason ?? failureReason;
 
     // Persist a human-readable reason on the agent record when it enters error
     // so operators see it on the agent page without digging into run events;
-    // clear it whenever the agent leaves error. The middle case is the held
-    // fault on the `running` branch: the status is not ours to write, but the
+    // clear it whenever the agent leaves error. The middle case is a tripped
+    // agent on the `running` branch: the status is not ours to write, but the
     // reason still must not be dropped.
     const nextErrorReason =
       nextStatus === "error"
         ? truncateAgentErrorReason(resolvedFailureReason)
-        : holdsFalseLivenessFault
-          ? FALSE_LIVENESS_ERROR_REASON
+        : falseLivenessEscalation
+          ? falseLivenessEscalation.errorReason
           : null;
 
     const updated = await db

@@ -396,61 +396,133 @@ describeEmbeddedPostgres("false-liveness detector writes agent status", () => {
     });
   });
 
-  // The two fixtures below pin the escalation condition's two conjuncts
-  // SEPARATELY (ALM-8333 / ADR-004 Amendment 6). Every fixture above finalizes
-  // a succeeded run on an agent with nothing else in flight, so it enters the
-  // one cell where both conjuncts already hold — and either conjunct could be
+  // The three fixtures below pin the `running` carve-out and the two
+  // non-`succeeded` outcomes SEPARATELY (ALM-8333 / ADR-004 Amendment 6). Every
+  // fixture above finalizes a succeeded run on an agent with nothing else in
+  // flight, so each one enters the same cell, and the carve-out could be
   // deleted with the suite still green.
 
-  it("leaves a concurrently-running agent alone even on a full streak", async () => {
+  it("leaves a concurrently-running agent's STATUS alone, but still records the fault", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, "DeadButBusy", {
       maxConcurrentRuns: 2,
     });
     await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
-    // The agent's OTHER run, still executing. Escalating now would overwrite
-    // `running` with `error` and publish a credential fault against an agent
-    // that is mid-run; the streak is durable, so the next finalization with
-    // nothing in flight catches it instead.
+    // The agent's OTHER run, still executing. Overwriting `running` with
+    // `error` would publish a status against an agent that is mid-run, so the
+    // status is left alone — but the REASON is written now rather than deferred
+    // to some later finalization. Deferring it is what stranded a tripped agent
+    // at `{idle, null}` (ALM-9552): the run that would have carried the marker
+    // forward has to find a marker already there, and until this branch writes
+    // one there is nothing to find.
     await seedInFlightRun(companyId, agentId);
 
     expect(await runOnceAndReadAgent(agentId)).toEqual({
       status: "running",
-      errorReason: null,
+      errorReason: FALSE_LIVENESS_ERROR_REASON,
     });
   });
 
-  it("does not escalate when the finalizing run did not succeed", async () => {
+  it("never advertises a tripped agent as healthy across a busy run and its cancel", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, "DeadBusyThenCancelled", {
+      maxConcurrentRuns: 2,
+    });
+    await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
+    const siblingRunId = await seedInFlightRun(companyId, agentId);
+
+    // The ALM-9552 sequence, in order, each step an ordinary production path
+    // and no race anywhere in it. At `f4606acb4` this ran
+    // `{running, null}` -> `{idle, null}` -> `{error, FAULT}`: the succeeded
+    // finalization declined to decide because a sibling was in flight, the
+    // sibling's cancel declined because `cancelled` is not `succeeded`, and
+    // between them a streak-5 agent was published as healthy. Neither
+    // finalization had written the marker, so there was nothing to carry.
+    //
+    // Reach: any agent with `maxConcurrentRuns > 1` whose succeeded run
+    // finalizes beside an in-flight sibling that then ends non-`succeeded`.
+    // `cancelled` arrives from the workspace-busy deferral path in ordinary
+    // scheduling; `interrupted` arrives from every deploy.
+    //
+    // Both single-step fixtures above would stay green if the middle step
+    // regressed — each observes one write, and this defect is only visible
+    // across two.
+    const afterSucceeded = await runOnceAndReadAgent(agentId);
+
+    await heartbeat.cancelRun(siblingRunId);
+    expect((await heartbeat.getRun(siblingRunId))?.status).toBe("cancelled");
+    await heartbeat.drainActiveRunExecutions();
+    const afterCancel = await readAgent(agentId);
+
+    const afterNextSucceeded = await runOnceAndReadAgent(agentId);
+
+    // Asserted as a sequence, not three independent reads: the status is never
+    // `idle` and the reason is never dropped at any point along it.
+    expect([afterSucceeded, afterCancel, afterNextSucceeded]).toEqual([
+      { status: "running", errorReason: FALSE_LIVENESS_ERROR_REASON },
+      { status: "error", errorReason: FALSE_LIVENESS_ERROR_REASON },
+      { status: "error", errorReason: FALSE_LIVENESS_ERROR_REASON },
+    ]);
+  });
+
+  it("escalates on an interrupted finalization when the streak already holds", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, "DeadButInterrupted");
     await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
 
-    // `interrupted` and `cancelled` both resolve to a base status of `idle`, so
-    // the base-status conjunct alone does not exclude them. The detector's
-    // evidence is a run that CLAIMED to succeed while the provider reported
-    // nothing; a run the control plane killed makes no such claim, and reading
-    // one as proof of death would escalate on every server restart.
+    // The interrupt is not the evidence — the five persisted zero-usage
+    // SUCCEEDED runs are, and `falseLivenessStreak` skips the interrupted row
+    // itself. So this escalates on a restart only for an agent that already met
+    // the trip condition before the restart, which is the agent the detector
+    // exists to find. A healthy agent interrupted by the same deploy computes a
+    // streak of 0 and is untouched — `leaves an interrupted healthy agent
+    // alone` below is that case.
+    //
+    // This inverted at ALM-9552. It previously asserted `{idle, null}` on the
+    // argument that a killed run makes no claim of success; true, and beside
+    // the point, because the finalizing run's outcome is not what the streak is
+    // computed from. Leaving it uninverted is what let a tripped agent reach
+    // `{idle, null}` with the fault never written at all.
     expect(await interruptOnceAndReadAgent(companyId, agentId)).toEqual({
-      status: "idle",
-      errorReason: null,
+      status: "error",
+      errorReason: FALSE_LIVENESS_ERROR_REASON,
     });
   });
 
-  it("does not escalate when the finalizing run was cancelled", async () => {
+  it("escalates on a cancelled finalization when the streak already holds", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, "DeadButCancelled");
     await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
 
     // The fixture above names `cancelled` and then tests only `interrupted`,
-    // which left the `cancelled` arm admitted by no fixture: widening the
-    // escalation to accept it was green (AdversarialEng A2, ALM-9520). This is
-    // the ADDITION-direction probe the removal mutants cannot reach — the
-    // condition is a disjunction, so each arm needs its own example.
+    // which left the `cancelled` arm admitted by no fixture (AdversarialEng A2,
+    // ALM-9520). Each outcome still needs its own example.
     //
     // `cancelled` matters more than `interrupted` here: it reaches
     // `finalizeAgentStatus` from the workspace-busy deferral path, which fires
-    // in ordinary scheduling rather than once per shutdown.
+    // in ordinary scheduling rather than once per shutdown. It is also step 2
+    // of the ALM-9552 sequence — the finalization that used to drop a tripped
+    // agent to `idle`.
     expect(await cancelOnceAndReadAgent(companyId, agentId)).toEqual({
+      status: "error",
+      errorReason: FALSE_LIVENESS_ERROR_REASON,
+    });
+  });
+
+  it("leaves an interrupted healthy agent alone", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, "HealthyButInterrupted");
+    // One healthy run at the head breaks the streak, so the detector has no
+    // finding. Without this, widening the escalation to fire on ANY
+    // interrupted finalization — the failure mode the two fixtures above would
+    // otherwise invite — is green, and every deploy would mark the whole fleet
+    // unavailable.
+    await seedHistory(companyId, agentId, [
+      ...healthy(1),
+      ...dead(FALSE_LIVENESS_STREAK_THRESHOLD - 1),
+    ]);
+
+    expect(await interruptOnceAndReadAgent(companyId, agentId)).toEqual({
       status: "idle",
       errorReason: null,
     });
@@ -581,35 +653,39 @@ describeEmbeddedPostgres("false-liveness detector writes agent status", () => {
       ...dead(FALSE_LIVENESS_STREAK_THRESHOLD - 1),
     ]);
 
-    // Deliberate, and the one place the hold costs something: the fault
-    // outlives the repair by one run. An interrupted run is not evidence of
-    // life, so it does not get to clear the fault — and the alternative, a
-    // history read on the recovery path, would clear on evidence the
-    // escalation path refuses to act on, which is the asymmetry that caused
-    // ALM-9523 in the first place. Recovery is not deferred indefinitely:
-    // `error` is invokable, so the agent's next succeeded finalization clears
-    // it through the normal path.
+    // The repair takes effect on this finalization rather than outliving it by
+    // one run. The interrupt is still not the evidence — the healthy SUCCEEDED
+    // run at the head of the history is, and it is the same row that clears the
+    // fault through `clears the fault when the adapter starts reporting usage
+    // again`.
+    //
+    // This inverted at ALM-9552, and the asymmetry its old comment warned about
+    // is what went away. Reading history on the recovery path used to be wider
+    // than the escalation path, which is the shape that caused ALM-9523; now
+    // both directions are the same single derivation from the same rows, so
+    // neither can be wider than the other.
     expect(await interruptOnceAndReadAgent(companyId, agentId)).toEqual({
-      status: "error",
-      errorReason: FALSE_LIVENESS_ERROR_REASON,
+      status: "idle",
+      errorReason: null,
     });
   });
 
-  it("leaves an ordinary failure reason to the ordinary path", async () => {
+  it("escalates over an unrelated prior reason when the streak holds", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, "FailedForOtherReasons", {
       status: "error",
       errorReason: "Process exited with code 137",
     });
-    // A full zero-usage streak, so the only thing keeping this out of the hold
-    // is the REASON. Widening the hold to any `errorReason` reds this fixture:
-    // the agent would be pinned in `error` forever, because nothing outside the
-    // detector clears a reason it did not write.
+    // A full zero-usage streak behind a reason the detector did not write. The
+    // prior reason is not consulted, so this agent is tripped like any other:
+    // reading the agent row to decide is what ALM-9552 removed, and an agent
+    // that happened to be carrying someone else's reason used to escape the
+    // detector entirely until a succeeded run finalized alone.
     await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
 
     expect(await interruptOnceAndReadAgent(companyId, agentId)).toEqual({
-      status: "idle",
-      errorReason: null,
+      status: "error",
+      errorReason: FALSE_LIVENESS_ERROR_REASON,
     });
   });
 
@@ -645,15 +721,26 @@ describeEmbeddedPostgres("false-liveness detector writes agent status", () => {
       errorReason: "Process exited with code 137",
       exitCode: 1,
     });
-    await seedHistory(companyId, agentId, dead(FALSE_LIVENESS_STREAK_THRESHOLD));
+    // One healthy run at the head, so the detector has no finding and the
+    // failing run keeps its own message. This is the bound on the ALM-9534
+    // fix: without it, "a tripped agent's fault survives a failed
+    // finalization" is indistinguishable from "a failing run never writes its
+    // own message again," which would strand every ordinary adapter failure
+    // behind the detector's reason.
+    //
+    // The seed changed at ALM-9552 and the title is why. It read
+    // `dead(FALSE_LIVENESS_STREAK_THRESHOLD)` — a FULL streak, on a fixture
+    // whose name says the detector never tripped — and passed only because the
+    // escalation was gated on the finalizing run's outcome, so a tripped agent
+    // slipped through. Once the streak alone decides, the old seed asserted
+    // that a tripped agent keeps an unrelated reason, which is the opposite of
+    // what this fixture is for. The separator is now the streak, so the streak
+    // is what this varies.
+    await seedHistory(companyId, agentId, [
+      ...healthy(1),
+      ...dead(FALSE_LIVENESS_STREAK_THRESHOLD - 1),
+    ]);
 
-    // One variable apart from the fixture above — the PRIOR reason — and the
-    // bound on the ALM-9534 fix. Without this, "hold the marker through a
-    // failed finalization" is indistinguishable from "a failing run never
-    // writes its own message again," which would strand every ordinary adapter
-    // failure behind whatever reason the agent happened to carry. The streak
-    // is seeded dead here too, so the streak cannot be what separates the two:
-    // the hold keys on the marker and on nothing else.
     expect(await runOnceAndReadAgent(agentId, "failed")).toEqual({
       status: "error",
       errorReason: "Process exited with code 1",
