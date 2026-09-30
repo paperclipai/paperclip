@@ -464,6 +464,12 @@
       "darkAsset": "/brands/apps/xai-dark.svg"
     },
     {
+      "slug": "zai",
+      "provider": "Z.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zai.svg"
+    },
+    {
       "slug": "imessage-photon",
       "provider": "iMessage Photon",
       "catalogVisible": true,

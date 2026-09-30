@@ -55,6 +55,11 @@ organization keys. You can still choose a new key or another account:
   `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`) and the distinct keys created by
   agent setup.
 
+A **Z.AI** connection takes a GLM API key. Z.AI runs an Anthropic-compatible
+endpoint. A managed Z.AI connection routes Claude Code at that endpoint and
+maps the Claude model tiers onto GLM models. Set an explicit agent model when
+you want a different GLM id.
+
 Reusing a connection binds its secret reference to the agent. It does not copy
 or rotate the saved value. The connection is tested before the agent is created;
 being listed does not guarantee that a provider still accepts the credential.

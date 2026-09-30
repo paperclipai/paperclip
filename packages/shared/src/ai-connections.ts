@@ -31,11 +31,23 @@ export const AI_PROVIDERS = [
   "openai",
   "openrouter",
   "xai",
+  "zai",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
+
+/**
+ * Z.AI (GLM) exposes an Anthropic Messages-compatible endpoint, so the Claude
+ * Code runtime speaks to it by pointing ANTHROPIC_BASE_URL here and passing the
+ * Z.AI API key as ANTHROPIC_API_KEY. Model ids are the GLM family; the coding
+ * plan documents both endpoints (https://docs.z.ai/devpack/latest-model).
+ */
+export const ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
+export const ZAI_DEFAULT_MODEL = "glm-5.3";
+export const ZAI_FAST_MODEL = "glm-5.3-flash";
+
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -105,6 +117,12 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     methods: {
       subscription: { adapters: ["grok_local"], envKey: "GROK_HOME" },
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
+    },
+  },
+  zai: {
+    name: "Z.AI (GLM)",
+    methods: {
+      api_key: { adapters: ["claude_local"], envKey: "ANTHROPIC_API_KEY" },
     },
   },
 };

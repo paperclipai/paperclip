@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "zai",
+  "name": "Z.AI (GLM)",
+  "description": "Connect Z.AI (GLM) accounts for your agents.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/zai.svg"
+  },
+  "urlPatterns": [
+    "https://api.z.ai/api/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Z.AI (GLM) API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "zai",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "ANTHROPIC_API_KEY"
+      },
+      "consoleLinks": {
+        "register": "https://z.ai/manage-apikey/apikey-list",
+        "docs": "https://docs.z.ai/devpack/latest-model"
+      }
+    }
+  ]
+}
