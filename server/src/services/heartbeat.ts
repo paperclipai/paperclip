@@ -370,6 +370,10 @@ import {
 } from "./chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
+  FALSE_LIVENESS_ERROR_REASON,
+  FALSE_LIVENESS_SCAN_LIMIT,
+  FALSE_LIVENESS_STREAK_THRESHOLD,
+  resolveFalseLivenessEscalation,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
@@ -18001,6 +18005,35 @@ export function heartbeatService(
     return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
   }
 
+  /**
+   * The agent's most recent succeeded runs, newest first, for the
+   * false-liveness streak (ALM-6138).
+   *
+   * Selecting only `succeeded` rows is how "ignore failed/cancelled/timed_out
+   * runs" is implemented: they are neither counted toward the streak nor
+   * allowed to reset it. Ordered by startedAt to ride
+   * heartbeat_runs_company_agent_started_idx. The run being finalized is
+   * already persisted terminal at every call site that reports "succeeded", so
+   * it is included here.
+   */
+  async function readRecentSucceededRunUsage(companyId: string, agentId: string) {
+    return db
+      .select({
+        status: heartbeatRuns.status,
+        usageJson: heartbeatRuns.usageJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.startedAt))
+      .limit(FALSE_LIVENESS_SCAN_LIMIT);
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
@@ -18018,7 +18051,7 @@ export function heartbeatService(
       options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
+    const baseStatus =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" ||
@@ -18028,23 +18061,116 @@ export function heartbeatService(
           ? "idle"
           : "error";
 
+    // False-liveness detector (ALM-6138). A run that exits cleanly while the
+    // provider reported no tokens and no cost did not reach the model. One such
+    // run is noise; a streak of them means this agent's adapter credentials or
+    // config are broken, and nothing else notices because every run "succeeds".
+    //
+    // This has to happen here rather than in classifyAndPersistRunLiveness:
+    // that hook runs BEFORE finalizeAgentStatus at every finalization site, so
+    // a status written there is overwritten by the `idle` below. This is the
+    // write, so it cannot be clobbered.
+    //
+    // Only a finalization that could ENTER the fault may decide it, and that
+    // same condition governs leaving it. Both conjuncts are about evidence:
+    // `succeeded` is the detector's whole premise — a run that CLAIMED success
+    // while the provider reported nothing — and `running` means another run of
+    // this agent is in flight and must not be stomped. A finalization outside
+    // that cell is evidence of neither death nor life, exactly as a
+    // non-`succeeded` ROW is skipped by falseLivenessStreak, so it abstains.
+    const decidesFalseLiveness =
+      baseStatus === "idle" && outcome === "succeeded";
+    const falseLivenessEscalation = decidesFalseLiveness
+      ? resolveFalseLivenessEscalation(
+          await readRecentSucceededRunUsage(existing.companyId, agentId),
+          existing.errorReason,
+        )
+      : null;
+
+    // Abstaining carries an existing fault forward; it does not drop it
+    // (ALM-9523). The `errorReason` write below clears on every status that is
+    // not `error`, so recovery used to be strictly wider than escalation:
+    // measured at `cb53af60b`, a tripped agent whose streak still held was
+    // reset to `{idle, null}` by an `interrupted` or a `cancelled`
+    // finalization, and to `{running, null}` whenever another of its runs was
+    // in flight. A graceful shutdown drains every in-flight run as
+    // `interrupted`, and `error` is an invokable status, so each deploy did
+    // this to every tripped agent.
+    //
+    // Scoped to this detector's own reason on purpose: an ordinary failure
+    // reason belongs to the run that produced it and is still cleared when the
+    // agent leaves error.
+    //
+    // The hold reaches a finalization landing in `error` too, and that is the
+    // whole of the ALM-9534 fix. An earlier version excluded `baseStatus ===
+    // "error"` so a failing run's own message would survive — but that branch
+    // is the one that OVERWRITES the column this condition keys on, so it
+    // destroyed the marker and the next `interrupted` or `cancelled`
+    // finalization found nothing to hold. Measured at `8aa82b276`: a tripped
+    // agent, failed exit 1, then interrupted -> `{idle, null}`, advertised
+    // healthy while still dead. Two hops, both ordinary — an agent with a
+    // broken adapter fails constantly, and a deploy interrupts every run.
+    //
+    // The cost is accepted and real: while the marker is held, the agent row
+    // shows the credential/config fault instead of the failing run's own
+    // message. That message is still on the run row and in run events, the
+    // agent is unavailable under either string, and a durable agent-level
+    // fault is the more useful thing on the agent page than one run's exit
+    // code. Composing the two strings was rejected — the marker is an equality
+    // key (`===` here, and the ALM-8037 class-B undo keys on the same bytes),
+    // so anything but the exact reason breaks the hold it exists to drive.
+    const holdsFalseLivenessFault =
+      !decidesFalseLiveness &&
+      existing.errorReason === FALSE_LIVENESS_ERROR_REASON;
+
+    // `idle` advertises the agent as healthy, so a held fault keeps it in
+    // `error`. `running` is left alone and only the reason is carried, which is
+    // already how a tripped agent looks mid-run: the run-start write flips
+    // status to `running` without touching `errorReason`. `error` needs no
+    // status change and carries the reason for the same purpose the other two
+    // do — so that the marker survives to be read by the finalization after
+    // this one.
+    const nextStatus =
+      falseLivenessEscalation?.status ??
+      (holdsFalseLivenessFault && baseStatus === "idle" ? "error" : baseStatus);
+    const resolvedFailureReason =
+      falseLivenessEscalation?.errorReason ??
+      (holdsFalseLivenessFault ? FALSE_LIVENESS_ERROR_REASON : failureReason);
+
+    // Persist a human-readable reason on the agent record when it enters error
+    // so operators see it on the agent page without digging into run events;
+    // clear it whenever the agent leaves error. The middle case is the held
+    // fault on the `running` branch: the status is not ours to write, but the
+    // reason still must not be dropped.
+    const nextErrorReason =
+      nextStatus === "error"
+        ? truncateAgentErrorReason(resolvedFailureReason)
+        : holdsFalseLivenessFault
+          ? FALSE_LIVENESS_ERROR_REASON
+          : null;
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
-        // Persist a human-readable reason on the agent record when it enters
-        // error so operators see it on the agent page without digging into run
-        // events; clear it whenever the agent leaves error.
-        errorReason:
-          nextStatus === "error"
-            ? truncateAgentErrorReason(failureReason)
-            : null,
+        errorReason: nextErrorReason,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (falseLivenessEscalation?.reportEscalation && updated) {
+      logger.warn(
+        {
+          agentId,
+          agentName: updated.name,
+          streakThreshold: FALSE_LIVENESS_STREAK_THRESHOLD,
+        },
+        "agent marked unavailable: adapter reported no provider usage on the last consecutive succeeded runs",
+      );
+    }
 
     if (isFirstHeartbeat && updated) {
       const tc = getTelemetryClient();
