@@ -165,16 +165,18 @@ describe("persistent agent directories", () => {
     expect(await fs.readFile(path.join(root, "next-task.txt"), "utf8")).toBe("still working");
   });
 
-  it("warns on each run at the file limit and clears the warning after ordinary agent cleanup", async () => {
+  it.each([false, true])("warns on each run at the file limit and clears the warning after ordinary agent cleanup (warm=%s)", async (warm) => {
     await sparseFile(path.join(root, "full.bin"), MAX_AGENT_FILE_BYTES);
-    const first = await run();
+    const first = await run({ warm });
     expect(first.receipt?.storageWarning).toContain("256 MiB");
     expect(instructionWorkingCopyGuidance(first)).toContain("Runs can continue");
-    const unchanged = await copies.collectStopped({ companyId, runId: first.runId });
-    expect(unchanged).toMatchObject({ state: "unchanged", errorCode: null });
+    const unchanged = await copies[warm ? "checkpointWarm" : "collectStopped"]({ companyId, runId: first.runId });
+    expect(unchanged).toMatchObject({ state: warm ? "warm_saved" : "unchanged", errorCode: null });
+    if (warm) expect(unchanged?.receipt?.checkpointState).toBe("unchanged");
     expect(unchanged?.receipt?.storageWarning).toContain("Agent storage is full");
     copies = agentInstructionWorkingCopyService(db);
-    const second = await run();
+    const second = await run({ warm, ...(warm ? { reuseRunId: first.runId } : {}) });
+    if (warm) expect(second.localRoot).toBe(first.localRoot);
     expect(second.receipt?.storageWarning).toContain("Agent storage is full");
     await fs.unlink(path.join(second.localRoot, "full.bin"));
     await fs.writeFile(path.join(second.localRoot, "task-output.txt"), "work continues");

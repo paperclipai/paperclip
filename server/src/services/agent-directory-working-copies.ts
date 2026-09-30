@@ -201,7 +201,9 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         const changed = nextHash !== row.baseHash;
         const { storageWarning } = changed
           ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({ storageWarning: null }));
+          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
+            storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
+          }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
           candidateHash: nextHash, errorCode: null, errorMessage: null, attempts: 0, nextAttemptAt: null,
           ...(stopped ? { processStoppedAt: new Date() } : {}),
