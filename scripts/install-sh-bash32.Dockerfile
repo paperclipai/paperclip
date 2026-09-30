@@ -19,7 +19,7 @@
 # errors in gcc 14, which is what this was developed against. -Wno-return-mismatch
 # likewise only exists in gcc 14 and is silently ignored by gcc 12. Keeping both
 # means a future base-image bump does not turn 2006-era C into a build failure.
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 # Cross-checked against ftp.gnu.org and mirrors.kernel.org.
 ARG BASH_VERSION=3.2.57

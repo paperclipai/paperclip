@@ -236,8 +236,9 @@ docker run --rm \
   -e PAPERCLIP_INSTALL_CANARY=Off \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   "$BASH32_IMAGE" \
-  bash32 /paperclip-scripts/install.sh
+  bash32 /paperclip-scripts/install.sh >"$RESULTS_DIR/bash32-env.out"
 assert_line "$RESULTS_DIR/bash32-env.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/bash32-env.args" "--yes"
+assert_line "$RESULTS_DIR/bash32-env.out" "[paperclip] Installation complete."
 
 echo "Installer Docker checks passed."
