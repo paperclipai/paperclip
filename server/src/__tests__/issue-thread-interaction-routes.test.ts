@@ -490,6 +490,7 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
+      continuationIssue: null,
     });
     mockInteractionService.submitItemVerdicts.mockResolvedValue({
       interaction: {
@@ -836,6 +837,7 @@ describe.sequential("issue thread interaction routes", () => {
       sourceRunId: RUN_2,
       payload: { version: 1, questions: [] },
       result: { version: 1, answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      continuationIssue: null,
     });
     const app = await createApp();
 
@@ -2767,6 +2769,7 @@ describe.sequential("issue thread interaction routes", () => {
       id: interactionId,
       status: "answered",
       result: { version: 1, answers: [] },
+      continuationIssue: null,
     }));
     mockInteractionService.getForIssue
       .mockResolvedValueOnce(addressed)

@@ -365,7 +365,9 @@ describeEmbeddedPostgres("native question bridge", () => {
       answers: [{ questionId: "color", optionIds: ["red"] }],
     })).toThrow(/unknown option red/);
 
-    const answered = await issueThreadInteractionService(db).answerQuestions(
+    const answered = await issueThreadInteractionService(
+      db,
+    ).answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
       interaction!.id,
       answer,
@@ -415,7 +417,9 @@ describeEmbeddedPostgres("native question bridge", () => {
       binding: binding(),
       event: runtimeRequestEvent(),
     });
-    const answered = await issueThreadInteractionService(db).answerQuestions(
+    const answered = await issueThreadInteractionService(
+      db,
+    ).answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
       interaction!.id,
       { answers: [{ questionId: "color", optionIds: ["green"] }] },
@@ -613,7 +617,9 @@ describeEmbeddedPostgres("native question bridge", () => {
       }],
     };
     validateNativeQuestionResponseInput(interaction!, answer);
-    const answered = await issueThreadInteractionService(db).answerQuestions(
+    const answered = await issueThreadInteractionService(
+      db,
+    ).answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
       interaction!.id,
       answer,
