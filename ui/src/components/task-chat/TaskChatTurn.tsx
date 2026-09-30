@@ -127,7 +127,7 @@ export function TaskChatTurn({
           </div>
         ) : null}
         {item.finalResponse ? (
-          <div className="w-full pl-0.5" data-testid="task-chat-final-response">
+          <div className="w-full" data-testid="task-chat-final-response">
             <div
               className="break-words px-1 py-2 text-sm text-foreground"
               data-testid="task-chat-agent-bubble"

@@ -81,6 +81,7 @@ export function TaskChatActivityPhase({
     >
       {item.interstitial ? (
         <div
+          // Match the agent reply gutter. The run's first line renders here.
           className="min-w-0 px-1 text-sm text-foreground/90"
           data-testid="task-chat-phase-interstitial"
         >

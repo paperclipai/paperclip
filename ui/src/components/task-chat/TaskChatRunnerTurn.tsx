@@ -269,7 +269,7 @@ export function TaskChatRunnerTurn({
       ) : null}
       {final ? (
         <div
-          className="w-full pl-0.5"
+          className="w-full"
           data-testid="task-chat-final-response"
         >
           <TaskChatBubble

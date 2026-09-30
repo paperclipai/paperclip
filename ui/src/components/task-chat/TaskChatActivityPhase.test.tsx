@@ -5,9 +5,39 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatExpansionState } from "./expansion-state";
+import { TaskChatBubble } from "./TaskChatBubble";
+import { ThemeProvider } from "@/context/ThemeContext";
 import type { TaskChatToolItem } from "./task-chat-model";
 
 describe("TaskChatActivityPhase", () => {
+  it("keeps the run's first line on the agent reply's left edge", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    flushSync(() => root.render(
+      <ThemeProvider>
+        <TaskChatActivityPhase
+          item={{
+            id: "phase-1",
+            kind: "activity_phase",
+            active: false,
+            summary: "Worked",
+            interstitial: { id: "first-line", kind: "message", author: "agent", text: "First line" },
+            items: [],
+          }}
+          renderChild={() => null}
+        />
+        <TaskChatBubble item={{ id: "reply-1", kind: "message", author: "agent", text: "Later reply" }} />
+      </ThemeProvider>,
+    ));
+
+    const firstLine = container.querySelector('[data-testid="task-chat-phase-interstitial"]');
+    const reply = container.querySelector('[data-testid="task-chat-agent-bubble"]');
+    expect(firstLine?.classList.contains("px-1")).toBe(true);
+    expect(reply?.classList.contains("px-1")).toBe(true);
+    flushSync(() => root.unmount());
+  });
+
   it("retains expanded phase and tool details when live activity becomes persisted history", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
