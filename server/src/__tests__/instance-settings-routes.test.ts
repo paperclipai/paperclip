@@ -29,6 +29,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockApplyQuotaPacingSettings = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -40,6 +41,9 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+  vi.doMock("../services/quota-pacing.js", () => ({
+    applyQuotaPacingSettings: mockApplyQuotaPacingSettings,
   }));
 }
 
@@ -672,6 +676,94 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  describe("quota pacing settings", () => {
+    const pacing = {
+      enabled: true,
+      mode: "auto",
+      sessionReservePercent: 20,
+      weeklyAllowancePercent: 8,
+      pollIntervalSec: 300,
+    };
+
+    it("stores a pacing patch and applies it to the running pacing controller", async () => {
+      mockInstanceSettingsService.updateGeneral.mockResolvedValue({
+        id: "instance-settings-1",
+        general: { censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt", quotaPacing: pacing },
+      });
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ quotaPacing: { enabled: true } });
+
+      expect(res.status).toBe(200);
+      expect(res.body.quotaPacing).toEqual(pacing);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ quotaPacing: { enabled: true } });
+      expect(mockApplyQuotaPacingSettings).toHaveBeenCalledWith(pacing);
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not touch pacing for a general write without pacing keys", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ censorUsernameInLogs: true });
+
+      expect(res.status).toBe(200);
+      expect(mockApplyQuotaPacingSettings).not.toHaveBeenCalled();
+    });
+
+    it("rejects pacing changes from board users who are not instance admins", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: ["company-1"],
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ quotaPacing: { enabled: true } });
+
+      expect(res.status).toBe(403);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+      expect(mockApplyQuotaPacingSettings).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a poll interval under five minutes", { pollIntervalSec: 60 }],
+      ["a session reserve above 60%", { sessionReservePercent: 61 }],
+      ["an unknown mode", { mode: "turbo" }],
+      ["an unknown key", { maxRuns: 2 }],
+    ])("rejects %s", async (_label, quotaPacing) => {
+      const app = await createApp({
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ quotaPacing });
+
+      expect(res.status).toBe(400);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
   });
 
   describe("executionMode floor on cloud-managed instances", () => {
