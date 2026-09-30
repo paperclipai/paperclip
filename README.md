@@ -343,43 +343,15 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 Open source. Self-hosted. No Paperclip account required. Follow the [guided quickstart](https://docs.paperclip.ing/guides/getting-started/five-minute-path/) to set up your first agent.
 
-```bash
-curl -fsSLO https://paperclip.ing/install.sh
-curl -fsSLO https://paperclip.ing/install.sh.sha256
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum -c install.sh.sha256
-else
-  shasum -a 256 -c install.sh.sha256
-fi
-bash install.sh
-```
-
-The installer ensures Node.js 24.11 or newer is available, installs a managed
-Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
-can also install Paperclip as a background service on supported Linux and
-macOS systems. The checksum detects transfer or publishing mistakes, but it is
-served from the same origin as the script; use a release-tag or commit-pinned
-GitHub copy when you need an independently hosted source.
-
-For a non-interactive managed install:
+With **Node.js 24.11 or newer** installed:
 
 ```bash
-curl -fsSL https://paperclip.ing/install.sh | bash -s -- --no-prompt --no-onboard
-paperclipai onboard --yes
-```
-
-The piped form requires supported Node.js, npm, and npx to already be present.
-If Node.js bootstrap is required, download and review `install.sh` before
-running it so no privileged dependency-install command is accepted through a
-pipe.
-
-To start through npx instead of the installer:
-
-```bash
-npx --registry https://registry.npmjs.org paperclipai onboard --yes
+npx paperclipai@latest onboard --yes
 ```
 
 The CLI runs from npm's cache; your instance configuration and data persist locally.
+
+See the [installation guide](https://docs.paperclip.ing/reference/cli/installation/) for managed installs, pinned versions, canary and git-ref installs, updates, rollback, service management, and uninstalling.
 
 For an isolated manual test instance that is already initialized with a CEO
 agent, use `test-drive`. It stays in the foreground, never installs a service
@@ -413,21 +385,18 @@ reuse behavior.
 > Workaround (cross-platform; force the public npm registry for this command):
 >
 > ```bash
-> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> npx --registry https://registry.npmjs.org paperclipai@latest onboard --yes
 > ```
 
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
 ```bash
-paperclipai onboard --yes --bind lan
+npx paperclipai@latest onboard --yes --bind lan
 # or:
-paperclipai onboard --yes --bind tailnet
+npx paperclipai@latest onboard --yes --bind tailnet
 ```
 
-If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
-
-See the [installation guide](https://docs.paperclip.ing/reference/cli/installation/) for pinned versions, canary and
-git-ref installs, updates, rollback, service management, and uninstalling.
+If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `npx paperclipai configure` to edit settings.
 
 Or manually:
 
