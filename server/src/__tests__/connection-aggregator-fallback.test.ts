@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  authUsers,
   companies,
   companyMemberships,
   goals,
@@ -21,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -52,6 +54,10 @@ const support = await getEmbeddedPostgresTestSupport();
         name: "Connection tests",
         issuePrefix: "AGG",
         requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(authUsers).values({
+        id: "responsible-user", name: "Responsible user", email: "responsible-user@example.test",
+        createdAt: new Date(), updatedAt: new Date(),
       });
       await db.insert(companyMemberships).values({
         companyId,
@@ -256,6 +262,100 @@ const support = await getEmbeddedPostgresTestSupport();
       }
       return connection!;
     }
+    it.each([
+      ["AgentMail create an email address and manage an agent mailbox", "agentmail"],
+      ["Please acquire an email address through agent mail and remember it", "agentmail"],
+      ["I need an Agentmial inbox for receiving mail from customers", "agentmail"],
+      ["Please connect my Linear workspace so I can triage the team's backlog", "linear"],
+      ["Find a Notion connection to search our engineering documentation", "notion"],
+      ["Can you find the OpenRouter connection for the model I want to use?", "openrouter"],
+      ["Please help me connect to Git Hub to look at my pull requests", "github"],
+    ])("finds native connections in natural-language queries: %s", async (query, service) => {
+      await resetQuestions();
+      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+      try {
+        const result = await connectionIntentService(db).search(claims, query);
+        expect(result.results[0]).toMatchObject({ service, state: "available" });
+        expect(result.providerQuestion).toBeUndefined();
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+      }
+    });
+    it("discovers all purposes with truthful setup actions and the chat feature gate", async () => {
+      await resetQuestions();
+      const service = connectionIntentService(db);
+      expect((await service.search(claims, "agentmail")).results.some(item => item.service === "agentmail")).toBe(false);
+      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+      try {
+        const result = await service.search(claims, "agentmail");
+        expect(result.results[0]?.methods).toEqual([expect.objectContaining({
+          key: "email-agent", purpose: "channel", setupPath: `/AGG/apps/chat/connect?provider=agentmail&purpose=chat&agentId=${claims.sub}`,
+        })]);
+        expect(result.instruction).toContain("setupPath");
+        const browse = await service.search(claims, "");
+        expect(browse.results.some(item => item.service === "agentmail")).toBe(true);
+        expect(browse.results.some(item => item.service === "anthropic")).toBe(true);
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+      }
+    });
+    it("keeps useful capability matches even when other query words do not occur in the catalog", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims,
+        "I need something that can search documents and spreadsheets for our quarterly planning discussion");
+      expect(result.results.some(item => item.service === "google-drive")).toBe(true);
+      expect(result.results.some(item => item.service === "google-sheets")).toBe(true);
+      expect(result.instruction).not.toContain("search its exact name");
+    });
+    it.each([
+      ["help me find tools for circle back", "circleback-mcp"],
+      ["Find Circlebak meeting transcripts and action items from yesterday", "circleback-mcp"],
+      ["Can you connect Circleback MCP to get all our meeting notes?", "circleback-mcp"],
+      ["Find Attio tools to review all our customer contacts before next week's meeting", "attio"],
+      ["Help me find a ClickUp connection to organize our team's projects", "clickup"],
+    ])("finds verified aggregator apps in natural-language queries: %s", async (query, target) => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, query);
+      expect(result.results).toEqual(expect.arrayContaining([expect.objectContaining({
+        service: `via:composio:${target}`, source: "aggregator",
+        aggregator: expect.objectContaining({ evidenceUrl: expect.stringContaining("composio.dev/"), targetService: target }),
+      })]));
+      expect(result.providerQuestion?.options.map(option => option.id)).toContain(`via:composio:${target}`);
+      await expect(connectionIntentService(db).request(claims, `via:composio:${target}`)).rejects.toThrow();
+    });
+    it.each([false, true])("prefers an exact Motion match over fuzzy Notion (Notion denied: %s)", async denied => {
+      await resetQuestions();
+      if (denied) await seedProvider("notion", "notion_search", "responsible-user", false);
+      const result = await connectionIntentService(db).search(claims, "Help me find Motion tools");
+      expect(result.results[0]?.service).toBe("via:composio:motion");
+      expect(result.providerQuestion?.id).toBe("connection-provider:motion");
+      expect(result.instruction).not.toContain("administratively restricted");
+    });
+    it("finds namespaced installed aggregator tools with extra query words", async () => {
+      await resetQuestions();
+      await seedProvider("executor", "heliotrope:list_records");
+      const result = await connectionIntentService(db).search(claims, "Please find heliotrope tools for our weekly report");
+      expect(result.results[0]?.service).toBe("via:executor:heliotrope");
+    });
+    it("returns multiple named services so the agent can choose the relevant result", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, "Find Linear or Notion for our project planning");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["linear", "notion"]));
+    });
+    it("returns multiple aggregator apps without inventing a combined route or choosing consent", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, "Find Circleback and Attio tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["via:composio:circleback-mcp", "via:composio:attio"]));
+      expect(result.providerQuestion).toBeUndefined();
+      expect(result.instruction).toContain("aggregator.targetService");
+    });
+    it("keeps native and aggregator app matches from the same query", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, "Find Notion and Circleback tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["notion", "via:composio:circleback-mcp"]));
+      expect(result.providerQuestion).toBeUndefined();
+    });
+
     it("prefers the built-in Jira connection and returns a direct instruction", async () => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(

@@ -394,7 +394,6 @@ Issue document comments, document annotation comments, and document review comme
 
 Document-scoped activity may still route work when it is converted into an explicit action-path primitive. Valid routing exceptions include:
 
-- an issue mention or structured agent mention that intentionally wakes or assigns a named participant
 - a document-review assignment that names a reviewer or assignee for the review state
 - a response to an issue-thread interaction, such as `request_confirmation`, `ask_user_questions`, or `suggest_tasks`
 - intentional board routing that assigns or reassigns the issue, opens a first-class blocker, creates delegated follow-up work, or queues a typed wake
@@ -423,16 +422,9 @@ A wake is the delivery path for a selected agent owner. If an interrupting updat
 
 If the committed update assigns the issue to a user, clears the agent assignee, or leaves the issue without an agent owner, Paperclip must not imply that an agent handoff happened. The issue is then waiting on the human owner or on a future explicit assignment, blocker, approval, interaction, monitor, or recovery action.
 
-Plain text is not assignment. Writing an agent's name, role, or team label in a comment does not change ownership and does not create an agent wake. Agent routing from comment text requires a structured agent mention that resolves inside the company, an explicit `assigneeAgentId` mutation, or an existing current agent assignee receiving normal issue-thread feedback.
+Agent names and structured @-mentions are context, not assignment or wake requests. Mentions remain on the original comment and do not start an agent, authorize checkout, or copy feedback onto a referenced child task. This applies equally to board and agent comments, standalone comments and issue updates, and open and terminal tasks. New work for another agent requires explicit assignment, a bounded delegated task, or an explicit review request.
 
-A delegation comment from the current assignee's run on this parent must not start competing parent work when the named worker already owns the referenced child. This applies to issue updates with a comment and standalone comments. Verify the source run's company, agent, and parent-task context. Then verify that the comment references the child's identifier, the child's `parentId` names this parent, and the child belongs to the same company and is assigned to the mentioned worker. Apply child-aware routing only in either of these states:
-
-- The parent is `blocked` and the child is `in_progress`. The child must have a blocker edge to the parent. The child's execution or checkout run must still be `running`, belong to that worker and company, and name that child in its run context. Verify comment and mutation access to the child, then retain the parent comment and append a linked copy on the child. Preserve the full comment, author, source run, responsible-user attribution, and source trust. Target the normal mention wake at the child and its new comment ID, with explicit resume and follow-up intent. This keeps new feedback available to the worker and lets the existing queue serialize a child continuation behind its current execution.
-- The parent and child are both `done`. The assignee's closing comment must not start another worker run for the completed delegation. A blocker edge is not required after completion: a fast child can finish before the lead needs to record a wait. New agent work must use explicit `resume: true`, a status change, or a new assigned task. Explicit resume moves the parent out of `done` before this rule runs; the comment's prose alone does not restart completed work.
-
-The completed-delegation comment remains on the parent without a worker wake. Neither path changes ownership. Board-user comments and unrelated mentions retain their normal wake behavior. If multiple referenced children qualify for the same worker, the child or run no longer meets these conditions, child comment or mutation access is denied, or a lookup or copy fails, use the normal parent mention path. Do not parse mentions again while copying a comment, which would create another routing loop. Completion of the child still uses the existing blocker-resolution wake for the parent's assignee.
-
-The parent may receive a closing comment before its assignee changes the status to `done`. Recheck the completed-delegation rule when releasing that parent execution, before promoting a deferred mention. On the same transaction, verify the final parent state, finishing run, and every original queued or deferred comment ID. Each comment must belong to this parent and company, come from its assignee's finishing run, and reference exactly one completed direct child assigned to the mentioned worker. A link to the parent itself is allowed; any other extra issue reference keeps the normal mention path, including an unknown or foreign reference. Mixed human, other-run, unrelated, or ambiguous input retains its normal wake path. Explicit continuation and interaction requests also retain their normal path.
+Normal issue-thread feedback can still wake the current assignee according to the comment policy; self-comments and closed-task comments retain their existing suppression rules. Explicit assignment, review, interaction, and blocker-resolution wakes retain their own routing. New mention wake requests are ignored at admission, including calls from legacy producers. Already accepted queue entries retain their existing execution rules: an old entry can combine an assignment or other feedback with a later mention, so its last wake reason does not prove that the entry is mention-only.
 
 Accepted agent feedback must survive a child changing to `done` before its active run exits. Deferred wake promotion may reopen that completed child only for its current assignee, with explicit agent resume intent and live tracked comments from another author. Claim promotion before reopening. Cancelled tasks, deleted comments, self-authored comments, empty continuations, and agent continuations without explicit intent keep their existing suppression rules. Normal pause, ownership, authorization, and budget gates still apply.
 
@@ -936,6 +928,20 @@ Questions must be created as durable interactions before the agent claims to be
 waiting. A direct Board comment reopening completed work has the same passive
 response-wait semantics as a comment on an open task, subject to the same source,
 identity, and governance checks. An automatic continuation is not a user reply.
+For ordinary tasks, a response wait cannot park reported blocking remaining
+work without a recorded wait condition. The finish tool rejects this combination;
+finalization routes already-accepted reports through one bounded corrective
+continuation and then a visible recovery error. Real questions, approvals,
+dependencies, pauses, and conversation lifecycles keep their existing behavior.
+A superseded Board comment never grants permission to replay the old response.
+
+A run must receive queued human direction before it creates a new task question.
+When the saved run context contains an explicit delivered-comment list, the
+server rejects `ask_user_questions` if a newer human comment is absent from that
+list. It returns `409` with `reason: "newer_comment_not_delivered"` and creates no
+pending question. The next run receives the queued comments and can ask a question
+if it still needs an answer. Older contexts without a delivered-comment list keep
+their existing behavior. This rule does not answer, accept, or dismiss an approval.
 
 Provider-turn identity separates recovery responses from earlier assistant
 output. A recovery turn cannot overwrite a delivered answer. File attachments
@@ -1250,6 +1256,11 @@ turn finishes during shutdown, its release checkpoints the session before
 returning instead of leaving a new idle owner behind. If checkpointing fails,
 the retained state continues to block unverified reuse.
 
+Local durable control-plane state is bounded at 256 MiB in the server,
+runnerd recovery, and durable control-plane readers. These paths synchronously
+read and parse the full JSON file, so memory use and parse time grow with file
+size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
+
 ### Warm sandbox continuity
 
 For the native runner, warm mode requests a reusable sandbox lease **before**
@@ -1324,6 +1335,11 @@ transaction that queues it. Their original authors remain intact. A former
 assignee's ordinary comment wake must not start another execution or reopen a
 completed task after the replacement finishes. Mentions, chat deliveries, and
 dedicated interaction continuations retain their separate delivery contracts.
+Comment insertion takes the issue-row lock before writing. When no valid
+historical timestamp is supplied, the comment's `createdAt` and `updatedAt`
+use one statement timestamp so a transaction that started earlier cannot make
+the later comment appear older; imported historical timestamps retain their
+existing behavior.
 
 A requested file is complete when the user can retrieve it. Native runners must
 register requested output files before reporting Done and link the resulting
@@ -1456,3 +1472,31 @@ Contracts reference the existing brief and answers instead of copying them again
 Resumed sessions keep the existing message-delta path; fresh sessions receive the
 full covered history. Stable wording and bounded references avoid adding another
 full brief on each comment, but provider cache hits must be measured separately.
+
+### Native finalization recovery display
+
+A native finalization retry uses the existing recovery record but does not imply
+that an agent turn is running. Task and inbox surfaces show recovery in progress
+only while its recorded retry is still due or its matching retry run is verified
+live. An expired or missing retry, exhausted budget, or board-owned failure shows
+recovery needed rather than “Observing active run.”
+
+Native recovery reads include a read-only `nativeRunActivity` projection, bound
+to the company, source issue, and exact `resume_native_run.runId`. It reports a
+queued/running native heartbeat, or a running `workspace_finalize` operation
+owned by `native_workspace_finalizer` whose actual callback is still executing
+in this server process. A persisted running row alone is not activity evidence: a
+crash may leave it behind. The in-process claim ends when the callback joins and
+is empty after restart, with no expiry that can misclassify a slow export. This
+read-only presentation check never grants takeover authority. It remains authoritative while
+the original heartbeat still records its previous failure. Completed operations,
+unrelated runs, and other companies do not establish activity. These retries do
+not require or synthesize a legacy `scheduledRetryReason`.
+
+The card describes recovery of the existing run. It does not describe a fresh
+owner disposition turn. This also covers native bootstrap/session recovery,
+which shares the same resume policy. Inbox rows, source cards, and blocker chips
+use the same activity projection. Board-owned repairs stay actionable until a
+verified native retry actually starts. Once an explicit board retry is running,
+its live activity takes precedence over the prior owner and exhausted budget.
+Resolved and cancelled actions remain resolved.

@@ -125,7 +125,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         value: "approve-reads",
         label: "Allow Paperclip reads",
         description:
-          "Automatically allow assigned Paperclip read tools. Other operations stop with an approval-required message because this runner has no interactive approval handler.",
+          "Automatically allow assigned Paperclip read tools. Other operations request a supported permission decision. Company permissions and execution boundaries still apply.",
       },
       {
         value: "deny-all",
@@ -223,3 +223,12 @@ export function normalizeLegacyRunnerProvider(
   } = config;
   return { ...rest, provider: "codex", codexPermissionMode: "never" };
 }
+
+/** Qualification is a release property, never an operator-configurable bypass. */
+export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
+  { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: false, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "pi", label: "Pi", qualified: false, credentialEnvironment: ["OPENROUTER_API_KEY"] },
+] as const);

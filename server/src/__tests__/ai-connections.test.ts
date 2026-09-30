@@ -47,6 +47,74 @@ afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) 
 
 describe("managed AI connections", () => {
   it.each([
+    ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
+  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {
+    const userId = `auth-recovery-${provider}-${switchMethod}`;
+    const id = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const adapterType = provider === "openai" ? "codex_local" : "claude_local";
+    const selectedBinding = { provider, method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: "Auth recovery", adapterType, runtimeConfig: { aiConnection: selectedBinding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
+    const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
+      contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
+    await runtime.cleanup();
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(runId);
+    expect(card).toMatchObject({ state: "needs_user_action", service: provider });
+    expect((await intents.requestForRunAuthFailure(runId))?.interactionId).toBe(card!.interactionId);
+    const setup = await intents.setupOptions(card!.interactionId!);
+    expect(setup.existingConnections).toEqual([]);
+    expect(setup.aiRepair).toMatchObject({ canReconnect: true, connection: { id: account.connectionId, status: "needs_attention" } });
+    await expect(intents.complete(card!.interactionId!, account.connectionId, userId)).rejects.toThrow();
+    // A stopped run's token cannot call the public request path.
+    await expect(intents.request({ sub: id, company_id: companyId, run_id: runId, responsible_user_id: userId }, provider, { purpose: "ai" })).rejects.toThrow("no longer active");
+    // Reverification can keep the same credential bytes; it still supersedes the failure.
+    let repaired = account;
+    if (switchMethod) {
+      const token = provider === "openai" ? JSON.stringify({ tokens: { access_token: "fixture-subscription", refresh_token: "fixture-refresh", id_token: "fixture-id", account_id: "fixture-account" } }) : "fixture-subscription";
+      repaired = await service.save(companyId, userId, { provider, method: "subscription", ownership: "personal", name: "Recovery subscription", loginSessionId: "fixture", agentIds: [id], allAgents: false }, token);
+      await service.setDefault(companyId, userId, repaired.grantId);
+      const [original] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+      expect(original.status).toBe("needs_reauthorization");
+    } else {
+      await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", connectionId: account.connectionId, apiKey: "fixture", agentIds: [id], allAgents: false }, provider === "openai" ? "fixture-recovery-key" : "fixture-repaired-key");
+    }
+    expect((await intents.setupOptions(card!.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([repaired.connectionId]);
+    await intents.complete(card!.interactionId!, repaired.connectionId, userId);
+    const wakeup = vi.fn(async (_agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+      return null;
+    });
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledWith(id, expect.objectContaining({ contextSnapshot: expect.objectContaining({ forceFreshSession: true }) }));
+    // Reprocessing an old failure cannot invalidate the newly saved credential.
+    await intents.requestForRunAuthFailure(runId);
+    expect((await service.select({ companyId, agentId: id, userId, adapterType, binding: selectedBinding })).grant.status).toBe("active");
+  });
+
+  it("offers a compatible connection for legacy auth failures without silently adopting it", async () => {
+    const id = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values({ id, companyId, name: "Legacy Codex", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Legacy auth", status: "in_progress", assigneeAgentId: id });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, nativeIssueId: issueId, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: "alice", contextSnapshot: {} });
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(runId);
+    expect(card).toMatchObject({ service: "openai", state: "needs_user_action" });
+    expect(await intents.setupOptions(card!.interactionId!)).toMatchObject({ aiConnectionRequiresAdoption: true, aiConnection: { provider: "openai", mode: "responsible_user" } });
+    const [unchanged] = await db.select().from(agents).where(eq(agents.id, id));
+    expect(unchanged.runtimeConfig.aiConnection).toBeUndefined();
+    await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "succeeded", responsibleUserId: "alice", contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1000) });
+    expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
+  });
+  it.each([
     ["anthropic", "claude_local", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     ["openai", "codex_local", "CODEX_HOME", "OPENAI_API_KEY"],
   ] as const)("runs the same %s agent with each responsible user's subscription or API key", async (provider, adapterType, subscriptionEnv, apiEnv) => {
@@ -668,7 +736,7 @@ describe("managed AI connections", () => {
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
   });
 
-  it("validates runner account adoption in the inherited sandbox and refuses an unavailable target", async () => {
+  it.each([false, true])("validates runner account adoption in the inherited sandbox (inline: %s)", async (inline) => {
     const { agentRoutes } = await import("../routes/agents.js");
     const { instanceSettingsService } = await import("../services/instance-settings.js");
     const targetModule = await import("../services/environment-execution-target.js");
@@ -676,12 +744,20 @@ describe("managed AI connections", () => {
     const { requireServerAdapter } = await import("../adapters/index.js");
     const settings = instanceSettingsService(db);
     const previous = await settings.get();
-    const [environment] = await db.insert(environments).values({ name: "Adoption sandbox", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    const [environment] = await db.insert(environments).values({ name: `Adoption sandbox ${inline}`, driver: "sandbox", config: { provider: "daytona" } }).returning();
     await settings.update({ defaultEnvironmentId: environment.id });
     const id = randomUUID();
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
-    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: [id], allAgents: false }, "fixture-adoption-key");
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    let interactionId: string | undefined;
+    if (inline) {
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Atomic adoption", status: "in_progress", assigneeAgentId: id });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: "alice", contextSnapshot: { issueId } });
+      interactionId = (await connectionIntentService(db).requestForRunAuthFailure(runId))!.interactionId!;
+    }
     const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
     const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
     const release = vi.fn(async () => undefined);
@@ -695,26 +771,54 @@ describe("managed AI connections", () => {
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const selected = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
     const providerRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
+    const adopt = () => inline
+      ? request(app).post(`/api/agents/${id}/connection-intents/${interactionId}/adopt`).send({ connectionId: account.connectionId })
+      : request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
     try {
       // Target resolution can return only warning checks. Adoption still must
       // fail closed, rather than quietly running the probe on the server host.
       resolveTarget.mockResolvedValueOnce(null);
-      const unavailable = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      const unavailable = await adopt();
       expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
       expect(probe).not.toHaveBeenCalled();
       expect(providerRequest).not.toHaveBeenCalled();
       expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
-      const saved = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      if (inline) {
+        const assertUnchanged = async () => {
+          expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+          expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId))).toEqual([]);
+          expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId!)))[0].status).toBe("pending");
+        };
+        await assertUnchanged();
+        // Force the last write to fail after binding and install changes.
+        await db.execute(sql.raw(`CREATE FUNCTION reject_atomic_adoption() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${interactionId}'::uuid THEN RAISE EXCEPTION 'injected resolution failure'; END IF; RETURN NEW; END $$`));
+        await db.execute(sql.raw("CREATE TRIGGER reject_atomic_adoption BEFORE UPDATE ON issue_thread_interactions FOR EACH ROW EXECUTE FUNCTION reject_atomic_adoption()"));
+        try {
+          const failed = await adopt();
+          expect(failed.status).toBe(500);
+          await assertUnchanged();
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER reject_atomic_adoption ON issue_thread_interactions"));
+          await db.execute(sql.raw("DROP FUNCTION reject_atomic_adoption()"));
+        }
+      }
+      const saved = await adopt();
       expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-      expect(saved.body.defaultEnvironmentId).toBeNull();
-      expect(saved.body.runtimeConfig.aiConnection).toEqual(selected);
+      const savedAgent = (await db.select().from(agents).where(eq(agents.id, id)))[0];
+      expect(savedAgent.defaultEnvironmentId).toBeNull();
+      expect(savedAgent.runtimeConfig.aiConnection).toEqual(inline ? { ...selected, method: "subscription" } : selected);
+      if (inline) {
+        expect(saved.body.status).toBe("accepted");
+        expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId))).toHaveLength(1);
+        expect((await adopt()).status).toBe(200);
+      }
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
       expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
       expect(providerRequest).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
         headers: { Authorization: "Bearer fixture-adoption-key" },
         redirect: "error",
       }));
-      expect(release).toHaveBeenCalledTimes(2);
+      expect(release).toHaveBeenCalledTimes(inline ? 3 : 2);
       expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
     } finally {
       providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();

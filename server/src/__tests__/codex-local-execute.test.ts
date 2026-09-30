@@ -659,6 +659,84 @@ describe("codex execute", () => {
     }
   });
 
+  it("keeps real assignment markdown and current wake events single-owned at the CLI boundary", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-context-owner-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+      includeWakeComments: false,
+    });
+    const historicalMarkdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+    });
+    try {
+      await execute({
+        runId: "run-context-owner",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli", command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Custom template keeps {{paperclipTaskMarkdown}} and {{paperclipWakePrompt}}.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: historicalMarkdown,
+          paperclipTaskMarkdownAssignment: markdown,
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase", status: "in_progress" },
+            executionContinuation: {
+              version: 1,
+              companyId: "company-1",
+              issueId: "issue-1",
+              trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+              originCommentIds: [],
+              objective: "Repeat phrase Repeat phrase",
+              objectiveSource: { kind: "description", id: "issue-1", revision: "2e2ed64c2ca5be0343f591d037a6f40a0b9cee733fedb7fdafa69e4158299957" },
+              messages: [],
+              interactionOutcomes: [],
+              completedWork: null,
+              unresolvedInteractionIds: [],
+              coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+            },
+            comments: [
+              { id: "comment-a", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:00:00.000Z" },
+              { id: "comment-b", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:01:00.000Z" },
+            ],
+            commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+          paperclipTurnContext: { version: 1, assignment: { owner: "task_markdown" }, events: { owner: "wake_prompt", comments: [{ id: "comment-a", revision: "a" }, { id: "comment-b", revision: "b" }] } },
+        },
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Custom template keeps");
+      expect(capture.prompt).toContain("comment-a");
+      expect(capture.prompt.indexOf("comment-a")).toBeLessThan(capture.prompt.indexOf("comment-b"));
+      expect(capture.prompt.split("Same event body.")).toHaveLength(3);
+      // The custom template intentionally repeats task context; ownership only
+      // removes automatic wake-event duplication.
+      expect(capture.prompt.split("Repeat phrase Repeat phrase")).toHaveLength(4);
+      expect(capture.prompt).not.toContain('"objective":"Repeat phrase Repeat phrase"');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
     const workspace = path.join(root, "workspace");

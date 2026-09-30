@@ -240,6 +240,12 @@ const fields = {
       tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
     checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
   })),
+  completionQuality: optional(array(shape({
+    name: string, purpose: optional(oneOf("product", "calibration")), expectedPass: boolean, passed: boolean, status: oneOf("completed", "failed", "pending"), config: object, configHash: string, evidenceHash: string,
+    criteria: array(shape({ id: string, passed: boolean, rationale: string, evidenceIds: array(string) })),
+    reports: optional(array(shape({ replyId: string, rationale: string, completedTaskIdsReferenced: array(string), resultAccessTaskIds: optional(array(string)), correctsReplyIds: array(string) }))),
+    inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string), rejectedVerdict: optional(string),
+  }))),
   firstTaskQuality: optional(shape({
     status: oneOf("completed", "failed", "pending"), informational: boolean, config: object, configHash: string, evidenceHash: string,
     scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),

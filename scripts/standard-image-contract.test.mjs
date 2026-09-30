@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { standardImageDigest, resolveStandardImageDigest } from "./standard-image-contract.mjs";
+import { isNode24ImageTag } from "./node-image-policy.mjs";
+
+test("Node image policy accepts Node 24 major tags and exact security pins", () => {
+  for (const tag of ["24-trixie-slim", "24-bookworm-slim", "24-alpine3.23", "24.11.0-bookworm", "24.21.0-bookworm",
+    `24.21.0-bookworm@sha256:${"a".repeat(64)}`, `24-bookworm@sha256:${"0".repeat(64)}`]) {
+    assert.equal(isNode24ImageTag(tag), true, tag);
+  }
+});
+
+test("Node image policy rejects other majors, partial versions and malformed pins", () => {
+  for (const tag of ["240-bookworm", "25.21.0-bookworm", "v24.21.0-bookworm", "latest",
+    "24.0.0-bookworm", "24.10.0-bookworm", "24.10.99-bookworm",
+    "24.21-bookworm", "24.21.0", "24.21.0-", "24..21.0-bookworm", "24.021.0-bookworm",
+    "24.21.0-bookworm@sha256:short", `24.21.0-bookworm@@sha256:${"a".repeat(64)}`,
+    `24.21.0-bookworm@sha256:${"a".repeat(64)}junk`, "${NODE_VERSION}-bookworm", "24-$(whoami)"]) {
+    assert.equal(isNode24ImageTag(tag), false, tag);
+  }
+});
 const descriptor = architecture => ({ platform: { os: "linux", architecture }, digest: `sha256:${"a".repeat(64)}`, size: 100 });
 const index = manifests => Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests }));
 test("signs the exact registry bytes, including both supported platforms", () => {

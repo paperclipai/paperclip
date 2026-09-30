@@ -2,6 +2,9 @@ import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
+import { isConversation } from "../agent-conversations.js";
+import { issueTreeControlService } from "../issue-tree-control.js";
+import { resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
@@ -159,6 +162,30 @@ export async function nativeCompletionFeedback(
   const readiness = await issueService(db).getDependencyReadiness(issue.id, db);
   if (readiness.unresolvedBlockerCount > 0) {
     return `Completion report accepted; this task still has unresolved dependencies. Explain the blockers on [this task](/issues/${issue.identifier ?? issue.id}); do not say the task is done.`;
+  }
+  if (
+    !isConversation(issue) &&
+    result.reportedWorkDisposition === "yielded" &&
+    result.continuation?.kind === "response_wake" &&
+    result.completionClaim.remainingWork.some((entry) => entry.blocksCompletion) &&
+    signals.actionableAttentionRequests.length === 0
+  ) {
+    const pause = await issueTreeControlService(db).getActivePauseHoldGate(
+      run.companyId, issue.id,
+    );
+    if (pause) {
+      return "Completion report accepted; this task is paused. Wait for the recorded pause to be released before continuing.";
+    }
+    const chatWait = await resolveExternalChatResponseWaitAuthorization({
+      db,
+      binding: { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId },
+    });
+    // Conversation turns and revoked chat authority retain their own lifecycle.
+    if (chatWait === "not_applicable") {
+      throw new Error(
+        "The response_wake report includes blocking remaining work without a pending wait condition. Answering a user comment does not pause the task. Continue the authorized work, register a same_agent continuation, or report the concrete blocker or required question. Do not repeat completed work.",
+      );
+    }
   }
   if (
     result.reportedWorkDisposition === "needs_review" &&

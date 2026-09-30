@@ -20,6 +20,26 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Shared file tree: preserve desktop indentation and leave room for labels on
+   narrow screens, including deeply nested skill packages. */
+.file-tree-row {
+  padding-inline-start: min(calc(var(--file-tree-indent-base) + var(--file-tree-depth) * var(--file-tree-indent-step)), var(--file-tree-indent-max));
+}
+
+@media (width < 40rem) {
+  .file-tree-row {
+    --file-tree-indent-step: calc(var(--spacing) * 3);
+    --file-tree-indent-max: 25%;
+  }
+}
+
+/* One control column plus its gap: a child's checkbox aligns with its parent's
+   icon. Keep this rhythm at every depth and viewport width. */
+.file-tree-row-explorer {
+  --file-tree-indent-step: calc(var(--spacing) * 6);
+  padding-inline-start: calc(var(--file-tree-indent-base) + var(--file-tree-depth) * var(--file-tree-indent-step));
+}
+
 @theme inline {
   --font-sans: "InterVariable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -72,6 +92,9 @@
 
 :root {
   color-scheme: light;
+  --file-tree-indent-base: calc(var(--spacing) * 2);
+  --file-tree-indent-step: calc(var(--spacing) * 6);
+  --file-tree-indent-max: 40%;
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -88,7 +111,7 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -304,6 +327,7 @@
   --side-panel-tab-active-bg: color-mix(in oklab, var(--accent) 88%, var(--background));
   --side-panel-tab-hover-bg: color-mix(in oklab, var(--accent) 58%, transparent);
   --radius-task-composer: 16px;
+  --tc-interaction-card-max-h: 50dvh;
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
@@ -353,13 +377,12 @@
   --sz-turn-status-island: min(100%, 42rem);
   --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
 
-  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
-     safe-area inset (+20px); Layout raises it to the bottom-nav height
-     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
-     composer's action row never hides behind the nav. Desktop and the classic
-     thread never override it and fall through to the safe-area default. */
+  /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
+     leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
+     Desktop and the classic thread use the safe-area default. */
   --tc-composer-bottom: var(--sz-calc-8);
-  /* Together with the dock's pb-2, match the page's p-4 side gutters. */
+  --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
+  /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
 }
 
@@ -3154,4 +3177,43 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .plugin-app-shell-overlay { pointer-events: auto; }
 @media (max-width: 767px) {
   .plugin-app-shell-overlays { bottom: var(--plugin-shell-mobile-bottom); }
+}
+
+:root {
+  /* Browser Use live viewer chrome: 30px tab strip + 40px navigation bar.
+     Provider integration measurement (2026-09-29), not Paperclip spacing.
+     Keep navigation visible; the cross-origin viewer exposes no sizing message. */
+  --browser-use-viewer-chrome-height: 70px;
+}
+
+/* GitHub skill scans: real counters with a quiet indeterminate sweep until the tree is known. */
+.skill-import-enter {
+  animation: tc-fade-rise var(--motion-duration-enter) var(--motion-ease-out) both;
+}
+.skill-import-sweep {
+  width: 40%;
+  animation: skill-import-sweep var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+@keyframes skill-import-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+.skill-import-progress {
+  appearance: none;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--foreground);
+}
+.skill-import-progress::-webkit-progress-bar { background: var(--muted); }
+.skill-import-progress::-webkit-progress-value {
+  background: var(--foreground);
+  border-radius: var(--radius-sm);
+  transition: width var(--motion-line-scroll) var(--motion-ease-standard);
+}
+.skill-import-progress::-moz-progress-bar { background: var(--foreground); }
+@media (prefers-reduced-motion: reduce) {
+  .skill-import-enter, .skill-import-sweep { animation: none; }
+  .skill-import-progress::-webkit-progress-value { transition: none; }
 }

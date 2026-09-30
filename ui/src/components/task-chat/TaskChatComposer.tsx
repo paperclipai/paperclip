@@ -5,7 +5,6 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -28,20 +27,12 @@ import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import {
   ArrowUp,
   Square,
-  Check,
   ChevronDown,
   CircleHelp,
   Loader2,
-  Plus,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Attachment,
   AttachmentAction,
@@ -57,11 +48,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorRef,
 } from "@/components/MarkdownEditor";
-import {
-  nextWorkMode,
-  workModeMetaFor,
-  workModeMetaList,
-} from "@/lib/work-mode-meta";
+import { nextWorkMode } from "@/lib/work-mode-meta";
 import {
   InlineEntitySelector,
   type InlineEntityOption,
@@ -74,6 +61,10 @@ import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
+import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import { ComposerAddMenu, ComposerModeChip } from "./ComposerAddMenu";
+import type { ComposerRunSettings } from "./composer-run-settings";
+import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
@@ -104,6 +95,7 @@ interface TaskChatComposerProps {
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
     clientRequestId?: string,
+    runSettings?: ComposerRunSettings,
   ) => Promise<void> | void;
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
@@ -124,6 +116,9 @@ interface TaskChatComposerProps {
   conversationMode?: boolean;
   reassignOptions?: InlineEntityOption[];
   agentMap?: ReadonlyMap<string, import("../AgentAvatar").AvatarAgent & { icon?: string | null }>;
+  modelAgents?: ReadonlyMap<string, Agent>;
+  companyId?: string | null;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   userProfileMap?: ReadonlyMap<
     string,
     { label: string; image: string | null }
@@ -219,17 +214,6 @@ export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
   return { matched: true, command: { action: "create", objective: remainder } };
 }
 
-/** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
-const MODE_HUE: Partial<Record<IssueWorkMode, string>> = {
-  standard: "var(--tc-mode-agent)",
-  planning: "var(--tc-mode-plan)",
-  ask: "var(--tc-mode-ask)",
-};
-
-function modeHue(mode: IssueWorkMode): string {
-  return MODE_HUE[mode] ?? "var(--tc-mode-agent)";
-}
-
 function identityInitials(label: string): string {
   const parts = label.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -295,12 +279,6 @@ function AssigneeIdentityAvatar({
   return null;
 }
 
-const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
-  standard: "Make changes and run work",
-  planning: "Draft a plan before acting",
-  ask: "Answer questions only, no changes",
-};
-
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
 function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
   if (mobile) {
@@ -350,6 +328,7 @@ function shouldImplicitlyReopenComment(
 }
 
 function parseAssigneeValue(value: string): CommentReassignment | undefined {
+  if (!value) return { assigneeAgentId: null, assigneeUserId: null };
   if (value.startsWith("agent:")) {
     const id = value.slice("agent:".length);
     return id ? { assigneeAgentId: id, assigneeUserId: null } : undefined;
@@ -368,9 +347,8 @@ function escapeMarkdownLabel(name: string): string {
 /**
  * Composer for the redesigned thread (v7 spec): the shared MarkdownEditor
  * (rich lists, @-mentions, /-commands, inline pasted images) over a 32px
- * comp-bar of [attach] [mode chip] … [assignee] [send]. The mode chip is a
- * borderless filled control carrying the pending mode's hue; the composer chrome
- * itself stays neutral. Cmd/Ctrl+. and Shift+Tab cycle modes (captured before
+ * comp-bar of [add] [optional mode chip] … [assignee] [send]. The add menu
+ * offers files, supported goals, Plan, and Ask. Cmd/Ctrl+. and Shift+Tab cycle modes (captured before
  * Lexical); Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter
  * stays a newline / next list item. Pasted or dropped images upload through
  * `onAttachImage` (or the `onImageUpload` fallback) and land inline at the
@@ -395,6 +373,9 @@ export function TaskChatComposer({
   conversationMode = false,
   reassignOptions,
   agentMap,
+  modelAgents,
+  companyId,
+  assigneeAdapterOverrides,
   userProfileMap,
   currentAssigneeValue = "",
   onPendingAssigneeChange,
@@ -438,6 +419,8 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
+  const [runSettings, setRunSettings] = useState<ComposerRunSettings | null>(null);
+  useEffect(() => setRunSettings(null), [draftKey, currentAssigneeValue]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
     () =>
@@ -620,7 +603,6 @@ export function TaskChatComposer({
     return () => window.removeEventListener("beforeunload", flushDraft);
   }, [draftKey]);
 
-  const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles =
     !pause &&
     !queuedEdit &&
@@ -789,6 +771,13 @@ export function TaskChatComposer({
     evt.target.value = "";
   }
 
+  function prepareGoal() {
+    const current = bodyRef.current.trim();
+    changeBody(/^\/goal(?:\s|$)/.test(current) ? current : `/goal ${current}`);
+    setActionError(null);
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }
+
   /**
    * Pasted image files fall through to the editor's image plugin (inline at
    * the caret); non-image files are attached to the task here. Only swallow
@@ -828,9 +817,7 @@ export function TaskChatComposer({
     Boolean(onStop || stopControl.stopping);
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
-  const takeoverVisible = Boolean(
-    takeover && !pause && !queuedEdit && !submitting && !uploadPending,
-  );
+  const takeoverVisible = Boolean(takeover && !pause);
   const previousTakeoverVisibleRef = useRef(takeoverVisible);
   useEffect(() => {
     if (previousTakeoverVisibleRef.current && !takeoverVisible && !queuedEdit) {
@@ -891,7 +878,7 @@ export function TaskChatComposer({
           showAssignee && assigneeValue !== currentAssigneeValue;
         if (hasReassignment && goalCommand.command.action !== "focus") {
           const reassignment = parseAssigneeValue(assigneeValue);
-          if (!reassignment || !onRunnerGoalReassign) {
+          if (!reassignment?.assigneeAgentId || !onRunnerGoalReassign) {
             setActionError("Select an agent before starting a session goal.");
             return;
           }
@@ -1003,7 +990,11 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
         changeBody(bodyRef.current);
       }
-      await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      if (runSettings) {
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
+      } else {
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      }
       // Navigation does not invalidate the server receipt. Settle the captured
       // task before checking whether this composer is still on screen.
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
@@ -1016,6 +1007,7 @@ export function TaskChatComposer({
       if (pendingAssigneeRef.current === submittedAssignee) {
         updatePendingAssignee(null);
       }
+      setRunSettings(null);
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
@@ -1124,19 +1116,83 @@ export function TaskChatComposer({
   }
 
   return (
-    <div
-      className={cn(
+    <div className="flex min-w-0 flex-col gap-2">
+      {takeoverVisible && takeover ? (
+        <section
+          className={cn(
+            "relative rounded-xl border border-border bg-card p-(--sz-18px) shadow-sm",
+            mobile ? "overflow-visible" : "max-h-(--tc-interaction-card-max-h) overflow-y-auto scrollbar-auto-hide",
+          )}
+          aria-label={takeover.label}
+          data-testid="task-chat-composer-takeover"
+        >
+          <div
+            className={cn(
+              "flex min-w-0 items-center gap-2",
+              takeover.hideLabel && takeover.pendingCount === 1
+                ? "absolute right-0 top-0 z-10"
+                : "mb-3",
+            )}
+            data-testid="task-chat-composer-takeover-header"
+          >
+            <div className="min-w-0 flex-1">
+              {!takeoverHeaderClaimed && !takeover.hideLabel ? (
+                <strong className="block truncate text-sm font-medium text-foreground">
+                  {takeover.label}
+                </strong>
+              ) : null}
+              <div
+                ref={setTakeoverHeaderSlot}
+                className="flex min-w-0 items-center"
+                data-testid="task-chat-composer-takeover-title-slot"
+              />
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {takeover.pendingCount > 1 ? (
+                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={takeover.onShowNext}>
+                  {takeover.pendingCount} pending
+                </Button>
+              ) : null}
+              <div ref={setTakeoverControlsSlot} className="flex shrink-0 items-center" data-testid="task-chat-composer-takeover-controls-slot" />
+              <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground"
+                aria-label={`Dismiss ${takeover.label}`} disabled={takeoverBusy} onClick={takeover.onDismiss}>
+                <X aria-hidden />
+              </Button>
+            </div>
+          </div>
+          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-8" : "pr-1"}
+            data-testid="task-chat-composer-takeover-body">
+            <TaskChatComposerTakeoverActionsContext.Provider
+              value={{
+                skipButton: takeover.inlineSkip && !takeover.hideSkip && takeoverSkipButton ? takeoverSkipButton : null,
+                dismiss: takeover.onDismiss,
+                headerSlot: takeoverHeaderSlot,
+                controlsSlot: takeoverControlsSlot,
+                setHeaderClaimed: setTakeoverHeaderClaimed,
+              }}
+            >
+              {takeover.content}
+            </TaskChatComposerTakeoverActionsContext.Provider>
+          </div>
+          {takeoverError ? <p className="mt-2 text-sm text-destructive" role="alert">{takeoverError}</p> : null}
+          {!takeover.inlineSkip && !takeover.hideSkip ? (
+            <div className="mt-3 flex items-center justify-end gap-2">{takeoverSkipButton}</div>
+          ) : null}
+        </section>
+      ) : null}
+      <div
+        className={cn(
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
-        mobile && "p-2",
+        mobile && "p-3",
       )}
-      onKeyDownCapture={(e) => {
+        onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
         // editor is focused and win over Lexical/browser bindings. Match the
         // period by key and code because hardware keyboards on iOS can omit
         // `code` for Cmd+Period.
-        if (disabled || queuedEdit || takeoverVisible) return;
+        if (disabled || queuedEdit) return;
         const isPeriod = e.key === "." || e.code === "Period";
         const isModeShortcut =
           (isPeriod && (e.metaKey || e.ctrlKey)) ||
@@ -1147,9 +1203,9 @@ export function TaskChatComposer({
           setPendingMode((mode) => nextWorkMode(mode));
         }
       }}
-      onPasteCapture={handlePasteCapture}
-    >
-      {uncertainSubmission ? (
+        onPasteCapture={handlePasteCapture}
+      >
+        {uncertainSubmission ? (
         <div
           role="alert"
           className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
@@ -1187,117 +1243,22 @@ export function TaskChatComposer({
           ) : null}
         </div>
       ) : null}
-      {takeoverVisible && takeover ? (
-        <section
-          className="relative"
-          aria-label={takeover.label}
-          data-testid="task-chat-composer-takeover"
+      {!takeoverVisible && (pendingTakeover || takeover) ? (
+        <button
+          type="button"
+          className="mb-2 flex w-full items-center gap-2 rounded-md bg-muted/50 px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          onClick={pendingTakeover?.onOpen}
+          data-testid="task-chat-pending-input-indicator"
         >
-          <div
-            className={cn(
-              "flex min-w-0 items-center gap-2",
-              takeover.hideLabel && takeover.pendingCount === 1
-                ? "absolute right-0 top-0 z-10"
-                : "mb-3",
-            )}
-            data-testid="task-chat-composer-takeover-header"
-          >
-            <div className="min-w-0 flex-1">
-              {!takeoverHeaderClaimed && !takeover.hideLabel ? (
-                <strong className="block truncate text-sm font-medium text-foreground">
-                  {takeover.label}
-                </strong>
-              ) : null}
-              <div
-                ref={setTakeoverHeaderSlot}
-                className="flex min-w-0 items-center"
-                data-testid="task-chat-composer-takeover-title-slot"
-              />
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-1">
-              {takeover.pendingCount > 1 ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2"
-                  onClick={takeover.onShowNext}
-                >
-                  {takeover.pendingCount} pending
-                </Button>
-              ) : null}
-              <div
-                ref={setTakeoverControlsSlot}
-                className="flex shrink-0 items-center"
-                data-testid="task-chat-composer-takeover-controls-slot"
-              />
-              <Button
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                className="text-muted-foreground hover:text-foreground"
-                aria-label={`Dismiss ${takeover.label}`}
-                disabled={takeoverBusy}
-                onClick={takeover.onDismiss}
-              >
-                <X aria-hidden />
-              </Button>
-            </div>
-          </div>
-          <div
-            className={
-              takeover.hideLabel && takeover.pendingCount === 1
-                ? "pr-8"
-                : "pr-1"
-            }
-            data-testid="task-chat-composer-takeover-body"
-          >
-            <TaskChatComposerTakeoverActionsContext.Provider
-              value={{
-                skipButton:
-                  takeover.inlineSkip &&
-                  !takeover.hideSkip &&
-                  takeoverSkipButton
-                    ? takeoverSkipButton
-                    : null,
-                dismiss: takeover.onDismiss,
-                headerSlot: takeoverHeaderSlot,
-                controlsSlot: takeoverControlsSlot,
-                setHeaderClaimed: setTakeoverHeaderClaimed,
-              }}
-            >
-              {takeover.content}
-            </TaskChatComposerTakeoverActionsContext.Provider>
-          </div>
-          {takeoverError ? (
-            <p className="mt-2 text-sm text-destructive" role="alert">
-              {takeoverError}
-            </p>
-          ) : null}
-          {!takeover.inlineSkip && !takeover.hideSkip ? (
-            <div className="mt-3 flex items-center justify-end gap-2">
-              {takeoverSkipButton}
-            </div>
-          ) : null}
-        </section>
-      ) : (
-        <>
-          {pendingTakeover || takeover ? (
-            <button
-              type="button"
-              className="mb-2 flex w-full items-center gap-2 rounded-md bg-muted/50 px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              onClick={pendingTakeover?.onOpen}
-              data-testid="task-chat-pending-input-indicator"
-            >
-              <CircleHelp className="h-4 w-4 shrink-0" aria-hidden />
-              <span className="min-w-0 flex-1 truncate">
-                {pendingTakeover?.label ?? takeover?.label ?? "Pending input"}
-              </span>
-              <span className="shrink-0 font-medium">
-                {pendingTakeover?.count ?? takeover?.pendingCount ?? 1} pending
-              </span>
-            </button>
-          ) : null}
+          <CircleHelp className="h-4 w-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">
+            {pendingTakeover?.label ?? takeover?.label ?? "Pending input"}
+          </span>
+          <span className="shrink-0 font-medium">
+            {pendingTakeover?.count ?? takeover?.pendingCount ?? 1} pending
+          </span>
+        </button>
+      ) : null}
           {pause && conversationMode ? (
             <div className="space-y-2">
               <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
@@ -1408,31 +1369,25 @@ export function TaskChatComposer({
           ) : null}
 
           <div
-            className="mt-2 flex items-center gap-2"
+            className={cn("mt-2 flex items-center gap-x-2 gap-y-3", mobile && !queuedEdit ? "flex-nowrap" : "flex-wrap")}
             data-testid="task-chat-composer-actions"
           >
+            <div className="flex min-w-0 max-w-full items-center gap-2">
             {canAcceptFiles ? (
-              <>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={disabled}
-                  title="Attach file"
-                  aria-label="Attach file"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-                  data-testid="task-chat-composer-attach"
-                >
-                  <Plus className="h-4 w-4" aria-hidden />
-                </button>
-              </>
+              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileInputChange} />
             ) : null}
-
+            <ComposerAddMenu
+              mode={pendingMode}
+              onModeChange={!queuedEdit && onWorkModeChange ? setPendingMode : undefined}
+              onAttachFile={canAcceptFiles ? () => fileInputRef.current?.click() : undefined}
+              onGoal={!queuedEdit && !conversationMode && attachments.length === 0 &&
+                runnerGoalCapability?.availability === "available" && onRunnerGoalCommand
+                ? prepareGoal : undefined}
+              disabled={disabled || !!uncertainSubmission}
+              mobile={mobile}
+              triggerTestId="task-chat-composer-add"
+              menuTestId="task-chat-composer-add-menu"
+            />
             {queuedEdit ? (
               <span className="px-1 text-xs font-medium text-muted-foreground">
                 {queuedEdit.stale
@@ -1440,71 +1395,37 @@ export function TaskChatComposer({
                   : "Editing queued message"}
               </span>
             ) : (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    disabled={disabled || !onWorkModeChange}
-                    aria-keyshortcuts="Meta+Period Control+Period Shift+Tab"
-                    className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
-                      streamlined
-                        ? "status-chip border-0 transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none"
-                        : "status-chip transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none",
-                    )}
-                    style={{ "--sc": modeHue(pendingMode) } as CSSProperties}
-                    data-testid="task-chat-composer-mode"
-                    data-slot="task-chat-mode-trigger"
-                    data-pending-work-mode={pendingMode}
-                  >
-                    {modeMeta.label}
-                    <ChevronDown className="h-3 w-3" aria-hidden />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="start"
-                  className="flex w-(--sz-300px) flex-col gap-0.5"
-                  data-testid="task-chat-composer-mode-menu"
-                >
-                  {workModeMetaList().map((m) => {
-                    const Icon = m.icon;
-                    const selected = m.value === pendingMode;
-                    return (
-                      <DropdownMenuItem
-                        key={m.value}
-                        onSelect={() => setPendingMode(m.value)}
-                        style={
-                          selected
-                            ? {
-                                backgroundColor: `color-mix(in srgb, ${modeHue(m.value)} 12%, transparent)`,
-                              }
-                            : undefined
-                        }
-                      >
-                        <Icon
-                          className="h-4 w-4 shrink-0"
-                          style={{ color: modeHue(m.value) }}
-                          aria-hidden
-                        />
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="font-medium">{m.label}</span>
-                          <span className="whitespace-nowrap text-xs text-muted-foreground">
-                            {MODE_DESCRIPTION[m.value] ?? ""}
-                          </span>
-                        </span>
-                        {selected ? (
-                          <Check className="h-4 w-4 shrink-0" aria-hidden />
-                        ) : null}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => setPendingMode("standard") : undefined}
+                disabled={disabled || !!uncertainSubmission} testId="task-chat-composer-mode" mobile={mobile} />
             )}
+            </div>
 
-            <div className="flex-1" />
+            <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-2", mobile && !queuedEdit && "flex-1 justify-end")}>
 
-            {showAssignee && !queuedEdit ? (
+            {showAssignee && !queuedEdit && companyId && modelAgents ? (
+              <ComposerRunSettingsPicker
+                companyId={companyId}
+                assigneeValue={assigneeValue}
+                currentAssigneeValue={currentAssigneeValue}
+                options={reassignOptions ?? []}
+                agents={modelAgents}
+                overrides={assigneeAdapterOverrides}
+                settings={runSettings}
+                onSettingsChange={setRunSettings}
+                onAssigneeChange={updatePendingAssignee}
+                renderAssigneeIdentity={(value, label, placement) => (
+                  <AssigneeIdentityAvatar
+                    assigneeValue={value}
+                    label={label}
+                    agentMap={agentMap}
+                    userProfileMap={userProfileMap}
+                    placement={placement}
+                  />
+                )}
+                disabled={disabled}
+                mobile={mobile}
+              />
+            ) : showAssignee && !queuedEdit ? (
               <InlineEntitySelector
                 value={assigneeValue}
                 options={reassignOptions ?? []}
@@ -1562,7 +1483,6 @@ export function TaskChatComposer({
                 Cancel
               </button>
             ) : null}
-
             <button
               type="button"
               onClick={() => void (showStop ? stopControl.stop() : submit())}
@@ -1604,7 +1524,7 @@ export function TaskChatComposer({
                     : "Send"
               }
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
+                "flex size-8 min-h-8 min-w-8 shrink-0 aspect-square items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined
                   ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
                   : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
@@ -1622,14 +1542,14 @@ export function TaskChatComposer({
                 <ArrowUp className="h-4 w-4" aria-hidden />
               )}
             </button>
+            </div>
           </div>
           {stopControl.error ? (
             <p role="alert" className="text-xs text-destructive">
               {stopControl.error}
             </p>
           ) : null}
-        </>
-      )}
+      </div>
     </div>
   );
 }

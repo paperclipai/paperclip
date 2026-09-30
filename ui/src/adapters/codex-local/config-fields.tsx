@@ -20,6 +20,7 @@ import {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
@@ -195,9 +196,10 @@ export function CodexLocalConfigFields({
         >
           <select
             className={inputClass}
-            value={runnerProvider}
+            value={runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "grok" ? "grok" : runnerProvider}
             onChange={(event) => {
-              const provider = isPaperclipRunnerProvider(event.target.value)
+              const grok = event.target.value === "grok";
+              const provider = grok ? "acpx" : isPaperclipRunnerProvider(event.target.value)
                 ? event.target.value
                 : "codex";
               const model =
@@ -208,7 +210,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? defaultAcpxClaudeModel
+                        ? grok ? "grok-4.7" : defaultAcpxClaudeModel
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
@@ -216,14 +218,14 @@ export function CodexLocalConfigFields({
                   adapterSchemaValues: {
                     ...values!.adapterSchemaValues,
                     provider,
-                    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+                    ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
                   },
                 });
               } else {
                 mark("adapterConfig", "provider", provider);
                 mark("adapterConfig", "model", model);
                 if (provider === "acpx") {
-                  mark("adapterConfig", "acpxAgent", "claude");
+                  mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
                 }
               }
             }}
@@ -232,7 +234,25 @@ export function CodexLocalConfigFields({
             <option value="opencode">OpenCode 1.18.32</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
-            <option value="acpx">ACPX Claude</option>
+            <option value="acpx">ACP agents</option>
+            <option value="grok">Grok Build</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") !== "grok" && (
+        <Field configSection="adapter" label="ACP agent" hint="Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification.">
+          <select className={inputClass}
+            value={String(isCreate ? values!.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude"))}
+            onChange={(event) => {
+              const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === event.target.value);
+              if (!profile?.qualified) return;
+              if (isCreate) set!({ model: profile.value === "claude" ? defaultAcpxClaudeModel : "",
+                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value } });
+              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "model", profile.value === "claude" ? defaultAcpxClaudeModel : ""); }
+            }}>
+            {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => <option key={profile.value} value={profile.value} disabled={!profile.qualified}>
+              {profile.label}{profile.qualified ? "" : " — qualification pending"}
+            </option>)}
           </select>
         </Field>
       )}

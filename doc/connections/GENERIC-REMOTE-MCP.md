@@ -62,6 +62,23 @@ back that step while retaining the established draft identity.
 Later health checks still require the user's authorization and return an
 actionable `422` error when it is missing.
 
+### Personal apps on shared agents
+
+Installing a personal app on an agent does not require every user who runs that
+agent to connect the app. Runs start without probing optional apps or warning
+about another user's missing credentials. The installed app's cached tools stay
+available even when its shared health check needs attention.
+
+Authorization happens when the agent calls an app tool. Paperclip uses the run's
+responsible user, never another user's personal grant. If that user has not
+connected the app, the tool returns `user_authorization_required` and adds an
+inline connection request. Unrelated work can continue without using the app.
+Disabled or uninstalled apps remain unavailable.
+
+Optional assigned apps do not emit run-start connection warnings, including
+unavailable shared apps. Their health state and reconnect controls remain in
+Apps. An unrelated run does not need to act on that state.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app

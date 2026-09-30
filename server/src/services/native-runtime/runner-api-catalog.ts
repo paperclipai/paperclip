@@ -42,6 +42,10 @@ function words(text: string): string[] {
 }
 
 function dedicatedTools(method: string, path: string): string[] {
+  if (/\/agents\/\{[^}]+\}\/instructions-bundle\/file$/.test(path)) return method === "GET" ? ["read_agent_instructions"] : method === "PUT" ? ["update_agent_instructions"] : [];
+  if (/\/agents\/\{[^}]+\}\/instructions-bundle\/history$/.test(path) && method === "GET") return ["get_agent_instruction_history"];
+  if (/\/agents\/\{[^}]+\}\/instructions-bundle\/revision\/\{[^}]+\}$/.test(path) && method === "GET") return ["read_agent_instructions"];
+  if (/\/agents\/\{[^}]+\}\/instructions-bundle\/restore$/.test(path) && method === "POST") return ["restore_agent_instructions"];
   if (/\/companies\/\{[^}]+\}\/skills$/.test(path) && method === "POST") return ["create_skill"];
   if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
@@ -77,6 +81,8 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
       if (!METHODS.has(verb)) continue;
       const method = verb.toUpperCase();
       const restriction = runnerApiRestriction(method, path);
+      const conversationalConfirmation = method === "POST"
+        && /^\/api\/issues\/\{[^}]+\}\/interactions\/\{[^}]+\}\/resolve-from-comment$/.test(path);
       const skillReference = runnerApiReference[`${method} ${path.replace(/\{[^}]+\}/g, "{}")}`];
       const protocol = !path.startsWith("/api/") || /\/(oauth|auth|runtime-tools|mcp|ws)(\/|$)/.test(path)
         || /\/(claude-login|login-sessions|start-authorization|finalize-oauth-access)(\/|$)/.test(path)
@@ -96,11 +102,15 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
           const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === name);
           return descriptor ? [{ name, description: descriptor.description, supportedParameters: Object.keys((descriptor.inputSchema as Json).properties ?? {}) }] : [];
         }),
-        runnerRestrictions: [...(restriction ? [restriction] : []), "Active run and assignment must remain authorized.", "Cannot replace checkout, completion, task status/ownership changes, approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
+        runnerRestrictions: [...(restriction ? [restriction] : []), "Active run and assignment must remain authorized.",
+          conversationalConfirmation
+            ? "This records an ordinary conversational confirmation under existing resolver permissions. It cannot decide governed approvals or impersonate the user."
+            : "Cannot replace checkout, completion, task status/ownership changes, governed approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
         dedicatedToolGuidance: dedicatedTools(method, path).includes("hire_agent")
           ? "Use hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime; never use call_api to supply adapter, environment, or credential configuration."
           : "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
-        allowedModes: method === "GET" || method === "HEAD" ? ["standard", "ask", "planning", "skill_test"] : ["standard", "skill_test"],
+        allowedModes: method === "GET" || method === "HEAD" ? ["standard", "ask", "planning", "skill_test"]
+          : conversationalConfirmation ? ["standard", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
       });
     }

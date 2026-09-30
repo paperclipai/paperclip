@@ -3,6 +3,8 @@ import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, w
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { workspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +15,10 @@ import {
   fetchGitBundleIntoLocalRef,
   integrateImportedGitHead,
   isMissingGitPrerequisiteError,
-  readGitWorkspaceSnapshot,
+  readGitWorkspaceSnapshot as readRawSnapshot,
+  disposeGitWorkspaceSnapshot,
+  type ExpensiveWorkspaceGitInput,
+  type GitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
   readReferencedSourceGitIgnoredPaths,
   REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
@@ -26,6 +31,21 @@ import {
 
 const execFile = promisify(execFileCallback);
 
+const snapshots: GitWorkspaceSnapshot[] = [];
+async function readGitWorkspaceSnapshot(...args: Parameters<typeof readRawSnapshot>) {
+  const snapshot = await readRawSnapshot(...args);
+  if (!snapshot) return null;
+  snapshots.push(snapshot);
+  // Small fixture assertions use arrays; production consumes only iterators.
+  return { ...snapshot, overlayPaths: [...workspacePaths(snapshot.overlayPaths)].sort((a,b)=>a.localeCompare(b)),
+    deletedPaths: [...workspacePaths(snapshot.deletedPaths)], ignoredPaths: [...workspacePaths(snapshot.ignoredPaths)] };
+}
+function executeScan(input: ExpensiveWorkspaceGitInput) {
+  if (!input.onStdout) return runLocalGit(input.localDir, [...input.args], input);
+  return runWorkspaceGitProcess({ cwd: input.localDir, args: input.args, timeoutMs: input.timeout,
+    maxStdoutBytes: input.maxBuffer, maxStderrBytes: input.maxBuffer, onStdout: input.onStdout, signal: input.signal, env: input.env });
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
   return (await runLocalGit(cwd, args)).stdout.trim();
 }
@@ -35,6 +55,7 @@ describe("git workspace sync", () => {
 
   afterEach(async () => {
     setExpensiveWorkspaceGitExecutor(null);
+    for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -50,10 +71,7 @@ describe("git workspace sync", () => {
     const operations: string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       operations.push(input.operation);
-      return await runLocalGit(input.localDir, [...input.args], {
-        timeout: input.timeout,
-        maxBuffer: input.maxBuffer,
-      });
+      return executeScan(input);
     });
 
     const snapshot = await readGitWorkspaceSnapshot(repo);
@@ -112,7 +130,7 @@ describe("git workspace sync", () => {
     const failure = Object.assign(new Error("Git enumeration failed"), { code });
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (input.operation === "adapter_sync.ignored_files") throw failure;
-      return runLocalGit(input.localDir, [...input.args]);
+      return executeScan(input);
     });
     await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
   });
@@ -128,7 +146,7 @@ describe("git workspace sync", () => {
     let ignoredArgs: readonly string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
-      return runLocalGit(input.localDir, [...input.args]);
+      return executeScan(input);
     });
     expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
     expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
@@ -148,10 +166,7 @@ describe("git workspace sync", () => {
       maxBuffer: 2 * 1024 * 1024,
     });
     expect(Buffer.byteLength(raw.stdout)).toBeGreaterThan(1024 * 1024);
-    setExpensiveWorkspaceGitExecutor((input) => runLocalGit(input.localDir, [...input.args], {
-      timeout: input.timeout,
-      maxBuffer: input.maxBuffer,
-    }));
+    setExpensiveWorkspaceGitExecutor(executeScan);
 
     const snapshot = await readGitWorkspaceSnapshot(repo);
     expect(snapshot?.overlayPaths).toEqual(
@@ -180,9 +195,14 @@ describe("git workspace sync", () => {
     await rename(generatedDir, path.join(deepParent, "storybook-output"));
     expect(Buffer.byteLength(largerRaw.stdout) + 40_000 * (path.relative(repo, deepParent).length + 1))
       .toBeGreaterThan(32 * 1024 * 1024);
-    await expect(readGitWorkspaceSnapshot(repo)).rejects.toMatchObject({
-      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-    });
+    const streamed = await readRawSnapshot(repo);
+    snapshots.push(streamed!);
+    let count = 0;
+    let bytes = 0;
+    for (const relative of workspacePaths(streamed!.overlayPaths)) { count++; bytes += Buffer.byteLength(relative) + 1; }
+    expect(count).toBe(40_000);
+    expect(bytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(JSON.stringify(streamed).length).toBeLessThan(4096);
   }, 60_000);
 
   async function createRepo(rootDir: string): Promise<string> {

@@ -255,6 +255,19 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   return driverOptions;
 }
 
+// A long advisory-lock transaction must not borrow the normal pool that its
+// work needs for progress writes. Keep connection configuration private to the
+// originating Db lifetime; callers receive neither URLs nor credentials.
+const dedicatedDbFactories = new WeakMap<object, () => Db>();
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
+  const factory = dedicatedDbFactories.get(db);
+  if (!factory) throw new Error("dedicated_connection_requires_create_db");
+  const dedicated = factory();
+  try { return await action(dedicated); }
+  finally { await dedicated.$client.end({ timeout: 1 }); }
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
@@ -263,7 +276,11 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   // The registry keeps the real client (teardown must end the actual pool);
   // drizzle gets the retrying face so a pooler-recycled socket replays the
   // query instead of failing the request that happened to draw it.
-  return drizzlePg(withTransientWriteRetry(sql), { schema });
+  const db = drizzlePg(withTransientWriteRetry(sql), { schema });
+  dedicatedDbFactories.set(db, () => createDb(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }));
+  return db;
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {

@@ -14,6 +14,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { nativeSha256 } from "./canonical.js";
+import { isConversation } from "../agent-conversations.js";
 
 type Binding = {
   companyId: string;
@@ -382,8 +383,23 @@ export async function hasCommittedNativeBoardResponseWait(
   binding: Binding,
 ): Promise<boolean> {
   const [decision] = await db
-    .select({ decision: statusDecisions })
+    .select({
+      decision: statusDecisions,
+      resultJson: nativeRunResults.resultJson,
+      conversationAgentId: issues.conversationAgentId,
+      conversationUserId: issues.conversationUserId,
+    })
     .from(nativeRunFinalizations)
+    .innerJoin(
+      nativeRunResults,
+      and(
+        eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+        eq(nativeRunResults.companyId, binding.companyId),
+        eq(nativeRunResults.issueId, binding.issueId),
+        eq(nativeRunResults.runId, binding.runId),
+        eq(nativeRunResults.schemaStatus, "accepted"),
+      ),
+    )
     .innerJoin(
       statusDecisions,
       and(
@@ -421,10 +437,23 @@ export async function hasCommittedNativeBoardResponseWait(
   const origin = await readNativeBoardResponseWaitOrigin(db, binding);
   // A new comment cannot grant a replay of the old response. New independent
   // wakes are admitted normally and their new run ID is not this receipt.
-  return (
+  const bound =
     origin !== null &&
     nativeSha256(
       record(decision.decision.decisionJson).boardResponseWaitOrigin,
-    ) === nativeSha256(origin)
-  );
+    ) === nativeSha256(origin);
+  if (!bound) return false;
+  const claim = record(record(decision.resultJson).result).completionClaim;
+  const remainingWork = record(claim).remainingWork;
+  if (
+    !isConversation(decision) &&
+    decision.decision.reasonCode === "board_response_waiting" &&
+    Array.isArray(remainingWork) &&
+    remainingWork.some((entry) => record(entry).blocksCompletion === true)
+  ) {
+    // Old policy accepted contradictory waits. Let normal recovery handle the
+    // still-current work, but never replay a response to an obsolete comment.
+    return (await readNativeBoardResponseWaitSource(db, binding)) === null;
+  }
+  return true;
 }

@@ -25,7 +25,8 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
 
 /** Controlled presentation shared by provider setup, configuration imports and review stories.
  * Authentication, persistence and calls belong to the controller, never these views. */
-export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl, upstreamServiceName }: {
+export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl, upstreamServiceName, onCancel }: {
+  onCancel?: () => void;
   upstreamServiceName?: string;
   host?: "page" | "dialog";
   lockedAgentId?: string;
@@ -63,7 +64,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
     <StepHeader headingRef={heading} appIdentity={{ name: provider.name, logoUrl: null }}
       title={upstreamServiceName ? `Connect ${upstreamServiceName} through ${provider.name}` : s.step === "draft" ? "Continue your setup" : s.setupComplete ? s.step === "access" ? "Who can use this connection" : s.step === "connect" ? `Reconnect ${provider.name}` : provider.name : undefined}
       subtitle={currentStep >= 0 && !s.setupComplete ? `Step ${currentStep + 1} of 2` : s.step === "draft" ? `Your ${provider.name} setup is ready to resume.` : s.step === "permissions" ? `Connected${s.identity ? ` as ${s.identity}` : ""} · ${s.tools.length} actions available` : `Manage this ${provider.name} connection.`}
-      step={currentStep >= 0 && !s.setupComplete ? "access" : "gallery"} activeIndex={currentStep} labels={["Access", "Connect"]} onCancel={busy || s.step === "management" || s.step === "permissions" || s.step === "draft" ? undefined : a.saveExit} />
+      step={currentStep >= 0 && !s.setupComplete ? "access" : "gallery"} activeIndex={currentStep} labels={["Access", "Connect"]} onCancel={busy || s.step === "management" || s.step === "permissions" || s.step === "draft" ? undefined : onCancel ?? a.saveExit} />
     <main className="space-y-6">
         {upstreamServiceName && <InlineBanner compact>{provider.name} is an external service that handles the connection and requests to {upstreamServiceName}. After connecting, the agent will verify the app and guide you through any additional authorization.</InlineBanner>}
         {s.notice && <p role="status" className="text-sm text-muted-foreground">{s.notice}</p>}

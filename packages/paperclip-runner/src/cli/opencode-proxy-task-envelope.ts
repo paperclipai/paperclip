@@ -31,7 +31,6 @@ export function openCodeProxyTaskEnvelope(params: Record<string, unknown>) {
       : {}),
     constraints: [
       text(params.baseInstructions, "Complete only the supplied task."),
-      "Work only inside the supplied working directory.",
       "Use Paperclip MCP tools for semantic operations.",
     ],
   });

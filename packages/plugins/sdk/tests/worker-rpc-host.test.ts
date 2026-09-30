@@ -342,7 +342,7 @@ describe("worker configChanged cross-tenant guard", () => {
     });
 
     async function initialize() {
-      await callWorker("initialize", {
+      return await callWorker("initialize", {
         manifest: {
           id: "paperclip.config-guard-test",
           apiVersion: 1,
@@ -368,6 +368,23 @@ describe("worker configChanged cross-tenant guard", () => {
 
     return { callWorker, initialize, stop };
   }
+
+  it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
+    let releases = 0, stops = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { releases++; return { providerLeaseId: "allocation", state: "destroyed" }; },
+      ...(supported ? { async onEnvironmentStopLease() { stops++; return { providerLeaseId: "allocation", state: "stopped" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const stopped = worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(stopped).resolves.toEqual({ providerLeaseId: "allocation", state: "stopped" });
+      else await expect(stopped).rejects.toThrow();
+      expect(stops).toBe(supported ? 1 : 0);
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
 
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];

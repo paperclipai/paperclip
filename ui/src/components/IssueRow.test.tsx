@@ -771,6 +771,18 @@ describe("IssueRow", () => {
       return snapshot;
     }
 
+    it("shows native export activity from the action even without a scheduled retry", () => {
+      const issue = recoveryIssue(at(-5 * 60_000));
+      Object.assign(issue.activeRecoveryAction!, {
+        kind: "active_run_watchdog", cause: "native_finalization_invalid",
+        wakePolicy: { kind: "resume_native_run", runId: "native-run", notBefore: at(-5 * 60_000) },
+        nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+      });
+      const chip = renderChip(issue);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).not.toContain("missed");
+    });
+
     it("stays calm while the next attempt is still ahead", () => {
       const chip = renderChip(recoveryIssue(at(3 * 60_000)));
       expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");

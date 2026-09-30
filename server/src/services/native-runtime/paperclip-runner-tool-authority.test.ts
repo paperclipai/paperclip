@@ -99,10 +99,12 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(30);
+    expect(authority.definitions()).toHaveLength(34);
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
-    expect(questions.description).toContain("Never infer answers");
+    expect(questions.description).toContain("Never fabricate answers");
+    expect(questions.description).toContain("resolve-from-comment");
+    expect(questions.description).toContain("Existing resolver permissions still apply");
     expect(questions.description).toContain("Do not fabricate answer links");
     expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
     expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");

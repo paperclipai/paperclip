@@ -555,6 +555,12 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "cancelled",
 ] as const;
 
+export const retryWorkspaceExportSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  repairNote: z.string().trim().min(20).max(12000),
+}).strict();
+
 export const resolveIssueRecoveryActionSchema = z
   .object({
     executionReconciliation: z
@@ -1340,7 +1346,7 @@ export const paperclipQuestionSetPayloadSchema = z
   .object({
     schema: z.literal("paperclip.question_set.v1"),
     title: z.string().max(1000).optional(),
-    description: z.string().max(4000).optional(),
+    description: z.string().max(100_000).optional(),
     submitLabel: z.string().max(200).optional(),
     questions: z.array(paperclipQuestionSchema).min(1).max(64),
   })
@@ -2032,6 +2038,23 @@ export const acceptIssueThreadInteractionSchema = z
 export type AcceptIssueThreadInteraction = z.infer<
   typeof acceptIssueThreadInteractionSchema
 >;
+
+/** Records an agent's interpretation of a real user reply without widening resolver permissions. */
+export const resolveConfirmationFromCommentSchema = z.object({
+  commentId: z.string().guid(),
+  decision: z.enum(["accept", "reject"]),
+  selectedOptionIds: z.array(z.string().trim().min(1).max(120))
+    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT).optional(),
+  reason: z.string().trim().max(4000).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.decision === "reject" && value.selectedOptionIds !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionIds"], message: "Selections apply only to acceptance" });
+  }
+  if (value.selectedOptionIds && new Set(value.selectedOptionIds).size !== value.selectedOptionIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionIds"], message: "Selections must be unique" });
+  }
+});
+export type ResolveConfirmationFromComment = z.infer<typeof resolveConfirmationFromCommentSchema>;
 
 export const rejectIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),

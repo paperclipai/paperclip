@@ -46,6 +46,14 @@ Agent `adapterConfig.env` values must be `{type:"secret_ref", secretId,
 version:"latest"}` objects supplied to the factory. A fixture source containing
 a raw secret-looking value is rejected by catalog validation.
 
+The manual Grok subscription profile uses `GROK_AUTH_JSON` as an explicit login
+fixture. It does not put this credential in agent configuration or substitute an
+API key. Setup seeds a new company-scoped Grok home inside the disposable instance
+with mode 0700 and an exclusive mode-0600 auth file. Setup rejects redirected,
+occupied, or nonisolated homes. Production runner discovery and refresh operate on
+that company login; teardown destroys it after the remote environment is removed.
+This fixture tests subscription execution, not the interactive browser login flow.
+
 ## Environments
 
 An `EnvironmentFixture` declares driver/provider, credential requirements,
@@ -100,7 +108,13 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines. Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
+ten-minute turn deadlines. The ordinary warm fixture uses managed instructions,
+updates AGENT_HOME each turn, and verifies memory, an unchanged 8 MiB binary and
+a deletion through public file APIs. Native turns 2 and 3 must copy/hash only the
+changed memory file, with a saved receipt and the same provider PID. Journal and
+Git stress fixtures retain fixed external bundles as controls. Keep the stable-PID
+oracle strict; `instruction-persistence` also covers cold restarts and quota handling.
+Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
@@ -225,3 +239,38 @@ first provider turn intentionally omits task disposition, and their second turn
 must be an automatic, causally bound repair that records completion. They use
 public task comments/status APIs and run-detail evidence; no private runtime
 hooks or database mutations are used by the fixture.
+
+The explicit-only `extended-harnesses` suite uses five bounded journeys for each
+pending ACP candidate on local and Daytona. Candidate profile metadata includes
+the exact authenticated discovery choice without promoting it to a product
+default. Its file case anchors the task to a public project workspace, validates
+the model's claimed result by reading the actual final bytes, and also exercises
+remote copy-back. Keep candidate admission scoped to the selected model and the
+isolated operator environment; ordinary agent configuration must not enable it.
+
+## Persistent agent files
+
+The `instruction_persistence` flow uses production managed storage and public file
+APIs. The browser creates a supporting file, then a real agent edits its registered
+AGENT_HOME with ordinary filesystem tools. Independent oracles verify instructions,
+nested text, binary download bytes, and a stopped-run save receipt without new
+revision history. The harness restarts the server and creates a fresh browser task
+without disclosing the saved nonces. Its readback oracle downloads and verifies an
+attachment's bytes and SHA-256, rather than accepting a filename or model claim.
+A third task uploads a ready attachment and waits in an ordinary bounded shell
+command while the board changes the current file through the public API. Stopped
+cleanup must preserve the original candidate as a conflict. The browser reviews
+current and incoming files and applies the run edits against the reviewed current
+directory hash. All three tasks' runs count toward billing and teardown. The suite
+is explicit-only. No private control-plane hooks or direct database writes are used.
+
+## Direct blocker fixtures
+
+`blocker-cases.ts`, `blocker-fixtures.ts`, `blocker-flow.ts`, and
+`blocker-scoring.ts` define the explicit local legacy `blocker-guidance` suite.
+Its fixture registry creates a manager through the public API and assigns the
+production operational skill to worker and manager. Company-wide evidence and
+cleanup include unexpected manager runs. The grader checks saved human input,
+requester identity for scope questions, ownership history, no additional work or
+hires, and the browser-answer continuation. See [Direct blocker guidance](README.md#direct-blocker-guidance)
+for coverage boundaries and run commands.

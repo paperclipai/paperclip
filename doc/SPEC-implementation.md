@@ -414,7 +414,7 @@ Operational policy:
   - `provider` enum/text (`local_disk | s3`)
   - `object_key` text not null
   - `content_type` text not null
-  - `byte_size` int not null
+  - `byte_size` bigint not null (safe integer byte count in the API)
   - `sha256` text not null
   - `original_filename` text null
   - `created_by_agent_id` uuid fk null
@@ -542,6 +542,12 @@ V1 non-terminal liveness rule:
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
+For native ordinary tasks, answering a Board comment does not authorize an
+indefinite response wait when the structured result reports blocking remaining
+work. Without a recorded wait condition, reject the finish report or use the
+bounded incomplete-work recovery path. Preserve real governance and pause gates,
+conversation lifecycles, and protection against replaying superseded requests.
+
 ## 8.3 Approval Status
 
 - `pending -> approved | rejected | cancelled`
@@ -622,6 +628,11 @@ rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
+Agent @-mentions are context links only: they do not wake the mentioned agent,
+assign work, or forward comments to another task. Normal comment feedback still
+routes to the current assignee. Work for another agent requires explicit
+assignment, delegation, or a review request.
+
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
 records the write-policy reason, and spoof attempts fail with an audited 422.
@@ -698,6 +709,11 @@ Issue-thread interactions are coordination records, not grants of authority. Eve
 interaction kind defaults to resolver policy `anyone` when the create request omits
 `resolverPolicy`. Restrictions are opt-in.
 
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
+
 Canonical resolver policies are:
 
 - `anyone`: any authenticated actor in the interaction's company who can read the
@@ -723,8 +739,12 @@ outcomes and resolver attribution are immutable.
 
 An explicit named agent or user addressee and a company-configured cap may narrow
 the effective audience. Only the exact named addressee may resolve an addressed
-interaction; a human does not override a user addressee. A cap never widens the
-requested audience. Tool-action confirmations and
+interaction; a human does not override a user addressee. Explicit user recipients
+must exist and be authorized to respond in the issue's company before creation.
+Ordinary Agent Chat questions derive their user recipient from the persisted
+conversation owner. A conflicting explicit user recipient is rejected; IDs are
+never guessed or repaired. Ordinary task questions keep optional addressing.
+A cap never widens the requested audience. Tool-action confirmations and
 other hard-governed action cards remain `human_only` (or move to the formal approval
 system) regardless of a requested open audience.
 
@@ -973,6 +993,14 @@ Core authorization follows these rules:
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
+Failed-run rows in Mine and the inbox badge use the run's `responsibleUserId`.
+Another user's run does not appear there, even for a shared agent. Select the
+latest run per agent before checking ownership so older failures do not resurface.
+Unattributed runs appear only for `local-board` in Mine; an unresolved viewer
+identity shows no failed runs. All retains company-wide failed-run visibility.
+Company health alerts do not contribute to the personal inbox badge.
+Run list responses, including summaries, retain `responsibleUserId`.
+
 Ownership split:
 
 - **Core / Free:** permission key and scoped-grant enforcement; responsible-user resolution; default-open, disabled, and allowlist policy modes; archive/unarchive APIs; per-user archive persistence; resurfacing behavior; activity audit records; and stable denial codes.
@@ -1091,6 +1119,12 @@ Server behavior:
 1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+
+`POST /issues/:issueId/release` clears checkout and execution locks. For terminal
+issues (`done` or `cancelled`), it preserves the assignee, status, and disposition
+timestamps, including on repeated release. For unfinished issues it clears the
+agent assignee; only `in_progress` changes to `todo`. Existing company access,
+assignee/run ownership checks, and the `issue.released` activity event still apply.
 
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
@@ -1348,7 +1382,8 @@ Board can at any time:
 
 Ask-first connection calls use a server-owned tool-action confirmation linked to
 the authoritative action request. The task feed retains a stable record; dismissal
-only hides the composer takeover. Task and Connections decisions share one
+only hides the pending card above the composer. The ordinary composer remains
+available while the card is open. Task and Connections decisions share one
 transaction. Approval runs stored, signed arguments once; decline runs nothing.
 The human decision remains distinct from provider execution success or failure.
 
@@ -1604,7 +1639,7 @@ for persistence, migration, rendering, and integration contracts.
 
 `enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
-`GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue on first send/upload. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
+`GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
 
 The server owns conversation state: `waiting` plus `in_review` denotes a healthy idle conversation, and `active` denotes an unanswered or executing turn. Successful replies settle a turn; they do not finish the issue. Idle containers are excluded from execution-work counts, ordinary task lists, timer work, and recovery invocations. Failed/unanswered turns retain normal handling. Child completion never wakes or completes the conversation. Search and direct task access preserve history.
 
@@ -1641,6 +1676,12 @@ harness/model routing and fails closed without ambient credential fallback.
 Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
+
+Provider login failures create a provider-specific Connections card on the task
+when the run fails, before generic recovery retries. Reconnect preserves account
+identity and permissions. Compatible legacy agents may explicitly adopt a
+validated connection inline; late failures must not invalidate newer credentials.
+
 ### Experimental task-bound email
 
 AgentMail channel connections extend the experimental conversation/task pipeline
@@ -1703,18 +1744,100 @@ dismissal retries after withdrawal while rejecting caller-invented IDs. It
 stores no announcement content, account data or interaction events.
 See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.
 
-### Personal keyboard shortcut preference
+### Keyboard shortcuts
 
-Keyboard shortcuts are off by default and are enabled in Settings → Profile.
-The preference is stored on the signed-in user, applies across companies and
-devices, and does not require instance administrator access. The local trusted
-board user has the same preference. `GET /api/auth/preferences` returns only the
-current board user's preference. `PATCH /api/auth/preferences` updates only that
-user and requires an accessible `companyId` for the activity log, including viewer
-memberships. The preference and audit record commit in one transaction. Both
-requests require `expectedUserId` (GET query parameter or PATCH body) matching
-the authenticated actor, so a cookie change cannot mix accounts in the cache.
-Agents cannot
-read or change these preferences. The legacy instance general setting is retained
-for API compatibility but no longer controls shortcut behavior in the app;
-users opt in individually after the upgrade.
+Keyboard shortcuts are always enabled for every signed-in user. There is no
+instance setting and no personal preference that turns them off.
+
+### Persistent managed agent files (2026-09-28)
+
+The Instructions Editor and agent execution share one current agent-owned
+directory, scoped by company and agent. The configured instruction entry is one
+file in this directory. Registered private copies synchronize supported files
+across tasks and sessions, separately from task workspace persistence. Saves
+require verified provider stop and current authorization, then synchronize changed
+files using per-file last-sync-wins;
+new content is not stored as revision history. Existing deployed revisions and
+saved execution formats remain compatible during adoption. See
+[Persistent agent files](agent-files.md).
+
+Persistent-file storage limits are advisory for execution: a full folder cannot
+pause the agent, fail its run, or prevent later runs. Show a warning on each run
+while storage remains full, restore existing files so the agent can remove them,
+and enforce the limits on saves. Cleanup clears the warning for future runs.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.
+
+## GitHub-synced skill sources
+
+- Discovery supports opt-in `Accept: application/x-ndjson` on the existing discovery
+  endpoint. Progress events report connection/download/tree/package stages, checked skill
+  counts, and the current package's file counts; candidate events contain metadata,
+  never file contents. Only the final `complete` event makes the scan selectable.
+  Interrupted streams discard partial results, and cancellation stops further
+  provider reads. The default JSON API remains compatible. The import dialog uses
+  reduced-motion-aware animations and shows indeterminate progress while saving
+  complete packages, without inventing completion percentages.
+
+- Sources and entries are company-scoped. Reuse GitHub connection grants and credential
+  refresh; every provider read authorizes the current caller. Saved connection IDs do
+  not confer access to another user's token. Agent reads use managed run identities.
+- The import picker searches the deduplicated union of repositories from all connections
+  the caller can access, automatically choosing an authorized connection. Adding accounts
+  uses the standard GitHub setup in Apps and retains the import draft. Repository URLs
+  use the default branch; `/tree/<branch>` URLs select a branch, including slash-containing
+  names, without a separate branch or credential selector. Pasted URLs also prefer
+  the caller's eligible GitHub connections, including for public repositories;
+  anonymous access is used when no authorized connection succeeds. An explicitly
+  saved connection must remain authorized. Repository identity still comes from
+  the GitHub API; quota errors are distinct from access denials.
+- Discover every `SKILL.md`, including hidden/deep directories. Resolve the tracking
+  ref to an immutable commit once per operation through a shallow Git fetch. Read
+  the complete local Git tree and blobs without checkout, archive transformations,
+  or per-file API calls. Git's receiving/preparing percentages feed download progress.
+  Git must be installed on the server. Downloads are bounded to 128 MiB and three
+  minutes, with two simultaneous downloads and at most four cached/downloading
+  snapshots. A ten-minute in-memory index of temporary repositories, scoped by
+  company, caller, run, and grant, reuses a pinned snapshot for preview/import;
+  authorization is checked before every reuse. No credentials are written to disk
+  or inherited from host Git configuration. Cancellation terminates the Git process
+  group and removes incomplete downloads. Symlinks and submodules are reported,
+  never traversed; nested skill roots are independent package boundaries.
+- Select packages as units, with included-file trees and bounded read-only previews.
+  Nested packages have independent checkboxes; supporting files have no individual
+  selection. Persist file manifests, explicit missing/out-of-package reference findings,
+  and declared `compatibility` requirements with source entries. Preview reads reauthorize
+  the current caller and audit the requested package at the scanned immutable commit;
+  discovery and source metadata contain no file contents. Reference checks are advisory,
+  do not establish complete runtime dependencies, and never expand package boundaries.
+- Stage and audit complete packages before publishing. Scripts are allowed through
+  the existing content audit and never run on import. Persist binary bytes and executable
+  flags in immutable version inventories (legacy entries default to UTF-8/non-executable).
+- Refresh is serialized per source, checks saved selection revisions, and publishes
+  valid skills plus per-entry outcomes with required activity records in one transaction.
+  Failed packages retain prior versions; access/scan/download failures retain all content.
+  Record attempted and successful refresh times separately.
+- Match by repository identity and exact path. Preserve IDs, keys, assignments, folders,
+  and history. New key collisions cannot overwrite unrelated skills. Only changed package
+  bytes or executable modes create versions. Library reads, tests, and subsequent unpinned
+  runs use local installed snapshots; pinned/active runs retain their versions.
+- Additions require reviewed selection, with new candidates checked by default and
+  explicit folder exclusions retained. Upstream deletion keeps installed content with
+  removed status; moves are removal plus discovery. Deselect/disconnect retains content
+  and assignments. Originals are read-only, with the existing independent fork workflow.
+- Adopt recognizable existing GitHub imports without provider calls or content changes;
+  resolve missing repository IDs and full snapshots on successful refresh. Exclude bundled,
+  catalog, local/project, skills.sh, and unsupported hosts. Existing GitHub import and update
+  endpoints delegate to sources while retaining response shapes.
+- GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
+  or pull-request creation in this milestone.

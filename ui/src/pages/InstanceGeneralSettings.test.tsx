@@ -57,7 +57,6 @@ describe("InstanceGeneralSettings sign-out", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "not_allowed",
       backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });
@@ -218,7 +217,6 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "not_allowed",
       backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });

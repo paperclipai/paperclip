@@ -34,6 +34,11 @@ human approval, decline, or scoped remembered permission. Connections and task
 views resolve the same review, and the agent continues with the server-recorded
 outcome. See [the implementation contract](SPEC-implementation.md#124-connection-tool-reviews).
 
+Model authentication failures also surface a provider-specific Connections card
+on the task immediately after failure. Users can reconnect inline and resume;
+legacy agents keep their authentication until an explicit, validated adoption.
+See [AI Connections](connections/AI-CONNECTIONS.md).
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:
@@ -46,6 +51,11 @@ The Board has **unrestricted access** to the entire system at all times:
 - **Manually change any budget** at any level
 
 The Board is not just an approval gate — it's a live control surface. The human can intervene at any level at any time.
+
+A Board status inquiry does not itself pause unfinished task execution. Native
+ordinary tasks that report blocking remaining work must continue, register a
+real wait, or surface a bounded recovery failure. Recorded approvals, questions,
+dependencies, and pauses remain authoritative; obsolete requests must not replay.
 
 #### Budget Delegation
 
@@ -277,11 +287,20 @@ All agent communication flows through the **task system**.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
-Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+
+### Question recipients
+
+Ordinary Agent Chat questions use the server-owned conversation recipient.
+Task questions may optionally name a particular user or agent. Explicit user
+recipients must be valid and authorized in the company before a question is
+saved. See `SPEC-implementation.md` §9.8.1 for the resolver contract.
+
 
 ### Implications
 
 - An agent's "inbox" is: tasks assigned to them + comments on tasks they're involved in
+- A human's Mine inbox and its badge include failed runs attributed to that human, not another user's runs. All retains company-wide failure visibility. Historical unattributed runs remain in the local single-user board's Mine view; see `SPEC-implementation.md` for the routing contract.
 - The CEO delegates by creating tasks assigned to the CTO
 - The CTO breaks those down into sub-tasks assigned to engineers
 - Discussion happens in task comments, not a side channel
@@ -413,6 +432,13 @@ Tasks use **single assignment** (one agent per task) with **atomic checkout**:
 3. If the task is already assigned to the requesting agent from a previous session, they can resume
 
 No optimistic locking or CRDTs needed. The single-assignment model + atomic checkout prevents conflicts at the design level.
+
+Agent @-mentions provide context without waking agents or changing task ownership. New work requires explicit assignment, delegation, or a review request; ordinary issue comments can still wake the current assignee.
+
+Releasing a terminal task clears execution locks while preserving its assigned
+owner and final status. Assignment remains part of the work history after Done
+or Cancelled. Releasing unfinished work still relinquishes the agent assignment;
+only an active `in_progress` task returns to `todo`.
 
 ### Human in the Loop
 
@@ -604,18 +630,43 @@ title matches lead; current conversation and document content supplies supportin
 evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
 matching contract and reproducible quality tests.
 
-### Personal keyboard shortcut preference
+### Keyboard shortcuts
 
-Keyboard shortcuts are off by default and are enabled in Settings → Profile.
-The preference is stored on the signed-in user, applies across companies and
-devices, and does not require instance administrator access. The local trusted
-board user has the same preference. `GET /api/auth/preferences` returns only the
-current board user's preference. `PATCH /api/auth/preferences` updates only that
-user and requires an accessible `companyId` for the activity log, including viewer
-memberships. The preference and audit record commit in one transaction. Both
-requests require `expectedUserId` (GET query parameter or PATCH body) matching
-the authenticated actor, so a cookie change cannot mix accounts in the cache.
-Agents cannot
-read or change these preferences. The legacy instance general setting is retained
-for API compatibility but no longer controls shortcut behavior in the app;
-users opt in individually after the upgrade.
+Keyboard shortcuts are always enabled for every signed-in user. There is no
+instance setting and no personal preference that turns them off.
+
+Managed agents own a persistent file directory across tasks and sessions. The
+Instructions Editor and stopped agent execution synchronize the same current
+files, including AGENTS.md and its supporting files. Task working directories and
+provider home directories remain separate concepts. Concurrent runs synchronize only
+the files they change, with the last sync winning for the same file. Temporary
+copies are cleaned up; this storage does not add a revision-history system. See
+[agent-files.md](agent-files.md) for lifecycle and upgrade compatibility.
+
+Full agent storage produces a run warning without stopping current or future
+work. Storage limits constrain saved file changes, not the agent's ability to run
+and remove files to recover space.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.
+
+### Git-backed skill library sources
+
+Repositories can supply read-only company skills independently of project repositories.
+A source tracks repository identity, branch, selected paths, and installed commits;
+an existing GitHub connection supplies caller-authorized reads. Manual refresh publishes
+complete local immutable versions, preserving skill identity and assignments. Selection
+operates on whole skill packages, with inspectable included files, declared runtime
+requirements, and advisory warnings for missing or external references. New
+upstream skills require reviewed selection; removed or deselected skills remain
+installed. Editing starts with an independent copy. Write-back and PR publication
+are a later milestone; exact path and commit provenance provide their base.

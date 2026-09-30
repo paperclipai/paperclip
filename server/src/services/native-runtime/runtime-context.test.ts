@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({
   exportFiles: vi.fn(),
+  readCommittedForRuntime: vi.fn(),
   getEffectiveProfilesForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
 }));
@@ -20,6 +21,11 @@ vi.mock("../chat-github-tools.js", () => ({
 
 vi.mock("../agent-instructions.js", () => ({
   agentInstructionsService: () => ({ exportFiles: serviceMocks.exportFiles }),
+  agentInstructionsBundleMode: (agent: { adapterConfig?: { instructionsBundleMode?: string } }) => agent.adapterConfig?.instructionsBundleMode ?? null,
+}));
+
+vi.mock("../agent-instruction-revisions.js", () => ({
+  agentInstructionRevisionService: () => ({ readCommittedForRuntime: serviceMocks.readCommittedForRuntime }),
 }));
 
 vi.mock("../tool-access.js", () => ({
@@ -50,6 +56,7 @@ async function makeTreeWritable(target: string): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
@@ -90,6 +97,60 @@ afterEach(async () => {
 });
 
 describe("buildNativeRuntimeContext", () => {
+  it("uses committed instructions when the disk projection is stale", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "Old disk projection\n", "reference.md": "Sibling reference\n" },
+    });
+    serviceMocks.readCommittedForRuntime.mockResolvedValue({
+      revision: { entryFile: "AGENTS.md" }, content: "Saved canonical instructions\n",
+    });
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: { instructionsBundleMode: "managed" } },
+      runId: "run-1", runtimeConfig: {}, runtimeSkillEntries: [],
+    });
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("Saved canonical instructions\n");
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, "reference.md"), "utf8"))
+      .toBe("Sibling reference\n");
+    expect(serviceMocks.readCommittedForRuntime).toHaveBeenCalledWith({ companyId: "company-1", agentId: "agent-1" });
+  });
+
+  it("does not substitute canonical managed instructions into an external bundle", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "External instructions\n" } });
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterConfig: { instructionsBundleMode: "external" } },
+      runId: "run-1", runtimeConfig: {}, runtimeSkillEntries: [],
+    });
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("External instructions\n");
+    expect(serviceMocks.readCommittedForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pinned prompt immutable while exposing the registered editable instruction copy", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({
+      entryFile: "instructions/CHARter.md",
+      files: { "instructions/CHARter.md": "Original instructions.\n" },
+    });
+    const workingRoot = path.join(temporaryRoots.at(-1)!, "private-run-copy");
+    await mkdir(path.join(workingRoot, "instructions"), { recursive: true });
+    await writeFile(path.join(workingRoot, "instructions/CHARter.md"), "Original instructions.\n");
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-1",
+      runtimeConfig: {},
+      runtimeSkillEntries: [],
+      instructionWorkingCopy: { rootPath: workingRoot, entryPath: "instructions/CHARter.md" },
+    });
+    expect(context.instructions.workingCopy).toEqual({ rootPath: workingRoot, entryPath: "instructions/CHARter.md" });
+    await writeFile(path.join(workingRoot, "instructions/CHARter.md"), "Persist this next time.\n");
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("Original instructions.\n");
+  });
+
   it.each(["disabled", "degraded"] as const)(
     "omits an unavailable native MCP connection when it is %s without aborting runtime context creation",
     async (unavailableState) => {
