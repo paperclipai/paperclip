@@ -1240,6 +1240,11 @@ that classification finishes.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
 
+Only successful turns retain a live warm provider session. A structured failed
+or cancelled result must retire that session and collect its managed files before
+heartbeat stops the reusable sandbox. A later retry can resume the same sandbox
+without inheriting the stopped provider transport.
+
 Run the credential-free real-process restart suite with:
 
 ```sh
