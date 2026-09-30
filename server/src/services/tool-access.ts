@@ -2313,6 +2313,13 @@ const NOTION_WRITE_TOOLS = new Set([
   "notion-update-view",
 ]);
 
+// Serply's hosted MCP tools only read Reddit, but "post" in their names matches
+// the generic write verbs.
+const SERPLY_READ_TOOLS = new Set([
+  "reddit-post",
+  "reddit-post-comments",
+]);
+
 const SHOPIFY_DESTRUCTIVE_TOOLS = new Set([
   "cancel-cart",
   "cancel-checkout",
@@ -2389,6 +2396,11 @@ export function classifyRisk(
   if (
     sourceTemplateKey === "notion" &&
     NOTION_READ_TOOLS.has(normalizedToolName)
+  )
+    return "read";
+  if (
+    sourceTemplateKey === "serply" &&
+    SERPLY_READ_TOOLS.has(normalizedToolName)
   )
     return "read";
   if (verbMatches(tool.name, "delete|remove|destroy|unpublish"))

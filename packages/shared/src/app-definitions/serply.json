@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "serply",
+  "name": "Serply",
+  "description": "Connect Serply's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/serply.svg"
+  },
+  "urlPatterns": [
+    "https://api.serply.io/*"
+  ],
+  "docsUrl": "https://serply.io/mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api.serply.io/mcp"
+      },
+      "guidanceMd": "Use a customer-created Serply key. A Serply API key from app.serply.io. Each search or scrape call uses account credits.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Serply API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Serply API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "X-Api-Key",
+        "prefix": null
+      },
+      "consoleLinks": {
+        "keys": "https://app.serply.io/users/sign_up",
+        "docs": "https://serply.io/mcp"
+      },
+      "warnings": [
+        "A Serply API key from app.serply.io. Each search or scrape call uses account credits."
+      ]
+    }
+  ]
+}
