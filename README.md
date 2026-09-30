@@ -343,6 +343,12 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 Open source. Self-hosted. No Paperclip account required. Follow the [guided quickstart](https://docs.paperclip.ing/guides/getting-started/five-minute-path/) to set up your first agent.
 
+### Just ask your agent to install Paperclip
+
+Share the [installation guide](https://docs.paperclip.ing/reference/cli/installation/) with your agent.
+
+### Or install it yourself
+
 With **Node.js 24.11 or newer** installed:
 
 ```bash
@@ -417,27 +423,43 @@ Source development also builds the native Paperclip Runner when enabled (the sel
 
 ## FAQ
 
-**Is this project maintained or just slop?**
-Paperclip is maintained by the [Paperclip team](https://paperclip.ing). We've merged [over 2,700 pull requests](https://github.com/paperclipai/paperclip/pulls?q=is%3Apr+is%3Amerged).
+**Q: Is this project maintained or just slop?**
 
-**What does a typical setup look like?**
-Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
+**A:** Paperclip is maintained by the [Paperclip team](https://paperclip.ing). We've merged [over 2,700 pull requests](https://github.com/paperclipai/paperclip/pulls?q=is%3Apr+is%3Amerged).
+
+<br/>
+
+**Q: What does a typical setup look like?**
+
+**A:** Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
 For remote access, use authenticated mode with a private-network bind such as Tailscale, or deploy the persistent server with Docker. See [deployment modes](https://docs.paperclip.ing/reference/deploy/deployment-modes/) and the [Docker guide](https://docs.paperclip.ing/reference/deploy/docker/).
 
-**Can I run multiple companies?**
-Yes. A single deployment can host multiple organizations with company-scoped data and access checks.
+<br/>
 
-**How is Paperclip different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+**Q: Can I run multiple companies?**
 
-**Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
+**A:** Yes. A single deployment can host multiple organizations with company-scoped data and access checks.
+
+<br/>
+
+**Q: How is Paperclip different from agents like OpenClaw or Claude Code?**
+
+**A:** Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+
+<br/>
+
+**Q: Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
+
+**A:** Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
 
 (Bring-your-own-ticket-system is on the Roadmap)
 
-**Do agents run continuously?**
-Agents wake for assigned work and follow-up messages. Optional timer heartbeats let them check for work periodically; routines create recurring tasks on their own schedules. You can also connect externally running agents such as OpenClaw. A mention alone does not assign work or wake another agent.
+<br/>
+
+**Q: Do agents run continuously?**
+
+**A:** Agents wake for assigned work and follow-up messages. Optional timer heartbeats let them check for work periodically; routines create recurring tasks on their own schedules. You can also connect externally running agents such as OpenClaw. A mention alone does not assign work or wake another agent.
 
 <br/>
 
