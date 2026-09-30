@@ -3,7 +3,7 @@ import type { CompanySkillVersionFileInventoryEntry, SkillSourceCandidate, Skill
 import { parseFrontmatterMarkdown, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { notFound, unprocessable } from '../errors.js';
 import { assertSkillSnapshotPath, snapshotFile, skillFileBytes } from './skill-snapshot.js';
-import { inspectSkillPackage } from './skill-package-inspection.js';
+import { indexSkillPackagePaths, inspectSkillPackage } from './skill-package-inspection.js';
 import { auditSkillSnapshot, classifyInventoryKind } from './company-skills.js';
 
 import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as TreeEntry } from './skill-source-git-snapshot.js';
@@ -17,6 +17,8 @@ export type DiscoveredSkill = SkillSourceCandidate & { files: CompanySkillVersio
 export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string };
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_BYTES = 100 * 1024 * 1024;
+const MAX_SCAN_PACKAGES = 1_000;
+const MAX_SCAN_FILES = 10_000;
 
 export function parseSkillRepository(url: string) {
   const parsed = parseGitHubSkillRepositoryUrl(url);
@@ -27,6 +29,8 @@ export function parseSkillRepository(url: string) {
 export interface SkillScanOptions {
   signal?: AbortSignal;
   onProgress?: (event: SkillSourceScanUpdate) => void | Promise<void>;
+  /** Discovery needs audited manifests, not the full contents retained for import. */
+  retainFiles?: boolean;
 }
 
 export async function scanGitHubSkills(input: { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string }, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
@@ -61,9 +65,54 @@ export async function scanGitHubSkills(input: { repositoryUrl: string; trackingR
     delete progress.download;
     await report();
     const entries = snapshot.entries;
-    for (const entry of entries) assertSkillSnapshotPath(entry.path);
+    for (const entry of entries) {
+      assertSkillSnapshotPath(entry.path);
+      if (entry.path.length > 4_096 || entry.path.split('/').length > 64) throw unprocessable('Repository paths exceed the 4,096 character or 64-level scan limit.');
+    }
+    const repositoryPaths = indexSkillPackagePaths(entries.map(entry => entry.path));
     const roots = entries.filter(e => e.type === 'blob' && /(^|\/)skill\.md$/i.test(e.path) && ['100644', '100755'].includes(e.mode));
-    const directories = new Set(roots.map(e => path.posix.dirname(e.path)));
+    const rootsByDirectory = new Map<string, TreeEntry[]>();
+    for (const root of roots) {
+      const dir = path.posix.dirname(root.path);
+      const siblings = rootsByDirectory.get(dir) ?? [];
+      siblings.push(root);
+      rootsByDirectory.set(dir, siblings);
+    }
+    const selectedRoots = roots.filter(root => !input.onlySkillPath || root.path === input.onlySkillPath).sort((a, b) => a.path.localeCompare(b.path));
+    if (selectedRoots.length > MAX_SCAN_PACKAGES) throw unprocessable('Repository exceeds the 1,000 skill package scan limit.');
+    // Assign each file to its nearest package root once, including hidden and
+    // nested directories. Memoized ancestors avoid a full-tree pass per skill.
+    const owners = new Map<string, string | null>([...rootsByDirectory.keys()].map(dir => [dir, dir]));
+    const inventories = new Map<string, TreeEntry[]>();
+    const selectedDirectories = new Set(selectedRoots.map(root => path.posix.dirname(root.path)));
+    for (const entry of entries) {
+      if (entry.type === 'tree') continue;
+      let dir = path.posix.dirname(entry.path);
+      const ancestors: string[] = [];
+      while (!owners.has(dir)) {
+        ancestors.push(dir);
+        if (dir === '.') { owners.set(dir, null); break; }
+        dir = path.posix.dirname(dir);
+      }
+      const owner = owners.get(dir) ?? null;
+      for (const ancestor of ancestors) owners.set(ancestor, owner);
+      if (owner !== null && selectedDirectories.has(owner)) {
+        const inventory = inventories.get(owner) ?? [];
+        inventory.push(entry);
+        inventories.set(owner, inventory);
+      }
+    }
+    let expandedFiles = 0;
+    let declaredBytes = 0;
+    for (const root of selectedRoots) {
+      const inventory = inventories.get(path.posix.dirname(root.path)) ?? [];
+      expandedFiles += inventory.length;
+      if (expandedFiles > MAX_SCAN_FILES) throw unprocessable('Skill packages exceed the 10,000 file scan limit.');
+      for (const entry of inventory) {
+        if (entry.type === 'blob' && ['100644', '100755'].includes(entry.mode) && (entry.size ?? 0) <= MAX_FILE_BYTES) declaredBytes += entry.size ?? 0;
+      }
+      if (declaredBytes > MAX_SCAN_BYTES) throw unprocessable('Skill packages exceed the 100 MB scan limit.');
+    }
     const warnings = entries.filter(e => e.mode === '120000' || e.type === 'commit').map(e => `Not followed: ${e.path} (${e.mode === '120000' ? 'symlink' : 'submodule'}).`);
     const blobs = new Map<string, Buffer>();
     let totalBytes = 0;
@@ -73,34 +122,25 @@ export async function scanGitHubSkills(input: { repositoryUrl: string; trackingR
       if (!bytes) {
         options.signal?.throwIfAborted();
         bytes = await snapshot.readBlob(entry, options.signal);
-        totalBytes += bytes.length;
-        if (totalBytes > MAX_SCAN_BYTES) throw unprocessable('Skill packages exceed the 100 MB scan limit.');
         if (bytes.length > MAX_FILE_BYTES) return null;
         blobs.set(entry.sha, bytes);
       }
+      // Reused blobs still produce another package copy, audit, and manifest.
+      totalBytes += bytes.length;
+      if (totalBytes > MAX_SCAN_BYTES) throw unprocessable('Skill packages exceed the 100 MB scan limit.');
       return bytes;
     };
     const skills: DiscoveredSkill[] = [];
-    const selectedRoots = roots.filter(root => !input.onlySkillPath || root.path === input.onlySkillPath).sort((a, b) => a.path.localeCompare(b.path));
     Object.assign(progress, { phase: 'checking', totalSkills: selectedRoots.length, currentPath: null });
     await report();
     for (const root of selectedRoots) {
       const dir = path.posix.dirname(root.path);
       const prefix = dir === '.' ? '' : `${dir}/`;
-      const owns = (entry: TreeEntry) => {
-        if (!entry.path.startsWith(prefix)) return false;
-        let parent = path.posix.dirname(entry.path);
-        while (parent !== dir && parent !== '.') {
-          if (directories.has(parent)) return false;
-          parent = path.posix.dirname(parent);
-        }
-        return parent === dir;
-      };
-      const inventory = entries.filter(e => e.type !== 'tree' && owns(e));
+      const inventory = inventories.get(dir) ?? [];
       Object.assign(progress, { currentPath: root.path, checkedFiles: 0, totalFiles: inventory.length });
       await report();
       const files: CompanySkillVersionFileInventoryEntry[] = [];
-      let error: string | null = roots.filter(entry => path.posix.dirname(entry.path) === dir).length > 1 ? 'Multiple SKILL.md entrypoints share this package directory.' : null;
+      let error: string | null = rootsByDirectory.get(dir)!.length > 1 ? 'Multiple SKILL.md entrypoints share this package directory.' : null;
       for (const entry of inventory) {
         progress.currentPath = entry.path;
         await report();
@@ -119,8 +159,8 @@ export async function scanGitHubSkills(input: { repositoryUrl: string; trackingR
       const description = typeof frontmatter.description === 'string' ? frontmatter.description : null;
       const findings = !error ? await auditSkillSnapshot(files) : [];
       error ??= findings.filter(f => f.severity === 'error').map(f => `${f.path ?? root.path}: ${f.message}`).join(' ') || null;
-      const inspection = { ...inspectSkillPackage(root.path, files, entries.map(entry => entry.path), frontmatter, findings), commitSha: commit.sha };
-      skills.push({ path: root.path, name, description, fileCount: inventory.length, error, warnings: inspection.warnings, inspection, files });
+      const inspection = { ...inspectSkillPackage(root.path, files, repositoryPaths, frontmatter, findings), commitSha: commit.sha };
+      skills.push({ path: root.path, name, description, fileCount: inventory.length, error, warnings: inspection.warnings, inspection, files: options.retainFiles === false ? [] : files });
       options.signal?.throwIfAborted();
       await options.onProgress?.({ type: 'candidate', candidate: { path: root.path, name, description, fileCount: inventory.length, error } });
       progress.checkedSkills++;

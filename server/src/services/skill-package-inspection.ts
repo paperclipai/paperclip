@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { CompanySkillAuditFinding, CompanySkillVersionFileInventoryEntry, SkillPackageInspection, SkillPackageReference } from '@paperclipai/shared';
+import { unprocessable } from '../errors.js';
 import { skillFileBytes } from './skill-snapshot.js';
 
 /** Inspect explicit Markdown links and inline-code resource paths, not project filenames, prose, or shell commands. */
@@ -20,27 +21,36 @@ function referencesIn(markdown: string) {
   return references;
 }
 
+/** Build once per repository; stop at ancestors already indexed by an earlier path. */
+export function indexSkillPackagePaths(paths: Iterable<string>): ReadonlySet<string> {
+  const result = new Set<string>();
+  const add = (value: string) => {
+    result.add(value);
+    if (result.size > 100_000) throw unprocessable('Repository exceeds the 100,000 path scan limit.');
+  };
+  for (const file of paths) {
+    add(file);
+    let parent = path.posix.dirname(file);
+    while (parent !== '.' && parent !== '/' && !result.has(parent)) {
+      add(parent);
+      parent = path.posix.dirname(parent);
+    }
+  }
+  if (result.size) add('.');
+  return result;
+}
+
 export function inspectSkillPackage(
   skillPath: string,
   files: CompanySkillVersionFileInventoryEntry[],
-  repositoryPaths: string[],
+  repositoryPaths: ReadonlySet<string>,
   frontmatter: Record<string, unknown>,
   findings: CompanySkillAuditFinding[],
 ): SkillPackageInspection {
   const root = path.posix.dirname(skillPath);
-  const withDirectories = (paths: string[]) => {
-    const result = new Set(paths);
-    for (const file of paths) {
-      let parent = path.posix.dirname(file);
-      while (parent !== '.' && parent !== '/') { result.add(parent); parent = path.posix.dirname(parent); }
-      if (paths.length) result.add('.');
-    }
-    return result;
-  };
-  const inPackage = withDirectories(files.map(file => file.path === 'SKILL.md' ? skillPath : path.posix.join(root, file.path)));
-  const inRepository = withDirectories(repositoryPaths);
+  const inPackage = indexSkillPackagePaths(files.map(file => file.path === 'SKILL.md' ? skillPath : path.posix.join(root, file.path)));
   const references = new Map<string, SkillPackageReference>();
-  const contains = (paths: Set<string>, target: string) => paths.has(target);
+  const contains = (paths: ReadonlySet<string>, target: string) => paths.has(target);
   for (const file of files) {
     if (file.encoding === 'base64' || !/\.md$/i.test(file.path)) continue;
     for (const { target, rootRelative } of referencesIn(file.content)) {
@@ -52,7 +62,7 @@ export function inspectSkillPackage(
       if (!decoded.startsWith('/') && contains(inPackage, resolvedPath)) continue;
       const outsideRoot = decoded.startsWith('/') || resolvedPath === '..' || resolvedPath.startsWith('../')
         || (root !== '.' && !resolvedPath.startsWith(`${root}/`) && resolvedPath !== root);
-      const kind = outsideRoot || contains(inRepository, resolvedPath) ? 'outside_package' : 'missing';
+      const kind = outsideRoot || contains(repositoryPaths, resolvedPath) ? 'outside_package' : 'missing';
       references.set(`${file.path}:${resolvedPath}`, { fromPath: file.path, target, resolvedPath, kind });
     }
   }

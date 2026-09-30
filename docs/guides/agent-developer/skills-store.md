@@ -160,7 +160,11 @@ shown separately from these warnings and from content-audit notices.
 Validation errors appear beside affected skills; eligible selections import and
 skipped skills are reported. These skills become available in the current company's
 library and agent skill picker. Files are limited to 1 MiB each and a scan to 100 MiB
-of skill content; importing never runs scripts, hooks, dependency installation,
+of expanded skill content, counting repeated file copies. A scan supports up to
+1,000 skill packages and 10,000 package files. The repository path index includes
+directories and is limited to 100,000 paths, with paths up to 4,096 characters and
+64 levels deep. Discovery retains audited manifests without retaining every
+package's contents. Importing never runs scripts, hooks, dependency installation,
 or builds.
 
 **Skills → Sources** shows repositories, installed skill links, and connection errors.
