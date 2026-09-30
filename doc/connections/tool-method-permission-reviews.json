@@ -58,6 +58,23 @@
     },
     {
       "app": "asana",
+      "method": "managed",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "default"
+      ],
+      "capability": "write",
+      "supportedActions": "Create/update tasks and projects authorized by the account.",
+      "evidence": [
+        "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+        "https://mcp.asana.com/.well-known/oauth-protected-resource/v2"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "Real OAuth, 39 MCP actions, Get me, and forced-expiry refresh verified with a local broker fixture on 2026-09-30."
+    },
+    {
+      "app": "asana",
       "method": "mcp-own-oauth",
       "auth": "oauth",
       "policy": "explicit",
@@ -68,10 +85,10 @@
       "supportedActions": "Create/update tasks and projects authorized by the account.",
       "evidence": [
         "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
-        "https://mcp.asana.com/.well-known/oauth-protected-resource"
+        "https://mcp.asana.com/.well-known/oauth-protected-resource/v2"
       ],
       "reviewedAt": "2026-09-30",
-      "liveProof": "not-run"
+      "liveProof": "OAuth, 39 MCP actions, and Get me verified in the embedded browser on 2026-09-30."
     },
     {
       "app": "beehiiv",

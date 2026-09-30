@@ -10418,7 +10418,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
       const callbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
@@ -10463,7 +10463,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectState).toBeTruthy();
       const redirectCallbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .set("Accept", "text/html")
         .query({ state: redirectState, code: "oauth-code" });
 
