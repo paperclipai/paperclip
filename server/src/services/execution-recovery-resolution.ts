@@ -875,12 +875,13 @@ export async function settleUnrecoverableExecutions(
         const review = task.status === "in_review"
           ? parseIssueExecutionState(task.executionState)
           : null;
-        const activeReview = review?.status === "pending" &&
+        const predecessorYieldedToReview = run.errorCode === "issue_continuation_waiting_on_review" &&
+          review?.status === "pending" &&
           review.currentStageType === "review" &&
           review.currentParticipant !== null;
         const current =
           !isSupersededConversationRun(task, run) &&
-          !activeReview &&
+          !predecessorYieldedToReview &&
           action.returnOwnerAgentId !== null &&
           task.assigneeAgentId === action.returnOwnerAgentId &&
           !["done", "cancelled"].includes(task.status) &&
