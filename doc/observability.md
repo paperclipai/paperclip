@@ -490,7 +490,9 @@ at seven days. These fields omit paths, PIDs, owner records, and absolute timest
 The local-holder flag covers this module's active acquisitions only. Process-age
 comparison uses the wall clock and a one-second margin; it is a clue to PID reuse,
 not proof of ownership or permission to remove a lock. Diagnostic reads can race
-with release. These fields do not change lock acquisition, reclamation, or retries.
+with release. The extra diagnostic owner read has a 100 ms budget; a stalled or
+unreadable read leaves the owner state `unknown`, while malformed JSON is `invalid`.
+These fields do not change lock acquisition, reclamation, or retries.
 Agent-directory callers also supply `restoreLockOperation`: `agent_directory_release`,
 `agent_directory_collect`, `agent_directory_checkpoint`, or `agent_directory_handoff`.
 This identifies the operation waiting for the lock, including cleanup after a

@@ -201,6 +201,7 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
 }
 
 const LOCK_STALE_MS = 30_000;
+const LOCK_DIAGNOSTIC_READ_TIMEOUT_MS = 100;
 const activeDirectoryMergeLocks = new Set<string>();
 const MAX_LOCK_DIAGNOSTIC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export type DirectoryMergeLockOperation =
@@ -217,9 +218,25 @@ async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number): P
     knownLocalHolder: activeDirectoryMergeLocks.has(lockDir),
     waitMs: Math.min(MAX_LOCK_DIAGNOSTIC_AGE_MS, Math.max(0, Math.floor(waitMs))),
   };
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
-    const owner = JSON.parse(raw) as { pid?: unknown; createdAt?: unknown } | null;
+    // Abort is best effort: race the read as well so a stalled filesystem
+    // cannot keep the original lock timeout from reaching its caller.
+    const raw = await Promise.race([
+      fs.readFile(path.join(lockDir, "owner.json"), { encoding: "utf8", signal: controller.signal }),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), LOCK_DIAGNOSTIC_READ_TIMEOUT_MS);
+      }),
+    ]);
+    if (raw === undefined) return diagnostics;
+    let owner: { pid?: unknown; createdAt?: unknown } | null;
+    try {
+      owner = JSON.parse(raw) as typeof owner;
+    } catch {
+      diagnostics.ownerState = "invalid";
+      return diagnostics;
+    }
     if (!owner || !Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0) {
       diagnostics.ownerState = "invalid";
       return diagnostics;
@@ -240,6 +257,9 @@ async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number): P
     }
   } catch (error) {
     diagnostics.ownerState = (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unknown";
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
   }
   return diagnostics;
 }
