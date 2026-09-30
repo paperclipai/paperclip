@@ -26,8 +26,8 @@ function projected(name: string, target = "copilot-denied-nonce.txt") {
 describe("Copilot Product protection integration", () => {
   it("registers two explicit cases on both environments with honest terminal expectations", () => {
     const cells = runnerMatrix.filter(x => x.suite.id === "copilot-protection");
-    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 4, naturalSettlementObservationMs: 2000, denialTerminal: "correlated-provider-settlement-and-audited-run-stop",
-      denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v2", activeTurnCancellation: "not-implied-by-completed-provider-turn" });
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 5, naturalSettlementObservationMs: 2000, denialTerminal: "correlated-provider-settlement-and-audited-run-stop",
+      denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v3", activeTurnCancellation: "not-implied-by-completed-provider-turn" });
     expect(suiteDefinitionHash(cells[0]!.suite)).not.toBe(suiteDefinitionHash({ ...cells[0]!.suite, definitionMetadata: { version: 2 } }));
     expect(cells).toHaveLength(4); expect(new Set(cells.map(c => c.environment.id))).toEqual(new Set(["local", "daytona"]));
     expect(cells.every(c => c.profile.qualificationCandidate === "copilot" && c.task.expectedRunCount === 1)).toBe(true);
@@ -41,11 +41,11 @@ describe("Copilot Product protection integration", () => {
       request: { ...request, requestId: "permission", method: "session/request_permission" as const, targetRelativePath: request.target!, offeredActions: request.declineOffered ? ["decline"] : [] },
       decision: { ...delivered, requestId: "permission", browserRequestId: "permission", action: delivered.outcome === "reject_once" ? "decline" : "accept" },
       deliveredDecision: { ...delivered, requestId: "permission", outcome: delivered.outcome! },
-      toolResult: { ...failed, status: "failed" as const }, terminal: { runId: "run", turnId: "turn", observedAtMs: 50, status: "cancelled" as const }, settlement: { schema: "paperclip.e2e.copilot-denial-settlement.v2" as const, ...copilotOrigin(request), requestId: "permission",
+      toolResult: { ...failed, status: "failed" as const }, terminal: { runId: "run", turnId: "turn", observedAtMs: 50, status: "cancelled" as const }, settlement: { schema: "paperclip.e2e.copilot-denial-settlement.v3" as const, ...copilotOrigin(request), requestId: "permission",
         branch: "provider_cancelled_or_interrupted" as const, providerCancellationTerminalObserved: true,
-        preStop: { schema: "paperclip.e2e.copilot-pre-stop-observation.v1" as const, ...copilotOrigin(request), requestId: "permission", companyId: "company", normalizedSessionId: "normalized", sourceInstanceId: "runner", failedToolSourceSeq: 5, failedToolRowSha256: `sha256:${"a".repeat(64)}`, terminal: null, apiReadCompletedMonotonicNs: "10" }, stopDispatchMonotonicNs: "20",
+        preStop: { schema: "paperclip.e2e.copilot-pre-stop-observation.v2" as const, ...copilotOrigin(request), requestId: "permission", companyId: "company", normalizedSessionId: "normalized", sourceInstanceId: "runner", failedToolSourceSeq: 5, failedToolRowSha256: `sha256:${"a".repeat(64)}`, terminal: null, apiReadCompletedMonotonicNs: "10", cancellationRequestId: "11111111-1111-4111-8111-111111111111" }, stopDispatchMonotonicNs: "20",
       providerTerminal: { rowSha256: `sha256:${"b".repeat(64)}`, failedToolRowSha256: `sha256:${"a".repeat(64)}`, eventType: "turn.cancelled" as const, normalizedSessionId: "normalized", sourceInstanceId: "runner", requestSourceSeq: 1, resolvedSourceSeq: 2, deliveredSourceSeq: 3, failedNoticeSourceSeq: 4, failedToolSourceSeq: 5, failedToolRowCreatedAtMs: 31, sourceSeq: 6, emittedAtMs: 50, rowCreatedAtMs: 51 },
-        runStop: { companyId: "company", issueId: "issue", scope: "run" as const, status: "cancelled" as const, issueStatus: "in_progress" as const, intentId: "intent", intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", requestedAtMs: 40, recordedAtMs: 41, acknowledgedAtMs: 52, finishedAtMs: 53 } },
+        runStop: { companyId: "company", issueId: "issue", scope: "run" as const, status: "cancelled" as const, issueStatus: "in_progress" as const, intentId: "native-cancellation:11111111-1111-4111-8111-111111111111", intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", requestedAtMs: 40, recordedAtMs: 41, acknowledgedAtMs: 52, finishedAtMs: 53 } },
       cleanup: { observedAtMs: 60, ownedProcessesRemaining: 0 }, nativeAttemptsForTarget: 1,
       fileObservations: (["before-request", "pending", "after-decision", "terminal", "after-cleanup"] as const).map((phase, index) => ({ phase, observedAtMs: [0, request.observedAtMs, 30, 50, 60][index]!, exists: false, providerCursor: index === 0 ? null : { runId: "run", turnId: "turn", normalizedSessionId: "normalized", sourceInstanceId: "runner", sourceSeq: [0, 1, 4, 6, 6][index]! } })), mutationObservation: { startedAtMs: 0, endedAtMs: 60, complete: true, targetMutationCount: 0 } };
     expect(request.target).toBe(target);

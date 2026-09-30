@@ -196,7 +196,7 @@ export async function readCopilotRemoteMarkerAfterRetirement(fixture: CopilotRem
 }
 
 export interface CopilotDenialSettlement {
-  schema: "paperclip.e2e.copilot-denial-settlement.v2";
+  schema: "paperclip.e2e.copilot-denial-settlement.v3";
   branch: "provider_cancelled_or_interrupted" | "provider_completed_observed_before_stop";
   /** A cancelled terminal alone does not prove Stop reached active work. */
   providerCancellationTerminalObserved: boolean;
@@ -222,7 +222,7 @@ const settlementTime = (v: unknown): v is number => Number.isSafeInteger(v) && (
 const settlementDate = (v: unknown): number => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T.*Z$/u.test(v) ? Date.parse(v) : NaN;
 
 export function validCopilotDenialSettlement(s: CopilotDenialSettlement): boolean {
-  if (!s || s.schema !== "paperclip.e2e.copilot-denial-settlement.v2") return false;
+  if (!s || s.schema !== "paperclip.e2e.copilot-denial-settlement.v3") return false;
   const t = s.providerTerminal, c = s.runStop;
   if (!t || !c || ![s.runId, s.sessionId, s.turnId, s.toolCallId, s.requestId, t.normalizedSessionId, t.sourceInstanceId,
     c.companyId, c.issueId, c.intentId, c.intentAuditId, c.acknowledgementAuditId].every(settlementId)
@@ -233,8 +233,10 @@ export function validCopilotDenialSettlement(s: CopilotDenialSettlement): boolea
     || !Number.isSafeInteger(t.failedToolSourceSeq) || t.failedToolSourceSeq <= 0 || !Number.isSafeInteger(t.sourceSeq) || t.sourceSeq <= t.failedToolSourceSeq
     || c.requestedAtMs > c.recordedAtMs || c.recordedAtMs > c.acknowledgedAtMs || c.acknowledgedAtMs > c.finishedAtMs) return false;
   const before = s.preStop;
-  if (!before || before.schema !== "paperclip.e2e.copilot-pre-stop-observation.v1"
+  if (!before || before.schema !== "paperclip.e2e.copilot-pre-stop-observation.v2"
     || !["runId", "sessionId", "turnId", "toolCallId", "requestId"].every(k => before[k as keyof CopilotPreStopObservation] === s[k as keyof CopilotDenialSettlement])
+    || typeof before.cancellationRequestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(before.cancellationRequestId)
+    || c.intentId !== `native-cancellation:${before.cancellationRequestId}`
     || before.companyId !== c.companyId || before.normalizedSessionId !== t.normalizedSessionId || before.sourceInstanceId !== t.sourceInstanceId
     || before.failedToolSourceSeq !== t.failedToolSourceSeq || before.failedToolRowSha256 !== t.failedToolRowSha256
     || ![t.rowSha256, t.failedToolRowSha256].every(v => /^sha256:[a-f0-9]{64}$/u.test(v))
@@ -292,13 +294,15 @@ export function readCopilotDeniedEdit(input: { events: readonly unknown[]; reque
 }
 
 export interface CopilotPreStopObservation {
-  schema: "paperclip.e2e.copilot-pre-stop-observation.v1";
+  schema: "paperclip.e2e.copilot-pre-stop-observation.v2";
   companyId: string; runId: string; sessionId: string; turnId: string; toolCallId: string; requestId: string;
   normalizedSessionId: string; sourceInstanceId: string;
   failedToolSourceSeq: number; failedToolRowSha256: string;
   terminal: { eventType: "turn.completed" | "turn.cancelled" | "turn.interrupted"; sourceSeq: number; rowSha256: string } | null;
   /** Fixture-process monotonic clock, never provider or database wall time. */
   apiReadCompletedMonotonicNs: string;
+  /** Fresh caller UUID reserved atomically by the board cancel API. */
+  cancellationRequestId: string;
 }
 const denialRowSha = (row: unknown) => `sha256:${createHash("sha256").update(canonicalJson(row)).digest("hex")}`;
 function readDeniedTerminal(proof: ReturnType<typeof readCopilotDeniedEdit>) {
@@ -317,14 +321,14 @@ function readDeniedTerminal(proof: ReturnType<typeof readCopilotDeniedEdit>) {
 }
 /** Call only on rows returned by the current operator API read. Retain this
  * receipt before dispatching Stop; historical rows cannot recreate that fact. */
-export function observeCopilotPreStop(input: { events: readonly unknown[]; request: CopilotToolNotice; companyId: string }): CopilotPreStopObservation {
+export function observeCopilotPreStop(input: { events: readonly unknown[]; request: CopilotToolNotice; companyId: string; cancellationRequestId: string }): CopilotPreStopObservation {
   const proof = readCopilotDeniedEdit(input), observed = readDeniedTerminal(proof), r = input.request;
-  return { schema: "paperclip.e2e.copilot-pre-stop-observation.v1", companyId: input.companyId,
+  return { schema: "paperclip.e2e.copilot-pre-stop-observation.v2", companyId: input.companyId,
     runId: r.runId, sessionId: r.sessionId, turnId: r.turnId, toolCallId: r.toolCallId, requestId: r.requestId!,
     normalizedSessionId: proof.origin.normalizedSessionId, sourceInstanceId: proof.origin.sourceInstanceId,
     failedToolSourceSeq: proof.tool.sourceSeq, failedToolRowSha256: denialRowSha(proof.toolRows[0]),
     terminal: observed ? { eventType: observed.terminal.eventType, sourceSeq: observed.terminal.sourceSeq, rowSha256: denialRowSha(observed.row) } : null,
-    apiReadCompletedMonotonicNs: process.hrtime.bigint().toString() };
+    apiReadCompletedMonotonicNs: process.hrtime.bigint().toString(), cancellationRequestId: input.cancellationRequestId };
 }
 
 /** Denial closes one permission, not necessarily the provider prompt. Match the
@@ -340,6 +344,8 @@ export function readCopilotDenialSettlement(input: {
   if (events.length > 20_000 || run.id !== request.runId || issue.id !== run.nativeIssueId
     || !settlementId(issue.companyId) || run.companyId !== issue.companyId || issue.status !== "in_progress" || run.status !== "cancelled"
     || stop.schema !== "paperclip.native-cancellation.v1" || stop.runId !== run.id || stop.companyId !== issue.companyId || stop.issueId !== issue.id
+    || stop.intentId !== `native-cancellation:${input.preStop?.cancellationRequestId}`
+    || settlementRecord(settlementRecord(run.resultJson).startupCancellation).cancellationRequestId !== input.preStop?.cancellationRequestId
     || stop.scope !== "run" || stop.dispatched !== true || stop.dispatchState !== "acknowledged" || stop.reasonCode !== "cancellation_run_only"
     || !Array.isArray(stop.effects) || stop.effects.length !== 1 || stop.effects[0] !== "release_run_resources") throw invalid();
   const { rows, get, stream, origin, delivery, failure, resolution, tool, toolRows, failed } = readCopilotDeniedEdit({ events, request, companyId: issue.companyId });
@@ -347,7 +353,7 @@ export function readCopilotDenialSettlement(input: {
   if (!observed) throw invalid();
   const { row, terminal } = observed;
   const result: CopilotDenialSettlement = {
-    schema: "paperclip.e2e.copilot-denial-settlement.v2",
+    schema: "paperclip.e2e.copilot-denial-settlement.v3",
     branch: row.eventType === "turn.completed" ? "provider_completed_observed_before_stop" : "provider_cancelled_or_interrupted",
     providerCancellationTerminalObserved: row.eventType !== "turn.completed",
     runId: run.id, sessionId: request.sessionId, turnId: request.turnId, toolCallId: request.toolCallId, requestId: request.requestId!,

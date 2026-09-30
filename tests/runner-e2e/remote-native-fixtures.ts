@@ -6,7 +6,13 @@ export const REMOTE_FIXTURE_DAYTONA_SDK_VERSION = "0.203.0";
 const NODE = "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node";
 const MAX_OUTPUT = 256 * 1024;
 const TEARDOWN_RESERVE_MS = 15_000;
-export const REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS = 27_000 + TEARDOWN_RESERVE_MS;
+const LEASE_READMISSION_BUDGET_MS = 10_000;
+const RUNTIME_READY_BUDGET_MS = 12_000;
+const INSTALL_BUDGET_MS = 27_000;
+// Lease activation can arrive late. Reserve each pre-install operation as well
+// as installation and teardown; the caller subtracts this from the same deadline.
+export const REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS = LEASE_READMISSION_BUDGET_MS
+  + RUNTIME_READY_BUDGET_MS + INSTALL_BUDGET_MS + TEARDOWN_RESERVE_MS;
 const CLOSE_GRACE_MS = 10_000;
 // createRunnerdBackend stages its verified executable, pack symlink, mutable
 // sessions, homes and injected context beneath this exact path. Qualification
@@ -21,6 +27,23 @@ const id = (value: string) => /^[a-zA-Z0-9_-]{1,128}$/u.test(value);
 function relative(value: string): string {
   fail(value.length <= 240 && /^[a-zA-Z0-9._/-]+$/u.test(value) && !value.startsWith("/") && value.split("/").every(part => part !== "" && part !== "." && part !== ".."), "unsafe_relative_target");
   return value;
+}
+// Only closed diagnostic enums cross the remote boundary; SDK errors and output
+// are never retained. These diagnostics explain failed evidence, not qualification.
+const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "read"] as const;
+const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline"] as const;
+type RpcPhase = typeof RPC_PHASES[number];
+type RpcCode = typeof RPC_CODES[number];
+interface RpcDiagnostic { phase: RpcPhase; code: RpcCode }
+class RemoteFixtureError extends Error {
+  constructor(message: string, readonly diagnostic: RpcDiagnostic, options?: ErrorOptions) { super(message, options); }
+}
+export function remoteNativeFixtureDiagnostics(error: unknown): RpcDiagnostic[] {
+  const result: RpcDiagnostic[] = [];
+  for (let current = error, depth = 0; current instanceof Error && depth < 3; current = current.cause, depth++) {
+    if (current instanceof RemoteFixtureError) result.push({ ...current.diagnostic });
+  }
+  return result;
 }
 export interface RemoteNativeAuthority { companyId: string; environmentId: string; runId: string; leaseId: string; sandboxId: string; image: string }
 export interface RemoteNativeBinding extends RemoteNativeAuthority { remoteCwd: string }
@@ -167,15 +190,18 @@ function observerSource() {
     .replace("WATCH_TARGET", () => createRemoteTargetWatch.toString()).replace("ATTACHED_CLIENT", () => JSON.stringify(ATTACHED_CLIENT));
 }
 const RPC = String.raw`const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process'),crypto=require('node:crypto');const r=JSON.parse(Buffer.from(process.argv[1],'base64').toString());const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
-const startedAt=Date.now();if(!Number.isInteger(r.timeoutMs)||r.timeoutMs<1000||r.timeoutMs>300000)throw Error('rpc_deadline');setTimeout(()=>process.exit(2),r.timeoutMs).unref();
+const startedAt=Date.now();if(!Number.isInteger(r.timeoutMs)||r.timeoutMs<1000||r.timeoutMs>300000)throw Error('rpc_deadline');setTimeout(()=>{failure('rpc_deadline');process.exit(2)},r.timeoutMs).unref();
 const parseStat=PARSE_STAT,runRoot=RUN_ROOT;
-async function waitRuntime(c){const root=c.binding.remoteCwd+'/'+c.runtimeRelative,boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim(),until=Math.min(startedAt+20000,startedAt+r.timeoutMs-1000);while(Date.now()<until){try{const s=fs.lstatSync(root);if(!s.isDirectory()||s.isSymbolicLink()||fs.realpathSync(root)!==root)throw Error('runtime_root_identity');const matches=[];const entries=fs.readdirSync('/proc');if(entries.length>8192)throw Error('proc_bound');for(const name of entries){if(!/^\d+$/.test(name)||Number(name)<2)continue;try{const p=parseStat(Number(name),fs.readFileSync('/proc/'+name+'/stat','utf8'),boot),argv=fs.readFileSync('/proc/'+name+'/cmdline').toString().split('\0').filter(Boolean);if(runRoot(argv,c.binding.runId,p)){if(argv[0]!==root+'/bin/paperclip-runnerd'||hash(fs.readFileSync('/proc/'+name+'/exe'))!==c.runnerdSha256)throw Error('runtime_binary_identity');matches.push(p)}}catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e}}if(matches.length>1)throw Error('ambiguous_run_root');if(matches.length===1)return;}catch(e){if(e.code!=='ENOENT')throw e}await new Promise(resolve=>setTimeout(resolve,50))}throw Error('runtime_not_ready')}
-(async()=>{let controlRequest=r;if(hash(fs.readFileSync(process.execPath))!==r.nodeSha256)throw Error('node_identity');if(r.op==='install'){const c=r.config;await waitRuntime(c);const st=fs.lstatSync(c.sentinel.path);if(!st.isFile()||st.isSymbolicLink()||st.size>16384||fs.realpathSync(c.sentinel.path)!==c.sentinel.path)throw Error('sentinel_type');const s=JSON.parse(fs.readFileSync(c.sentinel.path,'utf8'));if(s.version!==1||s.provider!=='daytona'||s.token!==c.sentinel.token||s.companyId!==c.binding.companyId||s.environmentId!==c.binding.environmentId)throw Error('sentinel');if(fs.realpathSync(c.binding.remoteCwd)!==c.binding.remoteCwd)throw Error('cwd');fs.mkdirSync(c.root,{mode:0o700});fs.writeFileSync(c.root+'/observer.cjs',r.source,{flag:'wx',mode:0o400});c.observerTtlMs=Math.max(1,c.observerTtlMs-(Date.now()-startedAt));const child=cp.spawn(process.execPath,[c.root+'/observer.cjs',Buffer.from(JSON.stringify(c)).toString('base64')],{detached:true,stdio:'ignore',env:{PATH:'/usr/bin:/bin'}});child.unref();r.root=c.root;controlRequest={op:'snapshot',nonce:c.nonce};}
-for(let i=0;!fs.existsSync(r.root+'/control.sock')&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,10));const socket=net.connect(r.root+'/control.sock');let output='';socket.setTimeout(Math.max(1,r.timeoutMs-(Date.now()-startedAt)));socket.on('timeout',()=>{socket.destroy();process.exitCode=2});socket.on('error',()=>{process.exitCode=2});socket.on('connect',()=>socket.write(JSON.stringify(controlRequest)+'\n'));socket.on('data',b=>{output+=b;if(Buffer.byteLength(output)>262144){socket.destroy();process.exitCode=2}});socket.on('end',()=>{if(!process.exitCode)process.stdout.write(output)});
-})().catch(()=>{process.exitCode=2});`;
+const codes=RPC_CODES;let failed=false;const phase=RPC_PHASES.includes(r.op)?r.op:'install';
+function failure(code){if(failed)return;failed=true;process.exitCode=2;process.stdout.write(JSON.stringify({ok:false,diagnostic:{phase,code:codes.includes(code)?code:'remote_unknown'}})+'\n')}
+function admitted(c){const st=fs.lstatSync(c.sentinel.path);if(!st.isFile()||st.isSymbolicLink()||st.size>16384||fs.realpathSync(c.sentinel.path)!==c.sentinel.path)throw Error('sentinel_type');const s=JSON.parse(fs.readFileSync(c.sentinel.path,'utf8'));if(s.version!==1||s.provider!=='daytona'||s.token!==c.sentinel.token||s.companyId!==c.binding.companyId||s.environmentId!==c.binding.environmentId)throw Error('sentinel');if(fs.realpathSync(c.binding.remoteCwd)!==c.binding.remoteCwd)throw Error('cwd')}
+function runtime(c){const root=c.binding.remoteCwd+'/'+c.runtimeRelative,boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();let s;try{s=fs.lstatSync(root,{bigint:true})}catch(e){if(e.code==='ENOENT')return {ready:false};throw e}if(!s.isDirectory()||s.isSymbolicLink()||fs.realpathSync(root)!==root)throw Error('runtime_root_identity');const matches=[];const entries=fs.readdirSync('/proc');if(entries.length>8192)throw Error('proc_bound');for(const name of entries){if(!/^\d+$/.test(name)||Number(name)<2)continue;try{const p=parseStat(Number(name),fs.readFileSync('/proc/'+name+'/stat','utf8'),boot),argv=fs.readFileSync('/proc/'+name+'/cmdline').toString().split('\0').filter(Boolean);if(runRoot(argv,c.binding.runId,p)){if(argv[0]!==root+'/bin/paperclip-runnerd'||hash(fs.readFileSync('/proc/'+name+'/exe'))!==c.runnerdSha256)throw Error('runtime_binary_identity');if(p.state!=='Z')matches.push({pid:p.pid,ppid:p.ppid,startTicks:p.startTicks,bootId:p.bootId})}}catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e}}if(matches.length>1)throw Error('ambiguous_run_root');return matches.length===1?{ready:true,binding:c.binding,root:matches[0],runtime:{dev:String(s.dev),ino:String(s.ino),runnerExecutableSha256:c.runnerdSha256}}:{ready:false}}
+(async()=>{let controlRequest=r;if(hash(fs.readFileSync(process.execPath))!==r.nodeSha256)throw Error('node_identity');if(r.op==='runtime-ready'||r.op==='install'){const c=r.config;admitted(c);const current=runtime(c);if(r.op==='runtime-ready'){process.stdout.write(JSON.stringify({ok:true,result:current})+'\n');return}if(!current.ready)throw Error('runtime_not_ready');if(JSON.stringify(current)!==JSON.stringify(r.expectedRuntime))throw Error('runtime_identity_changed');fs.mkdirSync(c.root,{mode:0o700});fs.writeFileSync(c.root+'/observer.cjs',r.source,{flag:'wx',mode:0o400});c.observerTtlMs=Math.max(1,c.observerTtlMs-(Date.now()-startedAt));const child=cp.spawn(process.execPath,[c.root+'/observer.cjs',Buffer.from(JSON.stringify(c)).toString('base64')],{detached:true,stdio:'ignore',env:{PATH:'/usr/bin:/bin'}});child.unref();r.root=c.root;controlRequest={op:'snapshot',nonce:c.nonce};}
+for(let i=0;!fs.existsSync(r.root+'/control.sock')&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,10));const socket=net.connect(r.root+'/control.sock');let output='';socket.setTimeout(Math.max(1,r.timeoutMs-(Date.now()-startedAt)));socket.on('timeout',()=>{socket.destroy();failure('socket_timeout')});socket.on('error',()=>{failure('socket_error')});socket.on('connect',()=>socket.write(JSON.stringify(controlRequest)+'\n'));socket.on('data',b=>{output+=b;if(Buffer.byteLength(output)>262144){socket.destroy();failure('output_bound')}});socket.on('end',()=>{if(!process.exitCode)process.stdout.write(output)});
+})().catch(e=>{failure(typeof e?.message==='string'?e.message:'remote_unknown')});`;
 
 function rpcSource() {
-  return RPC.replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString());
+  return RPC.replace("RPC_CODES", () => JSON.stringify(RPC_CODES)).replace("RPC_PHASES", () => JSON.stringify(RPC_PHASES)).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString());
 }
 
 export interface RemoteNativeFixture {
@@ -309,9 +335,9 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       ]);
     } finally { if (timer) clearTimeout(timer); }
   }
-  async function rpc(request: Record<string, unknown>, admitted?: Awaited<ReturnType<typeof admittedSandbox>>) {
-    const available = request.op === "close" ? CLOSE_GRACE_MS : receiptDeadlineAt - Date.now();
-    const cap = request.op === "install" ? 27_000 : request.op === "wait" ? 300_000 : 12_000;
+  async function rpc(request: Record<string, unknown>, admitted?: Awaited<ReturnType<typeof admittedSandbox>>, deadlineAt = receiptDeadlineAt) {
+    const available = request.op === "close" ? CLOSE_GRACE_MS : deadlineAt - Date.now();
+    const cap = request.op === "install" ? INSTALL_BUDGET_MS : request.op === "wait" ? 300_000 : RUNTIME_READY_BUDGET_MS;
     const budgetMs = Math.floor(Math.min(available, cap) / 1000) * 1000;
     fail(budgetMs >= 1000, "receipt_deadline");
     if (request.op === "install") fail(budgetMs >= 25_000, "insufficient_setup_budget");
@@ -328,27 +354,59 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       const command = `/usr/bin/env -i PATH=/usr/bin:/bin ${quote(NODE)} -e ${quote(rpcSource())} ${quote(payload)}`;
       let response: { exitCode: number; result: string };
       try { response = await sandbox.process.executeCommand(command, binding!.remoteCwd, {}, timeoutMs / 1000); }
-      catch { throw new Error("remote_native_fixture:remote_command_failed_or_deadline"); }
-      fail(response.exitCode === 0 && typeof response.result === "string" && Buffer.byteLength(response.result) <= MAX_OUTPUT, "command_failed_or_output_bound");
+      catch { throw new RemoteFixtureError("remote_native_fixture:remote_command_failed_or_deadline", { phase: request.op as RpcPhase, code: "transport_failure" }); }
+      if (typeof response.result !== "string" || Buffer.byteLength(response.result) > MAX_OUTPUT) throw new RemoteFixtureError("remote_native_fixture:command_failed_or_output_bound", { phase: request.op as RpcPhase, code: "output_bound" });
+      if (response.exitCode !== 0) {
+        let diagnostic: RpcDiagnostic = { phase: request.op as RpcPhase, code: "invalid_response" };
+        try {
+          const value = record(JSON.parse(response.result)), d = record(value.diagnostic);
+          if (value.ok === false && Object.keys(value).sort().join() === "diagnostic,ok" && Object.keys(d).sort().join() === "code,phase"
+            && d.phase === request.op && RPC_CODES.includes(d.code as RpcCode)) diagnostic = { phase: d.phase as RpcPhase, code: d.code as RpcCode };
+        } catch { /* Never retain remote text. */ }
+        throw new RemoteFixtureError(`remote_native_fixture:command_failed_or_output_bound:${diagnostic.phase}:${diagnostic.code}`, diagnostic);
+      }
       let parsed: Record<string, unknown>;
       try { parsed = record(JSON.parse(response.result)); } catch { throw new Error("remote_native_fixture:invalid_observer_json"); }
       fail(parsed.ok === true, "observer_incomplete");
       return parsed.result;
     }, budgetMs);
   }
-  const sandbox = await bounded(admittedSandbox, Math.min(10_000, receiptDeadlineAt - Date.now()));
+  const sandbox = await bounded(admittedSandbox, Math.min(LEASE_READMISSION_BUDGET_MS, receiptDeadlineAt - Date.now()));
   const names = [...targets, ...(options.crossRoot ? ["@cross-root"] : [])];
   const config = { root, nonce, binding, sentinel, targets, actionFile, crossRoot: options.crossRoot, runtimeRelative: RUNTIME_RELATIVE, runnerdSha256: options.runnerdSha256 };
+  // Lease activation precedes runner artifact staging. Observe the exact pinned
+  // run root before spending the single installation budget. No observer or
+  // action exists during this polling phase, and failures are never retried.
+  const readyDeadline = receiptDeadlineAt - INSTALL_BUDGET_MS;
+  let expectedRuntime: Record<string, unknown>;
+  while (true) {
+    if (readyDeadline - Date.now() < 1000) throw new RemoteFixtureError("remote_native_fixture:readiness_deadline", { phase: "runtime-ready", code: "readiness_deadline" });
+    const value = record(await rpc({ op: "runtime-ready", config }, undefined, readyDeadline));
+    if (value.ready === true) {
+      const process = record(value.root), runtime = record(value.runtime);
+      fail(Object.keys(value).sort().join() === "binding,ready,root,runtime" && JSON.stringify(value.binding) === JSON.stringify(binding)
+        && Object.keys(process).sort().join() === "bootId,pid,ppid,startTicks" && Number.isSafeInteger(process.pid) && Number(process.pid) > 1
+        && Number.isSafeInteger(process.ppid) && Number(process.ppid) >= 0 && typeof process.startTicks === "string" && /^\d+$/u.test(process.startTicks)
+        && typeof process.bootId === "string" && /^[a-f0-9-]{36}$/u.test(process.bootId)
+        && Object.keys(runtime).sort().join() === "dev,ino,runnerExecutableSha256" && typeof runtime.dev === "string" && /^\d+$/u.test(runtime.dev)
+        && typeof runtime.ino === "string" && /^\d+$/u.test(runtime.ino) && runtime.runnerExecutableSha256 === options.runnerdSha256, "runtime_ready_identity");
+      expectedRuntime = value; break;
+    }
+    fail(value.ready === false && Object.keys(value).length === 1, "runtime_ready_shape");
+    await new Promise(resolve => setTimeout(resolve, Math.min(200, Math.max(0, readyDeadline - Date.now()))));
+  }
   let baseline: RemoteNativeSnapshot;
   try {
-    baseline = readSnapshot(await rpc({ op: "install", config, source: observerSource() }, sandbox), binding!, names, actionFile, options.runnerdSha256);
+    baseline = readSnapshot(await rpc({ op: "install", config, expectedRuntime, source: observerSource() }), binding!, names, actionFile, options.runnerdSha256);
     fail(baseline.complete && baseline.processes.captured && baseline.processes.live.length > 0 && baseline.watcher.complete && !baseline.setup.published, "bootstrap_not_held");
+    fail((["pid", "ppid", "startTicks", "bootId"] as const).every(key => baseline.processes.root?.[key] === record(expectedRuntime.root)[key])
+      && baseline.scope.excludedRuntime.dev === record(expectedRuntime.runtime).dev && baseline.scope.excludedRuntime.ino === record(expectedRuntime.runtime).ino, "runtime_identity_changed");
   } catch (error) {
     // Only the nonce/inode-bound observer can acknowledge this cleanup. If
     // launch failed before its socket became available, TTL remains a bound,
     // not a claimed successful cleanup receipt.
     try { await rpc({ op: "close" }, sandbox); }
-    catch { throw new Error("remote_native_fixture:startup_failed_cleanup_unproven", { cause: error }); }
+    catch (cleanupError) { throw new RemoteFixtureError("remote_native_fixture:startup_failed_cleanup_unproven", remoteNativeFixtureDiagnostics(cleanupError)[0] ?? { phase: "close", code: "remote_unknown" }, { cause: error }); }
     throw error;
   }
   // Start receiving while the lease is still authorized, before publishAction.

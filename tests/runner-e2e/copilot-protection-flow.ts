@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -21,11 +21,23 @@ export async function settleCopilotDeniedRun(input: {
   retainPreStop(receipt: CopilotPreStopObservation): Promise<void>;
   afterSettlement(): Promise<void>;
 }) {
+  const cancellationRequestId = randomUUID();
+  const assertBeforeStop = (state: Awaited<ReturnType<typeof input.load>>) => {
+    if (state.run.id !== input.request.runId || state.run.status !== "running"
+      || state.run.resultJson?.startupCancellation != null || state.run.resultJson?.nativeCancellation != null) {
+      throw new Error("Copilot denial observed an earlier Stop or non-running run");
+    }
+  };
+  let stopSent = false;
   const poll = (label: string, accept: (state: Awaited<ReturnType<typeof input.load>>) => boolean) => pollUntil({
     label, deadlineAt: input.deadlineAt, load: async () => {
       const state = await input.load();
       // pollUntil recognizes this definitive rejection before invoking readers.
       if (["failed", "timed_out"].includes(state.run.status)) throw new Error(`Stopped waiting for ${label}: Copilot provider run failed`);
+      if (!stopSent) {
+        try { assertBeforeStop(state); }
+        catch { throw new Error(`Stopped waiting for ${label}: Copilot denial observed an earlier Stop or non-running run`); }
+      }
       return state;
     }, accept, intervalMs: 200,
   });
@@ -40,7 +52,8 @@ export async function settleCopilotDeniedRun(input: {
   while (true) {
     const state = await input.load();
     if (["failed", "timed_out"].includes(state.run.status)) throw new Error("Copilot provider run failed before Stop");
-    preStop = observeCopilotPreStop({ events: state.events, request: input.request, companyId: state.issue.companyId });
+    assertBeforeStop(state);
+    preStop = observeCopilotPreStop({ events: state.events, request: input.request, companyId: state.issue.companyId, cancellationRequestId });
     if (preStop.terminal || Date.now() >= observeUntil) break;
     await new Promise(resolve => setTimeout(resolve, Math.min(200, observeUntil - Date.now())));
   }
@@ -49,8 +62,14 @@ export async function settleCopilotDeniedRun(input: {
   // this causal boundary, and a later replay must never manufacture it.
   await input.retainPreStop(preStop);
   if (Date.now() >= input.deadlineAt) throw new Error("Copilot denial deadline reached before Stop");
+  assertBeforeStop(await input.load());
+  if (Date.now() >= input.deadlineAt) throw new Error("Copilot denial deadline reached before Stop");
   const stopDispatchMonotonicNs = process.hrtime.bigint().toString();
-  await input.api.post(`/api/heartbeat-runs/${input.request.runId}/cancel`);
+  const stopped = await input.api.post<Row>(`/api/heartbeat-runs/${input.request.runId}/cancel`, { cancellationRequestId });
+  if (stopped?.id !== input.request.runId || stopped?.resultJson?.nativeCancellation?.intentId !== `native-cancellation:${cancellationRequestId}`) {
+    throw new Error("Copilot denial Stop response has a foreign cancellation intent");
+  }
+  stopSent = true;
   await poll("correlated provider settlement and retired run", state => {
     if (!state.retired) return false;
     readCopilotDenialSettlement({ ...state, request: input.request, preStop, stopDispatchMonotonicNs }); return true;

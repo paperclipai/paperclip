@@ -3,11 +3,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { classifyFailure } from "./failure-classifier.js";
 import { ObservedStateTimeout, RemoteAdmissionReadError, RunnerApi, RunnerApiHttpError } from "./api.js";
 import { createRemoteNativeBootstrap } from "./remote-native-bootstrap.js";
-import type { RemoteFixtureApi, RemoteNativeFixture } from "./remote-native-fixtures.js";
+import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, type RemoteFixtureApi, type RemoteNativeFixture } from "./remote-native-fixtures.js";
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
-function harness(timeoutMs = 60_000) {
+function harness(timeoutMs = REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 18_000) {
   const order: string[] = [];
   const issue = { id: "issue", companyId: "company", assigneeAgentId: "agent" };
   const run = { id: "run", companyId: "company", agentId: "agent", status: "running", executionStage: "preparing" };
@@ -31,6 +31,22 @@ function harness(timeoutMs = 60_000) {
   } };
   return { bootstrap, input, bind, api, issue, run, leases, fixture, request, order };
 }
+
+it("keeps the complete readiness/install reserve when a lease arrives at the admission boundary", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("late-lease");
+  const lease = h.leases.pop()!;
+  let remainingAtBind = 0;
+  h.bind.mockImplementation(async () => { remainingAtBind = h.input.deadlineAt - Date.now(); return h.fixture; });
+  const pending = h.bootstrap.bindAndRelease(h.request);
+  await vi.advanceTimersByTimeAsync(800);
+  expect(h.bind).not.toHaveBeenCalled(); expect(h.fixture.publishAction).not.toHaveBeenCalled();
+  h.leases.push(lease); await vi.advanceTimersByTimeAsync(100);
+  await expect(pending).resolves.toBe(h.fixture);
+  expect(remainingAtBind).toBeGreaterThanOrEqual(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS);
+  expect(h.bind).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ deadlineAt: h.input.deadlineAt }));
+  expect(h.order.indexOf("baseline")).toBeLessThan(h.order.indexOf("publish"));
+});
 
 it("withholds actual work until exact run admission, armed observer and awaited baseline", async () => {
   const h = harness(); const prompt = h.bootstrap.prompt("nonce");
@@ -120,7 +136,7 @@ it("admits a cold building_snapshot lease after 20 seconds within the unchanged 
 
 it.each(["failed", "cancelled", "succeeded"])("stops waiting immediately when provisioning run becomes %s", async status => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(60_000); h.bootstrap.prompt("terminal"); h.leases.length = 0;
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 18_000); h.bootstrap.prompt("terminal"); h.leases.length = 0;
   const delivery = expect(h.bootstrap.bindAndRelease(h.request)).rejects.toThrow("stopped before observer setup");
   await vi.advanceTimersByTimeAsync(1000); h.run.status = status;
   await vi.advanceTimersByTimeAsync(100); await delivery;
@@ -140,7 +156,7 @@ it("rechecks run ownership while waiting for the lease", async () => {
 
 it.each(["foreign-run", "foreign-issue", "inactive", "missing-provider"])("never admits %s and reserves setup time within the authored deadline with bounded state", async variant => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("timeout");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("timeout");
   if (variant === "foreign-run") h.leases[0]!.heartbeatRunId = "foreign";
   if (variant === "foreign-issue") h.leases[0]!.issueId = "foreign";
   if (variant === "inactive") h.leases[0]!.status = "released";
@@ -190,7 +206,7 @@ it.each(["terminal", "run-owner", "issue-owner"])("does not lose a successful %s
 
 it.each(["/api/issues/issue", "/api/heartbeat-runs/run", "/api/environments/env/leases"])("never admits while %s cannot be read", async failedPath => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("missing-read");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("missing-read");
   const original = h.api.get.getMockImplementation()!;
   h.api.get.mockImplementation(async path => { if (path === failedPath) throw new Error("PRIVATE API ERROR"); return original(path); });
   const delivery = expect(h.bootstrap.bindAndRelease(h.request)).rejects.toThrow("diagnostics withheld");
@@ -211,7 +227,7 @@ it("allows a transient lease read failure to recover without losing the setup re
 
 it("rejects a lease read completing inside the final setup reserve and saves startup evidence", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("late");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("late");
   const original = h.api.get.getMockImplementation()!;
   h.api.get.mockImplementation(async path => {
     if (path.endsWith("/leases")) await new Promise(resolve => setTimeout(resolve, 1100));
@@ -260,7 +276,7 @@ it.each(["terminal", "run-owner", "issue-owner"])("rejects %s immediately with a
 
 it("retains persistent 503 classification without its raw cause", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("503");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("503");
   const cause = new RunnerApiHttpError(503, "GET /api/environments/env/leases returned 503: PRIVATE BODY");
   const original = h.api.get.getMockImplementation()!;
   h.api.get.mockImplementation(async path => { if (path.endsWith("/leases")) throw cause; return original(path); });
@@ -276,7 +292,7 @@ it("retains persistent 503 classification without its raw cause", async () => {
 
 it.each([true, false])("clears a recovered 503 cause before %s admission or observed-state timeout", async admits => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("503-recovery");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("503-recovery");
   const original = h.api.get.getMockImplementation()!; let failed = false;
   h.api.get.mockImplementation(async path => {
     if (path.endsWith("/leases")) {
@@ -293,7 +309,7 @@ it.each([true, false])("clears a recovered 503 cause before %s admission or obse
 
 it("bounds an unresponsive read at admission without launching replacement reads", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("hung");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("hung");
   const original = h.api.get.getMockImplementation()!;
   h.api.get.mockImplementation(async path => path.endsWith("/leases") ? new Promise<never>(() => {}) : original(path));
   const delivery = h.bootstrap.bindAndRelease(h.request).catch(error => error);
@@ -316,7 +332,7 @@ it.each([
   ["unknown object", { message: "PRIVATE", status: 503 }, "candidate_failure"],
 ])("normalizes %s rejection without exposing transport diagnostics", async (_label, rejected, failureClass) => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("safe-errors");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("safe-errors");
   const original = h.api.get.getMockImplementation()!;
   h.api.get.mockImplementation(async path => { if (path.endsWith("/leases")) throw rejected; return original(path); });
   const delivery = h.bootstrap.bindAndRelease(h.request).catch(error => error);
@@ -335,7 +351,7 @@ it.each([[503, "transient_infrastructure"], [403, "permanent_infrastructure"], [
   "normalizes actual RunnerApi HTTP %s status independently of its private body", async (status, failureClass) => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
-    const h = harness(43_000); h.bootstrap.prompt("actual-api");
+    const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("actual-api");
     const original = h.api.get.getMockImplementation()!;
     const secret = "PRIVATE body: forbidden secret plaintext 503 timeout socket hang up ".repeat(10_000);
     const request = { get: vi.fn(async (path: string) => ({
@@ -364,7 +380,7 @@ it.each([
   ["leases", ["PRIVATE"]], ["leases", [[{}]]], ["leases", undefined],
 ])("rejects malformed successful %s JSON without an unhandled continuation", async (endpoint, value) => {
   vi.useFakeTimers(); vi.setSystemTime(0);
-  const h = harness(43_000); h.bootstrap.prompt("malformed");
+  const h = harness(REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 1000); h.bootstrap.prompt("malformed");
   const original = h.api.get.getMockImplementation()!;
   const path = endpoint === "issue" ? "/api/issues/issue" : endpoint === "run" ? "/api/heartbeat-runs/run" : "/api/environments/env/leases";
   h.api.get.mockImplementation(async requested => requested === path ? value as never : original(requested));
