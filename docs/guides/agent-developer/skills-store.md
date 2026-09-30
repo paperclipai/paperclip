@@ -163,10 +163,10 @@ library and agent skill picker. Files are limited to 1 MiB each and a scan to 10
 of skill content; importing never runs scripts, hooks, dependency installation,
 or builds.
 
-**Skills → Sources** shows repositories, tracking branches, imported counts, last
-refresh times, and connection errors. **Refresh** applies valid updates immediately.
+**Skills → Sources** shows repositories, installed skill links, and connection errors.
 Click a repository title to open it on GitHub. Its three-dot menu contains
-**Select skills** and **Disconnect source**. New skills wait for
+**Refresh**, **Select skills**, and **Disconnect source**. **Refresh** applies valid
+updates immediately. New skills wait for
 **Select skills → Save selection** before import. Previously declined skills stay
 unchecked, including additions beneath excluded folders.
 
