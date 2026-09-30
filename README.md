@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  <a href="https://paperclip.ing/waitlist/"><strong>Sign up for the Paperclip Cloud waitlist →</strong></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/paperclipai/paperclip/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
   <a href="https://github.com/paperclipai/paperclip/stargazers"><img src="https://img.shields.io/github/stars/paperclipai/paperclip?style=flat" alt="Stars" /></a>
   <a href="https://www.star-history.com/paperclipai/paperclip"><img src="https://api.star-history.com/badge?repo=paperclipai/paperclip" alt="Star History Rank" /></a>
@@ -126,7 +130,7 @@ Agents wake for assigned work, follow-up messages, or configured schedules. Dele
 <tr>
 <td align="center">
 <h3>💰 Cost Control</h3>
-Company, agent, and project budgets. Track reported spend, get threshold alerts, and pause work at configured limits.
+Company, agent, and project <a href="https://docs.paperclip.ing/guides/day-to-day/costs/">budgets</a>. Track reported spend, get threshold alerts, and pause work at configured limits.
 </td>
 <td align="center">
 <h3>🏢 Multi-Organization</h3>
@@ -140,7 +144,7 @@ Keep conversations, plans, blockers, files, and run history attached to the work
 <tr>
 <td align="center">
 <h3>🛡️ Governance</h3>
-Configure review and approval stages, approve hires, and pause, reassign, or stop work when needed.
+Configure <a href="https://docs.paperclip.ing/guides/day-to-day/approvals/">review and approval stages</a>, approve hires, and pause, reassign, or stop work when needed.
 </td>
 <td align="center">
 <h3>📊 Org Chart</h3>
@@ -154,29 +158,29 @@ Monitor and manage your autonomous businesses from anywhere.
 <tr>
 <td align="center">
 <h3>🔗 Apps & Connections</h3>
-Connect services such as GitHub, Notion, and Railway, or your own MCP server. Set gateway actions to Allowed, Ask first, or Off.
+<a href="https://docs.paperclip.ing/connectors/">Connect services</a> such as GitHub, Notion, and Railway, or your own MCP server. Set gateway actions to Allowed, Ask first, or Off.
 </td>
 <td align="center">
 <h3>👥 Shared Agents, Personal Accounts</h3>
-Choose who can use a connection and which agents can access it. Managed GitHub operations can use the account of the person directing the work.
+Choose <a href="https://docs.paperclip.ing/connectors/access-model/">who can use a connection and which agents can access it</a>. Managed GitHub operations can use the account of the person directing the work.
 </td>
 <td align="center">
 <h3>🧠 Skills & Skill Studio</h3>
-Install or write shared skills, test them with saved inputs, inspect results, and restore earlier versions.
+Install or write <a href="https://docs.paperclip.ing/guides/org/skills/">shared skills</a>, test them with saved inputs, inspect results, and restore earlier versions.
 </td>
 </tr>
 <tr>
 <td align="center">
 <h3>📅 Scheduled Routines</h3>
-Run recurring work on a schedule or trigger it through an API or webhook. Each run has a task, an owner, and a history.
+Run <a href="https://docs.paperclip.ing/guides/projects-workflow/routines/">recurring work</a> on a schedule or trigger it through an API or webhook. Each run has a task, an owner, and a history.
 </td>
 <td align="center">
 <h3>📎 Artifacts & Feedback</h3>
-Find the files and documents agents produce. Preview supported formats and leave comments on specific passages in documents.
+Find the <a href="https://docs.paperclip.ing/guides/day-to-day/artifacts/">files and documents agents produce</a>. Preview supported formats and leave comments on specific passages in documents.
 </td>
 <td align="center">
 <h3>📦 Ready-Made Teams</h3>
-Preview and install teams with roles, skills, projects, and routines. Choose their runtimes and make the setup your own.
+Preview and install <a href="https://docs.paperclip.ing/guides/org/team-catalog/">teams</a> with roles, skills, projects, and routines. Choose their runtimes and make the setup your own.
 </td>
 </tr>
 </table>
@@ -299,7 +303,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 <tr>
 <td>
 
-**Plugins** — Instance-wide plugin system with out-of-process workers, capability-gated host services, job scheduling, tool exposure, and UI contributions. Extend Paperclip without forking it.
+**[Plugins](https://docs.paperclip.ing/administration/plugins/)** — Instance-wide plugin system with out-of-process workers, capability-gated host services, job scheduling, tool exposure, and UI contributions. Extend Paperclip without forking it.
 
 </td>
 <td>
@@ -316,7 +320,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td>
 
-**Company Portability** — Preview, export, and import organization packages with agents, skills, and optional projects, routines, tasks, and attachments. Referenced secret values are omitted; review packages before sharing because plain environment values and local paths can remain. Packages share an operating setup; full-instance recovery uses backups.
+**[Company Portability](https://docs.paperclip.ing/guides/power/export-import/)** — Preview, export, and import organization packages with agents, skills, and optional projects, routines, tasks, and attachments. Referenced secret values are omitted; review packages before sharing because plain environment values and local paths can remain. Packages share an operating setup; full-instance recovery uses backups.
 
 </td>
 </tr>
@@ -339,7 +343,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 ## Quickstart
 
-Open source. Self-hosted. No Paperclip account required.
+Open source. Self-hosted. No Paperclip account required. Follow the [guided quickstart](https://docs.paperclip.ing/guides/getting-started/five-minute-path/) to set up your first agent.
 
 ```bash
 curl -fsSLO https://paperclip.ing/install.sh
@@ -395,7 +399,7 @@ Each run without `--data-dir` gets a unique, retained temporary directory; its
 absolute path is printed at startup. Pass `--data-dir` to reuse one, or
 `--no-browser` to leave the initialized instance unopened. When invoked from a
 linked Git worktree, `test-drive` also enables task execution in that worktree.
-See [`doc/CLI.md`](doc/CLI.md#isolated-manual-test-drives) for credential and
+See the [test-drive guide](https://docs.paperclip.ing/reference/cli/test-drive/) for credential and
 reuse behavior.
 
 > **Troubleshooting: private npm registry `.npmrc`**
@@ -424,7 +428,7 @@ paperclipai onboard --yes --bind tailnet
 
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
 
-See [`doc/INSTALLING.md`](doc/INSTALLING.md) for pinned versions, canary and
+See the [installation guide](https://docs.paperclip.ing/reference/cli/installation/) for pinned versions, canary and
 git-ref installs, updates, rollback, service management, and uninstalling.
 
 Or manually:
@@ -449,7 +453,7 @@ Source development also builds the native Paperclip Runner when enabled (the sel
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
-For remote access, use authenticated mode with a private-network bind such as Tailscale, or deploy the persistent server with Docker. See [deployment modes](doc/DEPLOYMENT-MODES.md) and the [Docker guide](doc/DOCKER.md).
+For remote access, use authenticated mode with a private-network bind such as Tailscale, or deploy the persistent server with Docker. See [deployment modes](https://docs.paperclip.ing/reference/deploy/deployment-modes/) and the [Docker guide](https://docs.paperclip.ing/reference/deploy/docker/).
 
 **Can I run multiple companies?**
 Yes. A single deployment can host multiple organizations with company-scoped data and access checks.
