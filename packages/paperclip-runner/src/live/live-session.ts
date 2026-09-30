@@ -1,3 +1,4 @@
+import { cursorUsageNotice } from "./cursor-usage-notice.js";
 import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -2757,6 +2758,29 @@ export class CapabilityLiveSession {
 
   async #handleNotification(notification: CodexRpcNotification): Promise<void> {
     const params = notification.params;
+    if (notification.method === "paperclip/canonicalProviderEvent"
+      && params.eventType === "provider.notice.recorded"
+      && record(params.payload).category === "cursor_native_usage_observed") {
+      const notice = cursorUsageNotice(params, {
+        provider: this.#config.provider, agent: this.#config.acpxAgent,
+        threadId: this.#providerThreadId, turnId: this.#activeTurnId,
+      });
+      if (notice && !this.#evidence.some(entry => entry.turnId === this.#activeTurnId
+        && entry.kind === "provider_event" && entry.data.canonical === true
+        && record(entry.data.payload).category === "cursor_native_usage_observed")) {
+        this.#appendEvidence("provider_event", this.#activeTurnId, {
+          canonicalEventType: notice.eventType, itemId: notice.itemId, payload: notice.payload,
+        });
+        try {
+          await this.#persist();
+        } catch {
+          // These counters are optional diagnostics. Keep the evidence in the
+          // snapshot so #persist's recovered queue can retry on the next state
+          // transition. Authoritative terminal saves must still succeed.
+        }
+      }
+      return;
+    }
     const turn = record(params.turn);
     const item = record(params.item);
     const turnId = text(params.turnId, text(turn.id));

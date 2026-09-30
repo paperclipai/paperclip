@@ -481,3 +481,15 @@ and persisted historical waits and proof tampering. Current runtime/sidecar/pack
 remains blocked by the failed settlement case in the checkpoint above. This changes the
 runtime projection and profile contract, while the pinned Cursor native
 executable and distribution patch stay unchanged.
+
+### Runner Eval diagnostic retention
+
+The live-session recorder admits the bounded `cursor_native_usage_observed`
+notice only for the current Cursor session and turn. It validates the fixed
+provenance/reasons and generated observation identities, rejects unknown or
+oversized fields, and preserves parent/child observations through durable eval
+checkpoint reload. These unsummed, partial counters never enter the usage ledger
+or establish native USD. Deterministic transport/store tests cover this capture
+path; paid qualification remains pending. Earlier artifacts produced by the old
+recorder cannot establish whether these native counters were emitted and must
+retain their original accounting failure.
