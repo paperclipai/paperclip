@@ -97,10 +97,13 @@ export function buildKimiAcpConfig(config: Record<string, unknown>): Record<stri
   const nonInteractivePermissions =
     firstNonEmptyString(config.nonInteractivePermissions, config.acpNonInteractivePermissions) ??
     DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS;
-  const warmHandleIdleMs =
-    config.warmHandleIdleMs ??
-    config.acpWarmHandleIdleMs ??
-    DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // A warm ACP handle keeps the original Kimi process alive across heartbeat
+  // runs. Its process environment cannot be updated for the next turn, which
+  // leaves run-scoped PAPERCLIP_* values (token, run/task ids, scratch paths)
+  // stale or absent while the prompt advertises the newly built environment.
+  // Keep Kimi's backend session persistent, but close the process after each
+  // run so a resume launches it with that run's environment.
+  const warmHandleIdleMs = 0;
 
   const next: Record<string, unknown> = {
     ...config,

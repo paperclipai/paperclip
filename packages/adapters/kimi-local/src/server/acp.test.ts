@@ -37,6 +37,11 @@ describe("buildKimiAcpConfig", () => {
     expect(out.agentCommand).toBe("/opt/kimi acp --foo");
   });
 
+  it("disables warm ACP processes so every heartbeat receives fresh run-scoped env", () => {
+    const out = buildKimiAcpConfig({ warmHandleIdleMs: 60_000, acpWarmHandleIdleMs: 60_000 });
+    expect(out.warmHandleIdleMs).toBe(0);
+  });
+
   it("drops the model when it equals the default so ACP uses the agent default", () => {
     const out = buildKimiAcpConfig({ model: "kimi-code/kimi-for-coding" });
     expect("model" in out).toBe(false);
