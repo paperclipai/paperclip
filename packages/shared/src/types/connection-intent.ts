@@ -28,6 +28,10 @@ export interface ConnectionSearchResultItem {
     key: string;
     label: string;
     auth: "oauth" | "api_key" | "none";
+    /** Discovery is open across purposes; connection_request creates tool cards. */
+    purpose?: "tool" | "channel" | "ai";
+    /** Company-scoped setup destination for methods with a separate setup flow. */
+    setupPath?: string;
   }>;
   state: ConnectionAvailabilityState;
   connectionId: string | null;

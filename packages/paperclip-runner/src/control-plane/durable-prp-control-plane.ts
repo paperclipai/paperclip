@@ -58,7 +58,7 @@ const maxCommands = 500;
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
-const maxStateBytes = 192 * 1024 * 1024;
+const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;

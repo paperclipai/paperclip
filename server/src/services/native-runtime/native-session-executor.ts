@@ -283,8 +283,8 @@ const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 // Identity is read from the complete control-plane state, including its PRP
 // event window. Match the transport's bounded reader so verbose valid turns do
-// not lose continuation authority merely because their history exceeds 2 MiB.
-const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 64 * 1024 * 1024;
+// not lose continuation authority merely because their history exceeds 64 MiB.
+const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [

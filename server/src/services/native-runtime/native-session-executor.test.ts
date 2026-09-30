@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   realpath,
   readFile,
@@ -9746,7 +9747,7 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it("resumes an existing scoped authority only for the exact current run", async () => {
+  it("resumes a matching scoped authority with valid history above 64 MiB", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-current-scoped-state-"),
     );
@@ -9785,9 +9786,65 @@ describe("runnerd provider runtime wiring", () => {
         state.createTransport.mock.calls[0]![0].stateDirectory!;
       await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
       await mkdir(join(scopedRoot, "runner"), { recursive: true });
-      await writeFile(
-        join(scopedRoot, "control-plane", "control-plane-state.json"),
-        JSON.stringify(durableControlPlaneState(identity)),
+      const controlPlaneStatePath = join(
+        scopedRoot,
+        "control-plane",
+        "control-plane-state.json",
+      );
+      const stateWithHistory = JSON.stringify({
+        ...durableControlPlaneState(identity),
+        committedEvents: [],
+      });
+      const committedEventsMarker = '"committedEvents":[]';
+      const eventsStart = stateWithHistory.indexOf(committedEventsMarker);
+      expect(eventsStart).toBeGreaterThanOrEqual(0);
+      const eventArrayStart = eventsStart + '"committedEvents":'.length;
+      const historyPrefix = stateWithHistory.slice(0, eventArrayStart + 1);
+      const historySuffix = stateWithHistory.slice(eventArrayStart + 2);
+      const payloadBytesPerEvent = 512 * 1024;
+      const eventCount = 128;
+      const delta = "x".repeat(payloadBytesPerEvent);
+      const event = (sourceSeq: number) => {
+        const sourceEventId = `event-current-scoped-state-${sourceSeq}`;
+        return JSON.stringify({
+          sourceSeq,
+          sourceEventId,
+          eventType: "item.delta",
+          priority: 1,
+          envelope: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            sourceKind: "runner",
+            sourceInstanceId: identity.runnerInstanceId,
+            sourceEventId,
+            sourceSeq,
+            normalizedSessionId: identity.normalizedSessionId,
+            runId: identity.runId,
+            turnId: "turn-current-scoped-state",
+            itemId: "item-current-scoped-state",
+            eventType: "item.delta",
+            priority: 1,
+            emittedAt: "2026-09-30T00:00:00.000Z",
+            payload: { delta },
+          },
+          deliveryCount: 1,
+          logicalEffectCount: 1,
+        });
+      };
+      await writeFile(controlPlaneStatePath, historyPrefix);
+      const stateHandle = await open(controlPlaneStatePath, "a");
+      try {
+        for (let index = 0; index < eventCount; index += 1) {
+          if (index > 0) await stateHandle.write(",");
+          await stateHandle.write(event(index + 1));
+        }
+        await stateHandle.write("]");
+        await stateHandle.write(historySuffix);
+      } finally {
+        await stateHandle.close();
+      }
+      expect((await lstat(controlPlaneStatePath)).size).toBeGreaterThan(
+        64 * 1024 * 1024,
       );
       await writeFile(
         join(scopedRoot, "runner", "runner-state.json"),
@@ -10040,7 +10097,14 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each(["missing", "malformed", "unknown_schema", "mismatched", "oversized"] as const)(
+  it.each([
+    "missing",
+    "malformed",
+    "unknown_schema",
+    "mismatched",
+    "large_mismatched",
+    "oversized",
+  ] as const)(
     "fails closed on %s durable identity in an existing scoped root",
     async (caseName) => {
       const stateBase = await mkdtemp(
@@ -10101,6 +10165,25 @@ describe("runnerd provider runtime wiring", () => {
                   ),
           );
         }
+        if (caseName === "large_mismatched") {
+          await writeFile(
+            join(scopedRoot, "control-plane", "control-plane-state.json"),
+            JSON.stringify({
+              ...durableControlPlaneState({
+                runId: scopedExecution.binding.runId,
+                normalizedSessionId: "session-owned-by-another-scope",
+                runnerInstanceId: "runner-owned-by-another-scope",
+                environmentLeaseId: "lease-owned-by-another-scope",
+              }),
+              committedEvents: [
+                {
+                  eventType: "history",
+                  payload: { text: "x".repeat(64 * 1024 * 1024 + 1) },
+                },
+              ],
+            }),
+          );
+        }
         if (caseName === "oversized") {
           const identity = {
             runId: scopedExecution.binding.runId,
@@ -10108,12 +10191,33 @@ describe("runnerd provider runtime wiring", () => {
             runnerInstanceId: `runner-${caseName}-scoped-state`,
             environmentLeaseId: scopedExecution.binding.executionWorkspaceId,
           };
-          // Valid JSON and valid ready authority: only the byte bound rejects
-          // this file. Malformed sparse padding would not test that boundary.
-          await writeFile(
-            join(scopedRoot, "control-plane", "control-plane-state.json"),
-            JSON.stringify(durableControlPlaneState(identity)).padEnd(64 * 1024 * 1024 + 1, " "),
+          // Keep the file valid JSON so only the byte limit rejects it. Append
+          // bounded whitespace chunks to avoid a 256 MiB test allocation.
+          const statePath = join(
+            scopedRoot,
+            "control-plane",
+            "control-plane-state.json",
           );
+          const serializedState = JSON.stringify(
+            durableControlPlaneState(identity),
+          );
+          await writeFile(
+            statePath,
+            serializedState,
+          );
+          const padding = Buffer.alloc(1024 * 1024, 0x20);
+          const remainingBytes =
+            256 * 1024 * 1024 + 1 - Buffer.byteLength(serializedState);
+          const stateHandle = await open(statePath, "a");
+          try {
+            for (let remaining = remainingBytes; remaining > 0;) {
+              const bytesToWrite = Math.min(remaining, padding.length);
+              await stateHandle.write(padding, 0, bytesToWrite);
+              remaining -= bytesToWrite;
+            }
+          } finally {
+            await stateHandle.close();
+          }
           await mkdir(join(scopedRoot, "runner"), { recursive: true });
           await writeFile(
             join(scopedRoot, "runner", "runner-state.json"),
@@ -10138,7 +10242,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(quarantineEntries).toHaveLength(1);
         expect(quarantineEntries[0]!.isDirectory()).toBe(true);
         expect(quarantineEntries[0]!.name).toContain(
-          caseName === "mismatched"
+          caseName === "mismatched" || caseName === "large_mismatched"
             ? ".identity_mismatch."
             : ".identity_indeterminate.",
         );

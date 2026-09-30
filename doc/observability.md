@@ -22,7 +22,8 @@ alternative peer dependencies — install exactly **one**, matching
 `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
-packages are imported and there is zero runtime overhead.
+packages are imported and there is no SDK or exporter overhead. Local request
+timings still use the performance clock.
 
 `server/package.json` declares each optional package at the exact version the
 server tests against; install that exact version. Our Dependabot cannot bump
@@ -33,6 +34,33 @@ decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
 maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
+
+## Task detail loading
+
+`GET /api/issues/:id` returns `Server-Timing` with `paperclip_issue` for the
+whole handler and `issue_<phase>` for its reads. The total includes the final
+execution-blocker read after recovery revalidation. Concurrent phases overlap;
+do not sum them to obtain request duration.
+
+With the existing operator-configured OTLP endpoint, the same reads produce
+`issue.read.<phase>` child spans through the `paperclip.issue-read` tracer.
+There are no custom attributes, identifiers, content, or exception messages.
+The closed phase names in `server/src/services/issue-read-timing.ts` are:
+`lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
+`relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
+`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+Without an OTLP endpoint, spans remain no-ops. This adds no first-party
+Telemetry events or run-log events.
+
+The browser's `issue-detail:navigate→content-paint` User Timing measure ends
+after the redesigned conversation is revealed and painted, rather than when
+the comments request completes while the conversation is still hidden. Durable
+messages can paint before run history and plan enrichment. Runtime-only threads
+wait for initial output; late history retains the existing scroll-anchor behavior.
+Use Chrome's request waterfall and this mark together to distinguish API wait,
+request dependencies, and rendering time. A hard-load trace also includes auth,
+company selection, and JavaScript startup before the task navigation mark.
 
 ## Enabling tracing
 

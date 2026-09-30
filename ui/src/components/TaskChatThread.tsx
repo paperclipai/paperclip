@@ -1,3 +1,8 @@
+import {
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  scheduleIssueDetailPaintMeasure,
+} from "@/lib/issue-detail-performance";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
 import type { ActivityEvent, TaskBrowser } from "@paperclipai/shared";
@@ -884,25 +889,28 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [runs],
   );
   const {
-    transcriptByRun: logTranscriptByRun,
-    isInitialHydrating: logsAreInitiallyHydrating,
-    hydratedRunIds: hydratedLogRunIds,
-    errorsByRun: logErrorsByRun,
-    retry: retryLogs,
-  } = useLiveRunTranscripts({
-    // Native events are authoritative, but the persisted/live log remains a
-    // compatibility source when an upgraded server has no event history or
-    // the native event endpoint is temporarily unavailable.
-    runs,
-    companyId,
-  });
-  const {
     transcriptByRun: nativeTranscriptByRun,
     errorsByRun: nativeTranscriptErrorsByRun,
     isInitialHydrating: nativeEventsAreInitiallyHydrating,
     hydratedRunIds: hydratedNativeRunIds,
     retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
+  const logRuns = useMemo(() => runs.filter((run) =>
+    run.runtimeMode !== "native" ||
+    // Active runs still need the websocket log stream. Only settled native
+    // history can skip the legacy transport when event history is available.
+    run.status === "running" || run.status === "queued" ||
+    nativeTranscriptErrorsByRun.has(run.id) ||
+    (hydratedNativeRunIds?.has(run.id) &&
+      (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)
+  ), [runs, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
+  const {
+    transcriptByRun: logTranscriptByRun,
+    isInitialHydrating: logsAreInitiallyHydrating,
+    hydratedRunIds: hydratedLogRunIds,
+    errorsByRun: logErrorsByRun,
+    retry: retryLogs,
+  } = useLiveRunTranscripts({ runs: logRuns, companyId });
   const fallbackByRunRef = useRef(
     new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>(),
   );
@@ -2790,28 +2798,31 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         initialCommentWindow.current.oldestAt
     );
   });
-  const historyPending =
-    initialHistoryPending ||
-    planLoading ||
-    initialRuns.some((run) => {
-      // A scheduled retry has not started and has no log to hydrate yet.
-      if (run.status === "scheduled_retry") return false;
-      if (
-        run.runtimeMode === "native" &&
-        (hydratedNativeRunIds
-          ? !hydratedNativeRunIds.has(run.id)
-          : nativeEventsAreInitiallyHydrating)
-      )
-        return true;
-      if (
-        run.runtimeMode === "native" &&
-        (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0
-      )
-        return false;
-      return run.status !== "queued" && hydratedLogRunIds
-        ? !hydratedLogRunIds.has(run.id)
-        : logsAreInitiallyHydrating;
-    });
+  const transcriptHistoryPending = initialRuns.some((run) => {
+    // A scheduled retry has not started and has no log to hydrate yet.
+    if (run.status === "scheduled_retry") return false;
+    if (
+      run.runtimeMode === "native" &&
+      (hydratedNativeRunIds
+        ? !hydratedNativeRunIds.has(run.id)
+        : nativeEventsAreInitiallyHydrating)
+    )
+      return true;
+    if (
+      run.runtimeMode === "native" &&
+      (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0
+    )
+      return false;
+    return run.status !== "queued" && hydratedLogRunIds
+      ? !hydratedLogRunIds.has(run.id)
+      : logsAreInitiallyHydrating;
+  });
+  // Durable messages are useful immediately. Tool history can fill in around
+  // their stable anchors without concealing already-loaded replies. A thread
+  // with only runtime output still waits for that output before showing empty.
+  const historyPending = initialHistoryPending || (
+    comments.length === 0 && !issueBrief?.description && (planLoading || transcriptHistoryPending)
+  );
   const historyError =
     initialHistoryError ||
     planError ||
@@ -2833,6 +2844,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
     return () => cancelAnimationFrame(frame);
   }, [historyPending, historyRevealed, issueId]);
+  useEffect(() => {
+    if (!historyRevealed || !issueId) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [historyRevealed, issueId]);
   const retryHistory = () => {
     onRetryInitialHistory?.();
     retryLogs?.();

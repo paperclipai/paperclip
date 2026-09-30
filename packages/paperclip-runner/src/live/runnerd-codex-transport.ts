@@ -150,13 +150,15 @@ export function withCodexCollaborationRuntimeInstructions(
   return `${base}\n\n${CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS}`;
 }
 
+const CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
+
 function readControlPlaneState(directory: string): Record<string, unknown> {
   const path = resolve(directory, "control-plane-state.json");
   const metadata = lstatSync(path);
   if (
     metadata.isSymbolicLink() ||
     !metadata.isFile() ||
-    metadata.size > 64 * 1024 * 1024
+    metadata.size > CONTROL_PLANE_STATE_MAX_BYTES
   ) {
     throw new Error("native_runner_control_plane_state_unsafe");
   }
@@ -6741,6 +6743,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 export const runnerdRecoveryInternals = Object.freeze({
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
+  readControlPlaneState,
   awaitProviderDrainBarrier,
   awaitAdoptedRunnerAuthentication,
   awaitRunnerSuspensionBarrier,

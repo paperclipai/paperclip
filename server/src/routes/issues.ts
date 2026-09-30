@@ -1,4 +1,5 @@
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
+import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -8736,19 +8737,19 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
-    const requestStartedAt = performance.now();
+    const timing = createIssueReadTiming();
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
       req,
       res,
-      getIssueById(req, id),
+      timing.time("lookup", () => getIssueById(req, id)),
       "Issue not found",
     );
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue)))) return;
     const inboxArchiveFieldsPromise =
       req.actor.type === "board" && req.actor.userId
-        ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+        ? timing.time("inbox", () => svc.getActiveInboxArchiveFields(issue, req.actor.userId!))
         : Promise.resolve({});
     const [
       { project, goal },
@@ -8765,54 +8766,50 @@ export function issueRoutes(
       linkedCases,
       inboxArchiveFields,
       externalChannelBinding,
+      currentExecutionWorkspace,
+      workProducts,
     ] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
-      documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
-      svc
+      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue)),
+      timing.time("ancestors", () => svc.getAncestors(issue.id)),
+      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false })),
+      timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
+      timing.time("relations", () => svc.getRelationSummaries(issue.id)),
+      timing.time("blockers", () => svc
         .listBlockerAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
+        .then((map) => map.get(issue.id) ?? null)),
+      timing.time("review", () => svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      issueReferencesSvc.listIssueReferenceSummary(issue.id),
-      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
-      svc.getCurrentScheduledRetry(issue.id),
-      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
-      listIssueLinkedCases(db, issue.companyId, issue.id),
+        .then((map) => map.get(issue.id) ?? null)),
+      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id)),
+      timing.time("handoff", () => listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])),
+      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id)),
+      timing.time("recovery", () => recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)),
+      timing.time("cases", () => listIssueLinkedCases(db, issue.companyId, issue.id)),
       inboxArchiveFieldsPromise,
-      getExternalChannelBindingSummary(db, issue.companyId, issue.id),
+      timing.time("channel", () => getExternalChannelBindingSummary(db, issue.companyId, issue.id)),
+      timing.time("workspace", () => issue.executionWorkspaceId
+        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+        : Promise.resolve(null)),
+      timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
     ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
-    const revalidatedActiveRecoveryAction =
-      await revalidateActiveSourceRecoveryForRead({
+    const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects] = await Promise.all([
+      timing.time("relation_recovery", () => relationRecoveryActionMap(recoveryActionsSvc, issue.companyId, relations)),
+      timing.time("revalidate_recovery", () => revalidateActiveSourceRecoveryForRead({
         issue,
         trigger: "read_projection",
         actor: getActorInfo(req),
         activeRecoveryAction,
-      });
-    const mentionedProjects =
-      mentionedProjectIds.length > 0
-        ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
-        : [];
-    const currentExecutionWorkspace = issue.executionWorkspaceId
-      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : null;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
-    res.setHeader(
-      "Server-Timing",
-      `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`,
+      })),
+      timing.time("mentioned_projects", () => mentionedProjectIds.length > 0
+        ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+        : Promise.resolve([])),
+    ]);
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations, recoveryActionsByRelationIssue,
     );
+    // Recovery revalidation may change the blocker; read it afterwards.
+    const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
+    res.setHeader("Server-Timing", timing.header());
     res.json({
       ...issue,
       ...inboxArchiveFields,
@@ -8821,7 +8818,7 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      executionBlocker: await getExecutionBlocker(db, issue.companyId, issue.id),
+      executionBlocker,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       blockedBy: relationsWithRecoveryActions.blockedBy,

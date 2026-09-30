@@ -4,12 +4,14 @@ import {
   mkdir,
   lstat,
   mkdtemp,
+  open,
   readFile,
   readdir,
   readlink,
   rename,
   rm,
   stat,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -419,6 +421,38 @@ it("requires an explicit retained state directory before adopting a runner", () 
   ).toThrow("native_adopted_runner_state_directory_required");
   expect(launch).not.toHaveBeenCalled();
   expect(signal).not.toHaveBeenCalled();
+});
+
+it("reads valid control-plane history above 64 MiB and rejects it above 256 MiB", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-large-control-state-"));
+  const stateDirectory = join(root, "control-plane");
+  const statePath = join(stateDirectory, "control-plane-state.json");
+  try {
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        committedEvents: [
+          {
+            eventType: "history",
+            payload: { text: "x".repeat(64 * 1024 * 1024 + 1) },
+          },
+        ],
+      }),
+    );
+    expect(
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toMatchObject({
+      committedEvents: [{ eventType: "history" }],
+    });
+
+    await truncate(statePath, 256 * 1024 * 1024 + 1);
+    expect(() =>
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toThrow("native_runner_control_plane_state_unsafe");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("carries the provider attachment seed across consecutive authority rotations", () => {
@@ -6358,7 +6392,7 @@ it.each([
   },
 );
 
-it.each([0, 3 * 1024 * 1024])(
+it.each([0, 193 * 1024 * 1024])(
   "probes an exact-authority resume with %i extra journal bytes and confirms its live provider identity",
   async (extraJournalBytes) => {
     const stateDirectory = await mkdtemp(
@@ -6411,10 +6445,20 @@ it.each([0, 3 * 1024 * 1024])(
       "control-plane-state.json",
     );
     if (extraJournalBytes > 0) {
-      const journal = await readFile(statePath, "utf8");
-      const paddedJournal = `${journal}${" ".repeat(extraJournalBytes)}`;
-      await writeFile(statePath, paddedJournal);
-      expect(Buffer.byteLength(paddedJournal)).toBeGreaterThan(2 * 1024 * 1024);
+      const padding = Buffer.alloc(1024 * 1024, 0x20);
+      const stateHandle = await open(statePath, "a");
+      try {
+        for (let remaining = extraJournalBytes; remaining > 0;) {
+          const bytesToWrite = Math.min(remaining, padding.length);
+          await stateHandle.write(padding, 0, bytesToWrite);
+          remaining -= bytesToWrite;
+        }
+      } finally {
+        await stateHandle.close();
+      }
+      expect((await stat(statePath)).size).toBeGreaterThan(
+        64 * 1024 * 1024,
+      );
     }
     const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
       commands: Array<{ type: string }>;
