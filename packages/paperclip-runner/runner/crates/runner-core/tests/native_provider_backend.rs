@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
 const PI_ACPX_DIGEST: &str =
-    "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf";
+    "sha256:5e1a4357fc108fa79a66111413f85f6353b3dd3ab802ddfb80fc66719bc12571";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()

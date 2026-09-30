@@ -24,7 +24,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Candidate identity is build-owned; model selection cannot substitute a CLI. */
 export function assertPiInstallationProfile(profile: QualifiedAcpxProfile): void {
   const trusted = QUALIFIED_ACPX_PROFILES.pi;
-  if (profile.agentProfileVersion !== 9) throw new Error("Pi rich ACP requires profile version 9; reopen the previous session");
+  if (profile.agentProfileVersion !== 10) throw new Error("Pi rich ACP requires profile version 10; reopen the previous session");
   if (profile.agent !== "pi" || profile.driverKind !== trusted.driverKind || profile.protocolVersion !== trusted.protocolVersion || profile.acpxVersion !== trusted.acpxVersion || profile.agentServerPackage !== "pi-acp" || profile.agentServerVersion !== "0.0.33" || profile.agentRuntimePackage !== "@earendil-works/pi-coding-agent" || profile.agentRuntimeVersion !== "0.84.2" || profile.commandDigest !== trusted.commandDigest || profile.permissionPolicy !== "interactive" || profile.qualificationModel !== PI_MODEL || profile.reportedModelId !== PI_MODEL) throw new Error("Pi distribution profile differs from its trusted declaration");
 }
 

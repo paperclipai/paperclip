@@ -1553,6 +1553,8 @@ async function persistedRuntimeStatus(
     agentSessionId: persistedAgentSessionId,
     lastRequestId: record.lastRequestId,
     requestTokenUsage: structuredClone(record.request_token_usage ?? {}),
+    cursorPromptUsage: structuredClone(record.cursor_prompt_usage),
+    promptMessageIds: (record.messages ?? []).flatMap(message => typeof message === "object" && message !== null && "User" in message ? [message.User.id] : []),
     usageCost: structuredClone(record.cumulative_cost),
     ...(currentModelId === undefined && !availableModelIds?.length
       ? {}

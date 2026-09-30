@@ -19,7 +19,7 @@ export function cursorPrivateEnvironment(paths: { agentHomeDirectory: string; da
 /**
  * The vendor's disable-project-configs flag covers cli.json only. Keep this
  * admission refusal as defense in depth without mutating the user's project.
- * The separately verified paperclip-cursor-instructions-v2 distribution removes
+ * The separately verified paperclip-cursor-usage-v4 distribution removes
  * ambient MCP and hook discovery at its source for the entire session. This
  * check alone is not continuous filesystem protection or an OS sandbox.
  */

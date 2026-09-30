@@ -1,5 +1,5 @@
 import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -555,6 +555,24 @@ describe("native backend factory", () => {
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime",
       acpxEnvironment: { COPILOT_GITHUB_TOKEN: "explicit-fixture", CURSOR_API_KEY: "explicit-fixture", OPENROUTER_API_KEY: "explicit-fixture" },
     })).toThrow("ACPX candidate direct execution requires completed qualification");
+  });
+
+  it.each([
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v7-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v9-identity.json"],
+  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, path) => {
+    const historical = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? QUALIFIED_ACPX_PROFILES.pi.qualificationModel : "explicit-fixture-model");
+    Object.assign(input.provider, { agent, model: current.qualificationModel, profile: { ...current,
+      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
+    input.provider.profile.agentProfileVersion = current.agentProfileVersion;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified commandDigest");
   });
 
   it.each([1, 2] as const)("rejects a Pi version %s warm snapshot after the rich ACP upgrade", version => {

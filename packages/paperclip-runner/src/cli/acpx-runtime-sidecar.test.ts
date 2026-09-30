@@ -1,3 +1,4 @@
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
 import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -41,6 +42,60 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("projects the actual sidecar terminal diagnostic block without authoritative accounting", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("      try {", source.indexOf("      const usageAfter = await readSidecarHostStatusWithin(activeHost);"));
+    const end = source.indexOf("      const usage = persistedAcpxTurnUsage(", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const emitted: unknown[] = [];
+    const project = new Function("persistedCursorUsageNotice", "validateAcpxRichEvent", "emit", "usageBefore", "usageAfter", "agent", `
+      const currentTurnId="turn", runtimeTurn={requestId:"request-1"}, openParams={agent};
+      ${stripTypeScriptTypes(source.slice(start, end))}
+    `).bind(null, persistedCursorUsageNotice, validateAcpxRichEvent, (...args: unknown[]) => emitted.push(args));
+    const before = { promptMessageIds: [], requestTokenUsage: {} };
+    const after = { lastRequestId: "request-1", promptMessageIds: ["prompt-1"], requestTokenUsage: {}, cursorPromptUsage: {
+      request_id: "request-1", prompt_message_id: "prompt-1", receipt: {
+        schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended", promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
+        reasons: ["native_counter_semantics_unverified"], observations: [], limits: { maxObservations: 64, maxInvocations: 64, maxBytes: 16384 }, truncated: false,
+      },
+    } };
+    project(before, after, "cursor");
+    expect(emitted).toEqual([["runtime.rich_event", expect.objectContaining({ eventType: "provider.notice.recorded", payload: expect.objectContaining({ category: "cursor_native_usage_observed" }) }), "turn"]]);
+    emitted.length = 0;
+    for (const agent of ["copilot", "pi", "codex"]) project(before, after, agent);
+    project(after, after, "cursor");
+    project(before, { ...after, lastRequestId: "stale" }, "cursor");
+    expect(emitted).toEqual([]);
+  });
+
+  it.each(["projection", "validation", "emission"])("preserves standard usage when optional Cursor notice %s fails", async failure => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("    try {\n      const usageAfter = await readSidecarHostStatusWithin(activeHost);");
+    const end = source.indexOf("    terminal = boundedSidecarValue(result);", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const emitted: unknown[] = [], diagnostics: unknown[] = [];
+    const after = { lastRequestId: "request-1", requestTokenUsage: { "prompt-1": { input_tokens: 12, output_tokens: 3 } } };
+    const project = new Function("readSidecarHostStatusWithin", "persistedCursorUsageNotice", "persistedAcpxTurnUsage", "acpxUsageEstimateNotice", "validateAcpxRichEvent", "emit", "diagnostic", `
+      return (async () => {
+        const activeHost={}, currentTurnId="turn", runtimeTurn={requestId:"request-1"}, openParams={agent:"cursor"};
+        const usageBefore={requestTokenUsage:{}}, sanitizeRuntimeEvent=value=>value, safeMessage=()=>"fixture error";
+        ${stripTypeScriptTypes(source.slice(start, end))}
+      })();
+    `);
+    await project(async () => after,
+      () => { if (failure === "projection") throw new Error("optional projection failed"); return { eventType: "provider.notice.recorded" }; },
+      persistedAcpxTurnUsage, acpxUsageEstimateNotice,
+      () => { if (failure === "validation") throw new Error("optional validation failed"); },
+      (type: string, payload: unknown, turn: string) => {
+        if (type === "runtime.rich_event" && failure === "emission") throw new Error("optional emission failed");
+        emitted.push([type, payload, turn]);
+      },
+      (...args: unknown[]) => diagnostics.push(args),
+    );
+    expect(emitted).toEqual([["runtime.event", expect.objectContaining({ tag: "usage_update", breakdown: expect.objectContaining({ inputTokens: 12, outputTokens: 3 }) }), "turn"]]);
+    expect(diagnostics).toEqual([]);
+  });
+
   it("emits the native plan tool identity from the actual sidecar input boundary", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("async function waitForExtensionInput(");

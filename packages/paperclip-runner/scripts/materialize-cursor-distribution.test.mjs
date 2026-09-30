@@ -68,7 +68,7 @@ test("the isolation patch refuses unsupported, drifted, missing or repeated vend
 });
 
 test("retained executable vendor proof matches every checked-in patch identity", async () => {
-  const proof = JSON.parse(await readFile(new URL("../test/fixtures/cursor-acp/runtime-patch-offline-proof.json", import.meta.url), "utf8"));
+  const proof = JSON.parse(await readFile(new URL("../test/fixtures/cursor-acp/usage-v4-runtime-patch-offline-proof.json", import.meta.url), "utf8"));
   assert.equal(proof.patchVersion, CURSOR_RUNTIME_PATCH_VERSION);
   assert.equal(proof.providerCalls, 0);
   assert.equal(proof.qualification, "offline-only");

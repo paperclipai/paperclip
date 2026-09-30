@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 
@@ -26,6 +26,28 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it.each([
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v8-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v7-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v9-identity.json"],
+  ] as const)("rejects retained %s sessions after the execution identity changes", async (agent, path) => {
+    const fixture = await recoveryFixture();
+    const historical = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
+    const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : fixture.input.requestedModel);
+    const input = { ...fixture.input, requestedModel: current.qualificationModel, profile: current };
+    const next = await createAcpxRecoveryBinding(input);
+    const prior = await createAcpxRecoveryBinding({ ...input, profile: { ...current,
+      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+    const priorExpected = { ...fixture.expected, profileDigest: prior.commandDigest,
+      requestedModel: prior.requestedModel, effectiveModel: prior.effectiveModel,
+      ...(agent === "cursor" ? { cursorMode: "agent" as const } : {}) };
+    const record = createAcpxIdentityRecord(priorExpected, prior);
+    expect(next.profileDigest).not.toBe(prior.profileDigest);
+    expect(next.profileSessionKey).not.toBe(prior.profileSessionKey);
+    expect(() => verifyExpectedAcpxIdentity({ ...priorExpected, profileDigest: next.commandDigest }, next, record)).toThrow(/persisted runtime record/);
+  });
+
   it("binds Cursor mode on recovery and rejects missing or changed persisted mode", async () => {
     const fixture = await recoveryFixture();
     const input = { ...fixture.input, profile: resolveQualifiedAcpxProfile("cursor", fixture.input.requestedModel) };

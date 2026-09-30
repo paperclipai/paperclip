@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createCursorNativeUsage } from "./cursor-native-usage.mjs";
 
 // This is an owned ACP-only patch of the immutable vendor archive. The legacy
 // Cursor adapter and the vendor's interactive CLI are not changed.
-export const CURSOR_RUNTIME_PATCH_VERSION = "paperclip-cursor-instructions-v2";
+export const CURSOR_RUNTIME_PATCH_VERSION = "paperclip-cursor-usage-v4";
 export const CURSOR_RUNTIME_PATCH_PINS = Object.freeze({
-  "darwin-arm64": { file: "5672.index.js", before: "7784c8b16d4e639814c13b12be2a687f5dc2cd98cbf29ed0a10820778ab1bf62", after: "c01657c111f65153d7a40a923f01a5a86d393d1cd6893eaa03f71b9604d2af0c" },
-  "darwin-x64": { file: "9841.index.js", before: "3c0aaf6ecc4fceb0f95e1731deec75384984570d14d0871cecec11972b948ac4", after: "cf0b5dbf4ec67219ce4fc49616af4c0041c4a9774e4b0840be170b749b8bc683" },
-  "linux-x64": { file: "1699.index.js", before: "2de420f1b31e70ca74b083a1ce5b519c2abffa5789d71cc06e84d2c38acb7c07", after: "d3d634fc2080efac084f00e5d403a44d0edf1c39b02b02a4ed7d5ce0e8c703ff" },
+  "darwin-arm64": { file: "5672.index.js", before: "7784c8b16d4e639814c13b12be2a687f5dc2cd98cbf29ed0a10820778ab1bf62", after: "35c5bf13b261ea884bb0e7b26ae7bd4c4999b0b4b08ab338bc22f2ccce2b8108" },
+  "darwin-x64": { file: "9841.index.js", before: "3c0aaf6ecc4fceb0f95e1731deec75384984570d14d0871cecec11972b948ac4", after: "5b2510248429febe1c9aead6ad43d35d89cdedc4dd057d4f07495efa33c7da55" },
+  "linux-x64": { file: "1699.index.js", before: "2de420f1b31e70ca74b083a1ce5b519c2abffa5789d71cc06e84d2c38acb7c07", after: "38fe96fa71463372bffdd9efa3e5608293ff075d079149fe20a1625783c4eb39" },
 });
 const digest = value => createHash("sha256").update(value).digest("hex");
 
@@ -70,6 +71,22 @@ return paperclipCursorInstructionSnapshot=Object.freeze({rules,ack:Object.freeze
   replace(oldAction, newAction);
   replace('if(e instanceof g.T&&e.code===m.C.Unauthenticated)return void(yield this.sendAgentMessageChunk("\\n\\nError: [unauthenticated] Backend rejected authentication. Verify this is a User API Key for the same endpoint/environment, then rerun with --debug for request-level auth logs."));'.replace('m.C.Unauthenticated', `${platform === "darwin-x64" ? "f" : "m"}.C.Unauthenticated`),
     `if(e instanceof g.T&&e.code===${platform === "darwin-x64" ? "f" : "m"}.C.Unauthenticated)throw new (${errorType})(-32000,"Cursor provider authentication rejected",{schema:"paperclip.cursor.provider-error.v1",kind:"authentication_required"});`);
+  // This diagnostic envelope never emits standard ACP usage or cost. Keep the
+  // collector local to handlePrompt, including overlapping cancelled prompts.
+  replace(`const ${errorType}=`, `const paperclipCreateCursorUsage=${createCursorNativeUsage.toString()};const ${errorType}=`);
+  replace("handlePrompt(e){return V(this,void 0,void 0,(function*(){var t,n,o;", "handlePrompt(e){return V(this,void 0,void 0,(function*(){var t,n,o;const paperclipUsage=paperclipCreateCursorUsage(crypto.randomUUID());let paperclipUsagePublisher,paperclipUsageTurn;try{");
+  replace("n.beginTurn(),d=()=>", "n.beginTurn();paperclipUsagePublisher=this.subagentPublisher;paperclipUsageTurn=l;if(paperclipUsagePublisher&&l!==undefined){paperclipUsagePublisher.paperclipUsageCollectors??=new Map;paperclipUsagePublisher.paperclipUsageCollectors.set(l,paperclipUsage)}const d=()=>");
+  replace("yield this.processPrompt(e,s,l)", "yield this.processPrompt(e,s,l,paperclipUsage)");
+  replace('{stopReason:"cancelled"}):{stopReason:"end_turn"}}))}claimTaskToolCall', '{stopReason:"cancelled",_meta:{paperclipCursorUsage:paperclipUsage.finish()}}):{stopReason:"end_turn",_meta:{paperclipCursorUsage:paperclipUsage.finish()}}}finally{paperclipUsage.close();paperclipUsagePublisher?.paperclipUsageCollectors?.delete(paperclipUsageTurn)}}))}claimTaskToolCall');
+  replace("processPrompt(e,t,n){", "processPrompt(e,t,n,paperclipUsage){");
+  // A fresh sendUpdate closure for EACH native invocation prevents a delayed
+  // callback from an earlier follow-up from being attributed to the next one.
+  const invocation = /D=e=>this\.sharedServices\.agentClient\.run\(t,this\.agentStore\.getConversationStateStructure\(\),e,b\.modelDetails,\$,this\.resources,this\.agentStore\.getBlobStore\(\),u,this\.agentStore,([A-Za-z]+),([A-Za-z]+)\)/g;
+  const invocations = [...source.matchAll(invocation)];
+  if (invocations.length !== 1) throw new Error("Cursor usage invocation anchor is ambiguous");
+  const call = invocations[0];
+  replace(call[0], `D=async e=>{const observation=paperclipUsage?.beginParent();try{return await this.sharedServices.agentClient.run(t,this.agentStore.getConversationStateStructure(),e,b.modelDetails,{...$,sendUpdate:async(context,update)=>{observation?.observe(update);return $.sendUpdate(context,update)}},this.resources,this.agentStore.getBlobStore(),u,this.agentStore,${call[1]},${call[2]})}finally{observation?.end()}}`);
+  replace("onInteractionUpdate(e,t){if(!this.enabled)return;const n=this.children.get(e),o=null==n?void 0:n.presenter;", "onInteractionUpdate(e,t){if(!this.enabled)return;const n=this.children.get(e),o=null==n?void 0:n.presenter;if(n&&!n.terminal)this.paperclipUsageCollectors?.get(n.turn)?.observeChild(n,t);");
   return source;
 }
 

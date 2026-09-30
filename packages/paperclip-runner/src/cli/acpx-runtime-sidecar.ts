@@ -67,6 +67,7 @@ import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
 import {
   persistedAcpxTurnUsage,
+  persistedCursorUsageNotice,
   acpxUsageEstimateNotice,
   qualifiedAcpxUsageBreakdown,
 } from "../drivers/acpx/usage-accounting.js";
@@ -633,9 +634,16 @@ async function pumpTurn(
     if (result.status === "completed") piMessages?.settle();
     await drainExtensions();
     try {
+      const usageAfter = await readSidecarHostStatusWithin(activeHost);
+      try {
+        const cursorNotice = persistedCursorUsageNotice(usageBefore, usageAfter, runtimeTurn.requestId, openParams?.agent ?? null, `${currentTurnId}:cursor-native-usage`);
+        if (cursorNotice) { validateAcpxRichEvent(cursorNotice); emit("runtime.rich_event", { ...cursorNotice }, currentTurnId); }
+      } catch {
+        // Optional diagnostics must not suppress standard usage or terminal settlement.
+      }
       const usage = persistedAcpxTurnUsage(
         usageBefore,
-        await readSidecarHostStatusWithin(activeHost),
+        usageAfter,
         runtimeTurn.requestId,
         openParams?.agent,
       );

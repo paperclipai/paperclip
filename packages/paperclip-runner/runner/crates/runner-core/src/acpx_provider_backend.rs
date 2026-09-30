@@ -207,7 +207,7 @@ impl AcpxProviderDescriptor {
                 "0.0.33",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
-                "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
+                "sha256:5e1a4357fc108fa79a66111413f85f6353b3dd3ab802ddfb80fc66719bc12571",
             ),
             "cursor" => (
                 self.model.as_str(),
@@ -215,7 +215,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
+                "sha256:a76ad26878a3b3328154901563cbda857e53583e4e01787f35a797992ef76162",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -223,7 +223,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
+                "sha256:3b97dac7020396a84997040ee2864a47af615d69aaf1c951de391e850038157a",
             ),
             "grok" => (
                 "grok-4.7",
@@ -2803,7 +2803,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
+                "sha256:a76ad26878a3b3328154901563cbda857e53583e4e01787f35a797992ef76162",
                 None,
                 None,
                 "explicit-model",
@@ -2812,7 +2812,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
+                "sha256:3b97dac7020396a84997040ee2864a47af615d69aaf1c951de391e850038157a",
                 None,
                 None,
                 "explicit-model",
@@ -2821,7 +2821,7 @@ mod tests {
                 "pi",
                 "pi-acp",
                 "0.0.33",
-                "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
+                "sha256:5e1a4357fc108fa79a66111413f85f6353b3dd3ab802ddfb80fc66719bc12571",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
                 "openrouter/deepseek/deepseek-v4-flash-0731",
@@ -2843,6 +2843,27 @@ mod tests {
             }
             let valid: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
             valid.validate(&context()).unwrap();
+            if agent == "cursor" {
+                let mut previous_v8 = value.clone();
+                previous_v8["commandDigest"] = json!(
+                    "sha256:b9e94cbcdce2783665612c85caf019c4defe37d3d245a694de590ebdf5b1f1a3"
+                );
+                let previous_v8: AcpxProviderDescriptor =
+                    serde_json::from_value(previous_v8).unwrap();
+                assert!(previous_v8.validate(&context()).is_err());
+            }
+            let mut previous_identity = value.clone();
+            previous_identity["commandDigest"] = json!(match agent {
+                "cursor" =>
+                    "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
+                "copilot" =>
+                    "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
+                "pi" => "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
+                _ => unreachable!(),
+            });
+            let previous_identity: AcpxProviderDescriptor =
+                serde_json::from_value(previous_identity).unwrap();
+            assert!(previous_identity.validate(&context()).is_err());
             let mut previous_contract = value.clone();
             previous_contract["commandDigest"] = json!(match agent {
                 "cursor" =>

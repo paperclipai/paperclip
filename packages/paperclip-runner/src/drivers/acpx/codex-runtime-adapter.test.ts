@@ -544,6 +544,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       cumulative_cost: { amount: 0.1, currency: "USD" },
+      messages: [{ User: { id: "prompt", content: [] } }],
+      cursor_prompt_usage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       acpx: {
         current_model_id: "gpt-5.6-sol",
         available_models: ["gpt-5.6-sol"],
@@ -566,6 +568,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       usageCost: { amount: 0.1, currency: "USD" },
+      promptMessageIds: ["prompt"],
+      cursorPromptUsage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],

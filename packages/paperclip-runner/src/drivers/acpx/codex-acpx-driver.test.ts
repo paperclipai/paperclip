@@ -24,6 +24,28 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it.each(["cursor", "copilot"] as const)("emits partial Cursor metadata only for admitted Cursor, preserving %s settlement", async agent => {
+    const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-native-usage", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const before = { promptMessageIds: [], requestTokenUsage: {} };
+    const after = { lastRequestId: "provider-turn-1", promptMessageIds: ["prompt-1"], requestTokenUsage: {}, cursorPromptUsage: {
+      request_id: "provider-turn-1", prompt_message_id: "prompt-1", receipt: {
+        schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended", promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
+        reasons: ["native_counter_semantics_unverified"], observations: [{ invocationId: "invocation-1", role: "parent", nativeRun: 1, sequence: 1, counters: { inputTokens: 7 } }],
+        limits: { maxObservations: 64, maxInvocations: 64, maxBytes: 16384 }, truncated: false,
+      },
+    } };
+    fixture.host.status.mockResolvedValueOnce(before as never).mockResolvedValue(after as never);
+    await session.startTurn({ message: { text: "fixture" } });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    const notices = events.filter(e => e.eventType === "provider.notice.recorded" && e.payload.category === "cursor_native_usage_observed");
+    expect(notices).toHaveLength(agent === "cursor" ? 1 : 0);
+    expect(events.filter(e => e.eventType === "usage.updated")).toEqual([]);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    await session.close({ reason: "partial diagnostics verified" });
+  });
+
   it.each(["tool-1", "tool with spaces", "🧭/plan", "x".repeat(300)])("binds a native Cursor plan request to its actual projected tool identity: %s", async toolCallId => {
     const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", cursorMode: "plan", providerPolicy: { readOnly: false } }, {
       runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "arbitrary tool display", kind: "execute", status: "pending" }],

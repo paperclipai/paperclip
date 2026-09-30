@@ -1,6 +1,14 @@
 # Pi rich ACP runtime
 
-Current checkpoint (2026-09-30): **Pi profile v9 remains unqualified**. Current runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`; controller/Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`. Runtime builds for macOS ARM64/x64 and Linux x64 are complete. No paid profile-v9 pass is claimed. A credential with a verifiable spend limit is still needed for the remaining paid qualification. The optional transport-budget candidate is frozen on a separate branch and is not integrated or a live spending guarantee. See the [comparative capability report](runner-rich-acp-capabilities.md) for current qualification gates and the field audit. The dated observations below retain their original profile identities.
+Current source candidate (2026-09-30): **Pi profile v10 is unqualified**.
+The native wrapper/runtime and their platform closures remain unchanged from v9.
+The declaration also pins the full shared ACPX patch, whose additive Cursor
+metadata persistence changes its digest. Therefore v10 rejects v9 sessions;
+retained evidence is not relabeled. No provider budget, token accounting or model
+pricing behavior changes. Paid qualification still requires the existing enforced
+provider spending bound and fresh exact-runtime pack/image admission.
+
+Historical v9 checkpoint (2026-09-30): **Pi profile v9 remains unqualified**. Current runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`; controller/Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`. Runtime builds for macOS ARM64/x64 and Linux x64 are complete. No paid profile-v9 pass is claimed. A credential with a verifiable spend limit is still needed for the remaining paid qualification. The optional transport-budget candidate is frozen on a separate branch and is not integrated or a live spending guarantee. See the [comparative capability report](runner-rich-acp-capabilities.md) for current qualification gates and the field audit. The dated observations below retain their original profile identities.
 
 Historical implementation candidate, 2026-09-29: profile version 8 repairs
 native assistant-message attribution. Real SDK `message_start` and `message_end`

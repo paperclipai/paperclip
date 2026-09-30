@@ -1,6 +1,32 @@
 # Rich ACP integration and qualification report
 
-Updated: 2026-09-30 UTC. **Cursor v7, Copilot v7 and Pi v9 remain unqualified.** Current paid controller and Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`; runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`. Runtime builds for macOS ARM64, macOS x64 and Linux x64 are complete. Builds and credential-free admission do not qualify authenticated behavior. Reviewed PR head `3f1933db551103e6b9e3e5fa1b3bc905becb6e71` differs from controller40064 only by the OpenCode test fixture's explicit Node-copy dereference option; it does not relabel the frozen execution source.
+Current source checkpoint (2026-09-30): **Cursor v9, Copilot v8 and Pi v10
+remain unqualified**. All three declarations bind shared ACPX patch SHA-256
+`bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e`.
+Cursor additionally binds newly materialized `paperclip-cursor-usage-v4` closures;
+Copilot and Pi native distribution bytes are unchanged. The new identities reject
+retained 7/7/9 sessions, plus Cursor v8 sessions. Claude, Codex and Grok profile declarations stay unchanged.
+The metadata is observation-only: native counters always remain partial, absent
+fields stay absent, and no token totals or dollar costs are inferred. A supported
+schema does not prove native counter aggregation semantics. No new paid pass,
+build, publication or production qualification is claimed for these identities.
+External eval definitions for 8/8/10 merged in [#35](https://github.com/paperclipai/paperclip-evals/pull/35)
+as `25303cf84953985b961b95f89aff0bdb864b2d65`, from head
+`b4ef1aa1296f8897714325d189e5a6f51dad9e01`: 136 deterministic tests,
+21 validated cells, passing CI and Apex 5/5. Models, pricing and graders are
+unchanged; this adds no paid proof. Those definitions remain the historical
+Cursor v8 checkpoint and require a separate reviewed Cursor v9 update.
+
+| Source candidate | Remaining production gate |
+| --- | --- |
+| Cursor v9 | Qualify the exact new runtime locally and on Daytona; resolve native counter semantics and verified exact-model pricing before treating observations as accounting. Native input, permissions, recovery, isolation and warm continuity remain required. |
+| Copilot v8 | Admit fresh exact-runtime packs/images and qualify the required local/Daytona cases. Prior v7 passes remain case-specific historical proof. Native external-tool/sampling/limits callbacks must not leave unresolved admitted requests. |
+| Pi v10 | Retain the enforced spending-bound requirement, then qualify the exact runtime locally and on Daytona. The optional transport-budget candidate remains unintegrated. |
+
+The following checkpoint and chronology retain their original source/profile
+identities; their builds and paid outcomes do not qualify the new candidates.
+
+Historical 7/7/9 checkpoint, 2026-09-30 UTC. **Cursor v7, Copilot v7 and Pi v9 remain unqualified.** Current paid controller and Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`; runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`. Runtime builds for macOS ARM64, macOS x64 and Linux x64 are complete. Builds and credential-free admission do not qualify authenticated behavior. Reviewed PR head `3f1933db551103e6b9e3e5fa1b3bc905becb6e71` differs from controller40064 only by the OpenCode test fixture's explicit Node-copy dereference option; it does not relabel the frozen execution source.
 
 Before the controller hash fix, exact-head CI passed for Cursor `b74ca5eb976a48e35027be6eb8ea1fb09d181b82` (53 successes, two skips) and Copilot `3f1933db551103e6b9e3e5fa1b3bc905becb6e71` (54 successes, four skips; two superseded duplicate checks cancelled). Those two reviewed heads had no failed or pending checks; Greptile reported 5/5 for both. The subsequent controller fix needs its own CI review. Foundation [#14430](https://github.com/paperclipai/paperclip/pull/14430) and Runner Eval definitions [#33](https://github.com/paperclipai/paperclip-evals/pull/33) are merged. The v7/v7/v9 definition update [#34](https://github.com/paperclipai/paperclip-evals/pull/34) merged as `52f6e897c08d236776a21723257e12c909d71137`, with 136 deterministic tests and 21 validated cells. These definitions are not paid proof. Provider PRs remain drafts.
 
@@ -8,7 +34,7 @@ Current Cursor v7 local attempt `40064-cursor-plan-01` failed passive accepted-p
 
 The [prior evidence checkpoint](runner-rich-acp-validation-2026-09-30-current.json) retains controller/harness `ca7026182c2b861e3badbcb7e5b733445a6ee403` and runtime `e822b614fc368043f4b3d5e34a8d9bbda644e055`; despite its filename, it is historical for the current source. The [earlier September 30 checkpoint](runner-rich-acp-validation-2026-09-30.json) is also historical. Original failures, unknown costs and exact source/profile identities remain unchanged.
 
-| Current production gate | Required evidence or decision |
+| Gate recorded at the historical checkpoint | Required evidence or decision |
 | --- | --- |
 | Cursor v7 | Resolve the failed accepted-plan settlement and qualify the exact corrected bytes. Native AskQuestion availability remains unverified; semantic questions cannot substitute for its callback. Complete the required local/Daytona native input, permission, recovery, isolation and warm-continuity cases. |
 | Copilot v7 | The exact local attached-async and native-denial cases passed; broader provider qualification remains pending. Complete the remaining local/Daytona denial, recovery, isolation and warm-continuity cases. Explicit detached work remains unsupported. Native external-tool/sampling/limits callbacks require proof that admitted tools cannot leave an unresolved request, or a qualified responder. |

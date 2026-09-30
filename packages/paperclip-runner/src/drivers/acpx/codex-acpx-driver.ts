@@ -87,7 +87,7 @@ import {
 } from "./runtime-sandbox.js";
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
-import { acpxUsageEstimateNotice, persistedAcpxTurnUsage } from "./usage-accounting.js";
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
 const MAX_BUFFERED_EVENTS = 512;
 const TERMINAL_EVENT_RESERVE = 3;
@@ -1459,7 +1459,13 @@ class CodexAcpxSession implements HarnessSession {
       const result = await turn.result;
       if (result.status === "completed") piMessages?.settle();
       await drainExtensions();
-      const receipt = persistedAcpxTurnUsage(usageBefore, await readUsageStatus(this.#host), turn.requestId, this.#agent);
+      const usageAfter = await readUsageStatus(this.#host);
+      // Diagnostic projection failures cannot replace the provider's terminal result.
+      try {
+        const notice = persistedCursorUsageNotice(usageBefore, usageAfter, turn.requestId, this.#agent, `${turnId}:cursor-native-usage`);
+        if (notice) { validateAcpxRichEvent(notice); this.#emit(notice.eventType, notice.payload, { turnId, itemId: notice.itemId }); }
+      } catch { /* Partial native diagnostics are optional, never settlement authority. */ }
+      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent);
       if (receipt) {
         this.#mapRuntimeEvent(receipt as unknown as AcpRuntimeEvent, turnId, ++index);
         const estimate = acpxUsageEstimateNotice(receipt, `${turnId}:usage-estimate`);
