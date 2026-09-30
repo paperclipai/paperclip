@@ -1777,7 +1777,7 @@ unavailable. Preserve current ownership and newer-work fences. See
 ## GitHub-synced skill sources
 
 - Discovery supports opt-in `Accept: application/x-ndjson` on the existing discovery
-  endpoint. Progress events report repository/tree/package stages, checked skill
+  endpoint. Progress events report connection/download/tree/package stages, checked skill
   counts, and the current package's file counts; candidate events contain metadata,
   never file contents. Only the final `complete` event makes the scan selectable.
   Interrupted streams discard partial results, and cancellation stops further
@@ -1792,10 +1792,22 @@ unavailable. Preserve current ownership and newer-work fences. See
   the caller can access, automatically choosing an authorized connection. Adding accounts
   uses the standard GitHub setup in Apps and retains the import draft. Repository URLs
   use the default branch; `/tree/<branch>` URLs select a branch, including slash-containing
-  names, without a separate branch or credential selector.
+  names, without a separate branch or credential selector. Pasted URLs also prefer
+  the caller's eligible GitHub connections, including for public repositories;
+  anonymous access is used when no authorized connection succeeds. An explicitly
+  saved connection must remain authorized. Repository identity still comes from
+  the GitHub API; quota errors are distinct from access denials.
 - Discover every `SKILL.md`, including hidden/deep directories. Resolve the tracking
-  ref to an immutable commit once per operation. Truncated recursive trees require
-  complete subtree traversal or a failed scan. Symlinks and submodules are reported,
+  ref to an immutable commit once per operation through a shallow Git fetch. Read
+  the complete local Git tree and blobs without checkout, archive transformations,
+  or per-file API calls. Git's receiving/preparing percentages feed download progress.
+  Git must be installed on the server. Downloads are bounded to 128 MiB and three
+  minutes, with two simultaneous downloads and at most four cached/downloading
+  snapshots. A ten-minute in-memory index of temporary repositories, scoped by
+  company, caller, run, and grant, reuses a pinned snapshot for preview/import;
+  authorization is checked before every reuse. No credentials are written to disk
+  or inherited from host Git configuration. Cancellation terminates the Git process
+  group and removes incomplete downloads. Symlinks and submodules are reported,
   never traversed; nested skill roots are independent package boundaries.
 - Select packages as units, with included-file trees and bounded read-only previews.
   Nested packages have independent checkboxes; supporting files have no individual

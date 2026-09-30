@@ -1,5 +1,6 @@
 import { AlertCircle, Check, FileText, LoaderCircle } from 'lucide-react';
 import type { SkillSourceCandidate, SkillSourceScanProgress } from '@paperclipai/shared';
+import { formatBytes } from '@/lib/issue-output';
 import { GithubIcon } from '@/components/icons/github-icon';
 
 export type FoundSkill = Pick<SkillSourceCandidate, 'path' | 'name' | 'description' | 'fileCount' | 'error'>;
@@ -11,14 +12,17 @@ export function SkillImportProgress({ repository, progress, found = [], importin
   count?: number;
 }) {
   const phase = progress?.phase ?? 'connecting';
-  const step = phase === 'connecting' ? 0 : phase === 'listing' ? 1 : 2;
+  const step = phase === 'connecting' || phase === 'downloading' ? 0 : phase === 'listing' ? 1 : 2;
+  const download = phase === 'downloading' ? progress?.download : undefined;
   const total = progress?.totalSkills;
   const checking = !importing && phase === 'checking' && total != null;
   const title = importing ? `Importing ${count} ${count === 1 ? 'skill' : 'skills'}`
     : checking ? `${total} ${total === 1 ? 'skill' : 'skills'} found`
+    : phase === 'downloading' ? download?.stage === 'resolving' ? 'Preparing repository' : 'Downloading repository'
     : phase === 'listing' ? 'Finding skills' : 'Opening repository';
   const detail = importing ? 'Checking package files and saving local copies…'
     : checking ? `${progress?.checkedSkills ?? 0} of ${total} checked`
+    : phase === 'downloading' ? download ? `${download.percent}% ${download.stage === 'resolving' ? 'prepared' : 'received'}${download.receivedBytes ? ` · ${formatBytes(download.receivedBytes)}` : ''}` : 'Receiving the repository from GitHub…'
     : phase === 'listing' ? 'Searching every folder for SKILL.md…' : 'Connecting to GitHub and resolving the branch…';
   const recent = found.slice(-5);
   return <section className="skill-import-enter flex min-w-0 flex-col gap-5" aria-label={importing ? 'Import progress' : 'Repository scan progress'}>
@@ -34,11 +38,11 @@ export function SkillImportProgress({ repository, progress, found = [], importin
           <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p>
         </div>
       </div>
-      {checking && total > 0
+      {!importing && download ? <progress className="skill-import-progress h-1 w-full" value={download.percent} max={100} aria-label={download.stage === 'resolving' ? 'Preparing repository' : 'Repository download'} /> : checking && total > 0
         ? <progress className="skill-import-progress h-1 w-full" value={progress?.checkedSkills ?? 0} max={total} aria-label="Skills checked" />
         : <div className="h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={importing ? 'Saving skill snapshots' : 'Scanning repository'}><div className="skill-import-sweep h-full rounded-full bg-foreground/30" /></div>}
       {!importing && <ol className="flex items-center justify-between gap-2 text-xs text-muted-foreground" aria-label="Scan stages">
-        {['Connect', 'Find skills', 'Check files'].map((label, index) => <li key={label} className={`flex items-center gap-1.5 ${index === step ? 'text-foreground' : ''}`} aria-current={index === step ? 'step' : undefined}>
+        {['Download', 'Find skills', 'Check files'].map((label, index) => <li key={label} className={`flex items-center gap-1.5 ${index === step ? 'text-foreground' : ''}`} aria-current={index === step ? 'step' : undefined}>
           {index < step ? <Check className="size-3" aria-hidden /> : <span className={`size-1.5 rounded-full ${index === step ? 'bg-foreground motion-safe:animate-pulse' : 'bg-muted-foreground/40'}`} />}{label}
         </li>)}
       </ol>}

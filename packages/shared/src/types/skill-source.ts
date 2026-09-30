@@ -77,6 +77,8 @@ export interface SkillSourceCandidate {
   warnings: string[];
 }
 export interface SkillSourceDiscovery {
+  /** Caller-authorized connection actually used; omitted by older servers. */
+  connectionId?: string | null;
   repositoryId: string;
   repositoryUrl: string;
   fullName: string;
@@ -88,7 +90,8 @@ export interface SkillSourceDiscovery {
 /** Live scan metadata only. A complete event is required before selections can be imported. */
 export interface SkillSourceScanProgress {
   type: 'progress';
-  phase: 'connecting' | 'listing' | 'checking';
+  phase: 'connecting' | 'downloading' | 'listing' | 'checking';
+  download?: { stage: 'receiving' | 'resolving'; percent: number; receivedBytes?: number };
   totalSkills: number | null;
   checkedSkills: number;
   currentPath: string | null;

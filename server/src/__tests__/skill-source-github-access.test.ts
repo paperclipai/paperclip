@@ -2,15 +2,53 @@ import type { Request } from 'express';
 import type { Db } from '@paperclipai/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { forbidden } from '../errors.js';
-const mocks = vi.hoisted(() => ({ headers: vi.fn(), grantIds: vi.fn(), managed: vi.fn() }));
-vi.mock('../services/tool-access.js', () => ({ toolAccessService: () => ({ githubReadHeaders: mocks.headers, githubReadGrantIds: mocks.grantIds }) }));
+const mocks = vi.hoisted(() => ({ headers: vi.fn(), connectionIds: vi.fn(), snapshot: vi.fn(), grantIds: vi.fn(), managed: vi.fn() }));
+vi.mock('../services/tool-access.js', () => ({ toolAccessService: () => ({ githubReadHeaders: mocks.headers, githubReadConnectionIds: mocks.connectionIds, githubReadGrantIds: mocks.grantIds }) }));
 vi.mock('../services/github-operation-credentials.js', () => ({ resolveGitHubOperationCredentials: mocks.managed }));
+vi.mock('../services/skill-source-git-snapshot.js', () => ({ openGitSkillSnapshot: mocks.snapshot }));
 import { skillSourceGitHubReader } from '../services/skill-source-github-access.js';
 const actor = (values: Record<string, unknown>) => values as Request['actor'];
 const db = {} as Db;
-beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); });
+beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]); });
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
+  it('automatically uses the active user’s connection for a pasted public URL and the Git download', async () => {
+    mocks.connectionIds.mockResolvedValue(['own']);
+    mocks.headers.mockResolvedValue({ Authorization: 'Bearer own-token' });
+    const fetch = vi.fn().mockResolvedValue(Response.json({ id: 42 })); vi.stubGlobal('fetch', fetch);
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40) });
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null);
+    await read('/repos/acme/public');
+    await read.openSnapshot({ repositoryUrl: 'https://github.com/acme/public', ref: 'main' });
+    expect(new Headers(fetch.mock.calls[0][1].headers).get('authorization')).toBe('Bearer own-token');
+    expect(mocks.connectionIds).toHaveBeenCalledWith('company', 'alice', false);
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: 'own-token', cacheScope: expect.stringContaining('alice') }), {});
+    expect(mocks.headers).toHaveBeenCalledTimes(2);
+    expect(read.connectionId).toBe('own');
+  });
+  it('tries other authorized connections before anonymous public access', async () => {
+    mocks.connectionIds.mockResolvedValue(['personal', 'work']);
+    mocks.headers.mockImplementation(async (_company, id) => ({ Authorization: `Bearer ${id}` }));
+    const fetch = vi.fn().mockResolvedValueOnce(new Response('', { status: 404 })).mockResolvedValueOnce(Response.json({ id: 42 })); vi.stubGlobal('fetch', fetch);
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice' }), null);
+    await read('/repos/acme/public');
+    expect(fetch.mock.calls.map(call => new Headers(call[1].headers).get('authorization'))).toEqual(['Bearer personal', 'Bearer work']);
+    expect(read.connectionId).toBe('work');
+  });
+  it('reauthorizes before serving a cached Git snapshot and never starts Git after revocation', async () => {
+    mocks.headers.mockResolvedValueOnce({ Authorization: 'Bearer allowed' }).mockRejectedValueOnce(forbidden('Authorization revoked.'));
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40) });
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice' }), 'connection');
+    const input = { repositoryUrl: 'https://github.com/acme/private', ref: 'main', commitSha: 'a'.repeat(40) };
+    await read.openSnapshot(input);
+    await expect(read.openSnapshot(input)).rejects.toThrow('revoked');
+    expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+  });
+  it('distinguishes quota exhaustion from access denial', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } })));
+    await expect(skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice' }), null)('/repos/acme/public'))
+      .rejects.toMatchObject({ details: { code: 'skill_source_github_rate_limited' }, message: expect.stringContaining('limit resets') });
+  });
   it('aborts an in-flight GitHub fetch and does not fall through to another grant', async () => {
     mocks.grantIds.mockResolvedValue(['first', 'second']);
     mocks.headers.mockResolvedValue({ Authorization: 'Bearer allowed' });

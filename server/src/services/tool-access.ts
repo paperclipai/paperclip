@@ -17250,6 +17250,22 @@ export function toolAccessService(
       toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted),
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
+    githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {
+      const connections = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.enabled, true))).orderBy(desc(toolConnections.updatedAt));
+      const ids: string[] = [];
+      for (const connection of connections) {
+        if (connection.status !== "active" || asRecord(connection.config).sourceTemplateKey !== "github") continue;
+        try {
+          await gitHubReadGrantAccess(db, companyId, connection.id, userId, localTrusted);
+          ids.push(connection.id);
+        } catch (error) {
+          // Only ineligible grants are skipped; database/service failures must surface.
+          if (!(error instanceof Error && "status" in error && error.status === 403)) throw error;
+        }
+      }
+      return ids;
+    },
+
     githubReadGrantIds: async (companyId: string, connectionId: string, userId: string | null, localTrusted = false): Promise<Array<string | null>> => {
       const { allowed, legacyShared } = await gitHubReadGrantAccess(db, companyId, connectionId, userId, localTrusted);
       return legacyShared ? [null] : allowed.map(grant => grant.id);

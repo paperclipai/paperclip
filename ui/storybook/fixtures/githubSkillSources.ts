@@ -194,9 +194,16 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
   skillSourcesApi.discoverStream = async (companyId, input, onProgress, signal) => {
     const active = signal ? AbortSignal.any([signal, fixtureController.signal]) : fixtureController.signal;
     const result = await skillSourcesApi.discover(companyId, input);
-    const progress = { type: 'progress' as const, phase: 'connecting' as 'connecting' | 'listing' | 'checking', totalSkills: null as number | null, checkedSkills: 0, currentPath: null as string | null, checkedFiles: 0, totalFiles: null as number | null };
+    const progress = { type: 'progress' as const, phase: 'connecting' as 'connecting' | 'downloading' | 'listing' | 'checking', totalSkills: null as number | null, checkedSkills: 0, currentPath: null as string | null, checkedFiles: 0, totalFiles: null as number | null };
     onProgress({ ...progress });
     await wait(options.scan ? 900 : 100, active);
+    progress.phase = 'downloading';
+    for (const percent of [12, 38, 64, 88, 100]) {
+      onProgress({ ...progress, download: { stage: 'receiving', percent, receivedBytes: Math.round(percent / 100 * 28 * 1024 * 1024) } });
+      await wait(options.scan ? 500 : 20, active);
+    }
+    onProgress({ ...progress, download: { stage: 'resolving', percent: 70 } });
+    await wait(options.scan ? 600 : 20, active);
     progress.phase = 'listing'; onProgress({ ...progress });
     await wait(options.scan ? 1200 : 100, active);
     progress.phase = 'checking'; progress.totalSkills = options.scan === 'large' ? 128 : result.candidates.length;

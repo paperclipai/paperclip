@@ -159,7 +159,7 @@ export function skillSourceService(db: Db) {
     }
     return db.transaction(async tx => {
       const [source] = await tx.insert(sources).values({ id, companyId, repositoryId: scan.repositoryId, repositoryUrl: scan.repositoryUrl, fullName: scan.fullName,
-        trackingRef: scan.trackingRef, connectionId: input.connectionId ?? null, lastAttemptAt: new Date() }).onConflictDoNothing().returning();
+        trackingRef: scan.trackingRef, connectionId: scan.connectionId ?? input.connectionId ?? null, lastAttemptAt: new Date() }).onConflictDoNothing().returning();
       if (!source) throw conflict('This repository and branch are already in Sources. Manage its skills there.');
       const result = await publish(tx, source, scan, input.selectedPaths, input.excludedFolders ?? [], context, true);
       return { ...result, source: await detail(companyId, id, tx) };
@@ -187,7 +187,7 @@ export function skillSourceService(db: Db) {
         const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
         if (!locked || locked.leaseToken !== token || locked.revision !== source.revision || locked.leaseExpiresAt! < new Date()) throw conflict('Source refresh expired or changed. Try again.');
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection));
-        if (selection) await tx.update(sources).set({ enabled: true, connectionId }).where(scope(companyId, id));
+        if (selection || scan.connectionId !== undefined) await tx.update(sources).set({ ...(selection ? { enabled: true } : {}), connectionId: scan.connectionId ?? connectionId }).where(scope(companyId, id));
         return { ...result, source: await detail(companyId, id, tx) };
       });
     } catch (error) {

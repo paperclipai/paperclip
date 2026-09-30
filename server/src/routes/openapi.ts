@@ -11550,7 +11550,7 @@ for (const [method, path, summary] of [
     : method === "post" && path.endsWith("/skill-sources") ? { body: skillSourceCreateSchema } : {}),
   responses: {
     [method === "post" && path.endsWith("/skill-sources") ? 201 : 200]: path.endsWith("/discover") ? {
-      description: "JSON discovery by default. Accept: application/x-ndjson streams progress (phase and package/file counts), candidate metadata, then complete with discovery. An error event terminates a failed scan; partial candidates cannot be imported. Disconnecting cancels further provider reads.",
+      description: "JSON discovery by default. Accept: application/x-ndjson streams progress (phase, measured Git download percentages, and package/file counts), candidate metadata, then complete with discovery. An error event terminates a failed scan; partial candidates cannot be imported. Disconnecting cancels further provider reads.",
       content: { "application/json": { schema: z.unknown() }, "application/x-ndjson": { schema: z.string() } },
     } : r.ok(),
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,

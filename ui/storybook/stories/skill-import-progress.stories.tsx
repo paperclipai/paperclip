@@ -12,6 +12,8 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Connecting: Story = {};
+export const DownloadingRepository: Story = { args: { progress: { type: 'progress', phase: 'downloading', download: { stage: 'receiving', percent: 64, receivedBytes: 18 * 1024 * 1024 }, totalSkills: null, checkedSkills: 0, currentPath: null, checkedFiles: 0, totalFiles: null } } };
+export const PreparingRepository: Story = { args: { progress: { type: 'progress', phase: 'downloading', download: { stage: 'resolving', percent: 32 }, totalSkills: null, checkedSkills: 0, currentPath: null, checkedFiles: 0, totalFiles: null } } };
 export const FindingSkills: Story = { args: { progress: { type: 'progress', phase: 'listing', totalSkills: null, checkedSkills: 0, currentPath: '.agents/skills/', checkedFiles: 0, totalFiles: null } } };
 export const CheckingPackages: Story = { args: {
   found: candidates,

@@ -124,7 +124,9 @@ Open **Skills → Sources → Import from GitHub** (also in the **New** menu), c
 click **… or add public repo by URL** to paste a GitHub.com repository URL, then choose **Find skills**. The searchable list
 combines repositories from all GitHub connections you can access, with duplicates
 removed. Paperclip automatically uses an authorized connection for the chosen
-repository. Public repositories outside the list can use anonymous access.
+repository. Pasted URLs also use your authorized connections when available,
+including public repositories outside the list. Public repositories can use
+anonymous access when no connection succeeds; private repositories require access.
 
 A repository URL uses the default branch. Paste a branch URL such as
 `https://github.com/owner/repo/tree/feature/new-skills` to track another branch,
@@ -158,7 +160,7 @@ shown separately from these warnings and from content-audit notices.
 Validation errors appear beside affected skills; eligible selections import and
 skipped skills are reported. These skills become available in the current company's
 library and agent skill picker. Files are limited to 1 MiB each and a scan to 100 MiB
-of downloaded content; importing never runs scripts, hooks, dependency installation,
+of skill content; importing never runs scripts, hooks, dependency installation,
 or builds.
 
 **Skills → Sources** shows repositories, tracking branches, imported counts, last
@@ -190,11 +192,21 @@ existing behavior. Sync is manual and GitHub.com-only; upstream editing and pull
 requests are not part of this milestone.
 
 While finding skills, the dialog shows the scan stages, the current file, and
-recently checked skills as GitHub returns them. Large repositories show real
+recently checked skills as their local packages are validated. Large repositories show real
 package and file counts; you can cancel and retry without importing partial
 results. Selection opens only after the full scan completes. Importing displays
 an animated saving state while complete local packages are prepared. Animations
 respect reduced-motion preferences.
+
+Paperclip fetches one shallow Git snapshot, preserving committed bytes and executable
+permissions without checking out or running repository code. Download progress shows
+Git's measured receiving and preparing percentages before discovery begins. The server
+requires Git. Downloads are limited to 128 MiB and three minutes; at most two downloads
+run concurrently. Up to four temporary snapshots (including active downloads) are kept
+for ten minutes, scoped to the company and caller's authorization. Preview and import
+can reuse the exact scanned commit after checking access again. Installed skills remain
+local and independent of this temporary cache. GitHub's API is still used for repository
+identity and the connection picker, so metadata requests can still encounter rate limits.
 
 The discovery API keeps its normal JSON response. Clients requesting
 `Accept: application/x-ndjson` receive `progress` and `candidate` events followed

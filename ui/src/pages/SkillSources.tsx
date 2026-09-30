@@ -133,7 +133,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
       if (event.type === 'progress') setProgress(event);
       else setFound(previous => [...previous.filter(skill => skill.path !== event.candidate.path), event.candidate].slice(-5));
     }, controller.signal);
-    return { discovery: result, connectionId: availableConnectionId, controller };
+    return { discovery: result, connectionId: result.connectionId === undefined ? availableConnectionId : result.connectionId, controller };
   }, onSuccess: result => {
     if (result.controller.signal.aborted || scanController.current !== result.controller) return;
     setDiscovery(result.discovery); setConnectionId(result.connectionId); setSelected(new Set(result.discovery.candidates.map(candidate => candidate.path))); setExcludedFolders([]);

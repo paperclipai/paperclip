@@ -697,6 +697,8 @@ export function classifyInventoryKind(relativePath: string): CompanySkillFileInv
   const normalized = normalizePortablePath(relativePath).toLowerCase();
   if (normalized.endsWith("/skill.md") || normalized === "skill.md") return "skill";
   const fileName = path.posix.basename(normalized);
+  // Font packages commonly keep their binary assets in a dedicated fonts folder.
+  if (/\.(ttf|otf|woff2?|eot)$/i.test(fileName)) return "asset";
   if (
     fileName.endsWith(".sh")
     || fileName.endsWith(".js")

@@ -59,6 +59,23 @@ afterEach(async () => {
 });
 
 describe('GitHub skill source import', () => {
+  it('shows measured Git download progress before skill discovery and retains the automatically chosen connection', async () => {
+    let finish!: (value: typeof discovery & { connectionId: string }) => void;
+    vi.mocked(skillSourcesApi.discoverStream).mockImplementation((_company, _input, update) => {
+      update({ type: 'progress', phase: 'downloading', download: { stage: 'receiving', percent: 64, receivedBytes: 18 * 1024 * 1024 }, totalSkills: null, checkedSkills: 0, currentPath: null, checkedFiles: 0, totalFiles: null });
+      return new Promise(resolve => { finish = resolve; });
+    });
+    await mount();
+    await act(async () => button('... or add public repo by URL').click());
+    await input('input[placeholder="https://github.com/owner/repository"]', 'https://github.com/public/skills');
+    await act(async () => button('Find skills').click()); await flush();
+    expect(document.body.textContent).toContain('Downloading repository');
+    expect(document.body.textContent).toContain('64% received · 18 MB');
+    expect(document.querySelector('progress')?.value).toBe(64);
+    expect(skillSourcesApi.create).not.toHaveBeenCalled();
+    await act(async () => finish({ ...discovery, connectionId: 'shared' })); await flush();
+    expect(JSON.parse(sessionStorage.getItem('paperclip.skill-source-draft:company-1:new')!).connectionId).toBe('shared');
+  });
   it('shows streamed candidates without allowing a partial import, then discards them on failure', async () => {
     let fail!: (error: Error) => void;
     vi.mocked(skillSourcesApi.discoverStream).mockImplementation((_company, _input, update) => {

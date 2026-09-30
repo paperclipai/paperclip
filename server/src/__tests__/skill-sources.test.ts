@@ -135,12 +135,12 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     let entered!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const blocked = new Promise<void>(resolve => { release = resolve; });
-    const pending = service.refresh(companyId, created.source.id, { ...context, read: id => async request => { entered(); await blocked; return context.read(id)(request); } });
+    const pending = service.refresh(companyId, created.source.id, { ...context, read: id => Object.assign(async (request: string) => { entered(); await blocked; return context.read(id)(request); }, { openSnapshot: context.read(id).openSnapshot }) });
     await started;
     await expect(service.refresh(companyId, created.source.id, context)).rejects.toThrow(/refreshing/);
     release(); await pending;
     const before = await service.detail(companyId, created.source.id);
-    await expect(service.refresh(companyId, created.source.id, { ...context, read: () => async () => { throw new Error('provider unavailable'); } })).rejects.toThrow();
+    await expect(service.refresh(companyId, created.source.id, { ...context, read: () => Object.assign(async () => { throw new Error('provider unavailable'); }, { openSnapshot: context.read(null).openSnapshot }) })).rejects.toThrow();
     const failed = await service.detail(companyId, created.source.id);
     expect(failed.lastSuccessAt).toEqual(before.lastSuccessAt);
     expect(failed.lastAttemptAt!.getTime()).toBeGreaterThanOrEqual(before.lastAttemptAt!.getTime());
@@ -206,10 +206,10 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     files = { 'old/SKILL.md': md('updated') }; commit = 'd'.repeat(40);
     await expect(service.create(legacyCompany, { repositoryUrl: 'https://github.com/acme/skills', commitSha: commit, selectedPaths: ['old/SKILL.md'] }, context)).rejects.toThrow(/already in Sources/);
     const read = context.read(null);
-    const refreshed = await service.importFromUrl(legacyCompany, 'https://github.com/acme/skills/tree/main/old', { ...context, read: () => async request => {
+    const refreshed = await service.importFromUrl(legacyCompany, 'https://github.com/acme/skills/tree/main/old', { ...context, read: () => Object.assign(async (request: string) => {
       if (request.includes('/commits/') && !['main', commit].includes(decodeURIComponent(request.split('/commits/')[1]!))) throw unprocessable('Not found', { status: 404 });
       return read(request);
-    } });
+    }, { openSnapshot: read.openSnapshot }) });
     expect(refreshed.imported[0]).toMatchObject({ id: legacy!.id, sourceRef: commit });
     expect((await service.sourceForSkill(legacyCompany, legacy!.id))?.trackingRef).toBe('main');
     expect(await service.list(legacyCompany)).toHaveLength(2);
@@ -254,10 +254,10 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const isolatedCompany = randomUUID();
     await db.insert(companies).values({ id: isolatedCompany, name: 'Compatibility', issuePrefix: 'CMP' });
     const fixture = githubFixture({ 'deep/SKILL.md': md('compatibility'), 'elsewhere/SKILL.md': md('unselected') });
-    const read = async (request: string) => {
+    const read = Object.assign(async (request: string) => {
       if (request.includes('/commits/') && decodeURIComponent(request.split('/commits/')[1]!) !== 'feature/new-skills' && !request.endsWith(sha)) throw unprocessable('Not found', { status: 404 });
       return fixture(request);
-    };
+    }, { openSnapshot: fixture.openSnapshot });
     const service = skillSourceService(db);
     const result = await service.importFromUrl(isolatedCompany, 'https://github.com/acme/skills/tree/feature/new-skills/deep', { ...context, read: () => read });
     expect(result.imported).toHaveLength(1);
