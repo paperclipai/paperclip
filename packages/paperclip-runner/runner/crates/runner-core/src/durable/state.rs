@@ -3488,8 +3488,15 @@ mod tests {
             "Explain API key expiration",
         ] {
             let input = json!({"title": title, "onlyIfProvisional": true, "idempotencyKey": "initial-title"});
-            assert_eq!(sanitize_semantic_tool_input("set_task_title", &input).unwrap(), input);
-            assert_ne!(redact_text(title), title, "diagnostics retain strict redaction");
+            assert_eq!(
+                sanitize_semantic_tool_input("set_task_title", &input).unwrap(),
+                input
+            );
+            assert_ne!(
+                redact_text(title),
+                title,
+                "diagnostics retain strict redaction"
+            );
         }
         for title in [
             "API key opaque-credential",
@@ -3502,7 +3509,10 @@ mod tests {
             "API key rotation sk-proj-secretvalue123456",
             "API key rotation Authorization: Bearer opaque-credential",
         ] {
-            assert!(sanitize_semantic_tool_input("set_task_title", &json!({"title": title})).is_err(), "{title}");
+            assert!(
+                sanitize_semantic_tool_input("set_task_title", &json!({"title": title})).is_err(),
+                "{title}"
+            );
         }
     }
 
