@@ -78,8 +78,10 @@ from the current browser edit. Later successful saves do not erase run history.
 Larger folders take longer to hash, copy, and transfer on each run. There is one
 canonical folder plus temporary working copies for currently active runs (and
 remote staging when the transport needs it). No additional captured tree is
-created. Terminal runs remove their private trees and baseline metadata, keeping
-only a small receipt. Restart recovery retries interrupted cleanup without
+created. After verified provider retirement and collection, runs remove their
+private trees and baseline metadata, keeping only a small receipt. A successful
+warm turn can retain its unchanged copy with the still-running provider. Restart
+recovery retries interrupted cleanup without
 removing a running provider's files. These are not aggregate disk quotas; the
 operator still provisions storage for agents and the configured run concurrency.
 
@@ -101,10 +103,50 @@ operator still provisions storage for agents and the configured run concurrency.
    runs. No per-run file versions, conflict copies, or review queue accumulate.
    The next run starts with the current directory.
 
-The whole-directory contract closes the provider process to establish a safe
-collection boundary, including child processes. It preserves the provider's
-resumable conversation. Only the loaded instruction entry participates in the
-new runtime instruction digest; adding or editing another file does not change
+A successful warm turn may retain its complete, unchanged materialized directory
+and the exact `AGENT_HOME` root with the same provider process. A bounded read-only
+probe must verify the full baseline and root identity without unsafe paths or
+concurrent changes. Local hashing runs in an isolated child; remote observation
+runs at the registered remote root. A failed or uncertain probe requires stopped
+collection. The next authorized run claims that same materialization within the
+company, agent, workspace, environment and configuration scope. Projectless runs
+use the stable workspace descriptor (cwd, repository URL/ref and branch), rather
+than the per-run workspace placeholder. A remote handoff verifies both DB leases
+belong to the same company, environment and provider allocation, then binds the
+successor run's active lease and collector without re-uploading the host mirror.
+Heartbeat explicitly permits a collection-only successor handoff before checking
+warm reuse. A changed or uncertain directory records durable `retirementRequired`;
+that receipt cannot authorize reuse. The successor capability is installed only
+after the ownership transaction commits. Configuration changes and abandoned
+preparation then stop the provider and collect through that current capability,
+never an expired prior lease. Ordinary adoption remains unchanged-only. Failed
+authorization or lease validation retires the prior owner without borrowing an
+unverified successor; if its lease is unusable, the bytes remain pending.
+Before initial admission, the remote transfer's two empty scratch directories are
+removed with exact-path, identity-checked `rmdir` operations. Any content, link or
+uncertain identity fails preparation; the complete probe never excludes them.
+An exact recorded lease that is missing or no longer matches the run/environment
+blocks retrieval as well as deletion. Legacy receipts without a lease ID require
+exactly one company/run/environment lease, including when a transport is still
+cached. Missing or ambiguous ownership preserves pending files without remote
+commands. No SSH exception bypasses this fence, and no-ID receipts grant no warm
+adoption authority.
+The original materialization root remains unchanged. The prior run
+loses collection authority; stale cleanup cannot remove the current owner's root.
+
+Edits, additions, removals or changed configuration retire the owner before
+collection and fresh preparation. A configuration or copy change found at the
+final dispatch fence fails that run after retirement; it does not replay the
+request automatically. Idle expiry, restart and abandoned preparation also retire
+before collection. Immediate collection retries have a fixed call budget and must
+advance; a deferred ownership state ends the callback without inventing attempts.
+A failed close leaves an unstopped pending receipt through generic run cleanup.
+Later owner retirement or independent current-run stop proof can still collect it;
+a prior run's stop proof cannot authorize collection. The whole-directory contract
+closes the provider process,
+including child processes, to establish this safe collection boundary. It
+preserves the provider's resumable conversation. Only the loaded instruction entry
+participates in the new runtime instruction digest; adding or editing another file does not change
 that digest. Relative supporting files are read from `AGENT_HOME`, not from the
 read-only prompt snapshot.
 
@@ -155,12 +197,29 @@ save receipt. An interrupted apply can replay its changed files with the same
 last-sync-wins rule. Cleanup resumes for terminal runs; no copy is retained as
 an archive after cleanup succeeds.
 
+An unchanged-turn observation is neither a save nor proof that a provider stopped.
+If retirement fails, the controller records unresolved ownership and preserves
+the materialized root. A crash after ownership transfer can leave the new run
+without independently recorded stop proof; terminal run status or the old run's
+alias is not enough to collect that root. Recovery leaves it preserved until the
+required proof is available. Exact destruction of the current owner's remote
+allocation permits an explicit unavailable/no-save outcome and owned local
+cleanup. A stopped-but-retained allocation instead stays pending with its files
+preserved. The current remote execute API may restart a stopped sandbox even
+when it bypasses a persistent session, so recovery cannot use it for retrieval
+or deletion. Safe retrieval from a stopped allocation remains a transport gap;
+live owner retirement still collects before the environment stops. No save is
+claimed for the pending case, and stale prior-run leases cannot authorize cleanup.
+
 ## Verification
 
 `agent-directory-working-copies.test.ts` exercises nested/binary files, directory
 isolation, last-sync-wins edits and deletions, terminal cleanup, link rejection, old-head
-adoption, and stable prompt digests. The legacy working-copy and native-tool
-suites exercise compatibility. Workspace merge tests exercise preflight and
+adoption, stable prompt digests, warm ownership transfer, concurrent stale claims,
+and stop-proved recovery. `agent-directory-probe.test.ts` covers stable snapshots,
+unsafe paths, mutation races and bounded child failures; composed native executor
+tests cover retained roots and retirement before collection. The legacy
+working-copy and native-tool suites exercise compatibility. Workspace merge tests exercise preflight and
 interrupted replay.
 
 The explicit Product E2E `instruction-persistence` suite creates a file through
