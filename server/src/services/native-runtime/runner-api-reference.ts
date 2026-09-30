@@ -152,7 +152,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/release": {
     "section": "Issues (Tasks)",
-    "description": "Release task ownership"
+    "description": "Release execution locks; preserve terminal task ownership"
   },
   "GET /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
@@ -164,11 +164,11 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
-    "description": "Add comment (@-mentions trigger wakeups)",
+    "description": "Add comment (@-mentions provide context)",
     "examples": [
       {
         "body": {
-          "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation."
+          "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context."
         }
       }
     ]
@@ -194,6 +194,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "kind": "ask_user_questions",
           "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
           "title": "Hire responsibility",
+          "addresseeUserId": "{requesting-user-id}",
           "resolverPolicy": "human_only",
           "continuationPolicy": "wake_assignee",
           "payload": {
@@ -232,6 +233,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "kind": "ask_user_questions",
           "idempotencyKey": "questions:{issueId}:responsibility:v1",
           "title": "Hire responsibility",
+          "addresseeUserId": "{requesting-user-id}",
           "resolverPolicy": "human_only",
           "continuationPolicy": "wake_assignee",
           "payload": {
