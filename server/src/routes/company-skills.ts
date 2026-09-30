@@ -342,7 +342,18 @@ export function companySkillRoutes(db: Db) {
         res.set({ "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
         res.flushHeaders();
       }
-      if (!res.write(`${JSON.stringify(event)}\n`)) await once(res, "drain", { signal: controller.signal });
+      if (!res.write(`${JSON.stringify(event)}\n`)) {
+        const stalled = setTimeout(() => {
+          controller.abort();
+          res.destroy();
+        }, 30_000);
+        stalled.unref();
+        try {
+          await once(res, "drain", { signal: controller.signal });
+        } finally {
+          clearTimeout(stalled);
+        }
+      }
     };
     try {
       const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }));

@@ -81,12 +81,16 @@ async function runGit(directory: string, args: string[], token: string, options:
     let sizeCheckRunning = false, closed = false;
     let latest: NonNullable<SkillSourceScanProgress['download']> | null = null;
     let reporting: Promise<void> | null = null;
+    let stopped!: () => void;
+    const interrupted = new Promise<void>(resolve => { stopped = resolve; });
     const kill = (signal: NodeJS.Signals) => {
       try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already exited. */ }
     };
     const stop = (error: unknown) => {
       if (failure) return;
-      failure = error;
+      failure = error ?? unprocessable('Repository download interrupted. Try again.');
+      latest = null;
+      stopped();
       if (closed) return;
       kill('SIGTERM');
       killTimer = setTimeout(() => kill('SIGKILL'), 1000);
@@ -125,13 +129,17 @@ async function runGit(directory: string, args: string[], token: string, options:
         if (progress) { latest = progress; report(); }
       }
     });
-    child.on('error', error => { failure = unprocessable((error as NodeJS.ErrnoException).code === 'ENOENT'
-      ? 'Git is required to import repositories. Install Git on the Paperclip server and try again.' : 'Could not start the repository download. Try again.'); });
+    child.on('error', error => stop(unprocessable((error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? 'Git is required to import repositories. Install Git on the Paperclip server and try again.' : 'Could not start the repository download. Try again.')));
     child.on('close', async code => {
       closed = true;
-      clearTimeout(timeout); clearInterval(monitor); clearTimeout(killTimer);
+      clearInterval(monitor); clearTimeout(killTimer);
+      // Git can exit while a progress consumer is still blocked. Keep cancellation
+      // and the deadline live until that write finishes, and let either release
+      // the download slot even if the consumer never settles its promise.
+      await Promise.race([reporting, interrupted]);
+      clearTimeout(timeout);
       options.signal?.removeEventListener('abort', abort);
-      await reporting;
       if (failure) { reject(failure); return; }
       if (code !== 0) {
         const denied = /authentication failed|could not read Username|repository not found|HTTP 40[13]|returned error: 40[13]/i.test(stderr);

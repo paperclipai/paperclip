@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const interception = vi.hoisted(() => ({ remote: '', commands: [] as Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }>, hang: false }));
+const interception = vi.hoisted(() => ({ remote: '', commands: [] as Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }>, hang: false, closedFetches: 0 }));
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, spawn: (command: string, args: string[], options: import('node:child_process').SpawnOptions) => {
@@ -14,7 +14,9 @@ vi.mock('node:child_process', async importOriginal => {
     // Exercise real Git objects/processes without depending on the network in CI.
     const localArgs = args.map(arg => arg === 'https://github.com/acme/skills.git' ? `file://${interception.remote}` : arg);
     if (args.includes('fetch')) localArgs.unshift('-c', 'protocol.file.allow=always');
-    return actual.spawn(command, localArgs, options);
+    const child = actual.spawn(command, localArgs, options);
+    if (args.includes('fetch')) child.once('close', () => { interception.closedFetches++; });
+    return child;
   } };
 });
 import { clearGitSkillSnapshotCache, openGitSkillSnapshot, parseGitDownloadProgress } from '../services/skill-source-git-snapshot.js';
@@ -39,7 +41,7 @@ beforeAll(async () => {
   await git('commit', '-m', 'Gitlink');
   laterCommit = (await git('rev-parse', 'HEAD')).stdout.trim();
 });
-afterEach(async () => { interception.hang = false; await clearGitSkillSnapshotCache(); interception.commands = []; vi.unstubAllEnvs(); });
+afterEach(async () => { vi.useRealTimers(); interception.hang = false; await clearGitSkillSnapshotCache(); interception.commands = []; interception.closedFetches = 0; vi.unstubAllEnvs(); });
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
 
 describe('Git skill snapshots', () => {
@@ -90,6 +92,28 @@ describe('Git skill snapshots', () => {
     await expect(readFile(path.join(download.cwd, 'HEAD'))).rejects.toMatchObject({ code: 'ENOENT' });
     interception.hang = false;
     const retry = await openGitSkillSnapshot(request()); expect(retry.commitSha).toBe(laterCommit); await retry.release();
+  });
+  it.each(['timeout', 'cancel'] as const)('releases both download slots after %s when Git exits but progress never drains', async reason => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const controller = new AbortController();
+    const onDownload = vi.fn(() => new Promise<void>(() => {}));
+    const rejected = [0, 1].map(index => expect(openGitSkillSnapshot(request({ cacheScope: `stalled:${index}` }), {
+      signal: controller.signal, onDownload,
+    })).rejects.toThrow(reason === 'timeout' ? 'timed out' : 'aborted'));
+    await vi.waitFor(() => {
+      expect(onDownload).toHaveBeenCalledTimes(2);
+      expect(interception.closedFetches).toBe(2);
+    });
+    const downloads = interception.commands.filter(command => command.args.includes('fetch'));
+    await expect(openGitSkillSnapshot(request())).rejects.toThrow('Other repositories are downloading');
+    if (reason === 'timeout') await vi.advanceTimersByTimeAsync(180_000);
+    else controller.abort();
+    await Promise.all(rejected);
+    for (const download of downloads) await expect(readFile(path.join(download.cwd, 'HEAD'))).rejects.toMatchObject({ code: 'ENOENT' });
+    vi.useRealTimers();
+    const retry = await openGitSkillSnapshot(request());
+    expect(retry.commitSha).toBe(laterCommit);
+    await retry.release();
   });
   it.each(['https://evil.test/acme/skills', 'https://token@github.com/acme/skills', 'file:///tmp/repo'])('rejects unauthorized remote %s before starting Git', async repositoryUrl => {
     await expect(openGitSkillSnapshot(request({ repositoryUrl }))).rejects.toThrow('Invalid GitHub');

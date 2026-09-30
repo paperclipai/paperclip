@@ -210,12 +210,13 @@ describe("company skill mutation permissions", () => {
     return { companySkillRoutes, errorHandler };
   });
 
-  function createApp(actor: Record<string, unknown>) {
+  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void) {
     const { companySkillRoutes, errorHandler } = routeModules.value;
     const app = express();
     app.use(express.json());
-    app.use((req, _res, next) => {
+    app.use((req, res, next) => {
       (req as any).actor = actor;
+      onResponse?.(res);
       next();
     });
     app.use("/api", companySkillRoutes({} as any));
@@ -1392,6 +1393,37 @@ describe("company skill mutation permissions", () => {
     expect(events.at(-1)).toEqual({ type: 'error', error: 'Repository scan interrupted. Try again.', status: 500 });
     expect(events.some((event: { type: string }) => event.type === 'complete')).toBe(false);
     expect(res.text).not.toContain('credential detail');
+  });
+  it('aborts discovery and closes a connected client whose progress stream never drains', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let response: express.Response | undefined;
+    let signal: AbortSignal | undefined;
+    const write = vi.fn(() => false);
+    mockSkillSourceService.discover.mockImplementation(async (_input, _context, options) => {
+      signal = options.signal;
+      await options.onProgress({ type: 'progress', phase: 'downloading' });
+      throw new Error('A stalled scan must abort before continuing');
+    });
+    try {
+      const app = createApp({ type: 'board', userId: 'board', companyIds: ['company-1'], source: 'local_implicit' }, res => {
+        response = res;
+        res.write = write;
+      });
+      const pending = request(app).post('/api/companies/company-1/skill-sources/discover')
+        .set('Accept', 'application/x-ndjson').send({ repositoryUrl: 'https://github.com/acme/skills' })
+        .then(() => null, error => error);
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await pending).toBeTruthy();
+      expect(signal?.aborted).toBe(true);
+      expect(response?.destroyed).toBe(true);
+      expect(response?.listenerCount('drain')).toBe(0);
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      response?.destroy();
+    }
   });
 
   it("rejects cross-company source reads and mutations for board users and agents", async () => {
