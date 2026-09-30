@@ -15,6 +15,7 @@ import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
+import { useAuthorizationWindow } from "@/lib/authorizationWindow";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { accessApi } from "@/api/access";
@@ -162,10 +163,16 @@ export function Connections() {
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
   });
+  // Enrollment finishes on Paperclip Cloud's own page, so it opens in its own
+  // tab; this list stays put and refreshes when the operator comes back to it.
+  const authorizationWindow = useAuthorizationWindow();
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(selectedCompanyId!, selectedCompany?.name),
+    // Claimed while the click still counts as user activation, before the
+    // server has minted an enrollment link.
+    onMutate: () => authorizationWindow.reserve(),
     onSuccess: (status) => {
-      if (status.verificationUrl) window.location.assign(status.verificationUrl);
+      if (status.verificationUrl) authorizationWindow.navigateTo(status.verificationUrl);
     },
     onError: (error) => pushToast({
       title: "Couldn’t reach Paperclip Cloud",
@@ -317,8 +324,9 @@ export function Connections() {
           unavailable={connectorEnrollmentQuery.isError}
           busy={startConnectorEnrollment.isPending}
           onEnable={() => {
+            authorizationWindow.reserve();
             const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-            if (verificationUrl) window.location.assign(verificationUrl);
+            if (verificationUrl) authorizationWindow.navigateTo(verificationUrl);
             else startConnectorEnrollment.mutate();
           }}
         />
