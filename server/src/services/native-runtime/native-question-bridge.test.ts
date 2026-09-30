@@ -10,7 +10,9 @@ import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   heartbeatRunEvents,
@@ -118,6 +120,13 @@ describeEmbeddedPostgres("native question bridge", () => {
       name: "Native questions",
       issuePrefix: `NQ${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({
+      id: "operator-1", name: "Operator", email: "operator-1@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "operator-1", status: "active", membershipRole: "member",
     });
     await db.insert(agents).values({
       id: agentId,

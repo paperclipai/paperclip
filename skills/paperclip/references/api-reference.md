@@ -668,7 +668,7 @@ When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
 2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; an explicit `addresseeUserId` is optional when only a particular person should respond. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; leave the recipient open to eligible humans unless a particular person must answer. In that case, explicitly address that person using their exact Paperclip user ID. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 

@@ -96,6 +96,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { resolveDeploymentMode } from "../config-file.js";
 import {
   logActivity,
   publishActivity,
@@ -3551,17 +3552,22 @@ export function issueThreadInteractionService(
           if (data.addresseeUserId) {
             const [user] = await tx.select({ id: authUsers.id }).from(authUsers)
               .where(eq(authUsers.id, data.addresseeUserId));
+            const cloudManaged = isCloudManagedInstance();
+            // No-login installs have an implicit board, which need not have an
+            // auth row. Never infer this authority in authenticated/Cloud mode.
+            const localImplicit = data.addresseeUserId === "local-board"
+              && !cloudManaged && resolveDeploymentMode() === "local_trusted";
             // Use the normal board mutation policy, including viewer restrictions,
             // local/instance-admin eligibility and Cloud's no-stale-admin rule.
-            const decision = user && await authorizationService(tx).decide({
+            const decision = user || localImplicit ? await authorizationService(tx).decide({
               actor: {
                 type: "board",
-                userId: user.id,
-                source: isCloudManagedInstance() ? "cloud_tenant" : "session",
+                userId: data.addresseeUserId,
+                source: localImplicit ? "local_implicit" : cloudManaged ? "cloud_tenant" : "session",
               },
               action: "issue:mutate",
               resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
-            });
+            }) : null;
             if (!decision?.allowed) {
               throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
                 code: "interaction_addressee_user_unavailable",

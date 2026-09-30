@@ -323,13 +323,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
   });
 
-  it.each(["local-board", "instance-admin"])("preserves valid %s recipients", async (userId) => {
+  it("preserves valid instance-admin recipients", async () => {
+    const userId = "instance-admin";
     const fixture = await seedSourceQuestionFixture({});
     await db.insert(authUsers).values({ id: userId, name: "Admin", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
     expect(await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
       ...questionCreateInput(fixture.runId), addresseeUserId: userId,
     }, { agentId: fixture.agentId })).toMatchObject({ addresseeUserId: userId });
+  });
+
+  it("lets the implicit local board answer chat questions without an auth row", async () => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", "local_trusted");
+    const fixture = await seedSourceQuestionFixture({});
+    await db.update(issues).set({
+      conversationAgentId: fixture.agentId, conversationUserId: "local-board", conversationState: "active",
+      assigneeAgentId: fixture.agentId,
+    }).where(eq(issues.id, fixture.issueId));
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const question = await interactionsSvc.create(scope, questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+    expect(question.addresseeUserId).toBe("local-board");
+    expect(await db.select().from(authUsers)).toHaveLength(0);
+    expect(await db.select().from(companyMemberships)).toHaveLength(0);
+    expect(await interactionsSvc.answerQuestions(scope, question.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+    }, { userId: "local-board" })).toMatchObject({ status: "answered", resolvedByUserId: "local-board" });
+  });
+
+  it.each(["authenticated", "cloud"])("does not infer local-board authority in %s mode", async (mode) => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", mode === "cloud" ? "local_trusted" : "authenticated");
+    if (mode === "cloud") vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedSourceQuestionFixture({});
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: "local-board",
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_addressee_user_unavailable" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
   });
 
   it("does not accept a stale Cloud instance-admin row as recipient authority", async () => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, documents, documentRevisions, heartbeatRuns,
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, documents, documentRevisions, heartbeatRuns,
   issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
@@ -26,6 +26,10 @@ const support = await getEmbeddedPostgresTestSupport();
   async function seed(checkbox = false, conversation = false) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Replies", issuePrefix: companyId.slice(0, 8) });
+    if (conversation) {
+      await db.insert(authUsers).values({ id: "operator", name: "Operator", email: "operator@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "operator", status: "active", membershipRole: "member" });
+    }
     await db.insert(agents).values({ id: agentId, companyId, name: "Planner", adapterType: "paperclip_runner" });
     const [issue] = await db.insert(issues).values({ id: issueId, companyId, title: "Proposal", status: "in_progress", assigneeAgentId: agentId,
       ...(conversation ? { conversationAgentId: agentId, conversationUserId: "operator", conversationState: "active", conversationSessionGeneration: 1 } : {}) }).returning();

@@ -34,7 +34,8 @@ describe("published hiring and human-input examples", () => {
     const section = skill.split('<a id="asking-for-human-input"></a>')[1]!;
     const body = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)![1]);
     expect(createIssueThreadInteractionSchema.safeParse(substituteIds(body))).toMatchObject({ success: true });
-    expect(body).toMatchObject({ addresseeUserId: "{requesting-user-id}", resolverPolicy: "human_only", continuationPolicy: "wake_assignee" });
+    expect(body).toMatchObject({ resolverPolicy: "human_only", continuationPolicy: "wake_assignee" });
+    expect(body).not.toHaveProperty("addresseeUserId");
     expect(body.payload.questionSet.questions[0]).toMatchObject({ answerMode: "text" });
     expect(body.payload.questions[0].id).toBe(body.payload.questionSet.questions[0].id);
   });

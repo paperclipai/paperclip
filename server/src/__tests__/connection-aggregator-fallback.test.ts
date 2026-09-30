@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  authUsers,
   companies,
   companyMemberships,
   goals,
@@ -53,6 +54,10 @@ const support = await getEmbeddedPostgresTestSupport();
         name: "Connection tests",
         issuePrefix: "AGG",
         requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(authUsers).values({
+        id: "responsible-user", name: "Responsible user", email: "responsible-user@example.test",
+        createdAt: new Date(), updatedAt: new Date(),
       });
       await db.insert(companyMemberships).values({
         companyId,
