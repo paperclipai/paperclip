@@ -55,15 +55,15 @@ export function SkillSources() {
       {query.data?.map(source => {
         const installed = source.entries.filter(entry => entry.skillId);
         const newCount = source.entries.filter(entry => entry.selection === 'new' && entry.present).length;
-        return <section key={source.id} className="flex flex-col gap-3 py-4" aria-label={source.fullName}>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-3"><GithubIcon className="mt-1 size-5 shrink-0 text-muted-foreground" /><div className="min-w-0">
-              <a href={source.repositoryUrl} target="_blank" rel="noreferrer" className="break-all rounded-sm text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{source.fullName}</a>
-              <p className="text-xs text-muted-foreground"><span className="font-mono">{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}</span> · {installed.length} imported · {source.enabled ? source.lastSuccessAt ? `Refreshed ${timeAgo(source.lastSuccessAt)}` : 'Not refreshed yet' : 'Disconnected'}</p>
+        return <section key={source.id} className="@container flex flex-col gap-3 py-4" aria-label={source.fullName}>
+          <div className="flex items-start gap-3">
+            <div className="flex min-w-0 flex-1 items-start gap-3"><GithubIcon className="mt-1 size-5 shrink-0 text-muted-foreground" /><div className="min-w-0">
+              <a href={source.repositoryUrl} target="_blank" rel="noreferrer" title={source.fullName} className="block truncate rounded-sm text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{source.fullName}</a>
+              <p className="text-xs text-muted-foreground"><span className="break-all font-mono">{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}</span> · <span className="inline-block">{installed.length} imported</span> · <span className="inline-block">{source.enabled ? source.lastSuccessAt ? `Refreshed ${timeAgo(source.lastSuccessAt)}` : 'Not refreshed yet' : 'Disconnected'}</span></p>
               {newCount > 0 && <Link to={`/skills/sources/${source.id}`} className="text-xs underline">{newCount} new {newCount === 1 ? 'skill' : 'skills'} available</Link>}
             </div></div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" disabled={!source.enabled || refresh.isPending} onClick={() => refresh.mutate(source.id)}><RefreshCw className="size-4" />{refresh.isPending && refresh.variables === source.id ? 'Refreshing…' : 'Refresh'}</Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button size="sm" variant="outline" aria-label={refresh.isPending && refresh.variables === source.id ? 'Refreshing…' : 'Refresh'} title="Refresh source" disabled={!source.enabled || refresh.isPending} onClick={() => refresh.mutate(source.id)}><RefreshCw className={refresh.isPending && refresh.variables === source.id ? 'size-4 motion-safe:animate-spin' : 'size-4'} /><span className="hidden @sm:inline">{refresh.isPending && refresh.variables === source.id ? 'Refreshing…' : 'Refresh'}</span></Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="icon-sm" variant="ghost" aria-label={`More actions for ${source.fullName}`}><MoreVertical className="size-4" /></Button>

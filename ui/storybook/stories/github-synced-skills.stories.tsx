@@ -44,6 +44,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Sources: Story = {};
+export const SourcesNarrow: Story = {
+  name: 'Sources · Narrow layout',
+  globals: { viewport: { value: 'mobile1', isRotated: false } },
+};
 export const SourceActions: Story = {
   name: 'Sources · Actions menu',
   play: async ({ canvasElement }) => {
