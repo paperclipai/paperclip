@@ -99,7 +99,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(34);
+    expect(authority.definitions()).toHaveLength(35);
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");

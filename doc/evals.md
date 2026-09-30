@@ -23,6 +23,12 @@ idle, busy, multiple-task, and restart Agent Chat handoffs on native Claude/Code
 completion delivery/result access from semantic review of the retained answer;
 see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
 
+The explicit-only [task-titles suite](../tests/runner-e2e/README.md#automatic-task-titles)
+checks that production guidance causes a real native agent to name prompt-only
+standard/Ask tasks early, while preserving user-supplied titles. Its oracle
+correlates browser creation, native tool receipts, durable titles, audit ownership,
+and the reloaded task UI; fixture prompts contain no naming instructions.
+
 ## Selecting a family
 
 Use **Runner Evals** for a runner protocol, adapter, transport, native session,

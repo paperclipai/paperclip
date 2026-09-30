@@ -1,6 +1,7 @@
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks } from "./continuation-cases.js";
@@ -1139,6 +1140,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
   },
   {
+    id: "task-titles", label: "Automatic task titles", manualOnly: true,
+    description: "A real agent names a prompt-only task early using production guidance and preserves a supplied title.",
+    groups: ["native", "local"], environments: [localEnvironment],
+    profiles: everydayProfiles.filter(profile => profile.provider === "codex").map(profile => ({
+      ...profile,
+      buildAgent(input) { return { ...profile.buildAgent(input), budgetMonthlyCents: TASK_TITLE_BUDGET_CENTS }; },
+    })),
+    tasks: taskTitleTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, gradingDigest: taskTitleDefinitionDigest, instructions: "production", grading: "initial-response-early-correlated-tool-and-agent-audit", providerRuns: 1, budgetMonthlyCents: TASK_TITLE_BUDGET_CENTS, scheduling: "explicit-only" },
+  },
+  {
     id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
     description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",
     groups: ["local"], environments: [localEnvironment], profiles: codexContinuityProfiles.map(productionStoryProfile),
@@ -1486,6 +1498,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...lifecycleLiveTasks,
     ...continuationTasks,
     ...everydayTasks,
+    ...taskTitleTasks,
     ...runnerTasks,
     ...localIntegrityTasks,
     ...openRouterBreadthTasks,

@@ -1,3 +1,5 @@
+import { setIssueTitle } from "../services/issue-title.js";
+import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
@@ -8512,6 +8514,7 @@ export function issueRoutes(
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
+        titleNeedsGeneration: issue.titleNeedsGeneration,
         description: issue.description,
         status: issue.status,
         workMode: issue.workMode,
@@ -12701,6 +12704,24 @@ export function issueRoutes(
       });
     },
   );
+
+  router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!existing) return;
+    if (req.actor.type === "agent") {
+      const decision = await decideIssueAccess(req, existing, "issue:mutate");
+      if (!decision.allowed) {
+        await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
+        return;
+      }
+    }
+    const actor = getActorInfo(req);
+    const { result, publication } = await db.transaction(tx => setIssueTitle(
+      tx as unknown as Db, existing.companyId, existing.id, req.body, actor,
+    ));
+    if (publication) publishActivity(publication);
+    res.json(result);
+  });
 
   router.patch(
     "/issues/:id",

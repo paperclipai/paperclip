@@ -2038,6 +2038,13 @@
       "when": 1790776905226,
       "tag": "0292_powerful_devos",
       "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1790796608171,
+      "tag": "0293_broad_rattler",
+      "breakpoints": true
     }
   ]
 }

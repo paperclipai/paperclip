@@ -49,6 +49,7 @@ import {
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
+  setIssueTitleSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
@@ -3904,6 +3905,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "Create an issue",
+  description: "Title is optional when description contains the task prompt. The server seeds a provisional title from the first 120 characters of the whitespace-normalized prompt and asks the assigned agent to refine it early. Explicit titles are preserved.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createIssueSchema),
@@ -3923,6 +3925,16 @@ registry.registerPath({
   summary: "Get an issue",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/title",
+  tags: ["issues"],
+  summary: "Set a task title",
+  description: "Changes only the title. onlyIfProvisional preserves an explicit title, including concurrent user edits. Agent callers must own the task's active run. Allowed in Ask and Plan modes.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(setIssueTitleSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

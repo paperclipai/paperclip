@@ -12,6 +12,7 @@ import type { Issue } from "../../packages/shared/src/types/issue.js";
 import { lifecycleLiveCase, gradeLifecycleRepair } from "./lifecycle-live-cases.js";
 import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
+import { gradeTaskTitle } from "./task-titles.js";
 import { runContextIntegrityFlow } from "./context-integrity-flow.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
@@ -549,11 +550,12 @@ for (const execution of executions) {
     const title = execution.task.buildTitle(nonce);
     let prompt = execution.task.buildPrompt(nonce);
     let apiResponseSourceId: string | undefined;
+    let titleCreation: { issue: unknown; submitted: unknown } | undefined;
     let lifecycleBlockerId: string | null = null;
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = ["blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -991,6 +993,14 @@ for (const execution of executions) {
       if (execution.task.flow === "governed_tool_review") {
         reviewProvider = await setupConnectionReview({ page, api, prefix: issuePrefix, companyId: fixtures.company.id, agentId: fixtures.agent.id, marker });
       }
+      // Capture the actual creation response: a generated title can change before
+      // a later list query, and the initial provisional state is part of the oracle.
+      const titleCreationResponse = execution.suite.id === "task-titles"
+        ? page.waitForResponse(response => response.request().method() === "POST"
+          && new URL(response.url()).pathname === `/api/companies/${fixtures!.company.id}/issues`,
+          { timeout: Math.max(1, startedAtMs + deadlineMs - Date.now()) })
+          .catch((cause: unknown) => new Error("Could not capture task creation response", { cause }))
+        : null;
       turnSubmissionTimesMs.push(
         await createTaskThroughUi({
           page,
@@ -1004,7 +1014,14 @@ for (const execution of executions) {
       );
 
       const deadlineAt = startedAtMs + deadlineMs;
-      issue = await pollUntil({
+      if (titleCreationResponse) {
+        const response = await titleCreationResponse;
+        if (response instanceof Error) throw response;
+        expect(response.status()).toBe(201);
+        issue = await response.json() as IssueRecord;
+        titleCreation = { issue, submitted: response.request().postDataJSON() };
+        await writeSanitizedJson(snapshotsDir, "task-title-creation.json", titleCreation, secrets);
+      } else issue = await pollUntil({
         label: `UI-created issue ${title}`,
         deadlineAt,
         load: async () => {
@@ -2016,6 +2033,17 @@ for (const execution of executions) {
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
         if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
       }
+      if (execution.suite.id === "task-titles") {
+        const titleEvidence = gradeTaskTitle({
+          initial: titleCreation?.issue, submitted: titleCreation?.submitted,
+          final: issue, prompt, explicitTitle: title, agentId: fixtures.agent.id,
+          runId: selectedRuns[0]!.id,
+          events: runEventsByRun.find(captured => captured.runId === selectedRuns[0]!.id)?.events ?? [],
+          activity: await api.get<unknown[]>(`/api/issues/${issue.id}/activity`),
+        });
+        await writeSanitizedJson(snapshotsDir, "task-title.json", titleEvidence, secrets);
+        invariantFailures.push(...titleEvidence.checks.filter(check => !check.passed).map(check => `${check.id}: ${check.detail}`));
+      }
 
       const context = record(run.contextSnapshot);
       const environmentContext = record(context.paperclipEnvironment);
@@ -2535,12 +2563,17 @@ for (const execution of executions) {
       const visibleAgentReplies = page
         .getByTestId("task-chat-thread")
         .getByTestId("task-chat-agent-bubble");
+      if (execution.suite.id === "task-titles") {
+        await expect(page.getByRole("heading", { name: issue.title.trim(), exact: true })).toBeVisible();
+      }
       if (execution.suite.id === "api-response-reading") {
         // File delivery renders a card instead of an exact summary bubble.
         // Prove the visible link points to the same independently checked bytes.
         const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();
         await expect(proofLink).toBeVisible({ timeout: 30_000 });
         await expect(proofLink).toHaveAttribute("href", `/api/attachments/${downloadedResponseProof!.attachmentId}/content`);
+      } else if (execution.suite.id === "task-titles") {
+        await expect(visibleAgentReplies.filter({ hasText: marker }).last()).toBeVisible({ timeout: 30_000 });
       } else if (execution.task.flow === "warm_three_turn") {
         // Prove the persisted user-facing response is visible, independently
         // of the byte-for-byte workspace checks and lease continuity checks.

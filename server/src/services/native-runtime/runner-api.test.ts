@@ -58,6 +58,17 @@ describe("bounded response capture receipts", () => {
 });
 
 describe("runner API catalog", () => {
+  it.each(["standard", "ask", "planning", "skill_test"])("permits the title-only API in %s mode", workMode => {
+    const operationId = "PUT /api/issues/{id}/title";
+    const { operation } = validateRunnerApiCall({
+      operationId,
+      pathParams: { id: context.issueId },
+      body: { title: "Fix sign-in redirect", onlyIfProvisional: true },
+    }, { ...context, workMode });
+    expect(operation.allowedModes).toContain(workMode);
+    expect(operation.dedicatedTools).toEqual(["set_task_title"]);
+    expect(operation.requestBody?.content["application/json"].schema.additionalProperties).toBe(false);
+  });
   it("advertises the conversational recording exception without general approval authority", () => {
     const operationId = "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment";
     const operation = runnerApiOperation(operationId);

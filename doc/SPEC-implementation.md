@@ -229,6 +229,17 @@ See `doc/project-repositories.md` for the API and UI contract.
 
 ## 7.6 `issues` (core task entity)
 
+Task creation accepts an omitted or blank title when the description contains a prompt.
+The server stores the first 120 characters of its whitespace-normalized prompt as
+a provisional title and sets `title_needs_generation`. The assigned agent receives
+an early instruction to use `set_task_title` (or `PUT /api/issues/:id/title`) to
+replace it with a concise title. `onlyIfProvisional: true` atomically preserves a
+user or agent title already chosen, including concurrent edits. Explicit title
+edits clear the marker. Naming is available in standard, ask, and planning modes;
+it does not change status, ownership, or the full description. Title writes are
+company-scoped and audited; agent callers must own the active run. Existing tasks
+retain their titles and default to no generation request.
+
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `project_id` uuid fk `projects.id` null

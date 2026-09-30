@@ -1,3 +1,5 @@
+import { setIssueTitle } from "../issue-title.js";
+import { setIssueTitleSchema } from "@paperclipai/shared";
 import { authorizeInstructionCommit } from "../agent-instruction-authorization.js";
 import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
@@ -87,7 +89,7 @@ import {
 const IMPLEMENTED_OPERATIONS = new Set([
   "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
-  "get_task_context", "get_task_history", "search_tasks", "report_progress",
+  "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title",
   "request_human_input",
   "create_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
@@ -547,6 +549,7 @@ export class PaperclipRunnerToolAuthority {
       case "create_task": return this.#createTask(input,
         (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
       case "reassign_task": return this.#reassignTask(input);
+      case "set_task_title": return this.#setTaskTitle(input);
       case "set_dependencies": return this.#setDependencies(input);
       case "register_deliverable": return this.#registerDeliverable(input);
       default: throw new Error("paperclip_runner_tool_not_bound");
@@ -1246,6 +1249,21 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
+  async #setTaskTitle(input: Record<string, unknown>): Promise<unknown> {
+    const { idempotencyKey, ...titleInput } = setIssueTitleSchema.parse(input);
+    const key = requiredString(idempotencyKey);
+    let publication: Awaited<ReturnType<typeof setIssueTitle>>["publication"] = null;
+    const result = await this.#withMutationReceipt("set_task_title", key, input, async (tx) => {
+      const updated = await setIssueTitle(tx, this.binding.companyId, this.binding.issueId, titleInput, {
+        actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId,
+      });
+      publication = updated.publication;
+      return updated.result;
+    });
+    if (publication) publishActivity(publication);
+    return result;
+  }
+
   async #setDependencies(input: Record<string, unknown>): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     if (!Array.isArray(input.blockedByTaskIds)) {
@@ -1926,6 +1944,7 @@ function redactedTask(task: typeof issues.$inferSelect) {
     companyId: task.companyId,
     identifier: task.identifier,
     title: task.title,
+    titleNeedsGeneration: task.titleNeedsGeneration,
     description: task.description,
     status: task.status,
     statusVersion: task.statusVersion,

@@ -42,6 +42,7 @@ function words(text: string): string[] {
 }
 
 function dedicatedTools(method: string, path: string): string[] {
+  if (/\/issues\/\{[^}]+\}\/title$/.test(path) && method === "PUT") return ["set_task_title"];
   if (/\/agents\/\{[^}]+\}\/instructions-bundle\/file$/.test(path)) return method === "GET" ? ["read_agent_instructions"] : method === "PUT" ? ["update_agent_instructions"] : [];
   if (/\/agents\/\{[^}]+\}\/instructions-bundle\/history$/.test(path) && method === "GET") return ["get_agent_instruction_history"];
   if (/\/agents\/\{[^}]+\}\/instructions-bundle\/revision\/\{[^}]+\}$/.test(path) && method === "GET") return ["read_agent_instructions"];
@@ -83,6 +84,7 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
       const restriction = runnerApiRestriction(method, path);
       const conversationalConfirmation = method === "POST"
         && /^\/api\/issues\/\{[^}]+\}\/interactions\/\{[^}]+\}\/resolve-from-comment$/.test(path);
+      const taskTitleUpdate = method === "PUT" && /^\/api\/issues\/\{[^}]+\}\/title$/.test(path);
       const skillReference = runnerApiReference[`${method} ${path.replace(/\{[^}]+\}/g, "{}")}`];
       const protocol = !path.startsWith("/api/") || /\/(oauth|auth|runtime-tools|mcp|ws)(\/|$)/.test(path)
         || /\/(claude-login|login-sessions|start-authorization|finalize-oauth-access)(\/|$)/.test(path)
@@ -109,7 +111,7 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
         dedicatedToolGuidance: dedicatedTools(method, path).includes("hire_agent")
           ? "Use hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime; never use call_api to supply adapter, environment, or credential configuration."
           : "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
-        allowedModes: method === "GET" || method === "HEAD" ? ["standard", "ask", "planning", "skill_test"]
+        allowedModes: method === "GET" || method === "HEAD" || taskTitleUpdate ? ["standard", "ask", "planning", "skill_test"]
           : conversationalConfirmation ? ["standard", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
       });
@@ -167,6 +169,6 @@ export function searchRunnerApi(value: unknown) {
   return {
     results, total: matches.length,
     nextCursor: offset + limit < matches.length ? `${fingerprint}:${offset + limit}` : null,
-    guidance: "Prefer an available dedicated tool when it supports the required operation and parameters. API permissions still apply. Protocol endpoints require their existing clients. Ask and Plan permit only reads through call_api.",
+    guidance: "Prefer an available dedicated tool when it supports the required operation and parameters. API permissions still apply. Protocol endpoints require their existing clients. Ask and Plan permit reads and active-task title updates; Plan also permits conversational confirmation recording. Check each operation's allowedModes.",
   };
 }

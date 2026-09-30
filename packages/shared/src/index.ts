@@ -1945,6 +1945,8 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  setIssueTitleSchema,
+  type SetIssueTitle,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,

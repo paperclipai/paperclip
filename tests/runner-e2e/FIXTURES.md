@@ -135,6 +135,26 @@ Adding a task expands its suite's matrix. Update the suite's intentional size,
 the complete-catalog size, and credential-free unit tests in the same change.
 Paid tests never silently skip a missing credential or unsupported artifact.
 
+## Prompt-only task title fixtures
+
+`task-titles.ts` defines a bounded ordinary writing request and an independent
+title oracle. Its `single_turn` cases leave the title field empty or supply an
+explicit control title. The harness captures the exact browser creation response
+instead of searching by a title that the agent may already have changed. It
+never patches the title itself. Normal production instructions own the early
+naming behavior; fixture prompts and agent instruction bundles contain no naming
+hints. Existing company/secret/environment/agent registry dependencies are reused,
+with 500-cent company and agent budgets and normal instance teardown.
+
+Keep the call input, successful result, execution receipt, saved task, and
+agent/run-attributed audit correlated. Missing evidence must fail. The first-five
+tool-call bound counts calls in the initial provider run, including discovery.
+The title must describe API-key rotation without requiring one exact wording.
+The control must retain its title throughout, not merely restore it at the end.
+The source digest versions the grader and request in catalog metadata. See
+[Automatic task titles](README.md#automatic-task-titles) for live selectors,
+coverage limits, evidence, and calibration.
+
 ## New Paperclip object fixtures
 
 The explicit-only `lifecycle-baseline` suite reuses this registry and existing

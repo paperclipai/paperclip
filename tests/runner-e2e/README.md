@@ -878,6 +878,38 @@ environment, task, matcher, or future Paperclip object fixture.
 See [SECURITY.md](./SECURITY.md) before enabling paid dispatch, the runner
 group, or permanent public history in this public repository.
 
+## Automatic task titles
+
+The explicit-only `task-titles` suite creates tasks in Chromium with an empty
+title field. Its ordinary writing request contains no naming or tool directions:
+the production execution prompt must cause the agent to call `set_task_title`.
+Six local cells cover standard and Ask naming plus an explicit-title preservation
+control on native Codex and Codex Mini. Each expects one provider run, has a
+six-minute attempt deadline, and applies 500-cent company and agent budget caps.
+
+The oracle captures the browser's original POST and creation response, then
+requires a descriptive replacement title, cleared generation marker, unchanged
+description/assignee, a correlated successful title call within the first five
+tool calls of the initial run and before completion, and a matching agent/run
+audit entry. Reloading the task must show the saved title and requested answer.
+The control rejects even a temporary rewrite of a user-supplied title. A model's
+claim that it renamed the task cannot pass. These cells require the dedicated
+native tool; they do not qualify legacy/API-fallback naming or planning mode.
+
+```sh
+pnpm test:e2e:runner -- --list --suite task-titles
+pnpm test:e2e:runner -- --id task-titles.runner-codex-mini.local.prompt-title-standard --max-automatic-retries 0
+```
+
+Only `OPENAI_API_KEY` is required; no Docker artifact oracle or Daytona is used.
+Use one exact ID for a live smoke run. The existing harness owns fixture setup,
+cleanup, source/model provenance, billing, failure classification, screenshots,
+and reports. All runs in the isolated fixture are included in billing/cleanup.
+Private attempt evidence adds `snapshots/task-title-creation.json` and
+`snapshots/task-title.json`; public screenshots use the existing marked task
+route and final-state capture. `task-titles.test.ts` calibrates correct evidence
+against missing, fabricated, late, misattributed, and overwritten-title outcomes.
+
 ## Everyday user-story evals
 
 See [EVERYDAY-WORKFLOWS.md](EVERYDAY-WORKFLOWS.md) for the explicit-only native-runner stories and their canonical Evalbook importer. These cells do not expand scheduled `--all` runs.

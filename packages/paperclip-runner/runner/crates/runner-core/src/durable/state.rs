@@ -1710,6 +1710,7 @@ pub(crate) fn sanitize_semantic_tool_input(
     }
     let mut checked = sanitize_bounded_display_value(input);
     let prose_fields: &[&str] = match operation_id {
+        "set_task_title" => &["title"],
         "create_task" => &["title", "description", "initialPlan"],
         "create_project" => &["name", "description"],
         "write_document" => &["title", "body", "changeSummary"],
@@ -2244,6 +2245,22 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
             ]
             .iter()
             .any(|lead| token_phrase_has_lead(lead));
+        // Declared prose can discuss API key maintenance. These exact noun
+        // phrases are not whitespace-separated credentials; assignments,
+        // quoted values, and compound/CLI names still use the normal scanner.
+        let is_semantic_key_maintenance = semantic_prose
+            && key == "api key"
+            && !key_is_compound
+            && (start == 0 || bytes[start - 1].is_ascii_whitespace())
+            && whitespace_start == start + key.len()
+            && separator > whitespace_start
+            && !has_assignment_separator
+            && bytes[whitespace_start..separator]
+                .iter()
+                .all(|value| matches!(value, b' ' | b'\t'))
+            && ["rotation", "replacement", "renewal", "expiration"]
+                .iter()
+                .any(|tail| token_phrase_has_tail(tail));
         let is_benign_token_noun_phrase = key == "token"
             && (!key_is_compound || has_hyphenated_count_lead)
             && whitespace_start == start + key.len()
@@ -2307,7 +2324,8 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
         let has_whitespace_separator = separator > whitespace_start
             && (key != "authorization" || key_is_compound || has_authorization_scheme)
             && !is_benign_token_noun_phrase
-            && !is_semantic_token_reference;
+            && !is_semantic_token_reference
+            && !is_semantic_key_maintenance;
         if !has_assignment_separator && !has_whitespace_separator {
             continue;
         }
@@ -3459,6 +3477,33 @@ mod tests {
         assert!(
             sanitize_semantic_tool_input("write_document", &json!({"body": document})).is_err()
         );
+    }
+
+    #[test]
+    fn task_title_preserves_maintenance_prose_but_rejects_credentials() {
+        for title in [
+            "API key rotation checklist",
+            "Plan API key replacement",
+            "Document API key renewal",
+            "Explain API key expiration",
+        ] {
+            let input = json!({"title": title, "onlyIfProvisional": true, "idempotencyKey": "initial-title"});
+            assert_eq!(sanitize_semantic_tool_input("set_task_title", &input).unwrap(), input);
+            assert_ne!(redact_text(title), title, "diagnostics retain strict redaction");
+        }
+        for title in [
+            "API key opaque-credential",
+            "API key=rotation",
+            "API key: rotation",
+            "API key \"rotation\"",
+            "--api key rotation",
+            "OPENAI_API_KEY rotation",
+            "API key rotation-secret",
+            "API key rotation sk-proj-secretvalue123456",
+            "API key rotation Authorization: Bearer opaque-credential",
+        ] {
+            assert!(sanitize_semantic_tool_input("set_task_title", &json!({"title": title})).is_err(), "{title}");
+        }
     }
 
     #[test]

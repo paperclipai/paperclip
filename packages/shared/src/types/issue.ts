@@ -774,6 +774,8 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  /** True only while the title is the provisional slice of the initial prompt. */
+  titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
   /** Server-owned Slack lifecycle projection; not writable through task updates. */

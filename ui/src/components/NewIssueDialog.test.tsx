@@ -731,7 +731,7 @@ describe("NewIssueDialog", () => {
     await flush();
     expect(container.textContent).not.toContain("Execution workspace");
     expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
-    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title"]')!, "Managed task");
+    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title (optional)"]')!, "Managed task");
     const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
     act(() => create!.click());
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
@@ -751,7 +751,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container, ["workspaces.isolation"]);
     await flush();
     expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
-    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title"]')!, "Context task");
+    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title (optional)"]')!, "Context task");
     const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes(subtask ? "Create Sub-Task" : "Create Task"));
     act(() => create!.click());
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
@@ -893,6 +893,36 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("restores a description-only draft", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+      title: "", description: "Keep the request without a title", status: "todo", priority: "medium",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => {
+      expect((container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement).value).toBe("Keep the request without a title");
+    });
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"))!;
+    expect(submit.hasAttribute("disabled")).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("creates a task from its description without requiring a title", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"))!;
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Add description..."]')!, "Investigate the sign-in redirect and fix it");
+    await vi.waitFor(() => expect(submit.hasAttribute("disabled")).toBe(false));
+    await act(async () => { submit.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ description: "Investigate the sign-in redirect and fix it" }));
+    expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
   it("submits the latest locally typed title and description", async () => {
     let resolveProjects: (projects: Array<{
       id: string;
@@ -908,7 +938,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
@@ -988,7 +1018,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
@@ -1024,7 +1054,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Plan this first");
 
@@ -1062,7 +1092,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Answer this first");
 
@@ -1256,7 +1286,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),

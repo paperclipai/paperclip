@@ -8,6 +8,16 @@ import {
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("asks for early naming only while an ordinary task has a provisional title", () => {
+    const issue = { id: "task-id", identifier: "PAP-1", title: "Please investigate", description: "Please investigate sign-in failures", titleNeedsGeneration: true };
+    const markdown = buildPaperclipTaskMarkdown({ issue });
+    expect(markdown).toContain("As one of your first tool calls");
+    expect(markdown).toContain("set_task_title");
+    expect(markdown).toContain("onlyIfProvisional: true");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, titleNeedsGeneration: false } })).not.toContain("Task title directive");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent" } })).not.toContain("Task title directive");
+  });
+
   it("carries current confirmation IDs and proposal data in every fresh or resumed chat assignment", () => {
     const conversationConfirmations = { truncated: false, cards: [{
       id: "existing-card", kind: "request_confirmation", status: "pending", title: "Proposal",

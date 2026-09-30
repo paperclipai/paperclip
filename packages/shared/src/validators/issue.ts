@@ -784,6 +784,7 @@ const onboardingFirstTaskMarkerSchema = {
 };
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
+  title: z.string().optional(),
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
@@ -791,10 +792,23 @@ export const createIssueInputSchema = createIssueBaseSchema.extend({
 
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend({
+    title: z.string().optional(),
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
   }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine((value, ctx) => {
+  if (!value.title?.trim() && !value.description?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Provide a title or task description" });
+  }
+});
+
+export const setIssueTitleSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  onlyIfProvisional: z.boolean().optional().default(false),
+  idempotencyKey: z.string().trim().min(1).max(240).optional(),
+}).strict();
+
+export type SetIssueTitle = z.input<typeof setIssueTitleSchema>;
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
