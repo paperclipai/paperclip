@@ -19,6 +19,18 @@ export async function backfillPersonalConnectionCredentials(db: Db) {
   while (true) {
     const page = await db.select({ id: toolConnections.id }).from(toolConnections).where(and(
       eq(toolConnections.credentialPolicy, "per_user"), eq(toolConnections.status, "active"),
+      // Healthy personal connections need no transaction or per-grant scan.
+      sql`exists (
+        select 1 from ${connectionGrants} as repair_grant
+        cross join lateral jsonb_array_elements(repair_grant.credential_secret_refs) as repair_ref
+        join ${companySecrets} as repair_secret on repair_secret.id::text = repair_ref->>'secretId'
+        where repair_grant.connection_id = ${toolConnections.id}
+          and repair_grant.company_id = ${toolConnections.companyId}
+          and repair_grant.kind = 'user' and repair_grant.status = 'active'
+          and repair_secret.company_id = ${toolConnections.companyId}
+          and repair_secret.scope = 'company'
+          and repair_ref->>'configPath' <> 'oauth.client_secret'
+      )`,
       cursor ? gt(toolConnections.id, cursor) : undefined,
     )).orderBy(asc(toolConnections.id)).limit(PAGE_SIZE);
     if (!page.length) break;
@@ -41,13 +53,25 @@ export async function backfillPersonalConnectionCredentials(db: Db) {
             const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
             if (!secretIds.length) return result;
             // Oversized or ambiguous graphs are reconnect-only, never a large startup mutation.
-            const legacy = await tx.select().from(companySecrets).where(and(
-              eq(companySecrets.companyId, connection.companyId), eq(companySecrets.scope, "company"),
+            const credentialSecrets = await tx.select().from(companySecrets).where(and(
+              eq(companySecrets.companyId, connection.companyId),
               inArray(companySecrets.id, secretIds.slice(0, PAGE_SIZE)),
             )).for("update");
+            const legacy = credentialSecrets.filter((secret) => secret.scope === "company");
             if (!legacy.length) return result;
+            const personalSecrets = credentialSecrets.filter((secret) => secret.scope === "user");
+            const definitionIds = personalSecrets.flatMap((secret) => secret.userSecretDefinitionId ? [secret.userSecretDefinitionId] : []);
+            const definitions = definitionIds.length ? await tx.select({ id: userSecretDefinitions.id }).from(userSecretDefinitions).where(and(
+              eq(userSecretDefinitions.companyId, connection.companyId), inArray(userSecretDefinitions.id, definitionIds),
+              eq(userSecretDefinitions.status, "active"), isNull(userSecretDefinitions.deletedAt),
+            )) : [];
+            const validDefinitionIds = new Set(definitions.map((definition) => definition.id));
             const otherConsumers = await connectionSecretsUsedByOtherConsumers(tx, legacy.map((secret) => secret.id));
             let safe = secretIds.length <= PAGE_SIZE && grants.length === 1
+              && credentialSecrets.length === secretIds.length
+              && personalSecrets.every((secret) => secret.status === "active" && !secret.deletedAt
+                && secret.ownerUserId === grant.subjectUserId && secret.userSecretDefinitionId
+                && validDefinitionIds.has(secret.userSecretDefinitionId))
               && otherConsumers.size === 0
               && !connection.createdByAgentId && grant.createdByUserId === grant.subjectUserId
               && connection.credentialSecretRefs.every((ref) => ref.configPath === "oauth.client_secret");

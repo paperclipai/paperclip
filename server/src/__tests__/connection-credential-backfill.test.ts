@@ -109,6 +109,47 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(toolAccessAuditEvents)).toEqual([]);
   });
 
+  it.each(["missing", "wrong-owner", "inactive-definition", "deleted-definition"])("does not partially repair a grant with a %s credential", async (reason) => {
+    const f = await fixture();
+    let additionalSecretId = randomUUID();
+    if (reason !== "missing") {
+      const vault = secretService(db);
+      const definition = await vault.createUserSecretDefinition(f.company.id, { key: "additional", name: "Additional", provider: "local_encrypted" });
+      const value = await vault.createCurrentUserSecretValue(f.company.id, reason === "wrong-owner" ? "bob" : "alice",
+        { definitionId: definition.id, value: "additional-fixture" });
+      additionalSecretId = value.id;
+      if (reason === "inactive-definition") await db.update(userSecretDefinitions).set({ status: "disabled" }).where(eq(userSecretDefinitions.id, definition.id));
+      if (reason === "deleted-definition") await db.update(userSecretDefinitions).set({ deletedAt: new Date() }).where(eq(userSecretDefinitions.id, definition.id));
+    }
+    await db.update(connectionGrants).set({ credentialSecretRefs: [f.ref,
+      { secretId: additionalSecretId, configPath: "headers.X-Extra", versionSelector: "latest", required: true },
+    ] }).where(eq(connectionGrants.id, f.grant.id));
+    const secretsBefore = await db.select().from(companySecrets);
+    const definitionsBefore = await db.select().from(userSecretDefinitions);
+    expect(await backfillPersonalConnectionCredentials(db)).toEqual({ repairedConnections: 0, repairedSecrets: 0, reconnectRequired: 1 });
+    expect(await db.select().from(companySecrets)).toEqual(secretsBefore);
+    expect(await db.select().from(userSecretDefinitions)).toEqual(definitionsBefore);
+    expect((await db.select().from(toolConnections))[0]!.healthStatus).toBe("missing_secret");
+    expect(await db.select().from(toolAccessAuditEvents)).toEqual([expect.objectContaining({ outcome: "failure" })]);
+  });
+
+  it("repairs a complete mixed grant and skips its transaction on the next startup", async () => {
+    const f = await fixture();
+    const vault = secretService(db);
+    const definition = await vault.createUserSecretDefinition(f.company.id, { key: "existing", name: "Existing", provider: "local_encrypted" });
+    const value = await vault.createCurrentUserSecretValue(f.company.id, "alice", { definitionId: definition.id, value: "existing-fixture" });
+    await db.update(connectionGrants).set({ credentialSecretRefs: [f.ref,
+      { secretId: value.id, configPath: "headers.X-Extra", versionSelector: "latest", required: true },
+    ] }).where(eq(connectionGrants.id, f.grant.id));
+    const versionsBefore = await db.select().from(companySecretVersions);
+    expect(await backfillPersonalConnectionCredentials(db)).toEqual({ repairedConnections: 1, repairedSecrets: 1, reconnectRequired: 0 });
+    expect(await db.select().from(companySecretVersions)).toEqual(versionsBefore);
+    expect(await db.select().from(userSecretDeclarations)).toHaveLength(2);
+    const transaction = vi.spyOn(db, "transaction");
+    expect(await backfillPersonalConnectionCredentials(db)).toEqual({ repairedConnections: 0, repairedSecrets: 0, reconnectRequired: 0 });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it("serializes concurrent startup repairs", async () => {
     await fixture();
     const results = await Promise.all([backfillPersonalConnectionCredentials(db), backfillPersonalConnectionCredentials(db)]);
