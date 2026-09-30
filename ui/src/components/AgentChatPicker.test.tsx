@@ -63,7 +63,7 @@ describe("AgentChatPicker", () => {
     await act(async () => {
       document.querySelector("[role=combobox]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
-    expect(props.onSelect).toHaveBeenCalledWith(agents[1]);
+    expect(props.onSelect).toHaveBeenCalledWith(agents[1], expect.any(AbortSignal));
     expect(props.onOpenChange).toHaveBeenCalledWith(false);
   });
 
@@ -73,14 +73,14 @@ describe("AgentChatPicker", () => {
     expect(options()[1].textContent).toContain("New chat");
     await search("designer");
     await act(async () => options()[0].click());
-    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1]);
+    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1], expect.any(AbortSignal));
     await render({ open: false });
     await render({ open: true, existingChatAgentIds: ["first", "second"] });
     await search("designer");
     expect(options()[0].textContent).toContain("Open chat");
     expect(options()[0].textContent).not.toContain("New chat");
     await act(async () => options()[0].click());
-    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1]);
+    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1], expect.any(AbortSignal));
   });
 
   it("recovers from no results and resets search when reopened", async () => {

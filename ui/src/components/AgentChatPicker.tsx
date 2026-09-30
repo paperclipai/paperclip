@@ -9,7 +9,7 @@ export interface AgentChatPickerProps {
   agents: Agent[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (agent: Agent) => void | Promise<void>;
+  onSelect: (agent: Agent, signal?: AbortSignal) => void | Promise<void>;
   loading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
@@ -34,7 +34,11 @@ export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPicke
 
 function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, onRetry, existingChatAgentIds, renderAgentIcon }: Omit<AgentChatPickerProps, "open" | "onOpenChange"> & { onComplete: () => void }) {
   const mounted = useRef(false);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const selection = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; selection.current?.abort(); };
+  }, []);
   const [search, setSearch] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [selectionError, setSelectionError] = useState<string | null>(null);
@@ -42,8 +46,10 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
     if (openingId) return;
     setOpeningId(agent.id);
     setSelectionError(null);
+    const request = new AbortController();
+    selection.current = request;
     try {
-      await onSelect(agent);
+      await onSelect(agent, request.signal);
       if (mounted.current) onComplete();
     } catch (error) {
       setSelectionError(error instanceof Error ? error.message : "Couldn’t open chat. Try again.");

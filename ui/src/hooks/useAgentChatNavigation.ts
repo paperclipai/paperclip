@@ -38,7 +38,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     scope.current = current;
     return () => { current.mounted = false; };
   }, [companyId, userId]);
-  return useCallback(async (agent: Agent) => {
+  return useCallback(async (agent: Agent, signal?: AbortSignal) => {
     if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
     const current = scope.current;
     const chat = await agentChatsApi.ensure(companyId, agent.id);
@@ -47,7 +47,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     client.setQueryData<Issue[]>(queryKeys.agentChats.list(companyId, userId), previous =>
       [chat, ...(previous ?? []).filter(item => item.id !== chat.id)]
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.id.localeCompare(a.id)));
-    if (!current.mounted || scope.current !== current) return;
+    if (!current.mounted || scope.current !== current || signal?.aborted) return;
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
     if (isMobile) setSidebarOpen(false);
   }, [client, companyId, userId, navigate, isMobile, setSidebarOpen]);

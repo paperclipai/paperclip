@@ -17,13 +17,16 @@ export interface AgentConversationSidebarProps {
   error?: Error | null;
   onRetry?: () => void;
   initialSearch?: string;
-  onSelect?: (agent: Agent) => void | Promise<void>;
+  onSelect?: (agent: Agent, signal?: AbortSignal) => void | Promise<void>;
   onBrowse?: () => void;
-  onAddChat?: (agent: Agent) => void | Promise<void>;
+  onAddChat?: (agent: Agent, signal?: AbortSignal) => void | Promise<void>;
+  historyLoading?: boolean;
+  historyError?: Error | null;
+  onRetryHistory?: () => void;
 }
 
 /** Searchable navigation for one conversation per agent. */
-export function AgentConversationSidebar({ agents, availableAgents = agents, activeId, previews = {}, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat }: AgentConversationSidebarProps) {
+export function AgentConversationSidebar({ agents, availableAgents = agents, activeId, previews = {}, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -56,6 +59,11 @@ export function AgentConversationSidebar({ agents, availableAgents = agents, act
         {query ? "Search results" : "Teammates"}
       </p>
       <span role="status" className="sr-only">{loading ? "Loading agents" : `${visible.length} ${visible.length === 1 ? "agent" : "agents"}`}</span>
+      {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading chat history…</p>}
+      {historyError && <div role="alert" className="flex flex-col items-start gap-2 px-2 py-3">
+        <p className="text-xs text-muted-foreground">Some chat history couldn’t load.</p>
+        <Button variant="outline" size="sm" onClick={onRetryHistory}>Retry chat history</Button>
+      </div>}
       {error ? <div role="alert" className="flex flex-col items-start gap-2 px-2 py-6"><p className="text-sm">Couldn’t load your chats.</p><Button variant="outline" size="sm" onClick={onRetry}>Try again</Button></div> : loading ? <div aria-hidden="true" className="flex flex-col gap-1">
         {[0, 1, 2, 3].map(index => <div key={index} className="flex items-center gap-3 rounded-md px-2 py-3 motion-safe:animate-pulse">
           <div className="size-8 shrink-0 rounded-lg bg-muted" />
@@ -73,7 +81,7 @@ export function AgentConversationSidebar({ agents, availableAgents = agents, act
             <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? "Terminated" : agent.status === "paused" ? "Paused" : previews[agent.id] ?? agent.title ?? "Start a conversation"}</span>
           </span>
         </Link>)}
-      </nav> : <div className="flex flex-col items-start gap-2 px-2 py-6">
+      </nav> : historyLoading || historyError ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
         <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
         <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? "Try another name or role." : "Choose an agent to start a conversation."}</p>
         {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>Choose an agent</Button>}
@@ -88,11 +96,11 @@ export function AgentConversationSidebar({ agents, availableAgents = agents, act
     <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}
       existingChatAgentIds={agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
       renderAgentIcon={agent => <AgentAvatar agent={agent} size={32} />}
-      onSelect={async agent => {
-        if (onAddChat) await onAddChat(agent);
-        else if (onSelect) await onSelect(agent);
+      onSelect={async (agent, signal) => {
+        if (onAddChat) await onAddChat(agent, signal);
+        else if (onSelect) await onSelect(agent, signal);
         else navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
-        setSearch("");
+        if (!signal?.aborted) setSearch("");
       }} />
   </aside>;
 }

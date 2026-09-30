@@ -36,6 +36,10 @@ export const LongNames: Story = { name: "07 · Long names and paused agent", arg
   ...sidebarAgents.slice(2),
 ], previews: {} } };
 export const Light: Story = { name: "08 · Light theme", globals: { theme: "light" } };
+export const HistoryUnavailable: Story = {
+  name: "10 · Partial history failure",
+  args: { historyError: new Error("History unavailable") },
+};
 
 export const AddAndReopenChat: Story = {
   name: "09 · Add and reopen · One per agent",

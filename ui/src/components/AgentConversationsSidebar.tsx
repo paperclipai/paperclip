@@ -34,9 +34,12 @@ export function AgentConversationsSidebar() {
     .map(chat => [chat.conversationAgentId!, "Working…"]));
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={conversations} availableAgents={roster}
     activeId={active?.id} previews={previews}
-    loading={agents.isPending || chats.isPending || session.isPending || historyAgents.some(result => result.isPending)}
-    error={agents.error ?? chats.error ?? session.error ?? historyAgents.find(result => result.error)?.error}
-    onRetry={() => { void agents.refetch(); void chats.refetch(); void session.refetch(); historyAgents.forEach(result => { void result.refetch(); }); }}
+    loading={agents.isPending || chats.isPending || session.isPending}
+    error={agents.error ?? chats.error ?? session.error}
+    onRetry={() => { void agents.refetch(); void chats.refetch(); void session.refetch(); }}
+    historyLoading={historyAgents.some(result => result.isPending)}
+    historyError={historyAgents.find(result => result.error)?.error}
+    onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
     onAddChat={openChat}
     onSelect={agent => {
       navigate(`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}`);
