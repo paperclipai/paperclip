@@ -764,7 +764,10 @@ function StorybookProviders({
     };
     checkViewport();
     window.addEventListener("resize", checkViewport);
-    return () => window.removeEventListener("resize", checkViewport);
+    // A custom viewport, browser zoom, or unavailable manager must never leave
+    // a story blank indefinitely. Mount at the actual size after a bounded wait.
+    const fallback = window.setTimeout(() => setViewportReady(true), 500);
+    return () => { window.removeEventListener("resize", checkViewport); window.clearTimeout(fallback); };
   }, [initialViewportWidth, viewportReady]);
 
   const [themeReady, setThemeReady] = useState(false);
@@ -809,8 +812,13 @@ const preview: Preview = {
   decorators: [
     (Story, context) => {
       const theme = context.globals.theme === "light" ? "light" : "dark";
+      const viewport = context.globals.viewport;
+      const styles = context.parameters.viewport?.options?.[viewport?.value]?.styles;
+      const width = styles?.[viewport?.isRotated ? "height" : "width"];
+      const initialViewportWidth = context.parameters.waitForViewport && typeof width === "string" && /^\d+px$/.test(width)
+        ? Number.parseInt(width, 10) : undefined;
       return (
-        <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={context.parameters.initialViewportWidth}>
+        <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth}>
           <Story />
         </StorybookProviders>
       );

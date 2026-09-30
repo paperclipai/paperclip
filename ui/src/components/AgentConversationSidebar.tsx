@@ -81,7 +81,7 @@ export function AgentConversationSidebar({ agents, availableAgents = agents, act
             <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? "Terminated" : agent.status === "paused" ? "Paused" : previews[agent.id] ?? agent.title ?? "Start a conversation"}</span>
           </span>
         </Link>)}
-      </nav> : historyLoading || historyError ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
+      </nav> : !agents.length && (historyLoading || historyError) ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
         <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
         <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? "Try another name or role." : "Choose an agent to start a conversation."}</p>
         {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>Choose an agent</Button>}

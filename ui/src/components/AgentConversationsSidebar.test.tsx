@@ -119,6 +119,14 @@ it("keeps healthy chats usable while a historical lookup fails and retries", asy
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Some chat history couldn’t load");
   });
   expect(container.querySelector('a[href="/chats/alice"]')).not.toBeNull();
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search agents"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "No match");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("No agents found");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Clear search"]')!.click());
+  expect(container.querySelector('a[href="/chats/alice"]')).not.toBeNull();
   await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Retry chat history")!.click());
   await vi.waitFor(async () => {
     await act(async () => {});

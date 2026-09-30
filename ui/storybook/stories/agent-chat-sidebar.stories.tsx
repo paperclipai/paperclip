@@ -20,8 +20,8 @@ export const FirstMessage: Story = { name: "03 · First conversation", args: { s
 export const LargerTeam: Story = { name: "04 · Larger team · Scroll and search", args: { sidebarScenario: "large-team" } };
 export const ContextPanel: Story = { name: "05 · Existing plan panel", args: { contextInitiallyOpen: true } };
 export const Light: Story = { name: "06 · Light theme", globals: { theme: "light" } };
-export const Mobile: Story = { name: "07 · Mobile · Agents in navigation drawer", parameters: { initialViewportWidth: 390 }, globals: { viewport: { value: "mobile", isRotated: false } } };
-export const MobileLanding: Story = { name: "08 · Mobile · Choose an agent", args: { sidebarScenario: "landing", scenario: "empty" }, parameters: { initialViewportWidth: 390 }, globals: { viewport: { value: "mobile", isRotated: false } } };
+export const Mobile: Story = { name: "07 · Mobile · Agents in navigation drawer", parameters: { waitForViewport: true }, globals: { viewport: { value: "mobile", isRotated: false } } };
+export const MobileLanding: Story = { name: "08 · Mobile · Choose an agent", args: { sidebarScenario: "landing", scenario: "empty" }, parameters: { waitForViewport: true }, globals: { viewport: { value: "mobile", isRotated: false } } };
 
 export const AddChat: Story = {
   name: "09 · Add chat · One per agent",
