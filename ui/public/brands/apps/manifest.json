@@ -404,6 +404,12 @@
       "localAsset": "/brands/apps/todoist.svg"
     },
     {
+      "slug": "typesafe",
+      "provider": "TypeSafe",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/typesafe.png"
+    },
+    {
       "slug": "vercel",
       "provider": "Vercel",
       "catalogVisible": false,

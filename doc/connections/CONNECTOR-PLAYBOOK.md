@@ -494,7 +494,7 @@ Connectors may contribute bundled skills with optional native tools. Keep provid
 instructions out of the universal Paperclip skill and provider-specific tools
 out of the universal runner catalog. Use the trusted connector contribution
 registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
-consumer. This registry describes bundled server implementations, not executable
+consumer and [TypeSafe](./TYPESAFE.md) is the second. This registry describes bundled server implementations, not executable
 code or skill URLs supplied by a credential or external message.
 
 For each contribution, declare its connector key, bundled skill, namespaced tool
@@ -507,7 +507,9 @@ they do not need a duplicate native wrapper just to supply a skill.
 credential alone does not give an agent email capabilities. An active inbox
 assigned to that agent does, provided both the inbox connection and saved
 credential access remain authorized and the experimental chat-connector flag is
-on. Other connectors must define an equally concrete assignment rule. Keep every
+on. Other connectors must define an equally concrete assignment rule. TypeSafe
+has no per-agent resource, so its rule is an active connection with an install
+that targets the company or that agent. Keep every
 lookup company-scoped. Revoked grants, disabled connections, removed assignments,
 and experimental gates must remove the contribution. Fail closed on lookup errors.
 

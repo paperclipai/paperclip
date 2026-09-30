@@ -7,6 +7,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "anthropic", "openai", "openrouter", "xai",
   "agentmail",
   "cognee",
+  "typesafe",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
   "arcade",
