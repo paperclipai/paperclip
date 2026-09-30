@@ -58,12 +58,17 @@ export function buildAnchorFromContainerSelection(input: {
   const occurrences = findAllOccurrences(projection.text, needle);
   if (occurrences.length === 0) return null;
 
-  const renderedTextLength = Math.max(1, normalizeAnchorText(input.containerOffset.containerText).length);
-  const renderedRatio = input.containerOffset.startOffset / renderedTextLength;
-  const projectionLength = Math.max(1, projection.text.length);
-  const expectedNormalized = Math.round(renderedRatio * projectionLength);
-
-  const best = pickClosestOccurrence(occurrences, expectedNormalized);
+  const renderedText = normalizeAnchorText(input.containerOffset.containerText);
+  const renderedStart = rawOffsetToNormalized(
+    input.containerOffset.containerText,
+    input.containerOffset.startOffset,
+  );
+  const best = mapOccurrenceBetweenTexts({
+    fromText: renderedText,
+    fromOffset: renderedStart,
+    toText: projection.text,
+    needle,
+  });
   if (best == null) return null;
 
   const normalizedStart = best;
@@ -103,39 +108,82 @@ function pickClosestOccurrence(occurrences: number[], expected: number): number 
 }
 
 /**
+ * Map an occurrence of `needle` at `fromOffset` in `fromText` to the matching
+ * occurrence in `toText`.
+ *
+ * The markdown projection and the rendered DOM text never align character for
+ * character (paragraph separators, image alt text, list markers, etc.), so raw
+ * offsets cannot be compared directly. Instead, match by occurrence ordinal: the
+ * k-th occurrence on one side is the k-th occurrence on the other. When the
+ * occurrence counts disagree (e.g. the quote also appears in text that only
+ * exists on one side), fall back to the proportional position in the document.
+ */
+function mapOccurrenceBetweenTexts(input: {
+  fromText: string;
+  fromOffset: number;
+  toText: string;
+  needle: string;
+}): number | null {
+  const toOccurrences = findAllOccurrences(input.toText, input.needle);
+  if (toOccurrences.length === 0) return null;
+  if (toOccurrences.length === 1) return toOccurrences[0] ?? null;
+
+  const fromOccurrences = findAllOccurrences(input.fromText, input.needle);
+  if (fromOccurrences.length === toOccurrences.length) {
+    const fromMatch = pickClosestOccurrence(fromOccurrences, input.fromOffset);
+    const ordinal = fromMatch == null ? -1 : fromOccurrences.indexOf(fromMatch);
+    if (ordinal >= 0) return toOccurrences[ordinal] ?? null;
+  }
+
+  const ratio = input.fromOffset / Math.max(1, input.fromText.length);
+  return pickClosestOccurrence(toOccurrences, Math.round(ratio * input.toText.length));
+}
+
+/** Convert a raw text offset into the matching offset in `normalizeAnchorText(rawText)`. */
+function rawOffsetToNormalized(rawText: string, rawOffset: number): number {
+  let normalizedCursor = 0;
+  let lastWasWhitespace = true; // mimic trim() at start
+  const end = Math.min(rawOffset, rawText.length);
+  for (let index = 0; index < end; index += 1) {
+    if (/\s/.test(rawText[index] ?? "")) {
+      if (!lastWasWhitespace) {
+        normalizedCursor += 1;
+        lastWasWhitespace = true;
+      }
+      continue;
+    }
+    normalizedCursor += 1;
+    lastWasWhitespace = false;
+  }
+  return normalizedCursor;
+}
+
+/**
  * Walk text nodes inside `container` and return a list of `Range`s that cover the
- * normalized-text span `[normalizedStart, normalizedEnd)`. Each Range can be
- * rectangle-projected to draw a highlight overlay.
+ * saved anchor's quote. When `normalizedStart` (a markdown-projection offset from
+ * the anchor selector) and `projectionText` (`projectMarkdownToText(markdown).text`)
+ * are provided, duplicate quotes resolve to the saved occurrence; otherwise the
+ * first occurrence is used. Each Range can be rectangle-projected to draw a
+ * highlight overlay.
  */
 export function rangesForNormalizedSpan(input: {
   container: HTMLElement;
-  markdown?: string;
   selectedText: string;
+  projectionText?: string;
   normalizedStart?: number;
 }): Range[] {
   const normalizedNeedle = normalizeAnchorText(input.selectedText);
   if (!normalizedNeedle) return [];
   const containerText = input.container.textContent ?? "";
   const normalizedContainerText = normalizeAnchorText(containerText);
-  const occurrences = findAllOccurrences(normalizedContainerText, normalizedNeedle);
-  const renderedStart = input.normalizedStart !== undefined && input.markdown !== undefined
-    ? mapProjectionOffsetToRenderedOffset(
-      projectMarkdownToText(input.markdown).text,
-      normalizedContainerText,
-      input.normalizedStart,
-    )
-    : input.normalizedStart;
-  const resolvedRenderedStart = renderedStart ?? input.normalizedStart;
-  const positionMatchesSelection = resolvedRenderedStart !== undefined
-    && normalizedContainerText.slice(
-      resolvedRenderedStart,
-      resolvedRenderedStart + normalizedNeedle.length,
-    ) === normalizedNeedle;
-  const containerOccurrenceIndex = positionMatchesSelection
-    ? resolvedRenderedStart ?? -1
-    : input.normalizedStart === undefined
-      ? occurrences[0] ?? -1
-      : pickClosestOccurrence(occurrences, resolvedRenderedStart ?? input.normalizedStart) ?? -1;
+  const containerOccurrenceIndex = input.normalizedStart !== undefined && input.projectionText !== undefined
+    ? mapOccurrenceBetweenTexts({
+      fromText: input.projectionText,
+      fromOffset: input.normalizedStart,
+      toText: normalizedContainerText,
+      needle: normalizedNeedle,
+    }) ?? -1
+    : normalizedContainerText.indexOf(normalizedNeedle);
   if (containerOccurrenceIndex === -1) return [];
 
   // Convert from normalized container offset back to raw container offset
@@ -152,32 +200,6 @@ export function rangesForNormalizedSpan(input: {
   const rawStart = rawIndex;
   const rawEnd = rawIndex + rawNeedleLength;
   return buildRangesForRawSpan(input.container, rawStart, rawEnd);
-}
-
-function mapProjectionOffsetToRenderedOffset(
-  projectionText: string,
-  renderedText: string,
-  projectionOffset: number,
-): number | null {
-  if (projectionOffset < 0 || projectionOffset > projectionText.length) return null;
-
-  let projectionCursor = 0;
-  let renderedCursor = 0;
-  while (projectionCursor < projectionOffset) {
-    const projected = projectionText[projectionCursor];
-    const rendered = renderedText[renderedCursor];
-    if (projected === rendered) {
-      projectionCursor += 1;
-      renderedCursor += 1;
-    } else if (projected === " ") {
-      projectionCursor += 1;
-    } else if (rendered === " ") {
-      renderedCursor += 1;
-    } else {
-      return null;
-    }
-  }
-  return renderedCursor;
 }
 
 function mapNormalizedOffsetToRaw(rawText: string, normalizedOffset: number): number {

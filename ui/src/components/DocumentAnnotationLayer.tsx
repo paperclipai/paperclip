@@ -19,7 +19,7 @@ import {
   recordMarkdownMutations,
   recordSelectionChange,
 } from "@/lib/document-annotation-debug";
-import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
+import { projectMarkdownToText, type DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
 
 export interface AnnotationOverlayThread {
   id: string;
@@ -274,6 +274,10 @@ export function DocumentAnnotationLayer({
     return threads.filter((thread) => thread.status !== "resolved" || thread.anchorState === "orphaned" || thread.id === focusedThreadId);
   }, [threads, hideResolved, focusedThreadId]);
 
+  // Saved selector positions are offsets into the markdown projection. Project once
+  // per markdown change (not once per thread per recompute, which runs on scroll).
+  const projectionText = useMemo(() => projectMarkdownToText(markdown).text, [markdown]);
+
   const computeHighlightRects = useCallback(() => {
     const container = containerRef.current;
     const overlay = overlayRef.current;
@@ -296,8 +300,8 @@ export function DocumentAnnotationLayer({
     }) => {
       const ranges = rangesForNormalizedSpan({
         container,
-        markdown,
         selectedText: run.selectedText,
+        projectionText,
         normalizedStart: run.selector?.position.normalizedStart,
       });
       const startIndex = next.length;
@@ -367,7 +371,7 @@ export function DocumentAnnotationLayer({
       width: activeRect.width,
       height: activeRect.height,
     } : null);
-  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightSelector, pendingHighlightText, visibleThreads]);
+  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightSelector, pendingHighlightText, projectionText, visibleThreads]);
 
   useLayoutEffect(() => {
     computeHighlightRects();

@@ -158,7 +158,7 @@ describe("DocumentAnnotationLayer", () => {
       root?.render(
         <DocumentAnnotationLayer
           containerRef={{ current: body }}
-          markdown="x\n\nx\n\nx"
+          markdown={"x\n\nx\n\nx"}
           threads={[{ id: "persisted", selectedText: "x", selector, status: "open", anchorState: "active" }]}
           focusedThreadId="persisted"
           onThreadFocus={vi.fn()}
@@ -172,13 +172,62 @@ describe("DocumentAnnotationLayer", () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
     });
 
-    expect(mockRangesForNormalizedSpan).toHaveBeenCalledTimes(2);
-    expect(mockRangesForNormalizedSpan).toHaveBeenCalledWith({
-      container: body,
-      markdown: "x\n\nx\n\nx",
+    // Highlights recompute synchronously on layout and again on a scheduled
+    // animation frame, so the exact call count is timing-dependent. Assert that
+    // every lookup (persisted thread + composer highlight) uses the saved position.
+    const calls = mockRangesForNormalizedSpan.mock.calls.map(([arg]) => arg);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.length % 2).toBe(0);
+    for (const call of calls) {
+      expect(call).toEqual({
+        container: body,
+        selectedText: "x",
+        projectionText: "x x x",
+        normalizedStart: 2,
+      });
+    }
+  });
+
+  it("recomputes highlights against the latest markdown projection", async () => {
+    const body = document.createElement("div");
+    body.innerHTML = "<p>x</p>";
+    const thread = {
+      id: "persisted",
       selectedText: "x",
-      normalizedStart: 2,
+      selector: {
+        quote: { exact: "x", prefix: "", suffix: "" },
+        position: { normalizedStart: 0, normalizedEnd: 1, markdownStart: 0, markdownEnd: 1 },
+      },
+      status: "open" as const,
+      anchorState: "active" as const,
+    };
+    const threads = [thread];
+    const renderLayer = (markdown: string) => (
+      <DocumentAnnotationLayer
+        containerRef={{ current: body }}
+        markdown={markdown}
+        threads={threads}
+        focusedThreadId={null}
+        onThreadFocus={vi.fn()}
+        pendingAnchor={null}
+        onPendingAnchorChange={vi.fn()}
+        onRequestComment={vi.fn()}
+      />
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(renderLayer("x"));
     });
+    mockRangesForNormalizedSpan.mockClear();
+
+    await act(async () => {
+      root?.render(renderLayer("x\n\nx"));
+    });
+
+    const calls = mockRangesForNormalizedSpan.mock.calls.map(([arg]) => arg);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.projectionText === "x x")).toBe(true);
   });
 
   it("does not capture annotation comments from editable selections", async () => {
