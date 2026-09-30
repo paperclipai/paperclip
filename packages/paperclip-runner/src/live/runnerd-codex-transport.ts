@@ -48,6 +48,7 @@ import type {
 } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
+  SemanticToolNotDispatchedError,
   durableRecoveryInternals,
   inspectWarmRunTransition,
   spawnRunner,
@@ -4355,7 +4356,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#controlPlaneRelease = null;
     }
     if (suspensionRequired && !runnerSettled) {
-      throw new NativeSessionCloseUnrecoverableError();
+      const settlement = {
+        runnerSuspended,
+        providerDrained,
+        semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
+        finalProviderState,
+      };
+      try {
+        this.options.onDiagnostic?.(`native_session_settlement_incomplete ${JSON.stringify(settlement)}`);
+      } catch {
+        // Keep the settlement failure authoritative if its observer fails.
+      }
+      throw new NativeSessionCloseUnrecoverableError(settlement);
     }
     if (this.#ownsRoot && !adoptedRunner) {
       rmSync(this.#root, { recursive: true, force: true });
@@ -5497,7 +5509,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>
     >[0],
   ) {
-    this.#throwIfFailed();
+    try {
+      this.#throwIfFailed();
+    } catch {
+      throw new SemanticToolNotDispatchedError();
+    }
     const core = this.#core;
     const threadId = this.#threadId;
     const epoch = this.#turnStartResponseEpoch;
@@ -5508,8 +5524,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const accepted =
       admission === null
         ? true
-        : await Promise.race([admission.settled, this.#failureSignal]);
-    this.#throwIfFailed();
+        : await Promise.race([admission.settled, this.#failureSignal]).catch(() => {
+            throw new SemanticToolNotDispatchedError();
+          });
+    try {
+      this.#throwIfFailed();
+    } catch {
+      throw new SemanticToolNotDispatchedError();
+    }
     if (
       !accepted ||
       this.#closed ||
@@ -5522,9 +5544,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         core.store.state.identity.normalizedSessionId ||
       call.correlation.turnId !== core.store.state.identity.turnId
     ) {
-      throw new Error(
-        "PRP semantic tool call no longer belongs to an admitted turn",
-      );
+      throw new SemanticToolNotDispatchedError();
     }
     const outcome = unwrapToolResponse(
       await this.#handler({

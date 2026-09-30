@@ -1,3 +1,4 @@
+import { authorizeInstructionCommit } from "../agent-instruction-authorization.js";
 import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
@@ -371,12 +372,25 @@ export class PaperclipRunnerToolAuthority {
     }
     switch (call.tool) {
       case "read_agent_instructions":
-      case "update_agent_instructions":
       case "get_agent_instruction_history":
-      case "restore_agent_instructions":
         return executeAgentInstructionTool({ db: this.db, binding: {
           companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
         }, tool: call.tool, arguments: call.arguments });
+      case "update_agent_instructions":
+      case "restore_agent_instructions": {
+        const tool = call.tool;
+        return this.#withMutationReceipt(tool, `instruction:${call.callId}`, input, (tx) =>
+          executeAgentInstructionTool({ db: tx, binding: {
+            companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+          }, tool, arguments: input }), {
+            beforeReceiptReplay: async (tx) => {
+              await authorizeInstructionCommit(tx, {
+                type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+                agentId: this.binding.agentId, runId: this.binding.runId,
+              }, { companyId: this.binding.companyId, id: typeof input.targetAgentId === "string" ? input.targetAgentId : this.binding.agentId });
+            },
+          });
+      }
       case "create_skill": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);

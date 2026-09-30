@@ -34,6 +34,34 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Semantic Settlement Diagnostics and Retry Logs
+
+Before interrupting a Codex turn, the runner durably records a
+`harness.diagnostic` event with code `provider_interrupt_requested`, the stop
+reason, provider turn ID, and pending tool call IDs. A harmless identical result
+replay records `semantic_tool_result_duplicate` with warning severity, call ID,
+operation ID, and result digest. It does not fail the task or create a user
+attention request. A true conflict includes the call and operation IDs and both
+result digests in its error; full arguments belong to the canonical semantic
+input record, not the error message.
+
+Incomplete close emits the bounded `native_session_settlement_incomplete`
+runner diagnostic. Its evidence includes runner suspension, provider drain,
+final provider state, pending call/operation/source-event IDs and input digests,
+and incomplete result-delivery command IDs and statuses. If execution and
+cleanup both fail, execution retains its original error identity and cleanup is
+attached as `cleanupError`.
+
+The NDJSON output log appends across repeated `begin` calls for one run. Each
+new handle adds an `attemptId` to its lines. If the local file is absent and a
+durable S3 mirror exists, `begin` restores that prefix before appending. A
+failed restore must not replace the mirror with an empty or partial attempt.
+Earlier attempts therefore remain available for incident diagnosis. Existing
+records without `attemptId` remain readable.
+
+These records use the instance run log and its configured storage. They add no
+Paperclip Telemetry or OpenTelemetry export.
+
 ## Omitted Unsafe Workspace Export
 
 `workspace_export_omitted` is an informational system event in the local run log.

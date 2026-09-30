@@ -1,6 +1,7 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { pipeline } from "node:stream/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { addAbortSignal } from "node:stream";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -12,6 +13,7 @@ export type RunLogStoreType = "local_file";
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
+  attemptId?: string;
 }
 
 export interface RunLogReadOptions {
@@ -295,9 +297,33 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const relPath = path.join(relDir, `${runId}.ndjson`);
       await ensureDir(relDir);
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
       await retireInflightMirror(relPath);
-      return { store: "local_file", logRef: relPath };
+      // Retries share a run ID. Never truncate their earlier evidence. On a
+      // new pod, restore the durable prefix before opening another attempt.
+      const exists = await fs.stat(absPath).then(() => true, (error) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      if (!exists && s3) {
+        const key = s3Key(relPath);
+        const head = await s3.provider.headObject({ objectKey: key });
+        if (head.exists) {
+          const temporary = `${absPath}.${randomUUID()}.restore`;
+          try {
+            const object = await s3.provider.getObject({ objectKey: key });
+            await pipeline(object.stream, createWriteStream(temporary, { flags: "wx", mode: 0o600 }));
+            if (typeof head.contentLength === "number" && (await fs.stat(temporary)).size !== head.contentLength) {
+              throw new Error("Durable run log restore returned an incomplete prefix");
+            }
+            await fs.rename(temporary, absPath);
+          } finally {
+            await fs.rm(temporary, { force: true });
+          }
+        }
+      }
+      const file = await fs.open(absPath, "a", 0o600);
+      await file.close();
+      return { store: "local_file", logRef: relPath, attemptId: randomUUID() };
     },
 
     async append(handle, event) {
@@ -305,6 +331,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
+        ...(handle.attemptId ? { attemptId: handle.attemptId } : {}),
         stream: event.stream,
         chunk: event.chunk,
         // Monotonic per-run sequence so readers can dedupe and order records

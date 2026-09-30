@@ -52,7 +52,8 @@ const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
 const maxFrameBytes = 1024 * 1024;
-const maxCommandBytes = maxFrameBytes - 4 * 1024;
+// Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
+const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
 // A provider can emit several 100-event runner batches before the transport's
 // polling turn regains the event loop. Match the transport's explicit deferred
@@ -222,6 +223,13 @@ interface SecureChannel {
   sendCounter: bigint;
   receiveCounter: bigint;
   sessionId: string;
+}
+
+/** Only the dispatch boundary may assert that no business operation started. */
+export class SemanticToolNotDispatchedError extends Error {
+  constructor() {
+    super("semantic_tool_not_dispatched");
+  }
 }
 
 export interface DurablePrpControlPlaneOptions {
@@ -586,7 +594,11 @@ function unsettledSemanticInput(
       command.payload.sourceEventType !== event.eventType ||
       canonicalJson(command.payload.correlation) !==
         canonicalJson(expectedCorrelation) ||
-      canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
+      (command.payload.inputDigest === undefined
+        ? canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
+        : command.payload.inputDigest !== canonicalDigest(semantic.input)
+          || (command.payload.input !== undefined
+            && canonicalJson(command.payload.input) !== canonicalJson(semantic.input)))
     );
   } catch {
     // Malformed retained evidence cannot establish settled authority, and
@@ -1620,6 +1632,35 @@ export class DurablePrpControlPlane {
         unsettledSemanticInput(event, this.#store.state),
       )
     );
+  }
+
+  /** Safe run-log evidence: identities and delivery state, never tool contents. */
+  semanticToolSettlementDiagnostics(): Record<string, unknown> {
+    const pending = this.#store.state.committedEvents.filter((event) =>
+      unsettledSemanticInput(event, this.#store.state),
+    );
+    return {
+      persistenceFailed: this.#semanticResultPersistenceFailed,
+      pending: pending.map((entry) => {
+        const event = entry.envelope.payload as Record<string, unknown>;
+        const payload = event.payload as Record<string, unknown>;
+        const tool = payload.semantic_tool as Record<string, unknown>;
+        return {
+          sourceEventId: entry.sourceEventId,
+          callId: tool.callId,
+          operationId: tool.operationId,
+          inputDigest: canonicalDigest(tool.input),
+        };
+      }),
+      deliveries: this.#store.state.commands
+        .filter((command) => command.type === "semantic_tool.result" && command.status !== "completed")
+        .map((command) => ({
+          commandId: command.commandId,
+          callId: command.payload.callId,
+          operationId: command.payload.operationId,
+          status: command.status,
+        })),
+    };
   }
 
   /**
@@ -3215,13 +3256,21 @@ export class DurablePrpControlPlane {
       const alreadyQueued = this.#store.state.commands.some(
         (command) => command.commandId === commandId,
       );
-      if (!alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
+      // A committed input without a result after restart may already have
+      // changed the outside world. Never redispatch it on event replay. Only
+      // the original admitted callback may publish its result; missing outcome
+      // evidence stays pending for authoritative reconciliation.
+      if (existing === undefined && !alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
         this.#pendingSemanticCalls.add(commandId);
         const queueResult = (result: unknown, isError: boolean): void => {
           try {
+            // Retain the full input once in its canonical event. Copying a
+            // large write into its result command can exceed the wire bound
+            // after the write has already committed. Bind it by exact digest.
+            const { input, ...metadata } = call;
             this.queueCommand(
               "semantic_tool.result",
-              { ...call, result, isError },
+              { ...metadata, inputDigest: canonicalDigest(input), result, isError },
               commandId,
               true,
             );
@@ -3237,9 +3286,20 @@ export class DurablePrpControlPlane {
           .then((outcome) =>
             queueResult(outcome.result, outcome.isError === true),
           )
-          .catch(() =>
-            queueResult({ code: "semantic_tool_bridge_failed" }, true),
-          )
+          .catch((error: unknown) => {
+            if (error instanceof SemanticToolNotDispatchedError) {
+              queueResult({ error: {
+                code: "semantic_tool_not_dispatched",
+                retryable: false,
+                message: "The turn stopped before this operation was dispatched.",
+              } }, true);
+              return;
+            }
+            // A rejected dispatcher promise does not prove that its effect
+            // rolled back. Do not fabricate a final failure or retry the write.
+            this.#semanticResultPersistenceFailed = true;
+            this.disconnectActiveRunner();
+          })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
     }

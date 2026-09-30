@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agents, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, issues, agentInstructionRevisions, createDb } from "@paperclipai/db";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { activityLog, agents, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, issues, agentInstructionRevisions, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedInstructionsRoot } from "../agent-instructions.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -64,6 +64,53 @@ describe("canonical instruction tools through native authority", () => {
     await expect(call("update_agent_instructions", { entryFile, content: "stale", baseRevisionId: first.revision.id })).rejects.toMatchObject({ status: 409 });
     expect((await call("read_agent_instructions")).content).toBe("changed\r\n");
   });
+  it("serializes duplicate writes at the filesystem commit and replays the exact receipt after restart", async () => {
+    const first = await call("read_agent_instructions");
+    const content = "\uFEFF# Instructions — 日本語 🦀\r\n".repeat(600) + "\nFINAL TAIL\n";
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content, baseRevisionId: first.revision.id,
+    } };
+    const originalRename = fs.rename.bind(fs);
+    let reached!: () => void, release!: () => void;
+    const atCommit = new Promise<void>((resolve) => { reached = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    let writes = 0;
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (destination === path.join(root, entryFile)) {
+        writes++;
+        reached();
+        await barrier;
+      }
+      return originalRename(source, destination);
+    });
+    try {
+      const pending = authority.execute(request);
+      await atCommit;
+      const duplicate = authority.execute(request);
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(original);
+      release();
+      const receipt = await pending as any;
+      expect(await duplicate).toEqual(receipt);
+      authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      expect(await authority.execute(request)).toEqual(receipt);
+      const bytes = await fs.readFile(path.join(root, entryFile));
+      expect(bytes).toEqual(Buffer.from(content));
+      expect(receipt.revision.byteLength).toBe(bytes.length);
+      expect(receipt.revision.contentHash).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(writes).toBe(1);
+      expect((await db.select().from(activityLog).where(eq(activityLog.runId, runId))).filter((event) => event.action === "agent.files_updated")).toHaveLength(1);
+      await expect(authority.execute({ ...request, arguments: { ...request.arguments, content: "conflicting replay" } })).rejects.toThrow("idempotency_conflict");
+      expect(await fs.readFile(path.join(root, entryFile))).toEqual(bytes);
+      await expect(call("update_agent_instructions", { entryFile, baseRevisionId: receipt.revision.id, content: "🦀".repeat(300_000) })).rejects.toMatchObject({ status: 422 });
+      expect(writes).toBe(1);
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
+      await expect(authority.execute(request)).rejects.toMatchObject({ status: 403 });
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+  });
+
   it("rejects supplied identity and missing CAS bases before changing content", async () => {
     const first = await call("read_agent_instructions");
     for (const identity of ["companyId", "agentId", "runId", "responsibleUserId", "onBehalfOfUserId", "actor"]) {

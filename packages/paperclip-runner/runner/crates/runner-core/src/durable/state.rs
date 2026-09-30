@@ -1671,52 +1671,55 @@ pub(crate) fn sanitize_semantic_tool_input(
     operation_id: &str,
     input: &Value,
 ) -> Result<Value, DurableRunnerError> {
-    let mut sanitized = sanitize_value(input);
-    // Mutation prose is the user's intended work, not a diagnostic. Preserve
-    // ordinary references to a token in these declared text fields; credential
-    // syntax and high-confidence secret values are still scrubbed. All other
-    // fields and operations retain the strict diagnostic policy.
+    // This value is executed by the authority. Diagnostic preview limits and
+    // redaction must never turn it into a different, apparently valid write.
+    // Hex-encoded authenticated frames double JSON bytes. Reserve envelope
+    // space below the 1 MiB wire cap before any effect can start.
+    // Enforce the transport envelope before dispatch, and reject content that
+    // cannot cross its credential policy instead of silently rewriting it.
+    if serde_json::to_vec(input)
+        .map_err(|_| DurableRunnerError::invalid("semantic tool input is not serializable"))?
+        .len()
+        > 480 * 1024
+    {
+        return Err(DurableRunnerError::invalid(
+            "semantic tool input exceeds the 480 KiB encrypted transport limit",
+        ));
+    }
+    let mut checked = sanitize_bounded_display_value(input);
     let prose_fields: &[&str] = match operation_id {
         "create_task" => &["title", "description", "initialPlan"],
         "create_project" => &["name", "description"],
         "write_document" => &["title", "body", "changeSummary"],
+        "update_agent_instructions" => &["content"],
         _ => &[],
     };
-    if let Some(sanitized_input) = sanitized.as_object_mut() {
+    if let Some(object) = checked.as_object_mut() {
         for field in prose_fields {
             if let Some(text) = input.get(*field).and_then(Value::as_str) {
-                sanitized_input.insert(
+                object.insert(
                     (*field).to_owned(),
-                    // The tool/API schema bounds business content. A diagnostic
-                    // preview limit must never truncate a plan or document.
                     Value::String(redact_sensitive_text_values_with_context(text, true)),
                 );
             }
         }
     }
-    if !matches!(operation_id, "paperclip_finish" | "paperclip_block") {
-        return Ok(sanitized);
-    }
-    let Some(summary) = input.get("summary").and_then(Value::as_str) else {
-        return Ok(sanitized);
-    };
-    if summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS {
+    if matches!(operation_id, "paperclip_finish" | "paperclip_block")
+        && input
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
+    {
         return Err(DurableRunnerError::invalid(
             "semantic completion summary exceeds the 12,000 character limit",
         ));
     }
-    let Some(sanitized_input) = sanitized.as_object_mut() else {
-        return Ok(sanitized);
-    };
-    // Completion summary is the schema-bounded user-facing answer, not an
-    // untrusted diagnostic snippet. Preserve it in full while applying the
-    // same credential scrubber used by every durable string. All other fields
-    // retain the generic 4 KiB diagnostic bound.
-    sanitized_input.insert(
-        "summary".to_owned(),
-        Value::String(redact_sensitive_text_values(summary)),
-    );
-    Ok(sanitized)
+    if checked != *input {
+        return Err(DurableRunnerError::invalid(
+            "semantic tool input contains credential material; refusing to execute altered arguments",
+        ));
+    }
+    Ok(input.clone())
 }
 
 fn finalize_semantic_tool_input_payload(
@@ -2944,7 +2947,7 @@ mod tests {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
         let summary = format!(
-            "token=do-not-persist {} Authorization: Bearer late-provider-secret COMPLETE-DURABLE-SUMMARY",
+            "Answer: {} COMPLETE-DURABLE-SUMMARY",
             "A complete paragraph for the user. ".repeat(180)
         );
         let input = json!({"summary": summary});
@@ -2988,11 +2991,11 @@ mod tests {
             .pointer("/payload/payload/semantic_tool/input")
             .unwrap();
         let transmitted_summary = transmitted["summary"].as_str().unwrap();
-        assert!(transmitted_summary.starts_with("token=[REDACTED] "));
+        assert!(transmitted_summary.starts_with("Answer: "));
         assert!(transmitted_summary.ends_with(" COMPLETE-DURABLE-SUMMARY"));
         assert!(!transmitted_summary.contains("do-not-persist"));
         assert!(!transmitted_summary.contains("late-provider-secret"));
-        assert!(transmitted_summary.contains("Authorization: Bearer [REDACTED]"));
+        assert_eq!(transmitted, &input);
         assert!(!transmitted_summary.contains("…[truncated]"));
         assert_eq!(
             state.outbox[0]
@@ -3013,7 +3016,7 @@ mod tests {
 
         let mut changed_tail = payload.clone();
         changed_tail["semantic_tool"]["input"]["summary"] = Value::String(format!(
-            "token=[REDACTED] {} CHANGED-DURABLE-SUMMARY",
+            "Answer: {} CHANGED-DURABLE-SUMMARY",
             "A complete paragraph for the user. ".repeat(180)
         ));
         assert!(state
@@ -3431,16 +3434,31 @@ mod tests {
             "{}\nAuthorization: Bearer late-credential\nFINAL-ACCEPTANCE-42",
             "Document content. ".repeat(400)
         );
-        let safe =
-            sanitize_semantic_tool_input("write_document", &json!({"body": document})).unwrap();
-        let body = safe["body"].as_str().unwrap();
-        assert!(body.len() > 4096);
-        assert!(body.ends_with("FINAL-ACCEPTANCE-42"));
-        assert!(!body.contains("late-credential"));
+        assert!(
+            sanitize_semantic_tool_input("write_document", &json!({"body": document})).is_err()
+        );
     }
 
     #[test]
-    fn semantic_prose_does_not_exempt_credential_syntax_or_shapes() {
+    fn semantic_credentials_are_rejected_instead_of_executing_redacted_arguments() {
+        for input in [
+            json!({"content": "Authorization: Bearer opaque-credential"}),
+            json!({"content": "literal token=opaque-credential"}),
+            json!({"content": "ghp_secretvalue12345678901234567890"}),
+            json!({"token": "opaque-credential"}),
+            json!({"nested": {"password": "opaque-credential"}}),
+        ] {
+            let error =
+                sanitize_semantic_tool_input("update_agent_instructions", &input).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("refusing to execute altered arguments"));
+            assert!(!error.to_string().contains("opaque-credential"));
+        }
+    }
+
+    #[test]
+    fn semantic_prose_rejects_all_previously_scrubbed_credential_shapes() {
         for text in [
             "auth token opaque-credential",
             "access token opaque-credential",
@@ -3453,56 +3471,57 @@ mod tests {
             "literal access_token opaque-credential",
             "literal \"token\" opaque-credential",
             "literal token \"opaque-credential\"",
+            "Include the literal token sk-proj-secretvalue123456 in the document.",
+            "Include the literal token ghp_secretvalue12345678901234567890 in the document.",
+            "Include the literal token github_pat_secretvalue12345678901234567890 in the document.",
+            "Include the literal token eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LWNsYWlt.signaturesecret in the document.",
         ] {
-            assert!(!redact_text(text).contains("opaque-credential"), "{text}");
-            let input = json!({"description": text, "initialPlan": text});
-            assert!(
-                !sanitize_semantic_tool_input("create_task", &input)
-                    .unwrap()
-                    .to_string()
-                    .contains("opaque-credential"),
-                "{text}"
-            );
+            for (operation, field) in [
+                ("create_task", "description"), ("create_task", "initialPlan"),
+                ("write_document", "body"), ("update_agent_instructions", "content"),
+            ] {
+                let input = json!({field: text});
+                assert!(sanitize_semantic_tool_input(operation, &input).is_err(), "{operation}: {text}");
+            }
         }
-        for secret in [
-            "sk-proj-secretvalue123456",
-            "ghp_secretvalue12345678901234567890",
-            "github_pat_secretvalue12345678901234567890",
-            "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LWNsYWlt.signaturesecret",
-        ] {
-            let text = format!("Include the literal token {secret} in the document.");
-            assert!(!redact_text(&text).contains(secret), "{text}");
-            assert!(
-                !sanitize_semantic_tool_input("write_document", &json!({"body": text}))
-                    .unwrap()
-                    .to_string()
-                    .contains(secret)
-            );
-        }
-        let input = json!({
-            "description": "Include the literal token ACCEPTANCE-42. Authorization: Bearer opaque-credential",
-            "token": "opaque-credential",
-        });
-        let safe = sanitize_semantic_tool_input("create_task", &input).unwrap();
-        assert!(safe["description"]
-            .as_str()
-            .unwrap()
-            .contains("ACCEPTANCE-42"));
-        assert!(!safe.to_string().contains("opaque-credential"));
-        let diagnostic = json!({"description": "the token opaque-credential"});
-        assert!(
-            !sanitize_semantic_tool_input("get_task_context", &diagnostic)
-                .unwrap()
-                .to_string()
-                .contains("opaque-credential")
-        );
-        assert!(!sanitize_semantic_tool_input(
-            "create_task",
-            &json!({"diagnostic": "token opaque-credential"})
+        assert!(sanitize_semantic_tool_input(
+            "get_task_context",
+            &json!({
+                "description": "the token opaque-credential",
+            })
         )
-        .unwrap()
-        .to_string()
-        .contains("opaque-credential"));
+        .is_err());
+    }
+
+    #[test]
+    fn instruction_arguments_survive_the_complete_outbox_without_byte_changes() {
+        let content = format!(
+            "{}\nFINAL-TAIL-🦀",
+            "# Instructions — 日本語 🦀\n".repeat(400)
+        );
+        let input = json!({"entryFile": "AGENTS.md", "baseRevisionId": null, "content": content});
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state.enqueue_executor_event(&config, "instruction-write".to_owned(), "semantic_tool.input".to_owned(), EventPriority::P0,
+            json!({"semantic_tool": {"schema":"paperclip.prp.semantic_tool.v1", "schemaVersion":1, "phase":"input", "operationId":"update_agent_instructions", "content":{"digest":semantic_value_digest(&input)}, "input": input}})).unwrap();
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let recovered: DurableState = serde_json::from_slice(&encoded).unwrap();
+        let actual = recovered.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        assert_eq!(actual, &input);
+        assert_eq!(
+            actual["content"].as_str().unwrap().as_bytes(),
+            content.as_bytes()
+        );
+        assert_eq!(semantic_value_digest(actual), semantic_value_digest(&input));
+        assert!(sanitize_semantic_tool_input(
+            "update_agent_instructions",
+            &json!({"content":"🦀".repeat(200_000)})
+        )
+        .is_err());
+        assert_eq!(state.outbox.len(), 1);
     }
 
     #[test]

@@ -97,7 +97,7 @@ export interface NativeSessionSnapshotOptions {
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor() {
+  constructor(readonly settlement?: Record<string, unknown>) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
     );

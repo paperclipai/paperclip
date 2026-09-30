@@ -185,6 +185,71 @@ The trace records `logicalEffectCount`. Every completed command has exactly one
 logical effect. A policy rejection, such as a new turn during drain or storage
 pressure, has zero effects.
 
+## Semantic operations that outlive a turn
+
+An execution session includes the provider process, the runner's durable call
+receipts and event outbox, and the controller's durable command queue. Ending a
+provider turn closes admission of new work. It does not establish whether a
+semantic operation already dispatched to the server succeeded or failed.
+
+The tool bridge retains pending call IDs, operation IDs, and exact arguments
+across that boundary. It accepts the authority's late result without delivering
+it to an obsolete provider turn. An identical result is an idempotent replay;
+a different result for that call remains a conflict. Codex records harmless
+result replay as `semantic_tool_result_duplicate` in a diagnostic event, with
+no task failure. Conflict errors identify the call, operation, and both result
+digests without including the result bodies.
+
+The controller checkpoints a reusable session only after every admitted tool
+has a matching completed result-delivery command and the provider has drained.
+A callback rejected before business dispatch can report
+`semantic_tool_not_dispatched`. A callback rejected after dispatch has an
+unknown outcome; the controller must not invent a failure or execute it again.
+After controller restart, an already committed input without a result remains
+unsettled. It requires authoritative reconciliation, not an automatic retry.
+This change does not repair legacy journals containing contradictory receipts.
+
+`update_agent_instructions` and `restore_agent_instructions` use a durable,
+company/run-scoped mutation receipt keyed by call ID. Concurrent identical
+calls and retries after authority restart return the exact original receipt.
+Changing the arguments under that ID is an idempotency conflict. Receipt replay
+still checks current instruction-write authorization.
+
+### Lossless arguments and bounded transport
+
+Execution arguments do not use the diagnostic preview formatter. Accepted
+input remains exact, including Unicode, line endings, and long document tails.
+The credential policy rejects input it would have to alter before dispatch.
+Diagnostic copies remain redacted and bounded. The semantic input limit is
+480 KiB of encoded JSON, leaving room for the encrypted frame's hex expansion
+and envelope inside the 1 MiB wire limit. Oversized input fails before a write;
+it is never truncated into an apparently successful write.
+
+A result command retains a SHA-256 `inputDigest` instead of duplicating the
+full input alongside the full result. The canonical input event retains the
+arguments. Settlement validates the digest and all run, event, call, operation,
+and correlation identities. Legacy result commands carrying the full input
+remain supported. Large results still have to fit the command transport limit;
+exceeding it leaves the outcome unsettled rather than retrying an effect.
+
+### Deterministic fault coverage
+
+These tests use explicit barriers, durable reloads, real runner processes with
+scripted providers, and a real PostgreSQL database. They do not require a paid
+model or rely on an LLM choosing the desired timing.
+
+| Fault | Required assertion | Regression suite |
+| --- | --- | --- |
+| Stop before/after server result; restart before late delivery | No invented failure; pending identity survives; late result accepted | Rust `provider_bridge`, `codex_provider` |
+| Provider terminal before tool completion | New turn blocked until actual result; safe replay and later reuse | Rust `acpx_provider_turns`, `acpx_provider_state` |
+| Lost result acknowledgement; conflicting redelivery | Identical result accepted; changed result rejected with IDs and digests | Rust `codex_provider`, `provider_bridge` |
+| Concurrent writes held at filesystem commit; authority restart | One write, one audit record, same receipt; revoked authorization rejected | Server `agent-instruction-tools.integration.test.ts` |
+| Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |
+| Handler finishes during close, after close budget, or persistence fails | Checkpoint marked settled only with completed delivery and drained provider | `runnerd-codex-transport.test.ts` |
+| Controller restarts with committed input but no result | No second dispatch and no fabricated outcome | `durable-prp-control-plane.test.ts` |
+| Execution and cleanup both fail | Original execution error retained; cleanup error attached | `native-session-runtime.test.ts` |
+| Retry in same process or after local log loss | Earlier attempts survive locally and in the durable mirror | Server `run-log-store.test.ts` |
+
 ## Residual local trust and revocation window
 
 The authenticated session removes trust in whichever process wins the configured
