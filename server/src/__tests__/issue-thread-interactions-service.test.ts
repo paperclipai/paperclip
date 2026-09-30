@@ -2991,6 +2991,32 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       agentId,
     });
 
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: {
+            type: "user",
+            agentId: null,
+            userId: "local-board",
+          },
+          returnAssignee: {
+            type: "agent",
+            agentId,
+            userId: null,
+          },
+          reviewRequest: { id: created.id },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+
     const accepted = await interactionsSvc.acceptInteraction({
       id: issueId,
       companyId,
@@ -3013,6 +3039,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "todo",
       assigneeAgentId: agentId,
       assigneeUserId: null,
+      executionState: {
+        returnAssignee: {
+          type: "agent",
+          agentId,
+          userId: null,
+        },
+        reviewRequest: { id: created.id },
+      },
     });
 
     await db

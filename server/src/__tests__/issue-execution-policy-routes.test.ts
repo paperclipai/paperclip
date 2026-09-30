@@ -60,6 +60,7 @@ const mockDb = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockResolveIssueReviewRequester = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
@@ -156,6 +157,14 @@ function registerModuleMocks() {
     }),
     workProductService: () => ({}),
   }));
+
+  vi.doMock("../services/issue-review-policy.js", async (importOriginal) => {
+    const orig = await importOriginal<typeof import("../services/issue-review-policy.js")>();
+    return {
+      ...orig,
+      resolveIssueReviewRequester: mockResolveIssueReviewRequester,
+    };
+  });
 }
 
 type TestActor =
@@ -201,6 +210,7 @@ describe("issue execution policy routes", () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/issue-review-policy.js");
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -210,6 +220,7 @@ describe("issue execution policy routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockResolveIssueReviewRequester.mockResolvedValue(null);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
@@ -559,7 +570,7 @@ describe("issue execution policy routes", () => {
     expect(activityTx).toBe(updateTx);
   });
 
-  it("rejects a review binding to a confirmation from another run", async () => {
+  it("binds a confirmation created by the same agent in an earlier run", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -581,6 +592,60 @@ describe("issue execution policy routes", () => {
       sourceRunId: "44444444-4444-4444-8444-444444444444",
       payload: { version: 1, prompt: "Approve another run's request?" },
     }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      changes: { status: { from: "todo", to: "in_review" } },
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+      expect.any(Array),
+    );
+  });
+
+  it("rejects a review binding to a confirmation created by another agent", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1004",
+      title: "Pending confirmation",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: "44444444-4444-4444-8444-444444444444",
+      sourceRunId: "44444444-4444-4444-8444-444444444444",
+      payload: { version: 1, prompt: "Approve another agent's request?" },
+    }]);
 
     const res = await request(await createApp({
       type: "agent",
@@ -596,7 +661,7 @@ describe("issue execution policy routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
-      error: expect.stringContaining("created by this agent run"),
+      error: expect.stringContaining("created by this agent"),
       details: { code: "invalid_review_interaction" },
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
@@ -1205,5 +1270,335 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  });
+
+  it("persists reviewInteractionId when entering execution review", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1100",
+      title: "Plan confirmation during execution review",
+      executionPolicy: policy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: "33333333-3333-4333-8333-333333333333",
+      sourceRunId: "55555555-5555-4555-8555-555555555555",
+      payload: { version: 1, prompt: "Approve this plan?" },
+    }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      changes: { status: { from: "in_progress", to: "in_review" } },
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+      expect.any(Array),
+    );
+  });
+
+  it("persists a cross-run reviewInteractionId on an active execution review", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1101",
+      title: "Rebind confirmation",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: "33333333-3333-4333-8333-333333333333",
+      sourceRunId: "44444444-4444-4444-8444-444444444444",
+      payload: { version: 1, prompt: "Approve this plan?" },
+    }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      changes: {},
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(res.body.executionState.reviewRequest).toEqual({
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionState: expect.objectContaining({
+          reviewRequest: {
+            id: "11111111-1111-4111-8111-111111111111",
+          },
+        }),
+      }),
+      expect.anything(),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+      expect.any(Array),
+    );
+  });
+
+  it("rejects execution review completion while the designated confirmation is pending", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1102",
+      title: "Pending plan confirmation",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: "33333333-3333-4333-8333-333333333333",
+      sourceRunId: "55555555-5555-4555-8555-555555555555",
+      payload: { version: 1, prompt: "Approve this plan?" },
+    }]);
+    mockResolveIssueReviewRequester.mockResolvedValue({
+      type: "agent",
+      id: "33333333-3333-4333-8333-333333333333",
+      reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+    const reviewerRun = {
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-1",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      permissions: null,
+    };
+    mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([reviewerRun]).then(onFulfilled, onRejected),
+      }),
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([reviewerRun]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-1",
+      runId: "66666666-6666-4666-8666-666666666666",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "done",
+        comment: "Approved: looks good.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: { code: "pending_review_confirmation" },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a caller-supplied confirmation that differs from the persisted review binding", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1103",
+      title: "Persisted plan confirmation",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const persistedInteractionId = "77777777-7777-4777-8777-777777777777";
+    const suppliedInteractionId = "88888888-8888-4888-8888-888888888888";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      {
+        id: persistedInteractionId,
+        kind: "request_confirmation",
+        status: "pending",
+        createdByAgentId: "33333333-3333-4333-8333-333333333333",
+        sourceRunId: "55555555-5555-4555-8555-555555555555",
+        payload: { version: 1, prompt: "Approve the persisted plan?" },
+      },
+      {
+        id: suppliedInteractionId,
+        kind: "request_confirmation",
+        status: "pending",
+        createdByAgentId: "44444444-4444-4444-8444-444444444444",
+        sourceRunId: "66666666-6666-4666-8666-666666666666",
+        payload: { version: 1, prompt: "Approve a replacement?" },
+      },
+    ]);
+    mockResolveIssueReviewRequester.mockResolvedValue({
+      type: "agent",
+      id: "33333333-3333-4333-8333-333333333333",
+      reviewInteractionId: persistedInteractionId,
+    });
+    const reviewerRun = {
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-1",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      permissions: null,
+    };
+    mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([reviewerRun]).then(onFulfilled, onRejected),
+      }),
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([reviewerRun]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-1",
+      runId: "66666666-6666-4666-8666-666666666666",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "done",
+        comment: "Approved: looks good.",
+        reviewInteractionId: suppliedInteractionId,
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: {
+        code: "review_interaction_binding_mismatch",
+        reviewInteractionId: suppliedInteractionId,
+        persistedReviewInteractionId: persistedInteractionId,
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

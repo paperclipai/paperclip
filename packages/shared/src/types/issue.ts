@@ -703,7 +703,9 @@ export interface IssueExecutionMonitorState {
 }
 
 export interface IssueReviewRequest {
-  instructions: string;
+  /** Server-owned binding to the confirmation that gates this review. */
+  id?: string;
+  instructions?: string;
 }
 
 export interface IssueExecutionState {
@@ -798,6 +800,7 @@ export interface Issue {
   workMode: IssueWorkMode;
   priority: IssuePriority;
   reviewPolicy: IssueReviewPolicy | null;
+  reviewInteractionId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   checkoutRunId: string | null;

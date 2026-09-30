@@ -500,6 +500,14 @@ export const issueReviewRequestSchema = z
   })
   .strict();
 
+const issueExecutionReviewRequestSchema = z
+  .object({
+    id: z.string().guid().optional(),
+    instructions: z.string().trim().min(1).max(20000).optional(),
+  })
+  .strict()
+  .refine((value) => value.id !== undefined || value.instructions !== undefined);
+
 export const issueExecutionStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
   currentStageId: z.string().guid().nullable(),
@@ -507,7 +515,7 @@ export const issueExecutionStateSchema = z.object({
   currentStageType: z.enum(ISSUE_EXECUTION_STAGE_TYPES).nullable(),
   currentParticipant: issueExecutionStagePrincipalSchema.nullable(),
   returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
-  reviewRequest: issueReviewRequestSchema.nullable().optional().default(null),
+  reviewRequest: issueExecutionReviewRequestSchema.nullable().optional().default(null),
   completedStageIds: z.array(z.string().guid()).default([]),
   lastDecisionId: z.string().guid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
