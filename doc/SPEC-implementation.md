@@ -626,15 +626,28 @@ marks an integration that speaks for an agent but never owns a heartbeat run —
 an inbound email router, a webhook receiver, a chat bridge. A run-less comment
 from such a key skips the run-context requirement and is decided by the normal
 issue authorization rule instead, the same way run-less issue creation already
-is. The carve-out covers comments only: issue updates and interaction
-resolutions from a `service` key still require a run. A `service` key that does
-send run context is charged the cap like any other run. The scope widens nothing
-else; board users mint these keys explicitly and each key creation is logged.
+is, but only where the agent it speaks for is actually involved in the issue: it
+is the assignee, the issue has no agent assignee, a mention grant names it, or it
+is reporting to its direct parent. The shared default-open visible-issue write
+rule does not unlock the run-less path — an integration fed by untrusted inbound
+content may reply where it was invited, not on every issue it can see — so a
+run-less comment carried only by visibility still fails closed on the missing
+run. The carve-out covers comments only: issue updates and interaction
+resolutions from a `service` key still require a run, as does a comment sent
+through the issue PATCH route rather than the comment route. A `service` key that
+does send run context is charged the run cap like any other run. The scope widens
+nothing else; board users mint these keys explicitly and each key creation is
+logged.
 A run may attempt at most 20 cross-issue comments, issue
 updates, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is
-active. Writes to the run's own source issue are not counted. Assignee self-comments do not
+active. Writes to the run's own source issue are not counted. A run-less
+`service` key has no run budget to charge, so it is counted against a rolling
+window instead — at most 60 comments per hour per key, recorded in the same
+activity trail with the same cap semantics and a 429 once exceeded. Every
+run-less attempt is charged; a service key has no source issue to write to for
+free. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
 Agent @-mentions are context links only: they do not wake the mentioned agent,
