@@ -504,12 +504,10 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Agent evals & feedback
 - ✅ Connected Apps
 - ✅ Personal & Shared AI Accounts
-- ✅ Shared Agents, Personal GitHub Identities
-- ✅ Ready-Made Team Templates
+- ✅ Shared Agents Use Personal GitHub Identities
 - ✅ Skill Version History & Restore
 - ✅ Document Comments & Revision History
 - ✅ Company-Wide Search
-- ✅ Task Dependencies & Automatic Unblocking
 - ✅ Multi-Model & Multi-Harness Teams
 - 🟡 Memory / Knowledge
 - ⚪ MAXIMIZER MODE

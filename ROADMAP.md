@@ -94,13 +94,9 @@ Apps and Connections provide a service catalog, custom MCP connections, personal
 
 Connect supported subscription accounts or API keys and choose personal defaults or shared accounts for compatible agents. Human access and agent eligibility are separate controls; account selection stays independent of the model and harness. See [AI Connections](doc/connections/AI-CONNECTIONS.md).
 
-### ✅ Shared Agents, Personal GitHub Identities
+### ✅ Shared Agents Use Personal GitHub Identities
 
 Shared agents can use the GitHub identity of the person whose instructions they are executing. Managed Git and GitHub operations resolve that identity through delegation and follow-up work, subject to connection permissions. See [GitHub identity during agent execution](doc/execution-github-identity.md).
-
-### ✅ Ready-Made Team Templates
-
-Browse, preview, and install teams with agent roles, skills, projects, and routines. Choose compatible runtimes during setup and adapt the team to your organization.
 
 ### ✅ Skill Version History & Restore
 
@@ -113,10 +109,6 @@ Leave comments on specific passages in task documents, follow revision history, 
 ### ✅ Company-Wide Search
 
 Search tasks, comments, documents, agents, projects, and artifacts within company access boundaries. Filters and matching excerpts help people find relevant work and its outputs.
-
-### ✅ Task Dependencies & Automatic Unblocking
-
-Tasks track explicit dependencies and blockers. Resolving blockers can wake eligible work while preserving task ownership and respecting pause, budget, and approval gates.
 
 ### ✅ Multi-Model & Multi-Harness Teams
 
