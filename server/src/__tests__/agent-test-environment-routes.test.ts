@@ -117,7 +117,7 @@ vi.mock("../routes/ai-connections.js", async (importOriginal) => ({
   validateAiApiKey: mockValidateAiApiKey,
 }));
 
-function mockManagedRuntime(method: "api_key" | "subscription") {
+function mockManagedRuntime(method: "api_key" | "subscription", endpoint?: { baseUrl: string }) {
   mockPrepareManagedAiRuntime.mockImplementation(
     async (_db: unknown, input: { config: Record<string, unknown> }) => ({
       config: {
@@ -146,6 +146,7 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
       accountName: "My Claude Account",
       accountOwnerUserId: "local-board",
       identity: "grant-1:local-board:0000000000000000",
+      endpoint,
       cleanup: vi.fn(async () => {}),
     }),
   );
@@ -440,13 +441,29 @@ describe("agent test-environment route", () => {
       expect(res.body.status).toBe("pass");
       expect(JSON.stringify(res.body)).not.toContain("ai_connection_validation_incomplete");
       expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_api_key_reverified");
-      expect(mockValidateAiApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key");
+      expect(mockValidateAiApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key", expect.any(Function), undefined);
       expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
       expect(cliProbeSpy).not.toHaveBeenCalled();
     } finally {
       unregisterServerAdapter("claude_local");
       if (previous) registerServerAdapter(previous);
     }
+  });
+
+  it("re-verifies a gateway connection's key at its gateway, not the provider's public API", async () => {
+    mockManagedRuntime("api_key", { baseUrl: "https://gateway.example" });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({
+        adapterConfig: { cwd: "/" },
+        aiConnection: { provider: "anthropic", method: "api_key", mode: "responsible_user" },
+      });
+    expect(res.status).toBe(200);
+    expect(mockValidateAiApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key", expect.any(Function), {
+      endpoint: { baseUrl: "https://gateway.example" },
+      allowPrivateNetwork: true,
+    });
   });
 
   it("fails adoption of an api_key connection the provider no longer accepts", async () => {

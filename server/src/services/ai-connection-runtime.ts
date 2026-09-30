@@ -7,14 +7,25 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  aiConnectionEndpoint,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
 import { secretService } from "./secrets.js";
-import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
+import { decideCodexAuthMerge, renderCodexModelProviderToml } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+
+// Set at startup from the current deployment, never stored per connection, so a
+// change of exposure takes effect without recreating connections.
+let gatewayAllowsPrivateNetwork = true;
+export function setAiGatewayNetworkPolicy(policy: { allowPrivateNetwork: boolean }) {
+  gatewayAllowsPrivateNetwork = policy.allowPrivateNetwork;
+}
+export function aiGatewayAllowsPrivateNetwork() {
+  return gatewayAllowsPrivateNetwork;
+}
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -270,12 +281,36 @@ export async function prepareManagedAiRuntime(
         selection.attribution.method
       ]!;
     const authFile = path.join(providerHome, "auth.json");
+    const endpoint = aiConnectionEndpoint(selection.connection.config);
+    // The provider CLI resolves the gateway host itself, so a server-side
+    // address check cannot stop DNS rebinding to a private address. Deployments
+    // that keep private networks off therefore refuse custom endpoints.
+    if (endpoint && !gatewayAllowsPrivateNetwork)
+      throw unprocessable("Custom AI gateway endpoints are not available on authenticated public deployments", {
+        code: "ai_connection_unavailable",
+        connectionId: selection.connection.id,
+      });
     if (input.binding.provider === "openai")
       await writeFile(
         path.join(providerHome, "config.toml"),
-        'cli_auth_credentials_store = "file"\n',
+        'cli_auth_credentials_store = "file"\n' +
+          (endpoint
+            ? renderCodexModelProviderToml("paperclip_gateway", {
+                name: selection.connection.name,
+                base_url: endpoint.baseUrl,
+                env_key: "OPENAI_API_KEY",
+                wire_api: "responses",
+                ...(endpoint.headers ? { http_headers: endpoint.headers } : {}),
+              })
+            : ""),
         { mode: 0o600 },
       );
+    if (endpoint && input.binding.provider === "anthropic") {
+      env.ANTHROPIC_BASE_URL = endpoint.baseUrl;
+      const headers = Object.entries(endpoint.headers ?? {}).map(([name, value]) => `${name}: ${value}`);
+      const inherited = typeof env.ANTHROPIC_CUSTOM_HEADERS === "string" ? env.ANTHROPIC_CUSTOM_HEADERS : "";
+      if (headers.length) env.ANTHROPIC_CUSTOM_HEADERS = [inherited, ...headers].filter(Boolean).join("\n");
+    }
     if (subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else env[capability.envKey] = value;
     if (
@@ -295,6 +330,7 @@ export async function prepareManagedAiRuntime(
     }
     const generation = createHash("sha256")
       .update(value)
+      .update(endpoint ? JSON.stringify(endpoint) : "")
       .digest("hex")
       .slice(0, 16);
     const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
@@ -305,6 +341,7 @@ export async function prepareManagedAiRuntime(
         managedAiConnection: { ...selection.attribution, identity },
       },
       attribution: selection.attribution,
+      endpoint,
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,

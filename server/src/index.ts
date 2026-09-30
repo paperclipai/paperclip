@@ -10,6 +10,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { setAiGatewayNetworkPolicy } from "./services/ai-connection-runtime.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -652,6 +653,9 @@ async function startServerWithDatabaseTeardown(
   // Auth, routes, or child-runtime configuration capture any public URL.
   const restoredCloudRuntimeIdentity = await initializeCloudRuntimeIdentity(db as any);
   if (restoredCloudRuntimeIdentity) config = loadConfig();
+  setAiGatewayNetworkPolicy({
+    allowPrivateNetwork: config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public",
+  });
 
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
     throw new Error(

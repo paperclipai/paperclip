@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  aiConnectionEndpointSchema,
   aiConnectionMetadataSchema,
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
@@ -124,6 +125,7 @@ export function aiConnectionService(db: Db) {
       );
       if (!metadata.success) return [];
       const needsReconnect = aiSubscriptionNeedsIsolatedLogin(connection.config);
+      const endpointBaseUrl = aiConnectionEndpointSchema.safeParse(connection.config.aiEndpoint).data?.baseUrl;
       if (!canUseCredential(grant, userId, members.filter((m) => m.grantId === grant.id)))
         return [];
       return [
@@ -134,6 +136,7 @@ export function aiConnectionService(db: Db) {
           ...metadata.data,
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
+          ...(endpointBaseUrl ? { endpointBaseUrl } : {}),
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
           ownership:
             grant.kind === "user" ? ("personal" as const) : ("shared" as const),
@@ -650,6 +653,7 @@ export function aiConnectionService(db: Db) {
               sourceTemplateKey: input.provider,
               ai: { provider: input.provider, method: input.method },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
+              ...("endpoint" in input && input.endpoint ? { aiEndpoint: input.endpoint } : {}),
             },
             createdByUserId: userId,
           });
@@ -770,7 +774,12 @@ export function aiConnectionService(db: Db) {
           : "ai_connection.connected",
         entityType: "tool_connection",
         entityId: id,
-        details: { provider: input.provider, method: input.method, grantId },
+        details: {
+          provider: input.provider,
+          method: input.method,
+          grantId,
+          ...("endpoint" in input && input.endpoint ? { endpointBaseUrl: input.endpoint.baseUrl } : {}),
+        },
       });
       return { connectionId: id, grantId };
     });

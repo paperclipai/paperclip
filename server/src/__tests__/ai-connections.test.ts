@@ -12,10 +12,10 @@ import { createDb, companies, agents, heartbeatRuns, companyMemberships, connect
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, setAiGatewayNetworkPolicy } from "../services/ai-connection-runtime.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, connectionPurposeTransportSchema, createAiConnectionSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -607,6 +607,123 @@ describe("managed AI connections", () => {
       expect(JSON.stringify(saved.body)).not.toContain("isolated-fixture-token");
       expect((await service.list(companyId, owner)).filter(c => c.name === intent.name)).toHaveLength(1);
     } finally { reader.mockRestore(); }
+  });
+  describe("custom gateway endpoints", () => {
+    const endpoint = { baseUrl: "https://gateway.example/", headers: { "x-team": "platform" } };
+    const shared = (provider: "anthropic" | "openai", name: string) =>
+      service.save(companyId, "alice", { provider, method: "api_key", ownership: "shared", name, apiKey: "fixture", endpoint: createAiConnectionSchema.parse({ provider, method: "api_key", ownership: "shared", name, apiKey: "fixture", endpoint }).endpoint, agentIds: [], allAgents: true }, `gateway-key-${provider}`);
+
+    it("routes a Claude run to the connection's gateway and keeps agent headers", async () => {
+      const created = await shared("anthropic", "Claude gateway");
+      const run = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob", binding: { ...binding, mode: "shared", ...created }, config: { model: "claude-opus-5", env: { ANTHROPIC_CUSTOM_HEADERS: "x-repo: paperclip" } } });
+      const env = run.config.env as Record<string, string>;
+      expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example");
+      expect(env.ANTHROPIC_API_KEY).toBe("gateway-key-anthropic");
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("x-repo: paperclip\nx-team: platform");
+      await run.cleanup();
+    });
+
+    it("writes a Codex model provider for the gateway into the private home", async () => {
+      const created = await shared("openai", "OpenAI gateway");
+      const run = await prepareManagedAiRuntime(db, { ...input, adapterType: "codex_local", responsibleUserId: "bob", binding: { provider: "openai", method: "api_key", mode: "shared", ...created }, config: { cwd: home, model: "gpt-5" } });
+      const env = run.config.env as Record<string, string>;
+      const toml = await readFile(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+      expect(toml).toBe([
+        'cli_auth_credentials_store = "file"',
+        'model_provider = "paperclip_gateway"',
+        "",
+        "[model_providers.paperclip_gateway]",
+        'name = "OpenAI gateway"',
+        'base_url = "https://gateway.example"',
+        'env_key = "OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        'http_headers = { x-team = "platform" }',
+        "",
+      ].join("\n"));
+      expect(env.OPENAI_API_KEY).toBe("gateway-key-openai");
+      expect(env.OPENAI_BASE_URL).toBe("");
+      await run.cleanup();
+    });
+
+    it("leaves connections without an endpoint on the provider's own API", async () => {
+      const created = await create("alice", "No gateway", "shared");
+      const run = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob", binding: { ...binding, mode: "shared", ...created }, config: { model: "m" } });
+      expect((run.config.env as Record<string, string>).ANTHROPIC_BASE_URL).toBe("");
+      await run.cleanup();
+    });
+
+    it("still rejects routing set on the agent instead of the connection", async () => {
+      const created = await shared("anthropic", "Claude gateway override");
+      await expect(prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob", binding: { ...binding, mode: "shared", ...created }, config: { env: { ANTHROPIC_BASE_URL: "https://elsewhere.example" } } })).rejects.toThrow("provider routing");
+    });
+
+    it("verifies the key against the gateway through the network guard", async () => {
+      const request = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      await validateAiApiKey("anthropic", "gw", request, { endpoint: { baseUrl: "http://93.184.216.34:4000", headers: { "x-team": "platform" } }, allowPrivateNetwork: false });
+      expect(request.mock.calls[0][0]).toBe("http://93.184.216.34:4000/v1/models?limit=1");
+      expect(request.mock.calls[0][1].headers).toMatchObject({ "x-api-key": "gw", "x-team": "platform" });
+      await validateAiApiKey("openai", "gw", request, { endpoint: { baseUrl: "http://93.184.216.34:4000/v1" }, allowPrivateNetwork: false });
+      expect(request.mock.calls[1][0]).toBe("http://93.184.216.34:4000/v1/models");
+      await expect(validateAiApiKey("anthropic", "gw", request, { endpoint: { baseUrl: "http://10.0.0.5:4000" }, allowPrivateNetwork: false })).rejects.toThrow("private");
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it("accepts endpoints only for Claude and OpenAI API keys, without credential headers", () => {
+      const base = { name: "g", ownership: "shared", apiKey: "k", endpoint: { baseUrl: "https://g.example" } } as const;
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "anthropic", method: "api_key" }).success).toBe(true);
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "openrouter", method: "api_key" }).success).toBe(false);
+      expect(createAiConnectionSchema.safeParse({ ...base, apiKey: undefined, loginSessionId: "s", provider: "anthropic", method: "subscription" }).success).toBe(false);
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "openai", method: "api_key", endpoint: { baseUrl: "ftp://g.example" } }).success).toBe(false);
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "openai", method: "api_key", endpoint: { baseUrl: "https://g.example", headers: { Authorization: "Bearer x" } } }).success).toBe(false);
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "anthropic", method: "api_key", endpoint: { baseUrl: "https://g.example", headers: { "X-Anthropic-Agent-Id": "spoofed" } } }).success).toBe(false);
+      expect(createAiConnectionSchema.safeParse({ ...base, provider: "anthropic", method: "api_key", endpoint: { baseUrl: "https://user:secret@g.example" } }).success).toBe(false);
+    });
+
+    it("refuses a reconnect for another provider before the key leaves the server", async () => {
+      const created = await shared("anthropic", "Claude gateway reconnect");
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, membershipRole: "owner", status: "active" }] }; next(); });
+      app.use("/api", aiConnectionRoutes(db));
+      app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+      const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach the gateway"));
+      try {
+        const response = await request(app).post(`/api/companies/${companyId}/ai-connections`).send({ provider: "openai", method: "api_key", name: "x", ownership: "shared", apiKey: "new-key", connectionId: created.connectionId, allAgents: false, agentIds: [] });
+        expect(response.status).toBe(422);
+        expect(response.body.error).toContain("providers");
+        expect(network).not.toHaveBeenCalled();
+      } finally { network.mockRestore(); }
+    });
+
+    it("refuses gateway runs on public deployments, whatever the host resolves to", async () => {
+      // A public hostname can rebind to a private address after any server-side
+      // check, so the refusal must not depend on DNS.
+      const created = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Public gateway", apiKey: "k", endpoint: { baseUrl: "https://gateway.example" }, agentIds: [], allAgents: true }, "k");
+      const run = (policy: boolean) => {
+        setAiGatewayNetworkPolicy({ allowPrivateNetwork: policy });
+        return prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob", binding: { ...binding, mode: "shared", ...created }, config: { model: "m" } });
+      };
+      try {
+        await expect(run(false)).rejects.toThrow("not available on authenticated public deployments");
+        // The same connection runs once the deployment is private again.
+        await (await run(true)).cleanup();
+      } finally { setAiGatewayNetworkPolicy({ allowPrivateNetwork: true }); }
+    });
+
+    it("refuses to create a gateway connection on a public deployment before any network call", async () => {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, membershipRole: "owner", status: "active" }] }; next(); });
+      app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "public" }));
+      app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+      const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach the gateway"));
+      try {
+        const response = await request(app).post(`/api/companies/${companyId}/ai-connections`).send({ provider: "anthropic", method: "api_key", name: "g", ownership: "shared", apiKey: "k", endpoint: { baseUrl: "https://gateway.example" }, allAgents: true, agentIds: [] });
+        expect(response.status).toBe(422);
+        expect(response.body.error).toContain("public deployments");
+        expect(network).not.toHaveBeenCalled();
+      } finally { network.mockRestore(); }
+    });
   });
   it("rejects invalid credentials without exposing the provider response", async () => {
     const request = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 401 }));

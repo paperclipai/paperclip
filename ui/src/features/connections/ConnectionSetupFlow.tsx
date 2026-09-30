@@ -2091,6 +2091,7 @@ function StandardConnectionSetupFlow({
   const credentialStep = entry ? renderCredentialStep?.({ app: entry, name: galleryName || entry.name, grantKind: effectiveGrantKind, agentIds: [...installAgentIds], allAgents: installChoice === "all", onBack: () => setAppStep("access") }) ?? (aiMethod && selectedCompanyId ? <><AiConnectionCredentialStep
     companyId={selectedCompanyId} provider={aiMethod.provider} fixedMethod={Boolean(aiConnection && aiConnection.mode !== "responsible_user")} initialMethod={reconnectConnection?.connectionPurpose === "ai" ? (reconnectConnection.config?.ai as { method: "subscription" | "api_key" }).method : aiMethod.method}
     connectionId={reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.id : undefined}
+    gatewayBaseUrl={reconnectConnection?.connectionPurpose === "ai" ? (reconnectConnection.config?.aiEndpoint as { baseUrl?: string } | undefined)?.baseUrl : undefined}
     name={reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.name : galleryName || `My ${entry.name} ${aiMethod.method === "subscription" ? "subscription" : "API"}`}
     ownership={(reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.credentialPolicy === "shared" : effectiveGrantKind === "organization") ? "shared" : "personal"}
     agentIds={[...installAgentIds]} allAgents={installChoice === "all"}
