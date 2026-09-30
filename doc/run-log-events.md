@@ -56,8 +56,11 @@ Instruction writes also commit an `agent.instruction_write_attempted` activity
 row and a run-scoped `instructionToolAttempts` entry before permitting the
 filesystem effect. They retain the call ID, operation ID, and input digest, not
 instruction text. A later transaction rollback cannot erase this attempt proof.
-A missing completed receipt means the outcome is unknown, even if the current
-file contains the requested text. Replays remain blocked until reconciled; a
+A missing success or definite pre-write failure receipt means the outcome is
+unknown, even if the current file contains the requested text. Known validation
+and stale-base failures are saved under the attempt's `failure` entry and replay
+their original status, message, and details without a new write. Unknown
+outcomes remain blocked until reconciled; a
 committed receipt with a lost acknowledgement can replay its exact result.
 
 The NDJSON output log appends across repeated `begin` calls for one run. Each

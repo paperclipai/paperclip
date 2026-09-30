@@ -192,6 +192,61 @@ describe("canonical instruction tools through native authority", () => {
     } finally { spy.mockRestore(); }
   });
 
+  it.each(["validation", "stale_base", "oversized"])("replays a definite %s failure after restart without executing again", async (fault) => {
+    const first = await call("read_agent_instructions");
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content: fault === "oversized" ? "🦀".repeat(300_000) : "requested update",
+      baseRevisionId: first.revision.id, ...(fault === "validation" ? { unexpected: true } : {}),
+    } };
+    if (fault === "stale_base") await fs.writeFile(path.join(root, entryFile), "newer canonical bytes");
+    const originalRename = fs.rename.bind(fs);
+    let writes = 0;
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (destination === path.join(root, entryFile)) writes++;
+      return originalRename(source, destination);
+    });
+    try {
+      const failure = await authority.execute(request).then(() => null, (error: unknown) => error) as any;
+      expect(failure).toMatchObject({ status: fault === "validation" ? 400 : fault === "stale_base" ? 409 : 422 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const saved = (run!.resultJson as any).instructionToolAttempts[`instruction:${request.callId}`].failure;
+      expect(saved).toMatchObject({ status: failure.status, message: failure.message });
+      // The stale request would now pass CAS if it were executed again.
+      await fs.writeFile(path.join(root, entryFile), original);
+      authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      await expect(authority.execute(request)).rejects.toMatchObject(saved);
+      await expect(authority.execute(request)).rejects.toMatchObject(saved);
+      await expect(authority.execute({ ...request, arguments: { ...request.arguments, content: "different" } }))
+        .rejects.toThrow("idempotency_conflict");
+      expect(writes).toBe(0);
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(original);
+      const audit = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
+      expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
+      expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(0);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("does not claim a final failure when its failure receipt cannot be persisted", async () => {
+    const first = await call("read_agent_instructions");
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content: "invalid input", baseRevisionId: first.revision.id, unexpected: true,
+    } };
+    const transaction = db.transaction.bind(db);
+    let attempts = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
+      if (++attempts === 3) throw new Error("injected failure receipt outage");
+      return transaction(...args);
+    });
+    try {
+      await expect(authority.execute(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect((run!.resultJson as any).instructionToolAttempts[`instruction:${request.callId}`].failure).toBeUndefined();
+      authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      await expect(authority.execute(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(original);
+    } finally { spy.mockRestore(); }
+  });
+
   it("rejects supplied identity and missing CAS bases before changing content", async () => {
     const first = await call("read_agent_instructions");
     for (const identity of ["companyId", "agentId", "runId", "responsibleUserId", "onBehalfOfUserId", "actor"]) {

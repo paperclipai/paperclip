@@ -235,7 +235,12 @@ unsettled operation for authoritative reconciliation. If only the commit
 acknowledgement was lost, the committed receipt is replayed normally.
 The native tool wrapper propagates `SemanticToolOutcomeUnknownError` instead
 of turning it into a completed failed tool response. Ordinary validation,
-authorization, and stale-base errors still return normal tool errors.
+authorization, and stale-base errors still return normal tool errors. Before
+returning a definite pre-write failure, the authority saves its status, message,
+and details under the attempt's `failure` receipt. Replays return that original
+error without executing again, even if the old CAS base becomes current again.
+Failure-receipt storage errors retain an unsettled operation instead of exposing
+an unrecorded final answer.
 
 ### Lossless arguments and bounded transport
 
@@ -270,6 +275,8 @@ model or rely on an LLM choosing the desired timing.
 | Failure after file rename or rollback while saving the receipt | Durable attempt and audit evidence survive; no success claim and no second write | Server `agent-instruction-tools.integration.test.ts` |
 | Receipt commits but its database acknowledgement is lost | Exact original result replays; one file-update audit and one attempt record | Server `agent-instruction-tools.integration.test.ts` |
 | Tool handler throws an unknown-outcome error versus a validation error | Unknown propagates without a completed tool event; validation returns an ordinary failed response | `codex-app-server-driver.test.ts` |
+| Invalid arguments, oversized input, or stale base; restart and replay | Original failure replays with zero writes, even after the base becomes valid | Server `agent-instruction-tools.integration.test.ts` |
+| Failure receipt cannot be stored | No unrecorded final failure; attempt remains unsettled and never reexecutes | Server `agent-instruction-tools.integration.test.ts` |
 | Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |
 | Handler finishes during close, after close budget, or persistence fails | Checkpoint marked settled only with completed delivery and drained provider | `runnerd-codex-transport.test.ts` |
 | Controller restarts with committed input but no result | No second dispatch and no fabricated outcome | `durable-prp-control-plane.test.ts` |

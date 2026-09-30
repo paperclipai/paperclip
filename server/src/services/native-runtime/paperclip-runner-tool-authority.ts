@@ -27,7 +27,7 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { assetService } from "../assets.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden, notFound } from "../../errors.js";
+import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
@@ -143,6 +143,7 @@ type ToolReceipt = {
 // Coalesce live callers, but never use this process-local lock as crash proof.
 // The database attempt record below is the authority after process loss.
 const instructionCallLocks = new WeakMap<Db, Map<string, Promise<void>>>();
+const instructionPreWriteFailureStatuses = new Set([400, 401, 403, 404, 409, 422]);
 async function withInstructionCallLock<T>(db: Db, key: string, work: () => Promise<T>): Promise<T> {
   let locks = instructionCallLocks.get(db);
   if (!locks) instructionCallLocks.set(db, locks = new Map());
@@ -1531,6 +1532,11 @@ export class PaperclipRunnerToolAuthority {
           if (prior.operationId !== tool || prior.inputDigest !== digest) {
             throw new Error("paperclip_runner_tool_idempotency_conflict");
           }
+          const failure = record(prior.failure);
+          if (typeof failure.status === "number" && instructionPreWriteFailureStatuses.has(failure.status)
+            && typeof failure.message === "string") {
+            throw new HttpError(failure.status, failure.message, failure.details);
+          }
           throw new SemanticToolOutcomeUnknownError(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
         }
         if (Object.keys(attempts).length >= 512) throw badRequest("Run instruction mutation limit reached");
@@ -1555,8 +1561,38 @@ export class PaperclipRunnerToolAuthority {
         // Instruction validation, authorization and CAS errors precede the
         // file write. Storage errors and lost commit acknowledgements do not
         // prove that a reserved filesystem effect rolled back.
-        const status = record(error).status;
-        if (!reserved || [400, 401, 403, 404, 409, 422].includes(Number(status))) throw error;
+        if (!reserved) throw error;
+        if (error instanceof HttpError && instructionPreWriteFailureStatuses.has(error.status)) {
+          const failure = { status: error.status, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) };
+          try {
+            // Save the definite failure before exposing it as a final answer.
+            // This is evidence of the admitted call, not another mutation, so
+            // retain it even if the run stopped after the effect rolled back.
+            await this.db.transaction(async (tx) => {
+              const [run] = await tx.select().from(heartbeatRuns).where(and(
+                eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId),
+                eq(heartbeatRuns.agentId, this.binding.agentId),
+              )).for("update");
+              if (!run) throw new Error("instruction_failure_run_missing");
+              const resultJson = record(run.resultJson);
+              const attempts = record(resultJson.instructionToolAttempts);
+              const prior = record(attempts[key]);
+              if (prior.operationId !== tool || prior.inputDigest !== digest
+                || record(resultJson.semanticToolReceipts)[key] !== undefined) {
+                throw new Error("instruction_failure_receipt_conflict");
+              }
+              attempts[key] = { ...prior, failure };
+              await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+                .where(eq(heartbeatRuns.id, this.binding.runId));
+            });
+          } catch (persistenceError) {
+            throw new SemanticToolOutcomeUnknownError(
+              `paperclip_runner_instruction_failure_receipt_unavailable call_id=${callId}`,
+              { cause: new AggregateError([error, persistenceError], "Definite instruction failure could not be saved") },
+            );
+          }
+          throw error;
+        }
         throw new SemanticToolOutcomeUnknownError(
           `paperclip_runner_instruction_outcome_unknown call_id=${callId}: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
