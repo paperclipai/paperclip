@@ -58,7 +58,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   });
 
   router.get("/mcp/runtime-tools", async (req, res) => {
-    await service.validate(runtimeClaims(req));
+    await service.validateActive(runtimeClaims(req));
     res.json({ name: "paperclip-runtime-tools", protocolVersion: "2025-03-26" });
   });
 
@@ -67,7 +67,13 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     // Streamable HTTP lifecycle calls are token uses too. Revalidate the bound
     // run before initialize/list as well as before an actual tool call so an
     // ended heartbeat cannot keep probing the endpoint with a once-valid token.
-    await service.validate(claims);
+    // This is the lightweight check only (active run, matching token) — it does
+    // not require a task to be bound yet. A fresh on-demand run reaches this
+    // handshake before it has looked at its inbox and checked out a task, so
+    // requiring one here made every on-demand run's handshake fail. The actual
+    // tool calls below (connections_search / connection_request) still need a
+    // bound task, and get that from their own full `service.validate` call.
+    await service.validateActive(claims);
     const request = req.body as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
     const id = request.id ?? null;
     if (request.method === "initialize") {

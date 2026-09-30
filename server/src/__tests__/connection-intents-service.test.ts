@@ -793,6 +793,49 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+
+  it("lets validateActive pass for a taskless run while validate still requires a bound task", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const tasklessRunId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "On-demand agent",
+      role: "researcher",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: tasklessRunId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: {},
+    });
+    const tasklessClaims = { ...claims, sub: agentId, run_id: tasklessRunId };
+    const service = connectionIntentService(db);
+
+    // The MCP protocol handshake (initialize/notifications/tools/list) reaches
+    // the endpoint before the agent has checked out a task, so it must not
+    // require one.
+    await expect(service.validateActive(tasklessClaims)).resolves.toMatchObject({ id: tasklessRunId });
+
+    // The actual tools (connections_search / connection_request) still need a
+    // bound task and must keep failing until one is checked out.
+    await expect(service.search(tasklessClaims, "notion"))
+      .rejects.toThrow("Connection requests require a task-bound heartbeat run");
+
+    // validateActive still enforces the same active-run/company checks as validate.
+    await expect(service.validateActive({ ...tasklessClaims, company_id: randomUUID() }))
+      .rejects.toThrow("does not match its heartbeat run");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, tasklessRunId));
+    await expect(service.validateActive(tasklessClaims)).rejects.toThrow("no longer active");
+  });
   it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
     const companyId = claims.company_id;
     const agentId = randomUUID();

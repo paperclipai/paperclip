@@ -137,7 +137,17 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  async function loadRunContext(claims: ConnectionRunClaims) {
+  /**
+   * The lightweight half of run validation: the token still matches an active
+   * heartbeat run, with no requirement that a task is bound yet. MCP protocol
+   * lifecycle calls (`initialize`, `notifications/initialized`, `tools/list`)
+   * happen as soon as the agent process starts — before it has looked at its
+   * inbox and checked out a task — so they use this, not `loadRunContext`.
+   * `loadRunContext` still re-validates from scratch (including the task-bound
+   * requirement) for the tool calls that actually need a task, so this does
+   * not weaken that check.
+   */
+  async function validateActiveRun(claims: ConnectionRunClaims) {
     let run = await db
       .select({
         id: heartbeatRuns.id,
@@ -163,6 +173,11 @@ export function connectionIntentService(db: Db) {
       run = { ...run, responsibleUserId: current.run.responsibleUserId };
     }
     if (!run.responsibleUserId) throw forbidden("This task needs a responsible user to connect a service");
+    return run;
+  }
+
+  async function loadRunContext(claims: ConnectionRunClaims) {
+    const run = await validateActiveRun(claims);
     const snapshot = record(run.contextSnapshot);
     const issueId = text(snapshot?.issueId) ?? text(snapshot?.taskId);
     if (!issueId) throw unprocessable("Connection requests require a task-bound heartbeat run");
@@ -880,6 +895,7 @@ export function connectionIntentService(db: Db) {
 
   return {
     validate: loadRunContext,
+    validateActive: validateActiveRun,
     usableConnectionForAgent,
     search,
     request,
