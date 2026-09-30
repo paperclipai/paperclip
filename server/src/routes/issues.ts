@@ -12720,6 +12720,7 @@ export function issueRoutes(
       tx as unknown as Db, existing.companyId, existing.id, req.body, actor,
     ));
     if (publication) publishActivity(publication);
+    await externalObjectsSvc.syncIssueSafely(existing.id);
     res.json(result);
   });
 

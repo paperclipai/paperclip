@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, externalObjectMentions, heartbeatRuns, issues } from "@paperclipai/db";
 import { createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { issueService } from "../services/issues.js";
+import { externalObjectService } from "../services/external-objects.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { callProjectTool, projectToolDefinitions } from "../services/project-tools.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 
@@ -101,6 +103,32 @@ describe("task titles", () => {
     ]) as Array<{ changed: boolean; title: string }>;
     expect(results.filter(result => result.changed)).toHaveLength(1);
     expect(new Set(results.map(result => result.title)).size).toBe(1);
+  });
+
+  it("refreshes external title links through native and REST renames while preserving description links", async () => {
+    const f = await server.fixture();
+    await instanceSettingsService(server.db).updateExperimental({ enableExternalObjects: true });
+    try {
+      await server.db.update(issues).set({
+        title: "Review https://github.com/acme/app/pull/42",
+        titleNeedsGeneration: true,
+        description: "Keep https://github.com/acme/app/issues/7",
+      }).where(eq(issues.id, f.issueId));
+      await externalObjectService(server.db).syncIssue(f.issueId);
+      const mentions = () => server.db.select().from(externalObjectMentions).where(eq(externalObjectMentions.sourceIssueId, f.issueId));
+      expect(await mentions()).toHaveLength(2);
+      await rename(f);
+      expect(await mentions()).toMatchObject([{ sourceKind: "description", sanitizedDisplayUrl: "https://github.com/acme/app/issues/7" }]);
+      const response = await request(f, `/issues/${f.issueId}/title`, "PUT", { title: "Review https://github.com/acme/app/pull/43" });
+      expect(response.status).toBe(200);
+      expect(await mentions()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceKind: "title", sanitizedDisplayUrl: "https://github.com/acme/app/pull/43" }),
+        expect.objectContaining({ sourceKind: "description", sanitizedDisplayUrl: "https://github.com/acme/app/issues/7" }),
+      ]));
+      expect(await mentions()).toHaveLength(2);
+    } finally {
+      await instanceSettingsService(server.db).updateExperimental({ enableExternalObjects: false });
+    }
   });
 
   it("rejects unrelated tasks, stale runs, and malformed title mutations", async () => {
