@@ -105,6 +105,22 @@ describe("task titles", () => {
     expect(new Set(results.map(result => result.title)).size).toBe(1);
   });
 
+  it.each(["native", "http"] as const)("shares %s title receipts with the other surface without overwriting later user edits", async firstSurface => {
+    const f = await server.fixture();
+    const input = { title: "Intentional rename", onlyIfProvisional: false, idempotencyKey: "shared-title-retry" };
+    const httpRename = async () => {
+      const response = await request(f, `/issues/${f.issueId}/title`, "PUT", input);
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const first = await (firstSurface === "native" ? rename(f, input) : httpRename());
+    await issueService(server.db).update(f.issueId, { title: "Keep this user edit" });
+    expect(await (firstSurface === "native" ? httpRename() : rename(f, input))).toEqual(first);
+    expect(await issueService(server.db).getById(f.issueId)).toMatchObject({ title: "Keep this user edit" });
+    expect((await request(f, `/issues/${f.issueId}/title`, "PUT", { ...input, title: "Conflicting retry" })).status).toBe(409);
+    await expect(rename(f, { ...input, title: "Conflicting retry" })).rejects.toThrow(/idempotency/);
+  });
+
   it("refreshes external title links through native and REST renames while preserving description links", async () => {
     const f = await server.fixture();
     await instanceSettingsService(server.db).updateExperimental({ enableExternalObjects: true });

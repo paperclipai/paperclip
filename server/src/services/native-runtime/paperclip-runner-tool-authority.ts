@@ -1253,15 +1253,15 @@ export class PaperclipRunnerToolAuthority {
   }
 
   async #setTaskTitle(input: Record<string, unknown>): Promise<unknown> {
-    const { idempotencyKey, ...titleInput } = setIssueTitleSchema.parse(input);
-    const key = requiredString(idempotencyKey);
-    let publication: Awaited<ReturnType<typeof setIssueTitle>>["publication"] = null;
-    const result = await this.#withMutationReceipt("set_task_title", key, input, async (tx) => {
-      const updated = await setIssueTitle(tx, this.binding.companyId, this.binding.issueId, titleInput, {
+    const titleInput = setIssueTitleSchema.parse(input);
+    requiredString(titleInput.idempotencyKey);
+    // Use the shared title receipt so native and HTTP retries have the same
+    // identity and cannot overwrite a later user edit when switching surfaces.
+    const { result, publication } = await this.db.transaction(async (tx) => {
+      await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+      return setIssueTitle(tx as unknown as Db, this.binding.companyId, this.binding.issueId, titleInput, {
         actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId,
       });
-      publication = updated.publication;
-      return updated.result;
     });
     if (publication) publishActivity(publication);
     const syncExternalObjects = this.binding.syncIssueExternalObjects ?? externalObjectService(this.db, {
