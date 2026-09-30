@@ -346,12 +346,12 @@ const apps = [
         "oauth",
         {
           serverUrl: "https://mcp.slack.com/mcp",
-          authorizationEndpoint: "https://slack.com/oauth/v2/authorize",
-          tokenEndpoint: "https://slack.com/api/oauth.v2.access",
-          scopesHint: ["channels:read", "chat:write", "search:read"],
+          authorizationEndpoint: "https://slack.com/oauth/v2_user/authorize",
+          tokenEndpoint: "https://slack.com/api/oauth.v2.user.access",
+          scopesHint: ["channels:read", "chat:write", "search:read.public"],
         },
         "S3",
-        "Connect a Slack workspace and limit access to the channels agents need.",
+        "Connect a Slack workspace and limit access to the channels agents need. In your Slack app, add the scopes named below under User Token Scopes (not Bot Token Scopes), add Paperclip's callback URL as a Redirect URL, and turn on Model Context Protocol under Features > Agents & AI Apps.",
         {
           label: "Use this connection as an agent tool",
           purpose: "tool",

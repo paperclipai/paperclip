@@ -2712,6 +2712,38 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("states the Slack app prerequisites before consent", async () => {
+    const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
+    mockParams.appKey = "slack";
+    listGalleryMock.mockResolvedValueOnce({ apps: [slack] });
+
+    await render();
+
+    // Slack rejects the authorization request unless the app carries these two
+    // settings, and the consent screen only says "Invalid permissions
+    // requested" (#13935).
+    expect(container.textContent).toContain("User Token Scopes");
+    expect(container.textContent).toContain("Model Context Protocol");
+    // The scopes come from the method, so the screen cannot name a scope that
+    // the authorization request omits.
+    expect(container.textContent).toContain("channels:read chat:write search:read.public");
+    // The Slack method carries no warnings, so the guidance keeps its own
+    // spacing instead of adding an empty list.
+    expect(container.querySelector("ul.list-disc")).toBeNull();
+  });
+
+  it("keeps the scope list off a method that registers its own client", async () => {
+    const railway = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "railway")!;
+    mockParams.appKey = "railway";
+    listGalleryMock.mockResolvedValueOnce({ apps: [railway] });
+
+    await render();
+
+    // Railway can register its client dynamically, so nobody types its scopes
+    // into a console.
+    expect(container.textContent).not.toContain("Add these scopes");
+  });
+
   it("routes the enabled Notion gallery tile through the generic source deep link", async () => {
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     await render();
