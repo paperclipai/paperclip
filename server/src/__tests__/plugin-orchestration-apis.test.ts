@@ -598,6 +598,32 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
   });
 
+  it("pages issues.list once: an offset page is not windowed a second time", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    await db.insert(issues).values(
+      Array.from({ length: 5 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Paged issue ${index}`,
+        status: "todo",
+        priority: "medium",
+      })),
+    );
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const first = await services.issues.list({ companyId, status: "todo", limit: 2, offset: 0 } as any);
+    const second = await services.issues.list({ companyId, status: "todo", limit: 2, offset: 2 } as any);
+    const third = await services.issues.list({ companyId, status: "todo", limit: 2, offset: 4 } as any);
+    const empty = await services.issues.list({ companyId, status: "todo", limit: 0, offset: 2 } as any);
+    const beyond = await services.issues.list({ companyId, status: "todo", limit: 2, offset: 6 } as any);
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(2);
+    expect(third).toHaveLength(1);
+    expect(empty).toEqual([]);
+    expect(beyond).toEqual([]);
+    const ids = new Set([...first, ...second, ...third].map((issue) => issue.id));
+    expect(ids.size).toBe(5);
+  });
+
   it("asserts checkout ownership for run-scoped plugin actions", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
