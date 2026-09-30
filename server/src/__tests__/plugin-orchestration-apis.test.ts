@@ -622,6 +622,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(beyond).toEqual([]);
     const ids = new Set([...first, ...second, ...third].map((issue) => issue.id));
     expect(ids.size).toBe(5);
+    await expect(services.issues.list({ companyId, limit: 0, assigneeAgentId: "invalid-id" } as any)).rejects.toThrow();
   });
 
   it("asserts checkout ownership for run-scoped plugin actions", async () => {
