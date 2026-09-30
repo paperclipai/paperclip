@@ -340,6 +340,25 @@ describe("AgentProviderConnection reuse", () => {
     expect(managedApi.connectLocal).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
     expect(mocks.loginPanel).not.toHaveBeenCalled();
   });
+  it("saves a pasted Claude setup token instead of the local sign-in", async () => {
+    const onComplete = vi.fn();
+    const intent = { provider: "anthropic" as const, method: "subscription" as const, name: "My account", ownership: "personal" as const, agentIds: [], allAgents: false };
+    await mount("claude_local", false, false, false, false, false, { intent, onComplete }, true);
+    openProvider();
+    await vi.waitFor(() => expect(host.textContent).toContain("claude auth login"));
+    click("Use a setup token instead");
+    const field = host.querySelector('input[aria-label="Setup token"]') as HTMLInputElement;
+    expect(field).toBeTruthy();
+    const token = `sk-ant-oat01-${"c".repeat(40)}`;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, token);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("Connect");
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "managed-connection", grantId: "managed-grant", method: "subscription" }));
+    expect(managedApi.create).toHaveBeenCalledWith("c1", { ...intent, method: "subscription", setupToken: token });
+    expect(managedApi.connectLocal).not.toHaveBeenCalled();
+  });
   it("leaves a completed local account saved when its host is cancelled", async () => {
     managedApi.checkLocalLogin.mockResolvedValue({ status: "ready" });
     let finish!: (result: { connectionId: string; grantId: string }) => void;

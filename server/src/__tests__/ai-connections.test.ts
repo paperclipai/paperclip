@@ -27,11 +27,12 @@ import { execute as executeGemini, testEnvironment as testGeminiEnvironment } fr
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, connectionPurposeTransportSchema, createAiConnectionSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
 import { validateAiApiKey } from "../routes/ai-connections.js";
+import { errorHandler } from "../middleware/error-handler.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -1519,6 +1520,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "codex")).toBe(false);
     expect(isAiConnectionCompatible({ provider: "openrouter", method: "api_key" }, "opencode_local", "anthropic/model")).toBe(false);
+    const setupToken = `sk-ant-oat01-${"a".repeat(40)}`;
+    const account = { provider: "anthropic", method: "subscription", name: "Setup token", ownership: "personal" } as const;
+    expect(createAiConnectionSchema.safeParse({ ...account, setupToken }).success).toBe(true);
+    expect(createAiConnectionSchema.safeParse({ ...account, setupToken: setupToken.slice(0, 20) }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...account, setupToken, loginSessionId: "fixture" }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...account, provider: "openai", setupToken }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...account, method: "api_key", setupToken }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...account, method: "api_key", apiKey: "fixture" }).success).toBe(true);
+    expect(createAiConnectionSchema.safeParse({ ...account, loginSessionId: "fixture" }).success).toBe(true);
   });
   it("does not let a forged delegation bypass human access or accept an expired subscription attempt", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
@@ -1572,6 +1582,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       reader.mockResolvedValue("completed-before-restart");
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("saves a pasted Claude setup token as a subscription and injects it at run time", async () => {
+    const user = "setup-token-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "admin" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: user, companyIds: [companyId], memberships: [{ companyId, membershipRole: "admin", status: "active" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use(errorHandler);
+    const setupToken = `sk-ant-oat01-${"b".repeat(80)}`;
+    const base = `/api/companies/${companyId}/ai-connections`;
+    const payload = { provider: "anthropic", method: "subscription", name: "Claude setup token", ownership: "personal", agentIds: [], allAgents: true };
+    // The token has no usage scope, so saving it must not call the provider.
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach provider"));
+    try {
+      expect((await request(app).post(base).send(payload)).status).toBe(400);
+      expect((await request(app).post(base).send({ ...payload, setupToken: "not-a-setup-token" })).status).toBe(400);
+      const saved = await request(app).post(base).send({ ...payload, setupToken });
+      expect(saved.status).toBe(201);
+      expect(JSON.stringify(saved.body)).not.toContain(setupToken);
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    const run = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: user, binding: { provider: "anthropic", method: "subscription", mode: "responsible_user" }, config: { model: "same-model" } });
+    try {
+      expect((run.config.env as Record<string, string>).CLAUDE_CODE_OAUTH_TOKEN).toBe(setupToken);
+    } finally { await run.cleanup(); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("fixture-local-token");
