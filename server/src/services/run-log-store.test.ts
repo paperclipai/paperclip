@@ -108,6 +108,46 @@ describe("createDurableRunLogStore", () => {
     }
   });
 
+  it("never replaces concurrent appends when two stores restore the same missing log", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const firstStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const secondStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const original = await firstStore.begin(begin);
+    await firstStore.append(original, { stream: "stderr", chunk: "original", ts: "t0" });
+    await firstStore.finalize(original);
+    const prefix = Buffer.from(objects.get(original.logRef)!);
+    await fs.rm(baseDir, { recursive: true, force: true });
+    let reached!: () => void, release!: () => void;
+    const restoring = new Promise<void>((resolve) => { reached = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(provider, "getObject").mockImplementationOnce(async () => ({
+      stream: Readable.from((async function* () {
+        yield prefix;
+        reached();
+        await barrier;
+      })()),
+      contentLength: prefix.length,
+    }));
+    const slow = firstStore.begin(begin);
+    try {
+      await restoring;
+      const fast = await secondStore.begin(begin);
+      await secondStore.append(fast, { stream: "stderr", chunk: "fast attempt", ts: "t1" });
+      release();
+      const late = await slow;
+      await firstStore.append(late, { stream: "stderr", chunk: "slow attempt", ts: "t2" });
+      await firstStore.finalize(late);
+      const saved = objects.get(original.logRef)!;
+      expect(saved).toEqual(await fs.readFile(path.join(baseDir, original.logRef)));
+      expect(saved.toString().trim().split("\n").map((line) => JSON.parse(line).chunk))
+        .toEqual(["original", "fast attempt", "slow attempt"]);
+    } finally {
+      release();
+      await slow.catch(() => undefined);
+      spy.mockRestore();
+    }
+  });
+
   it.each(["stream_failure", "short_read"])("preserves the durable prefix when restore fails (%s)", async (fault) => {
     const { provider, objects, calls } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

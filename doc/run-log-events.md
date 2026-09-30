@@ -52,10 +52,20 @@ and incomplete result-delivery command IDs and statuses. If execution and
 cleanup both fail, execution retains its original error identity and cleanup is
 attached as `cleanupError`.
 
+Instruction writes also commit an `agent.instruction_write_attempted` activity
+row and a run-scoped `instructionToolAttempts` entry before permitting the
+filesystem effect. They retain the call ID, operation ID, and input digest, not
+instruction text. A later transaction rollback cannot erase this attempt proof.
+A missing completed receipt means the outcome is unknown, even if the current
+file contains the requested text. Replays remain blocked until reconciled; a
+committed receipt with a lost acknowledgement can replay its exact result.
+
 The NDJSON output log appends across repeated `begin` calls for one run. Each
 new handle adds an `attemptId` to its lines. If the local file is absent and a
 durable S3 mirror exists, `begin` restores that prefix before appending. A
 failed restore must not replace the mirror with an empty or partial attempt.
+Publishing a restored prefix uses an atomic create-if-absent operation, so a
+concurrent restore cannot overwrite lines another attempt has already appended.
 Earlier attempts therefore remain available for incident diagnosis. Existing
 records without `attemptId` remain readable.
 

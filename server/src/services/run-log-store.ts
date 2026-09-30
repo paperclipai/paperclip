@@ -315,7 +315,11 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
             if (typeof head.contentLength === "number" && (await fs.stat(temporary)).size !== head.contentLength) {
               throw new Error("Durable run log restore returned an incomplete prefix");
             }
-            await fs.rename(temporary, absPath);
+            // Publish the complete prefix without replacing a file another
+            // attempt has already restored and started appending to.
+            await fs.link(temporary, absPath).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "EEXIST") throw error;
+            });
           } finally {
             await fs.rm(temporary, { force: true });
           }

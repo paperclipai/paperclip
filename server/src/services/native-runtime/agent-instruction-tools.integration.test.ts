@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, issues, agentInstructionRevisions, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -86,7 +86,7 @@ describe("canonical instruction tools through native authority", () => {
     try {
       const pending = authority.execute(request);
       await atCommit;
-      const duplicate = authority.execute(request);
+      const duplicate = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId }).execute(request);
       expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(original);
       release();
       const receipt = await pending as any;
@@ -109,6 +109,87 @@ describe("canonical instruction tools through native authority", () => {
       release();
       spy.mockRestore();
     }
+  });
+
+  it.each(["after_file_rename", "receipt_persistence"])("retains durable attempt evidence and refuses replay after rollback at %s", async (fault) => {
+    const first = await call("read_agent_instructions");
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content: "written before database rollback\r\n", baseRevisionId: first.revision.id,
+    } };
+    const key = `instruction:${request.callId}`;
+    if (fault === "receipt_persistence") {
+      // This is an actual PostgreSQL transaction rollback, after the real
+      // filesystem rename and attempted audit insert, before receipt commit.
+      await db.execute(sql.raw(`CREATE FUNCTION reject_instruction_test_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.id = '${runId}' AND NEW.result_json->'semanticToolReceipts' ? '${key}' THEN
+            RAISE EXCEPTION 'injected receipt persistence failure';
+          END IF;
+          RETURN NEW;
+        END $$`));
+      await db.execute(sql.raw(`CREATE TRIGGER reject_instruction_test_receipt BEFORE UPDATE ON heartbeat_runs
+        FOR EACH ROW EXECUTE FUNCTION reject_instruction_test_receipt()`));
+    }
+    const originalRename = fs.rename.bind(fs);
+    let writes = 0;
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      await originalRename(source, destination);
+      if (destination === path.join(root, entryFile)) {
+        writes++;
+        if (fault === "after_file_rename") throw new Error("injected failure after rename");
+      }
+    });
+    try {
+      await expect(authority.execute(request)).rejects.toThrow();
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(request.arguments.content);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect((run!.resultJson as any).instructionToolAttempts[key]).toMatchObject({
+        operationId: request.tool, targetAgentId, inputDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect((run!.resultJson as any).semanticToolReceipts?.[key]).toBeUndefined();
+      const audit = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
+      expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
+      expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(0);
+      authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      await expect(authority.execute(request)).rejects.toThrow("paperclip_runner_instruction_outcome_unknown");
+      await expect(authority.execute({ ...request, arguments: { ...request.arguments, content: "different" } }))
+        .rejects.toThrow("idempotency_conflict");
+      expect(writes).toBe(1);
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
+      await expect(authority.execute(request)).rejects.toMatchObject({ status: 403 });
+    } finally {
+      spy.mockRestore();
+      if (fault === "receipt_persistence") {
+        await db.execute(sql.raw("DROP TRIGGER reject_instruction_test_receipt ON heartbeat_runs"));
+        await db.execute(sql.raw("DROP FUNCTION reject_instruction_test_receipt()"));
+      }
+    }
+  });
+
+  it("replays a committed receipt after its database commit acknowledgement is lost", async () => {
+    const first = await call("read_agent_instructions");
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content: "committed but acknowledgement lost\n", baseRevisionId: first.revision.id,
+    } };
+    const transaction = db.transaction.bind(db);
+    let commits = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
+      const result = await transaction(...args);
+      if (++commits === 2) throw new Error("injected lost commit acknowledgement");
+      return result;
+    });
+    try {
+      await expect(authority.execute(request)).rejects.toThrow("injected lost commit acknowledgement");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const receipt = (run!.resultJson as any).semanticToolReceipts[`instruction:${request.callId}`].result;
+      expect(receipt).toMatchObject({ changed: true, content: request.arguments.content });
+      authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      expect(await authority.execute(request)).toEqual(receipt);
+      const audit = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
+      expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
+      expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(1);
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(request.arguments.content);
+    } finally { spy.mockRestore(); }
   });
 
   it("rejects supplied identity and missing CAS bases before changing content", async () => {

@@ -27,7 +27,7 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { assetService } from "../assets.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden } from "../../errors.js";
+import { badRequest, forbidden, notFound } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
@@ -139,6 +139,24 @@ type ToolReceipt = {
   input: unknown;
   result: unknown;
 };
+
+// Coalesce live callers, but never use this process-local lock as crash proof.
+// The database attempt record below is the authority after process loss.
+const instructionCallLocks = new WeakMap<Db, Map<string, Promise<void>>>();
+async function withInstructionCallLock<T>(db: Db, key: string, work: () => Promise<T>): Promise<T> {
+  let locks = instructionCallLocks.get(db);
+  if (!locks) instructionCallLocks.set(db, locks = new Map());
+  const previous = locks.get(key);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  locks.set(key, pending);
+  await previous;
+  try { return await work(); }
+  finally {
+    release();
+    if (locks.get(key) === pending) locks.delete(key);
+  }
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -378,18 +396,7 @@ export class PaperclipRunnerToolAuthority {
         }, tool: call.tool, arguments: call.arguments });
       case "update_agent_instructions":
       case "restore_agent_instructions": {
-        const tool = call.tool;
-        return this.#withMutationReceipt(tool, `instruction:${call.callId}`, input, (tx) =>
-          executeAgentInstructionTool({ db: tx, binding: {
-            companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
-          }, tool, arguments: input }), {
-            beforeReceiptReplay: async (tx) => {
-              await authorizeInstructionCommit(tx, {
-                type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
-                agentId: this.binding.agentId, runId: this.binding.runId,
-              }, { companyId: this.binding.companyId, id: typeof input.targetAgentId === "string" ? input.targetAgentId : this.binding.agentId });
-            },
-          });
+        return this.#withInstructionMutationReceipt(call.tool, call.callId, input);
       }
       case "create_skill": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
@@ -1488,6 +1495,61 @@ export class PaperclipRunnerToolAuthority {
       ) return target.revisionId;
     }
     return null;
+  }
+
+  async #withInstructionMutationReceipt(
+    tool: "update_agent_instructions" | "restore_agent_instructions",
+    callId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
+    const key = `instruction:${callId}`;
+    const digest = createHash("sha256").update(canonicalJson(input)).digest("hex");
+    const targetAgentId = typeof input.targetAgentId === "string" ? input.targetAgentId : this.binding.agentId;
+    const authorize = async (tx: Db) => {
+      const [target] = await tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
+        .where(and(eq(agents.id, targetAgentId), eq(agents.companyId, this.binding.companyId)));
+      if (!target) throw notFound("Agent not found");
+      return authorizeInstructionCommit(tx, {
+        type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+        agentId: this.binding.agentId, runId: this.binding.runId,
+      }, target);
+    };
+    return withInstructionCallLock(this.db, `${this.binding.companyId}:${this.binding.runId}:${key}`, async () => {
+      // A filesystem rename cannot roll back with PostgreSQL. Commit proof of
+      // the attempt *before* permitting that effect. If the effect transaction
+      // or its acknowledgement is lost, a missing result is unknown, not a
+      // license to run the instruction write a second time.
+      await this.db.transaction(async (tx) => {
+        const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const bound = await authorize(tx as unknown as Db);
+        const resultJson = record(context.run.resultJson);
+        if (record(resultJson.semanticToolReceipts)[key] !== undefined) return;
+        const attempts = record(resultJson.instructionToolAttempts);
+        const prior = record(attempts[key]);
+        if (attempts[key] !== undefined) {
+          if (prior.operationId !== tool || prior.inputDigest !== digest) {
+            throw new Error("paperclip_runner_tool_idempotency_conflict");
+          }
+          throw new Error(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
+        }
+        if (Object.keys(attempts).length >= 512) throw badRequest("Run instruction mutation limit reached");
+        attempts[key] = { operationId: tool, inputDigest: digest, targetAgentId };
+        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+          .where(eq(heartbeatRuns.id, this.binding.runId));
+        await tx.insert(activityLog).values({
+          companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId,
+          agentId: this.binding.agentId, runId: this.binding.runId,
+          responsibleUserId: bound.type === "agent" ? bound.onBehalfOfUserId : null,
+          action: "agent.instruction_write_attempted", entityType: "agent", entityId: targetAgentId,
+          details: { callId, operationId: tool, inputDigest: digest },
+        });
+      });
+      return this.#withMutationReceipt(tool, key, input, (tx) =>
+        executeAgentInstructionTool({ db: tx, binding: {
+          companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+        }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+    });
   }
 
   async #withMutationReceipt(

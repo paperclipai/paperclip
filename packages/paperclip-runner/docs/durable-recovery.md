@@ -216,10 +216,23 @@ other indeterminate commands remain non-reexecutable. This change does not
 repair legacy journals already containing contradictory or failed receipts.
 
 `update_agent_instructions` and `restore_agent_instructions` use a durable,
-company/run-scoped mutation receipt keyed by call ID. Concurrent identical
-calls and retries after authority restart return the exact original receipt.
+company/run-scoped mutation receipt keyed by call ID. Before attempting a file
+write, the authority commits an `instructionToolAttempts` record and an
+`agent.instruction_write_attempted` activity row with the call ID, operation ID,
+and input digest. This evidence survives a later filesystem or database failure.
+Completed calls and retries after authority restart return the exact original receipt.
 Changing the arguments under that ID is an idempotency conflict. Receipt replay
-still checks current instruction-write authorization.
+still checks current instruction-write authorization. Concurrent callers in the
+same process wait for the first handler before checking the receipt again.
+
+The filesystem and PostgreSQL are not one atomic store. If a write is visible
+but its receipt transaction rolls back, the attempt record remains durable and
+the result is unknown. An identical call with an attempt but no committed result
+raises `paperclip_runner_instruction_outcome_unknown`; it does not write again
+or pretend to have succeeded. This also applies to another process reaching a
+reserved call before its effect transaction starts. The controller retains an
+unsettled operation for authoritative reconciliation. If only the commit
+acknowledgement was lost, the committed receipt is replayed normally.
 
 ### Lossless arguments and bounded transport
 
@@ -251,11 +264,14 @@ model or rely on an LLM choosing the desired timing.
 | Crash before/after applying a saved delivery receipt, before command completion | Exact result delivery recovers only for opted-in providers; changed commands and ordinary operations never replay | Rust durable runner tests |
 | Lost result acknowledgement; conflicting redelivery | Identical result accepted; changed result rejected with IDs and digests | Rust `codex_provider`, `provider_bridge` |
 | Concurrent writes held at filesystem commit; authority restart | One write, one audit record, same receipt; revoked authorization rejected | Server `agent-instruction-tools.integration.test.ts` |
+| Failure after file rename or rollback while saving the receipt | Durable attempt and audit evidence survive; no success claim and no second write | Server `agent-instruction-tools.integration.test.ts` |
+| Receipt commits but its database acknowledgement is lost | Exact original result replays; one file-update audit and one attempt record | Server `agent-instruction-tools.integration.test.ts` |
 | Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |
 | Handler finishes during close, after close budget, or persistence fails | Checkpoint marked settled only with completed delivery and drained provider | `runnerd-codex-transport.test.ts` |
 | Controller restarts with committed input but no result | No second dispatch and no fabricated outcome | `durable-prp-control-plane.test.ts` |
 | Execution and cleanup both fail | Original execution error retained; cleanup error attached | `native-session-runtime.test.ts` |
 | Retry in same process or after local log loss | Earlier attempts survive locally and in the durable mirror | Server `run-log-store.test.ts` |
+| Two restores overlap and one appends before the other publishes | Complete prefix is published without replacement; both attempts survive | Server `run-log-store.test.ts` |
 
 ## Residual local trust and revocation window
 
