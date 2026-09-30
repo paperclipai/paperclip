@@ -165,8 +165,10 @@ or builds.
 
 **Skills → Sources** shows repositories, tracking branches, imported counts, last
 refresh times, and connection errors. **Refresh** applies valid updates immediately.
-New skills wait for **Manage skills → Save selection** before import. Previously
-declined skills stay unchecked, including additions beneath excluded folders.
+Click a repository title to open it on GitHub. Its three-dot menu contains
+**Select skills** and **Disconnect source**. New skills wait for
+**Select skills → Save selection** before import. Previously declined skills stay
+unchecked, including additions beneath excluded folders.
 
 Unchecking an installed skill stops future syncing and keeps its content and agent
 assignments. **Disconnect source** does the same for the whole repository. Remove
