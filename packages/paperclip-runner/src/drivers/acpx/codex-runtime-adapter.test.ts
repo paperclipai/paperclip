@@ -90,7 +90,7 @@ describe("Codex ACPX runtime adapter", () => {
       const guard = created.protocolGuardFactory!();
       const binding = cursorInstructionBinding(options.systemInstructions);
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
-      guard("inbound", { id: 0, result: mode === "missing" ? {} : { _meta: { paperclipCursorInstructions: {
+      guard("inbound", { id: 0, result: mode === "missing" ? {} : { modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: {
         schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
       } } } });
       if (mode === "unsupported") throw new Error("Exact model unsupported");
@@ -107,6 +107,32 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "model", value: options.profile.reportedModelId });
     expect(runtime.startTurn).not.toHaveBeenCalled();
   });
+  it.each(["plan", "ask"] as const)("admission explicitly selects %s and renews temporary command authority", async selected => {
+    const runtime = fakeRuntime(); const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" }; options.cursorMode = selected;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const binding = cursorInstructionBinding(options.systemInstructions);
+    const configs = (mode: string) => [{ id: "mode", currentValue: mode }];
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: configs("agent"), _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: configs(input.key === "mode" ? selected : "agent") } });
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    expect(vi.mocked(runtime.setConfigOption).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
+    expect(options.refreshConsumedCommand).toHaveBeenCalledTimes(2);
+    expect(await port.identity()).toMatchObject({ cursorMode: selected });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "mode fixture cleanup" });
+  });
+
   it("routes only profile-allowed extensions to the owning turn and expires late responses", async () => {
     const runtime = fakeRuntime();
     const first = pendingExtensionTurn("turn-1");
@@ -123,7 +149,7 @@ describe("Codex ACPX runtime adapter", () => {
         const guard = value.protocolGuardFactory!();
         const binding = cursorInstructionBinding(options.systemInstructions);
         guard("outbound", { id: 0, method: "session/new", params: {} });
-        guard("inbound", { id: 0, result: { sessionId: "backend-1", _meta: { paperclipCursorInstructions: { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength } } } });
+        guard("inbound", { id: 0, result: { sessionId: "backend-1", modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength } } } });
         return runtime;
       },
     });

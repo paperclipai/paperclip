@@ -1436,6 +1436,37 @@ describe("verified native harness backups", () => {
     ).toBe(false);
   });
 
+  it("binds Cursor mode across governed and identical recovery identities", () => {
+    const execution = {
+      ...backupExecution,
+      provider: { kind: "acpx", agent: "cursor", model: "explicit-model", cursorMode: "plan" },
+      interactionResponses: [{ interactionId: "interaction-1" }],
+    } as unknown as NativeExecutionInputV1;
+    const identity = (suffix: string, cursorMode: unknown) => {
+      const value = acpxIdentity(suffix);
+      return { ...value, providerSessionIdentity: { ...value.providerSessionIdentity, cursorMode } };
+    };
+    const previous = identity("previous", "plan");
+    const current = identity("current", "plan");
+    expect(providerSessionIdentityTransitionIsAllowed({ execution, previous, current })).toBe(true);
+    expect(providerSessionIdentityTransitionIsAllowed({ execution, previous, current: previous })).toBe(true);
+    for (const mode of [undefined, null, "agent", "ask", "autopilot"]) {
+      const wrong = identity("wrong", mode);
+      expect(providerSessionIdentityTransitionIsAllowed({ execution, previous, current: wrong })).toBe(false);
+      expect(providerSessionIdentityTransitionIsAllowed({ execution, previous: wrong, current })).toBe(false);
+      expect(providerSessionIdentityTransitionIsAllowed({ execution, previous: wrong, current: wrong })).toBe(false);
+    }
+    for (const provider of [
+      { kind: "acpx", agent: "cursor", model: "explicit-model" },
+      { kind: "acpx", agent: "copilot", model: "explicit-model" },
+      { kind: "acpx", agent: "copilot", model: "explicit-model", cursorMode: "plan" },
+    ]) {
+      expect(providerSessionIdentityTransitionIsAllowed({
+        execution: { ...execution, provider } as unknown as NativeExecutionInputV1, previous, current,
+      })).toBe(false);
+    }
+  });
+
   it("restores a verified continuation into an intentionally fresh non-reusable sandbox", () => {
     expect(
       shouldRestoreNativeHarnessBackupIntoSandbox({
@@ -1765,6 +1796,28 @@ describe("split durable provider checkpoint identity", () => {
       providerBackendSessionId: "backend-1",
       providerSessionIdentity: identity,
     });
+  });
+
+  it("requires the exact observed Cursor mode in suspended descriptor and identity", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
+    const input = execution({ kind: "acpx", agent: "cursor", model: "explicit-model", permissionMode: "deny-all", cursorMode: "plan" }, "acpx_runtime");
+    const providerState = {
+      schema: "paperclip.runner.acpx-provider-state.v3", lifecycle: "suspended", activeTurnId: null, providerExitUnconfirmed: false,
+      descriptor: { kind: "acpx", provider: "acpx", driver: "acpx_runtime", agent: "cursor", model: "explicit-model", commandDigest: profileDigest, normalizedSessionId: "native-session", cursorMode: "plan" },
+      identity: { kind: "acpx", normalizedSessionId: "native-session", acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", profileDigest,
+        workspaceDigest: `sha256:${"b".repeat(64)}`, requestedModel: "explicit-model", effectiveModel: "explicit-model", permissionMode: "deny-all", cursorMode: "plan", providerLifetimeFenceCandidates: [53001, 53002, 53003] },
+    };
+    const read = (state: unknown, candidate = input) => providerSessionIdentityFromDurableProviderState({ execution: candidate, providerState: state });
+    expect(read(providerState).providerSessionIdentity).toEqual(providerState.identity);
+    for (const cursorMode of [undefined, null, "agent", "ask", "autopilot"]) {
+      expect(read({ ...providerState, identity: { ...providerState.identity, cursorMode } }).providerSessionIdentity).toBeNull();
+      expect(read({ ...providerState, descriptor: { ...providerState.descriptor, cursorMode } }).providerSessionIdentity).toBeNull();
+      expect(read(providerState, execution({ ...input.provider, cursorMode }, "acpx_runtime")).providerSessionIdentity).toBeNull();
+    }
+    const foreign = { ...providerState, descriptor: { ...providerState.descriptor, agent: "copilot" } };
+    for (const cursorMode of [undefined, "plan"]) {
+      expect(read(foreign, execution({ ...input.provider, agent: "copilot", cursorMode }, "acpx_runtime")).providerSessionIdentity).toBeNull();
+    }
   });
 
   it.each([

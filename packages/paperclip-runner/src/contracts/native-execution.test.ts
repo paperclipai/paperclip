@@ -296,7 +296,7 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it.each([1, 2, 3, 4, 5, 6, 7] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
+  it.each([1, 2, 3, 4, 5, 6, 7, 8] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -328,7 +328,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 8, 1.5, "7", null]) {
+    for (const unsupportedVersion of [0, 9, 1.5, "8", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
@@ -503,6 +503,20 @@ describe("native task context ownership", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
   }
+
+  it.each(["agent", "plan", "ask"])("round-trips Cursor mode %s through the closed execution contract", cursorMode => {
+    const { qualificationModel: _model, reportedModelId: _reported, permissionPolicy: _permission,
+      modelPolicy: _policy, qualificationStatus: _status, ...profile } = QUALIFIED_ACPX_PROFILES.cursor;
+    const value = { ...currentInput(), session: { ...currentInput().session, driverKind: "acpx_runtime" },
+      provider: { kind: "acpx", agent: "cursor", model: "explicit-model", permissionMode: "deny-all", cursorMode, profile } };
+    const result = parseNativeExecutionInput(value);
+    expect(result.provider).toEqual(value.provider);
+    expect(parseNativeExecutionInput(result)).toEqual(result);
+    for (const mode of [null, "", "PLAN", "auto", true, { toString: () => "plan" }]) {
+      expect(() => parseNativeExecutionInput({ ...value, provider: { ...value.provider, cursorMode: mode } })).toThrow("cursorMode");
+    }
+    expect(() => parseNativeExecutionInput({ ...value, provider: { ...value.provider, agent: "copilot" } })).toThrow("cursorMode");
+  });
 
   it.each([
     ["v4", "paperclip.native-execution-input.v4", "paperclip.native-model-envelope.v2"],

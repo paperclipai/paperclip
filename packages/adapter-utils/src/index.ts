@@ -124,6 +124,7 @@ export {
   paperclipRunnerTransitionConfig,
   normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
 } from "./paperclip-runner-permissions.js";
 export {
   PAPERCLIP_RUNNER_INGRESS_PORT,

@@ -1,15 +1,10 @@
 {
   "schema": "paperclip.rich-acp-qualification-checkpoint.v1",
-  "updatedAt": "2026-09-29T20:58:14.579734+00:00",
+  "updatedAt": "2026-09-29T21:39:23.882856+00:00",
   "qualificationStatus": "pending",
   "runtimeSource": "bd4cc29c3017ed5e1484423e842fd48e3b2f49f3",
   "modelReceiptPolicy": "Native per-run USD remains null/unpriced when absent. Included subscription credits, exclusive API-key charges and sandbox analytics are separate evidence. Unknown costs are never assumed zero.",
   "evidenceScope": "Sanitized checkpoint of retained private receipts; historical reports retain earlier attempts. This file is not an executable conformance result or production qualification certificate.",
-  "currentProfilePaidCoverage": {
-    "cursor4": "bd4 local hello passed. Cold continuation failed; corroborating offline reproduction led to source627451ecf session-load repair. The rebuilt four-cell paid batch is running, with no result yet. Native callbacks, restrictive permissions, Daytona and remaining platforms are open.",
-    "copilot4": "bd4 all five basic local journeys and Daytona hello passed. Native permission denial and attached background settlement Product cases plus remaining remote/platform coverage are open. The original session.open timeout remains unexplained.",
-    "pi7": "Local and Daytona hello passed. After preserving an earlier missing-evidence failure, the harness-only repair on runtimebd4/eval43c99f0 produced a complete native-question pass15/15. The next question-continuation cell failed5/6: final-message aggregation included pre-tool narration. All three runs settled and owned cleanup passed; five later cells were not launched."
-  },
   "hostBlocker": "Resolved for live testing: user-approved fixed-snapshot cleanup removed 4,892 stale PostgreSQL semaphore sets, skipping 11 whose creator PID was present. Credential-free startup and role-aware shutdown passed; subsequent paid Cursor and Copilot runs restored the 255-set baseline. No broad follow-up IPC deletion is authorized.",
   "ciCostCoverage": "Public standard GitHub-hosted minutes and self-hosted GitHub runner charges are zero; external self-hosted fleet infrastructure costs and private evals CI incremental charges remain unmetered.",
   "attempts": [
@@ -483,7 +478,7 @@
     {
       "id": "cursor-v4-local-627-remaining-20260929-01",
       "provider": "cursor",
-      "status": "authorized",
+      "status": "failed_last_cell_marker_mismatch",
       "createdAt": "2026-09-29T20:56:40.420584+00:00",
       "sourceRevision": "627451ecf15641504a485c6f868497177bd1bce8",
       "profileVersion": 4,
@@ -497,7 +492,22 @@
       ],
       "expectedProductRuns": 7,
       "maxRetries": 0,
-      "actualCostUsd": null
+      "actualCostUsd": null,
+      "reconciledAt": "2026-09-29T21:06:39.868239+00:00",
+      "failure": "Question continuation, semantic plan and controller-restart question passed. File edit/validation, native run and Done succeeded but final marker added VALIDATION despite the exact requested marker. Five of seven file matchers passed; retain candidate_failure.",
+      "attemptCount": 4,
+      "completedCells": 4,
+      "unlaunchedCells": 0,
+      "productRunCount": 7,
+      "matcherPassCount": 23,
+      "matcherCount": 25,
+      "ownedProcessesRetired": true,
+      "postRunAuthorityPassed": true,
+      "costCoverage": "Seven time/model-correlated account rows are explicitly Free; on-demand0. Native priced USD unavailable. No automatic retries.",
+      "nativePerRunUsd": null,
+      "accountObservedChargeUsd": 0,
+      "privateEvidenceName": "batch-analysis.private.json",
+      "privateEvidenceSha256": "843a05914728174dd8bacac9ce7014c1e9570d65ee4e675cdeaef3e016c7e65a"
     }
   ],
   "hostRecovery": {
@@ -508,5 +518,25 @@
     "startupAndShutdownProofSha256": "0f9e42e295d87cbf45731be089f65bc9cd6d1a26e185ab1847f3a7d2d0291fbe",
     "currentSupervisorHelperSha256": "c3c801ef7dc3ef969384dd9bb6d822fe6ab21025d40a4702abfdd9ee392d1148",
     "scope": "The credential-free startup proof used an earlier role-aware helper revision. Current-helper cleanup is additionally proven by the paid Cursor hello and Copilot file runs. Private qualification supervisors changed; frozen runtime bytes did not."
+  },
+  "implementationSource": "65b19549e0aac0cc7809142be9f33fb63e0a634c",
+  "historicalProfilePaidCoverage": {
+    "cursor4": "bd4 local hello passed. Rebuilt627451ecf passed question continuation, semantic plan and question continuation after controller restart. The file case created and validated exact bytes and reached Done, but its final marker added VALIDATION:5/7 file matchers passed. Four cells/seven runs fully settled,23/25 matchers passed overall. Native callbacks, restrictive permissions, Daytona and remaining platforms remain open.",
+    "copilot4": "bd4 all five basic local journeys and Daytona hello passed. Native permission denial and attached background settlement Product cases plus remaining remote/platform coverage are open. The original session.open timeout remains unexplained.",
+    "pi7": "Local and Daytona hello passed. After preserving an earlier missing-evidence failure, the harness-only repair on runtimebd4/eval43c99f0 produced a complete native-question pass15/15. The next question-continuation cell failed5/6: final-message aggregation included pre-tool narration. All three runs settled and owned cleanup passed; five later cells were not launched."
+  },
+  "currentProfilePaidCoverage": {
+    "cursor5": {
+      "profileDigest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+      "status": "pending_fresh_runtime_and_paid_qualification"
+    },
+    "copilot5": {
+      "profileDigest": "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
+      "status": "pending_fresh_runtime_and_paid_qualification"
+    },
+    "pi8": {
+      "profileDigest": "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
+      "status": "pending_fresh_runtime_and_paid_qualification"
+    }
   }
 }

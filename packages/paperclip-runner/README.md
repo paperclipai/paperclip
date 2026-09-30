@@ -60,6 +60,15 @@ and Daytona qualification passes. Their verified distributions are build-owned;
 no candidate accepts an arbitrary executable. See
 [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+Cursor candidate configuration accepts `acpxSessionMode: "agent" | "plan" | "ask"`
+(default `agent`). This selects the native Cursor mode independently of
+`acpxPermissionMode` and Paperclip task planning or company approvals. The mode
+is validated at the API boundary and is bound to provider admission and recovery;
+changing it cannot reuse an incompatible warm session. Other providers reject
+this setting. Candidate configuration requires an explicit model and still
+requires exact operator-controlled qualification admission.
+
+
 Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes

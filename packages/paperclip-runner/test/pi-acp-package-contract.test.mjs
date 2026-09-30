@@ -91,6 +91,30 @@ test("actual patched ACP process streams thinking and waits for settlement with 
   assert.ok(f.notifications.some((event) => event.params?.update?.content?.text === "hello🌒\u2028world"));
 });
 
+for (const scenario of ["narration-final", "tool-only", "empty-final"]) test(`actual patched wrapper preserves native message provenance for ${scenario}`, async t => {
+  const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  for (let warm = 0; warm < 2; warm++) {
+    const from = f.notifications.length;
+    await f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: scenario }] });
+    const updates = f.notifications.slice(from).map(event => event.params?.update).filter(update => update?.sessionUpdate === "agent_message_chunk");
+    assert.ok(updates.every(update => /^pi-message-[a-f0-9]{64}$/.test(update.messageId)));
+    assert.equal(updates[0]._meta.kind, "start"); assert.equal(updates[0].content.text, "");
+    assert.equal(updates[1].content.text, "Calling finish.");
+    assert.equal(updates[2]._meta.kind, "end:toolUse");
+    if (scenario === "tool-only") assert.equal(updates.length, 3);
+    else {
+      assert.equal(updates[3]._meta.kind, "start"); assert.notEqual(updates[3].messageId, updates[0].messageId);
+      assert.equal(updates[4].content.text, scenario === "empty-final" ? "" : "EXACT_MARKER");
+      assert.equal(updates[5]._meta.kind, "end:stop");
+    }
+  }
+});
+
+for (const scenario of ["missing-message-start", "duplicate-message-start", "mismatched-message-end", "missing-message-end"]) test(`actual wrapper rejects malformed native boundaries: ${scenario}`, async t => {
+  const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  await assert.rejects(f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: scenario }] }), /exited|Internal error/);
+});
+
 test("actual patched ACP process scopes recycled native IDs across iterations and warm prompts", async (t) => {
   const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
   for (let turn = 0; turn < 2; turn++) await f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "reused-tool-ids" }] });
@@ -105,7 +129,7 @@ test("actual patched ACP process scopes recycled native IDs across iterations an
     assert.equal(lifecycle.filter(update => ["failed", "completed"].includes(update.status)).length, 1);
     assert.ok(lifecycle.every(update => update._meta.paperclipPi.nativeToolCallId === "call_0"));
   }
-  assert.deepEqual(starts.map(update => update._meta.paperclipPi.modelIteration), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(starts.map(update => update._meta.paperclipPi.modelIteration), [1, 2, 3, 5, 6, 7]);
 });
 
 test("cancellation closes the iteration before a warm prompt reuses native IDs", async (t) => {
@@ -130,6 +154,9 @@ test("warm load uses stable display-only history IDs distinct from live executio
     await f.call("session/load", { sessionId: session.sessionId, cwd: join(f.root, "workspace"), mcpServers: [] });
     const starts = f.notifications.map(event => event.params?.update).filter(update => update?.sessionUpdate === "tool_call");
     assert.equal(starts.length, 2);
+    const historicalMessage = f.notifications.map(event => event.params?.update).find(update => update?.content?.text === "Historical reply");
+    assert.match(historicalMessage.messageId, /^pi-history-message-[a-f0-9]{64}$/);
+    assert.deepEqual(historicalMessage._meta, { origin: "pi-history-assistant", source: "pi-session-history-v1", kind: "history" });
     assert.notEqual(starts[0].toolCallId, starts[1].toolCallId);
     for (const start of starts) {
       assert.match(start.toolCallId, /^pi-history-[a-f0-9]{64}$/);
@@ -169,7 +196,7 @@ test("actual patched ACP reports unsupported external UI as an error and stops t
   const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
   await assert.rejects(f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "oversized-question" }] }), /exited/);
   assert.equal(f.requests.length, 0);
-  assert.ok(f.notifications.some(event => event.params?.update?._meta?.paperclipPi?.notice?.message === "Pi structured question is unsupported or invalid; the session was stopped"));
+  assert.ok(f.notifications.some(event => event.method === "paperclip/pi_notice" && event.params?.summary === "Pi structured question is unsupported or invalid; the session was stopped"));
 });
 
 test("native steering is explicit and does not replace the active ACP turn", async (t) => {
@@ -204,7 +231,8 @@ for (const [outcome, expected] of [
     const f = await fixture(t);
     const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
     const result = await f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: `retry-${outcome}` }] });
-    const messages = f.notifications.map((event) => event.params?.update?.content?.text).filter((text) => typeof text === "string");
+    const messages = f.notifications.filter(event => event.method === "paperclip/pi_notice").map(event => event.params.summary);
+    assert.ok(f.notifications.filter(event => event.params?.update?.sessionUpdate === "agent_message_chunk").every(event => !event.params.update.content.text.includes("Retry")));
     assert.ok(messages.includes(expected));
     if (outcome !== "success") assert.ok(messages.every((text) => !text.includes("resuming")));
     if (outcome === "failure") assert.equal(result._meta.jetbrains.air.sessionFailure.severity, "error");
@@ -221,11 +249,11 @@ test("manual and automatic compaction retain Pi 0.84.2 progress and usage", asyn
   const automatic = await prompt("auto-compact");
   assert.equal(automatic.usage.inputTokens, 16); assert.equal(automatic.usage.totalTokens, 24);
   assert.equal(automatic.usage._meta.paperclipPi.costUsd, 0.03);
-  assert.ok(f.notifications.some((event) => event.params?.update?.content?.text === "Context compaction finished."));
+  assert.ok(f.notifications.some((event) => event.method === "paperclip/pi_notice" && event.params?.summary === "Context compaction finished."));
   const retried = await prompt("retry-compact");
   assert.equal(retried.usage.inputTokens, undefined);
   assert.equal(retried.usage._meta.paperclipPi.costUsd, undefined);
-  assert.ok(f.notifications.some((event) => event.params?.update?.content?.text === "Context summarization is retrying a provider request."));
+  assert.ok(f.notifications.some((event) => event.method === "paperclip/pi_notice" && event.params?.summary === "Context summarization is retrying a provider request."));
   const active = prompt("long"); await new Promise((resolve) => setTimeout(resolve, 25));
   await assert.rejects(prompt("/compact"), /requires an idle session/);
   f.notify("session/cancel", { sessionId: session.sessionId }); await active;

@@ -8,7 +8,12 @@ one native `gpt-5.6-luna` run with six matchers on immutable image
 `sha256:bff4c3f291087a0eeae37e4c20dd51857b92833eaf73ba3aca4157f37de1e109`.
 Earlier question-marker, recovery, startup-timeout and PostgreSQL failures remain
 retained; later success does not establish causes for unresolved earlier failures.
-The new native-protection Product cases below have not run on the new source.
+The current admission identity is profile **v5**, binding shared ACPX patch
+`79aad2d688b03362e8cfcbf7a08f78a8383869f6882a9c9ed66f1d18efb94f2b`.
+The native Copilot binary and permission/instruction policy are unchanged. The
+new digest rejects old warm sessions; v4 paid receipts remain historical evidence,
+not a claim of v5 qualification. The new native-protection Product cases below
+have not run on the new source.
 
 Daytona sandbox-specific analytics stabilized across three reads at a provisional
 $0.0039682144 for the closed attempt interval; invoice finality and native per-run

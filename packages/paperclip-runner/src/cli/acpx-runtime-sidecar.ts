@@ -16,6 +16,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -62,6 +63,7 @@ import {
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
+import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
 import {
   persistedAcpxTurnUsage,
   acpxUsageEstimateNotice,
@@ -287,6 +289,7 @@ async function dispatch(
         clientCapabilities: acpxProfileClientCapabilities(params.agent),
         model: params.model,
         permissionMode: params.permissionMode,
+        cursorMode: params.cursorMode,
         providerPolicy: params.providerPolicy,
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
@@ -368,13 +371,15 @@ async function dispatch(
       waitForInput: (input, context) => waitForExtensionInput(currentTurnId, input, context),
       emit: event => emit("runtime.rich_event", { ...event }, currentTurnId),
     });
-    const toolEvidence = openParams!.agent === "copilot" ? createCopilotToolEvidence({
+    const evidenceFactory = openParams!.agent === "copilot" ? createCopilotToolEvidence
+      : openParams!.agent === "cursor" ? createCursorToolEvidence : undefined;
+    const toolEvidence = evidenceFactory?.({
       sessionId: activeHost.identity().backendSessionId, turnId: currentTurnId,
       workingDirectory: openParams!.workingDirectory,
       active: () => turnId === currentTurnId && host === activeHost,
       emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
-      unavailable: () => diagnostic("copilot_evidence_unavailable", "Copilot tool evidence is incomplete; permission and terminal outcomes are unchanged."),
-    }) : undefined;
+      unavailable: () => diagnostic(`${openParams!.agent}_evidence_unavailable`, "ACP tool evidence is incomplete; permission and terminal outcomes are unchanged."),
+    });
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -600,7 +605,7 @@ async function pumpTurn(
   activeHost: AcpxRuntimeHost,
   usageBefore: unknown,
   drainExtensions: () => Promise<void>,
-  toolEvidence?: CopilotToolEvidence,
+  toolEvidence?: CopilotToolEvidence | CursorToolEvidence,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -608,7 +613,8 @@ async function pumpTurn(
     // display metadata for later progress/completion frames before they cross
     // the sidecar boundary, matching the in-process ACPX driver path.
     const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-    const normalizeMessage = initializedAgent === "grok"
+    const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+    const normalizeMessage = piMessages ? piMessages.normalize : initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
@@ -621,6 +627,7 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
+    if (result.status === "completed") piMessages?.settle();
     await drainExtensions();
     try {
       const usage = persistedAcpxTurnUsage(
@@ -753,7 +760,7 @@ async function waitForPermission(
   activeTurnId: string,
   request: AcpPermissionRequest,
   context: { signal: AbortSignal; responseDelivery?: Promise<void> },
-  toolEvidence?: CopilotToolEvidence,
+  toolEvidence?: CopilotToolEvidence | CursorToolEvidence,
 ): Promise<AcpPermissionDecision> {
   const { signal } = context;
   if (turnId !== activeTurnId || signal.aborted || permissions.size >= MAX_PENDING_INPUTS) {
@@ -933,7 +940,7 @@ function boundRuntimeEventForNormalization(
   } as BoundedRuntimeToolEvent;
 }
 
-function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
+function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
   if (runtimeType === "plan") {
     return {
@@ -947,6 +954,8 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       text: boundedOptionalText(event.text, "", 64 * 1024),
       stream: event.stream,
       tag: event.tag ?? null,
+      ...(event.piMessageBoundary ? { piMessageBoundary: event.piMessageBoundary } : {}),
+      ...(event.piMessageHistory ? { piMessageHistory: true } : {}),
       messageId:
         typeof event.messageId === "string" && event.messageId.length > 0
           ? stableProviderIdentity(event.messageId, "message")
@@ -1155,6 +1164,7 @@ function parseOpenParams(
 ): AcpxSidecarOpenParams {
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
+  if (value.cursorMode !== undefined && agent !== "cursor") throw new Error("cursorMode is supported only for Cursor");
   resolveQualifiedAcpxProfile(agent, model);
   if (
     value.providerSessionKey !== undefined &&
@@ -1174,6 +1184,7 @@ function parseOpenParams(
     agent,
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
+    ...(agent === "cursor" ? { cursorMode: requiredCursorMode(value.cursorMode === undefined ? "agent" : value.cursorMode) } : {}),
     permissionModePinned: value.permissionModePinned === true,
     ...(value.providerPolicy == null ? {} : { providerPolicy: parseProviderPolicy(value.providerPolicy) }),
     systemInstructions: boundedText(
@@ -1243,6 +1254,7 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
     ...(input.permissionMode === undefined
       ? {}
       : { permissionMode: requiredPermissionMode(input.permissionMode) }),
+    ...(input.cursorMode === undefined ? {} : { cursorMode: requiredCursorMode(input.cursorMode) }),
     providerLifetimeFenceCandidates: requiredFenceCandidates(
       input.providerLifetimeFenceCandidates,
     ),
@@ -1265,6 +1277,11 @@ function requiredFenceCandidates(
     );
   }
   return Object.freeze([...value]) as readonly [number, number, number];
+}
+
+function requiredCursorMode(value: unknown): "agent" | "plan" | "ask" {
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("cursorMode must be agent, plan, or ask");
 }
 
 function requiredPermissionMode(

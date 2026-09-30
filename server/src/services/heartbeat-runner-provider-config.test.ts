@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assertAgentCoreProfileRecoveryBinding,
@@ -8,6 +8,28 @@ import {
 } from "./native-runtime/provider-profile.js";
 
 describe("Paperclip Runner native provider configuration", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([undefined, "agent", "plan", "ask"])("passes Cursor mode %s only after exact candidate admission", acpxSessionMode => {
+    const adapterConfig = { provider: "acpx", acpxAgent: "cursor", model: "exact-cursor-model", acpxSessionMode };
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", "");
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig })).toThrow("awaiting local and Daytona qualification");
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "cursor", model: "exact-cursor-model" }]));
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig })).toMatchObject({
+      provider: "acpx", acpxAgent: "cursor", model: "exact-cursor-model", acpxSessionMode: acpxSessionMode ?? "agent", acpxPermissionMode: "approve-all",
+    });
+  });
+
+  it.each([
+    { provider: "acpx", acpxAgent: "cursor", acpxSessionMode: "auto" },
+    { provider: "acpx", acpxAgent: "cursor", acpxSessionMode: null },
+    { provider: "acpx", acpxAgent: "copilot", acpxSessionMode: "plan" },
+    { provider: "codex", acpxSessionMode: "plan" },
+  ])("rejects invalid or foreign mode before provider admission: %j", adapterConfig => {
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig }))
+      .toThrowError(expect.objectContaining({ code: "paperclip_runner_cursor_mode_invalid" }));
+  });
+
   it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
     "passes Grok's full-auto default or explicit %s policy to the native runner",
     (acpxPermissionMode) => {

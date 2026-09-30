@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
@@ -23,8 +24,42 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it("keeps Pi retry-only activity as a rich notice without inventing a final answer", async () => {
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-pi-notice", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Work" } });
+    const input = fixture.host.startTurn.mock.calls[0]![0];
+    await input.onExtensionNotification!("paperclip/pi_notice", { sessionId: "backend-1", category: "auto_retry_end", summary: "Retry did not recover.", severity: "warning", details: { attempt: 2, success: false } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.find(event => event.eventType === "provider.notice.recorded")?.payload).toMatchObject({ severity: "warning", category: "pi.auto_retry_end", scope: "session" });
+    expect(events.some(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage")).toBe(false);
+    await session.close({ reason: "notice-only verified" });
+  });
+  it.each(["exact-final", "tool-only", "empty-final", "missing-end", "cancelled"])("Pi native boundaries preserve progress without stale final attribution: %s", async scenario => {
+    const chunk = (n: number, kind: string, text = "", stream: "output" | "thought" = "output"): AcpRuntimeEvent => ({
+      type: "text_delta", text, stream, messageId: `pi-message-${String(n).padStart(64, "0")}`,
+      meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind },
+    });
+    const runtimeEvents = [chunk(1, "start"), chunk(1, "delta", "Calling finish."), chunk(1, "end:toolUse")];
+    if (scenario !== "tool-only") {
+      runtimeEvents.push(chunk(2, "start"), chunk(2, "delta", "private thought", "thought"));
+      if (scenario !== "empty-final") runtimeEvents.push(chunk(2, "delta", "EXACT_MARKER"));
+      if (scenario !== "missing-end" && scenario !== "cancelled") runtimeEvents.push(chunk(2, "end:stop"));
+    }
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-pi-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Answer exactly" } });
+    fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
+    const events = await collectUntil(session.events(), scenario === "missing-end" ? "turn.failed" : scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
+    expect(events.some(event => event.eventType === "item.delta" && event.payload.text === "Calling finish.")).toBe(true);
+    const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage");
+    expect(final.map(event => event.payload.text)).toEqual(scenario === "exact-final" ? ["EXACT_MARKER"] : []);
+    await session.close({ reason: "native attribution verified" });
+  });
+
   it("delivers negotiated steering and follow-up distinctly, once, for the active turn", async () => {
-    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: true });
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     expect(fixture.hostOptions?.providerPolicy).toEqual({ readOnly: true });
@@ -33,7 +68,6 @@ describe("Codex ACPX harness driver", () => {
     const turnInput = fixture.host.startTurn.mock.calls[0]![0];
     const context = { requestId: 0, signal: new AbortController().signal };
     await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "agent-1" }, context)).rejects.toThrow(/session mismatch/);
-    await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "backend-1" }, context)).rejects.toThrow(/adapter is unavailable/);
     await session.steer!({ turnId, correlationId: "control-1", message: { text: "Change focus" } });
     await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { text: "Then validate" } });
     expect(fixture.host.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Change focus", `run-controls:${turnId}`);
@@ -50,7 +84,7 @@ describe("Codex ACPX harness driver", () => {
   });
 
   it("rejects unnegotiated controls and retains ambiguous delivery attempts", async () => {
-    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     const { turnId } = await session.startTurn({ message: { text: "Work" } });
     await expect(session.steer!({ turnId, message: { text: "No handshake" } })).rejects.toThrow(/did not negotiate/);
@@ -1571,6 +1605,47 @@ describe("Codex ACPX harness driver", () => {
     expect(session.pendingRuntimeRequests!()).toHaveLength(0);
     if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
     await session.close({ reason: "receipt checked" });
+  });
+
+  it.each(["written", "failed"] as const)("binds Cursor denial evidence to its original tool and response write: %s", async outcome => {
+    const command = "printf 'sensitive-value' > /workspace/denied.txt";
+    const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", providerPolicy: { readOnly: false } }, {
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId: "cursor-tool", title: "Run command", kind: "execute", status: "pending", rawInput: { command } }],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-cursor-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const origin = collectUntil(session.events(), "provider.notice.recorded");
+    const { turnId } = await session.startTurn({ message: { text: "Request the command." } });
+    const originEvents = await origin;
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const receipt = deferred<void>();
+    const providerResponse = callback({ inferredKind: "execute", raw: {
+      sessionId: "backend-1", toolCall: { toolCallId: "cursor-tool", title: "Run command", kind: "execute" },
+      options: [{ optionId: "deny", kind: "reject_once", name: "Deny" }],
+    } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
+    const requested = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    const evidence = (events: PrpEvent[]) => events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "cursor_tool_evidence_v1");
+    const fields = (event: PrpEvent) => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(field => [field.name, field.value]));
+    const commandSha256 = `sha256:${createHash("sha256").update(command).digest("hex")}`;
+    expect(evidence(requested).map(fields)).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: "cursor-tool", requestId: request.requestId, commandSha256, declineOffered: "true" })]);
+    const settled = collectUntil(session.events(), outcome === "written" ? "runtime_request.resolved" : "runtime_request.expired");
+    let acknowledged = false;
+    const resolution = session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "decline" } }).then(() => { acknowledged = true; });
+    await expect(providerResponse).resolves.toEqual({ outcome: "reject_once" });
+    expect(acknowledged).toBe(false);
+    if (outcome === "written") { receipt.resolve(); await resolution; }
+    else {
+      const failure = expect(resolution).rejects.toThrow("pipe failed");
+      receipt.reject(new Error("pipe failed")); await failure;
+    }
+    const terminalEvents = await settled;
+    expect(evidence(terminalEvents).map(fields)).toEqual(outcome === "written"
+      ? [expect.objectContaining({ stage: "permission_delivered", outcome: "reject_once", commandSha256, requestId: request.requestId })] : []);
+    expect(JSON.stringify([...evidence(originEvents), ...evidence(requested), ...evidence(terminalEvents)])).not.toContain("sensitive-value");
+    expect(session.pendingRuntimeRequests!()).toHaveLength(0);
+    if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await session.close({ reason: "Cursor receipt verified" });
   });
 
   it.each(["copilot", "codex"] as const)("preserves pinned attached-shell evidence only on the Copilot direct driver: %s", async agent => {

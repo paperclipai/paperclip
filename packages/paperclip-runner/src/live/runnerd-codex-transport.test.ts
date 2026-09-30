@@ -7642,3 +7642,13 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     evidence: () => bundle.evidence(),
   });
 }, 30_000);
+
+
+it.each([
+  { provider: "codex", acpxAgent: "cursor", acpxCursorMode: "plan" },
+  { provider: "acpx", acpxAgent: "copilot", acpxCursorMode: "plan" },
+  { provider: "acpx", acpxAgent: "cursor", acpxCursorMode: "auto" },
+] as const)("rejects invalid Cursor mode transport options before allocating resources: %j", options => {
+  expect(() => createCapabilityRunnerdCodexTransport(options as unknown as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]))
+    .toThrow("acpxCursorMode");
+});

@@ -1,3 +1,5 @@
+import { runCursorNativeFlow } from "./cursor-native-flow.js";
+import { verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
 import { runPiNativeFlow } from "./pi-native-flow.js";
 import { completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
@@ -551,7 +553,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = ["continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "copilot_protection"].includes(execution.task.flow);
+    const companyRunFlow = ["continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "copilot_protection", "cursor_native"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -594,6 +596,7 @@ for (const execution of executions) {
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
+    const cleanupAssertions: CleanupAssertion[] = [];
 
     const capturePrivateScreenshot = async (id: string, file: string) => {
       const screenshotPath = path.join(privateDir, file);
@@ -888,6 +891,19 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
+      } else if (execution.task.flow === "cursor_native") {
+        const story = await runCursorNativeFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          registerCleanupAssertion: assertion => {
+            if (cleanupAssertions.length >= 8) throw new Error("Cleanup assertion bound exceeded");
+            cleanupAssertions.push(assertion);
+          },
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "pi_native") {
         const story = await runPiNativeFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -2688,6 +2704,23 @@ for (const execution of executions) {
           )
             ? "failed"
             : "passed";
+      }
+
+      // Local fixture teardown does not retire the API server. These assertions
+      // independently prove the recorded provider processes retired, while the
+      // workspace still exists, before final grading. The outer supervisor
+      // remains responsible for complete server/database cleanup.
+      if (cleanupAssertions.length > 0) {
+        const verification = await verifyCleanupAssertions(cleanupAssertions);
+        matcherResults.push(...verification.checks.map(check => ({
+          matcher: { kind: "json_path" as const, path: `cleanup.${check.id}`, expected: true },
+          passed: check.passed, detail: check.detail,
+        })));
+        if (verification.errors.length > 0) {
+          cleanup = "failed";
+          primaryError = new AggregateError([primaryError, ...verification.errors].filter(Boolean), "Cleanup verification failed after provider settlement");
+          if (failureClassOverride !== "secret_leak") failureClassOverride = "cleanup_failure";
+        }
       }
 
       const finishedAtMs = Date.now();

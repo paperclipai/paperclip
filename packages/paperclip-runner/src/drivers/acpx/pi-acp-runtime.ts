@@ -27,6 +27,80 @@ export const PI_ACP_FEATURES = Object.freeze({
   pendingRequestRecovery: "live-process-only",
 });
 
+export interface PiAssistantBoundary {
+  messageId: string;
+  phase: "start" | "delta" | "end";
+  stopReason?: "stop" | "length" | "toolUse" | "error" | "aborted";
+}
+
+/** IDs are allocated only at actual SDK assistant message_start events. Tool
+ * iterations, retries, notices and ACP prompts cannot create assistant IDs. */
+export class PiAssistantMessages {
+  private ordinal = 0;
+  private active: { messageId: string; timestamp: number } | null = null;
+  private poisoned = false;
+  private readonly namespace: string;
+  constructor(namespace: string) {
+    this.namespace = namespace;
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(namespace)) throw new Error("Pi assistant namespace is invalid");
+  }
+  private fail(): never { this.poisoned = true; throw new Error("Pi native assistant message boundary is invalid"); }
+  normalize(event: RecordValue): RecordValue {
+    if (this.poisoned) return this.fail();
+    if (event.type === "agent_settled") {
+      if (this.active) return this.fail();
+      return event;
+    }
+    if (!["message_start", "message_update", "message_end"].includes(String(event.type))) return event;
+    const message = event.message;
+    if (!message || typeof message !== "object" || Array.isArray(message)) return this.fail();
+    const native = message as RecordValue;
+    if (native.role !== "assistant") {
+      if (event.type === "message_update" || this.active || !["user", "toolResult"].includes(String(native.role))) return this.fail();
+      return event;
+    }
+    if (!Number.isSafeInteger(native.timestamp) || (native.timestamp as number) < 0 || !Array.isArray(native.content)) return this.fail();
+    let boundary: PiAssistantBoundary;
+    if (event.type === "message_start") {
+      if (this.active || this.ordinal >= Number.MAX_SAFE_INTEGER) return this.fail();
+      const messageId = `pi-message-${createHash("sha256").update(JSON.stringify([this.namespace, ++this.ordinal])).digest("hex")}`;
+      this.active = { messageId, timestamp: native.timestamp as number };
+      boundary = { messageId, phase: "start" };
+    } else {
+      if (!this.active || this.active.timestamp !== native.timestamp) return this.fail();
+      boundary = { messageId: this.active.messageId, phase: event.type === "message_end" ? "end" : "delta" };
+      if (event.type === "message_end") {
+        if (!["stop", "length", "toolUse", "error", "aborted"].includes(String(native.stopReason))) return this.fail();
+        boundary.stopReason = native.stopReason as PiAssistantBoundary["stopReason"];
+        this.active = null;
+      }
+    }
+    return { ...event, paperclipAssistantMessage: boundary };
+  }
+}
+
+export function piAssistantChunk(boundaryValue: unknown, textValue: unknown = "", thought = false): RecordValue {
+  const boundary = record(boundaryValue);
+  const messageId = text(boundary.messageId, 96);
+  if (!/^pi-message-[a-f0-9]{64}$/.test(messageId) || !["start", "delta", "end"].includes(String(boundary.phase))) throw new Error("Pi assistant chunk lacks native provenance");
+  if (boundary.phase === "end" && !["stop", "length", "toolUse", "error", "aborted"].includes(String(boundary.stopReason))) throw new Error("Pi assistant chunk end is invalid");
+  const content = text(textValue, 262_144);
+  if (boundary.phase !== "delta" && (content || thought)) throw new Error("Pi assistant boundary cannot carry synthetic content");
+  return { sessionUpdate: thought ? "agent_thought_chunk" : "agent_message_chunk", messageId,
+    content: { type: "text", text: content },
+    _meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind: boundary.phase === "end" ? `end:${boundary.stopReason}` : boundary.phase },
+  };
+}
+
+export function piHistoricalAssistantChunk(sessionId: string, messageIndex: number, value: string): RecordValue {
+  if (!sessionId || !Number.isSafeInteger(messageIndex) || messageIndex < 0) throw new Error("Pi historical assistant identity is invalid");
+  return { sessionUpdate: "agent_message_chunk",
+    messageId: `pi-history-message-${createHash("sha256").update(JSON.stringify([text(sessionId, 1024), messageIndex])).digest("hex")}`,
+    content: { type: "text", text: text(value, 262_144) },
+    _meta: { origin: "pi-history-assistant", source: "pi-session-history-v1", kind: "history" },
+  };
+}
+
 /** One trusted Pi model iteration, not one ACP prompt. Pi resets its own turnIndex
  * on warm prompts; our ordinal is monotonic for the lifetime of the child. */
 export class PiToolIdentities {

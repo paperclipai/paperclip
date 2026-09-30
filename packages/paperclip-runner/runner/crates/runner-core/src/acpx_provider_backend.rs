@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession, AcpxProviderSessionConfig,
-    AcpxProviderSessionIdentity, AcpxTurnControlCapabilities,
+    AcpxProviderSessionIdentity, AcpxTurnControlCapabilities, CursorMode,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 #[cfg(test)]
@@ -135,6 +135,8 @@ struct AcpxProviderDescriptor {
     #[serde(default)]
     instructions: String,
     permission_mode: AcpxPermissionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor_mode: Option<CursorMode>,
     permission_mode_pinned: bool,
     #[serde(default)]
     provider_policy: Option<AcpxProviderRuntimePolicy>,
@@ -205,7 +207,7 @@ impl AcpxProviderDescriptor {
                 "0.0.33",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
-                "sha256:fec5b1448f4135710887133a9192747c476a825a56c255b52b17b1780ccb3761",
+                "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
             ),
             "cursor" => (
                 self.model.as_str(),
@@ -213,7 +215,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
+                "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -221,7 +223,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797",
+                "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
             ),
             "grok" => (
                 "grok-4.7",
@@ -246,6 +248,7 @@ impl AcpxProviderDescriptor {
             || self.model.trim().is_empty()
             || self.model.len() > 240
             || self.model.contains('\0')
+            || ((self.agent == "cursor") != self.cursor_mode.is_some())
             || (matches!(self.agent.as_str(), "pi" | "cursor" | "copilot")
                 && self.provider_policy.is_none())
             || self.agent_server_package != expected.1
@@ -341,6 +344,7 @@ impl AcpxProviderDescriptor {
             normalized_session_id: self.normalized_session_id.clone(),
             working_directory: PathBuf::from(&self.cwd),
             permission_mode: self.permission_mode,
+            cursor_mode: self.cursor_mode,
             permission_mode_pinned: self.permission_mode_pinned,
             provider_policy: self.provider_policy.clone(),
             system_instructions: self.instructions.clone(),
@@ -424,7 +428,7 @@ impl AcpxProviderDescriptor {
     }
 
     fn public_descriptor(&self, identity: Option<&AcpxProviderSessionIdentity>) -> Value {
-        json!({
+        let mut descriptor = json!({
             "provider": "acpx",
             "driver": "acpx_runtime",
             "providerVersion": self.provider_version,
@@ -440,7 +444,11 @@ impl AcpxProviderDescriptor {
             "providerSessionId": identity.map(|value| value.agent_session_id.as_str()),
             "acpxRecordId": identity.map(|value| value.acpx_record_id.as_str()),
             "permissionMode": self.permission_mode,
-        })
+        });
+        if let Some(mode) = self.cursor_mode {
+            descriptor["cursorMode"] = json!(mode);
+        }
+        descriptor
     }
 }
 
@@ -570,9 +578,11 @@ impl AcpxDurableState {
             identity
                 .validate()
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-            if identity.profile_digest != self.descriptor.command_digest {
+            if identity.profile_digest != self.descriptor.command_digest
+                || identity.cursor_mode != self.descriptor.cursor_mode
+            {
                 return Err(DurableRunnerError::invalid(
-                    "ACPX durable identity no longer matches its qualified profile digest",
+                    "ACPX durable identity no longer matches its qualified profile or Cursor mode",
                 ));
             }
         }
@@ -2510,6 +2520,7 @@ mod tests {
                 requested_model: descriptor.model.clone(),
                 effective_model: descriptor.model.clone(),
                 permission_mode: Some(descriptor.permission_mode),
+                cursor_mode: descriptor.cursor_mode,
                 provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
             };
             let operations = Vec::new();
@@ -2759,6 +2770,7 @@ mod tests {
             requested_model: "gpt-5.6-sol".to_owned(),
             effective_model: "gpt-5.6-sol".to_owned(),
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
+            cursor_mode: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
 
@@ -2782,7 +2794,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
+                "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
                 None,
                 None,
                 "explicit-model",
@@ -2791,7 +2803,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797",
+                "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
                 None,
                 None,
                 "explicit-model",
@@ -2800,7 +2812,7 @@ mod tests {
                 "pi",
                 "pi-acp",
                 "0.0.33",
-                "sha256:fec5b1448f4135710887133a9192747c476a825a56c255b52b17b1780ccb3761",
+                "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("0.84.2"),
                 "openrouter/deepseek/deepseek-v4-flash-0731",
@@ -2817,9 +2829,43 @@ mod tests {
             let missing: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
             assert!(missing.validate(&context()).is_err());
             value["providerPolicy"] = json!({"readOnly":true});
+            if agent == "cursor" {
+                value["cursorMode"] = json!("agent");
+            }
             let valid: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
             valid.validate(&context()).unwrap();
+            if agent == "cursor" {
+                assert_eq!(valid.public_descriptor(None)["cursorMode"], json!("agent"));
+                let mut previous_v4 = value.clone();
+                previous_v4["commandDigest"] = json!(
+                    "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b"
+                );
+                let previous_v4: AcpxProviderDescriptor =
+                    serde_json::from_value(previous_v4).unwrap();
+                assert!(previous_v4.validate(&context()).is_err());
+                let mut missing = value.clone();
+                missing.as_object_mut().unwrap().remove("cursorMode");
+                let missing: AcpxProviderDescriptor = serde_json::from_value(missing).unwrap();
+                assert!(missing.validate(&context()).is_err());
+                let mut unknown = value.clone();
+                unknown["cursorMode"] = json!("autopilot");
+                assert!(serde_json::from_value::<AcpxProviderDescriptor>(unknown).is_err());
+            } else {
+                assert!(valid.public_descriptor(None).get("cursorMode").is_none());
+                let mut wrong_agent = value.clone();
+                wrong_agent["cursorMode"] = json!("plan");
+                let wrong_agent: AcpxProviderDescriptor =
+                    serde_json::from_value(wrong_agent).unwrap();
+                assert!(wrong_agent.validate(&context()).is_err());
+            }
             if agent == "copilot" {
+                let mut previous_v4 = value.clone();
+                previous_v4["commandDigest"] = json!(
+                    "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797"
+                );
+                let previous_v4: AcpxProviderDescriptor =
+                    serde_json::from_value(previous_v4).unwrap();
+                assert!(previous_v4.validate(&context()).is_err());
                 let mut legacy = value.clone();
                 legacy["commandDigest"] = json!(
                     "sha256:527f9cbbad2f3e75169cae70d7aa5b189200e57f1ab7f9e1523357b5606b0939"
@@ -2973,6 +3019,7 @@ mod tests {
             requested_model: original_descriptor.model.clone(),
             effective_model: original_descriptor.model.clone(),
             permission_mode: Some(original_descriptor.permission_mode),
+            cursor_mode: original_descriptor.cursor_mode,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -3299,6 +3346,7 @@ mod tests {
             requested_model: descriptor.model.clone(),
             effective_model: descriptor.model.clone(),
             permission_mode: Some(descriptor.permission_mode),
+            cursor_mode: descriptor.cursor_mode,
             provider_lifetime_fence_candidates,
         };
         let operations = Vec::new();
@@ -3470,6 +3518,7 @@ mod tests {
             requested_model: provider_descriptor.model.clone(),
             effective_model: provider_descriptor.model.clone(),
             permission_mode: Some(provider_descriptor.permission_mode),
+            cursor_mode: provider_descriptor.cursor_mode,
             provider_lifetime_fence_candidates,
         });
         state.provider_exit_unconfirmed = true;

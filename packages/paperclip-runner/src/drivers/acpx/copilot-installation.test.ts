@@ -10,14 +10,14 @@ import { QUALIFIED_ACPX_PROFILES } from "./qualified-profiles.js";
 vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: vi.fn() }));
 
 describe("Copilot build-owned installation", () => {
-  it("admits the current v4 declaration and binds its source policy/patch hashes", () => {
-    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v4-identity.json", import.meta.url), "utf8"));
+  it("admits the current v5 declaration and binds its source policy/patch hashes", () => {
+    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v5-identity.json", import.meta.url), "utf8"));
     expect(identity.declaration.systemInstructionDelivery).toBe(COPILOT_SYSTEM_INSTRUCTION_DELIVERY);
     expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(identity.declaration.agentProfileVersion);
     expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe(identity.commandDigest);
     const sorted = Object.fromEntries(Object.entries(identity.declaration).sort(([a], [b]) => a.localeCompare(b)));
     expect(`sha256:${createHash("sha256").update(JSON.stringify(sorted)).digest("hex")}`).toBe(identity.commandDigest);
-    for (const [relative, field] of [["copilot-policy.ts", "policySha256"], ["../../../../../patches/acpx@0.13.1.patch", "acpxPatchSha256"]]) {
+    for (const [relative, field] of [["copilot-policy.ts", "policySha256"], ["../../../scripts/materialize-copilot-binary.mjs", "distributionSourceSha256"], ["../../../../../patches/acpx@0.13.1.patch", "acpxPatchSha256"]]) {
       expect(createHash("sha256").update(readFileSync(new URL(relative!, import.meta.url))).digest("hex")).toBe(identity.declaration[field!]);
     }
     expect(readFileSync(new URL("../../../scripts/build-copilot-distribution.mjs", import.meta.url), "utf8")).toContain(identity.commandDigest);
@@ -50,7 +50,7 @@ describe("Copilot build-owned installation", () => {
   });
   it("rejects changed profile identities before native file access", async () => {
     vi.mocked(verifyNativeAcpxInstallation).mockClear();
-    for (const override of [{ agentServerVersion: "latest" }, { commandDigest: "sha256:untrusted" }, { agent: "cursor" }, { agentProfileVersion: 1 }, { agentProfileVersion: 2 }, { agentProfileVersion: 3 }, { agentProfileVersion: 5 }]) {
+    for (const override of [{ agentServerVersion: "latest" }, { commandDigest: "sha256:untrusted" }, { agent: "cursor" }, { agentProfileVersion: 1 }, { agentProfileVersion: 2 }, { agentProfileVersion: 3 }, { agentProfileVersion: 4 }, { agentProfileVersion: 6 }]) {
       await expect(verifyCopilotInstallation({ ...QUALIFIED_ACPX_PROFILES.copilot, ...override } as never)).rejects.toThrow("exact pinned");
     }
     expect(verifyNativeAcpxInstallation).not.toHaveBeenCalled();

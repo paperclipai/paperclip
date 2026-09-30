@@ -7,17 +7,26 @@ const home = process.env.PI_CODING_AGENT_DIR;
 mkdirSync(join(home, "sessions"), { recursive: true });
 const sessionFile = join(home, "sessions", "fixture.jsonl");
 writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "fixture-session", cwd: process.cwd() }) + "\n");
-const output = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+let assistantActive = false;
+let messageTimestamp = 0;
+const nativeMessage = (stopReason = "stop", usage = {}) => ({ role: "assistant", timestamp: messageTimestamp, content: [], stopReason, usage });
+const output = (value) => process.stdout.write(JSON.stringify(value.type === "message_update" && !value.message ? { ...value, message: nativeMessage() } : value) + "\n");
+const endMessage = (stopReason = "stop", usage = { input: 11, output: 3, cacheRead: 2, cacheWrite: 0, cost: { total: 0.01 } }) => {
+  output({ type: "message_end", message: nativeMessage(stopReason, usage) }); assistantActive = false;
+};
 let active = false;
 let modelIteration = 0;
 const invocationNamespace = JSON.parse(process.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION).invocationNamespace;
 const toolIdentity = (id) => `pi-${createHash("sha256").update(JSON.stringify([invocationNamespace, modelIteration, id])).digest("hex")}`;
-const begin = () => { modelIteration++; output({ type: "turn_start" }); };
+const begin = () => { modelIteration++; output({ type: "turn_start" });
+  messageTimestamp++; assistantActive = true; output({ type: "message_start", message: nativeMessage() });
+};
 let model = "fixture-model";
 const compaction = () => ({ firstKeptEntryId: "fixture-entry", tokensBefore: 50, summary: "Fixture compacted", usage: { input: 5, output: 2, cacheRead: 1, cacheWrite: 0, cost: { total: 0.02 } } });
 const finish = (answer = "done") => {
+  if (!assistantActive) { output({ type: "turn_end" }); begin(); }
   output({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: answer } });
-  output({ type: "message_end", message: { role: "assistant", timestamp: Date.now(), stopReason: "stop", usage: { input: 11, output: 3, cacheRead: 2, cacheWrite: 0, cost: { total: 0.01 } } } });
+  endMessage();
   output({ type: "turn_end" });
   output({ type: "agent_end" });
   // An agent_end alone must not settle the ACP prompt.
@@ -33,19 +42,35 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.type === "get_messages") { response({ messages: process.env.PI_FIXTURE_HISTORY ? [
     { role: "toolResult", toolName: "mcp__paperclip__paperclip_finish", toolCallId: "call_0", content: [{ type: "text", text: "correct criteria" }], isError: true },
     { role: "toolResult", toolName: "mcp__paperclip__paperclip_finish", toolCallId: "call_0", content: [{ type: "text", text: "accepted" }] },
+    { role: "assistant", content: [{ type: "text", text: "Historical reply" }] },
   ] : [] }); return; }
   if (request.type === "get_commands") { response({ commands: process.env.PI_FIXTURE_EXTENSION_FAIL ? [] : [{ name: "paperclip-runtime-ready-v1", description: "Paperclip runtime gate v1", source: "extension" }] }); return; }
   if (request.type === "steer") { response(); output({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `steered:${request.message}` } }); return; }
   if (request.type === "follow_up") { response(); finish(`follow-up:${request.message}`); return; }
   if (request.type === "compact") { output({ type: "compaction_start", reason: "manual" }); const result = compaction(); output({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false }); response(result); return; }
-  if (request.type === "abort") { response(); if (active) { active = false; output({ type: "turn_end" }); output({ type: "agent_settled" }); } return; }
+  if (request.type === "abort") { response(); if (active) { active = false; if (assistantActive) endMessage("aborted", {}); output({ type: "turn_end" }); output({ type: "agent_settled" }); } return; }
   if (request.type === "prompt") {
-    response({ disposition: "started" }); active = true; output({ type: "agent_start" }); begin();
+    response({ disposition: "started" }); active = true; output({ type: "agent_start" });
+    if (request.message === "missing-message-start") { modelIteration++; output({ type: "turn_start" }); output({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "invalid" } }); return; }
+    begin();
+    if (request.message === "duplicate-message-start") { output({ type: "message_start", message: nativeMessage() }); return; }
+    if (request.message === "mismatched-message-end") { output({ type: "message_end", message: { ...nativeMessage(), timestamp: messageTimestamp + 1 } }); return; }
+    if (request.message === "missing-message-end") { output({ type: "agent_settled" }); return; }
+    if (["narration-final", "tool-only", "empty-final"].includes(request.message)) {
+      output({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Calling finish." } });
+      endMessage("toolUse", {});
+      const args = {}; output({ type: "tool_execution_start", toolCallId: "finish", toolName: "paperclip_finish", args });
+      output({ type: "tool_execution_end", toolCallId: "finish", toolName: "paperclip_finish", result: { content: [{ type: "text", text: "accepted" }] } });
+      if (request.message === "tool-only") { output({ type: "turn_end" }); active = false; output({ type: "agent_settled" }); }
+      else finish(request.message === "empty-final" ? "" : "EXACT_MARKER");
+      return;
+    }
     if (request.message === "reused-tool-ids") {
       for (const [index, toolName] of ["mcp__paperclip__paperclip_finish", "mcp__paperclip__paperclip_finish", "mcp__paperclip__get_task_context"].entries()) {
         if (index) { output({ type: "turn_end" }); begin(); }
         const args = { revision: index + 1 };
         output({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: { content: [{ type: "toolCall", id: "call_0", name: toolName, arguments: args }] } } });
+        endMessage("toolUse", {});
         output({ type: "tool_execution_start", toolCallId: "call_0", toolName, args });
         output({ type: "tool_execution_update", toolCallId: "call_0", toolName, partialResult: { content: [{ type: "text", text: "working" }] } });
         output({ type: "tool_execution_end", toolCallId: "call_0", toolName, result: { content: [{ type: "text", text: index ? "accepted" : "correct criteria" }] }, isError: index === 0 });
@@ -68,7 +93,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       output({ type: "auto_retry_start", attempt: 2, maxAttempts: 2, delayMs: 10, errorMessage: "Fixture provider unavailable" });
       output({ type: "auto_retry_end", attempt: 2, ...(request.message === "retry-unknown" ? {} : { success: request.message === "retry-success" }) });
       if (request.message === "retry-failure") {
-        output({ type: "message_end", message: { role: "assistant", timestamp: 2, stopReason: "error", usage: { input: 1, output: 0 } } });
+        endMessage("error", { input: 1, output: 0 });
         active = false; output({ type: "turn_end" }); output({ type: "agent_settled" });
       } else finish("retry outcome received");
       return;
@@ -82,7 +107,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     if (request.message === "permission") { output({ type: "extension_ui_request", id: "permission-id", method: "select", title: "paperclip.pi.permission.v1:" + JSON.stringify({toolCallId:toolIdentity("tool-1"),nativeToolCallId:"tool-1",modelIteration,toolName:"bash",input:{command:"pwd"}}), options: ["Allow once", "Allow for this session", "Deny"] }); return; }
     if (request.message === "failure") {
-      output({ type: "message_end", message: { role: "assistant", timestamp: 1, stopReason: "error", usage: { input: 1, output: 0 } } });
+      endMessage("error", { input: 1, output: 0 });
       active = false; output({ type: "turn_end" }); output({ type: "agent_settled" }); return;
     }
     output({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "fixture reasoning" } });

@@ -5429,6 +5429,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.requestedModel !== expectedModel ||
         identity.effectiveModel !== expectedModel ||
         identity.permissionMode !== input.execution.provider.permissionMode ||
+        !acpxRecoveryCursorModeMatches(input.execution.provider, descriptor.cursorMode, identity.cursorMode) ||
         !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
@@ -5513,11 +5514,30 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
   );
 }
 
+// Recovery consumes observed identities; it must never apply the fresh-config
+// default to a missing persisted mode or allow another provider to carry it.
+function acpxRecoveryCursorModeMatches(
+  provider: NativeExecutionInput["provider"],
+  ...observedModes: unknown[]
+): boolean {
+  const expected = record(provider).cursorMode;
+  if (provider.kind === "acpx" && provider.agent === "cursor") {
+    return (expected === "agent" || expected === "plan" || expected === "ask")
+      && observedModes.every(mode => mode === expected);
+  }
+  return expected === undefined && observedModes.every(mode => mode === undefined);
+}
+
 export function providerSessionIdentityTransitionIsAllowed(input: {
   execution: NativeExecutionInput;
   previous: unknown;
   current: unknown;
 }): boolean {
+  if (input.execution.provider.kind === "acpx" && !acpxRecoveryCursorModeMatches(
+    input.execution.provider,
+    record(record(input.previous).providerSessionIdentity).cursorMode,
+    record(record(input.current).providerSessionIdentity).cursorMode,
+  )) return false;
   if (canonicalJson(input.previous) === canonicalJson(input.current)) {
     return true;
   }
@@ -12397,6 +12417,7 @@ async function createRunnerdBackendWithinSessionClaim(
               // Read only the server operator environment, never agent/runtime env.
               acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
+              acpxCursorMode: input.execution.provider.cursorMode,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
                 input.execution.schema === "paperclip.native-execution-input.v5",

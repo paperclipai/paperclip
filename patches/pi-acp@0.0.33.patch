@@ -13,17 +13,18 @@
  // src/pi-rpc/process.ts
  import { spawn } from "child_process";
 -import * as readline from "readline";
-+import { PI_ACP_FEATURES, PiToolIdentities, piHistoricalToolIdentity, PiRpcFrames, PiUiBridge, PiTurnUsage, createPiLaunchSpec, snapshotPiWorkspaceFile } from "./paperclip-runtime.js";
++import { PI_ACP_FEATURES, PiAssistantMessages, piAssistantChunk, piHistoricalAssistantChunk, PiToolIdentities, piHistoricalToolIdentity, PiRpcFrames, PiUiBridge, PiTurnUsage, createPiLaunchSpec, snapshotPiWorkspaceFile } from "./paperclip-runtime.js";
 
  // src/pi-rpc/command.ts
  import { platform } from "os";
-@@ -94,51 +95,42 @@
+@@ -94,51 +95,43 @@
    pending = /* @__PURE__ */ new Map();
    eventHandlers = [];
    preludeLines = [];
 -  constructor(child) {
 +  constructor(child, invocationNamespace) {
 +    this.toolIdentities = new PiToolIdentities(invocationNamespace);
++    this.assistantMessages = new PiAssistantMessages(invocationNamespace);
      this.child = child;
 -    const rl = readline.createInterface({ input: child.stdout });
 -    rl.on("line", (line) => {
@@ -59,7 +60,7 @@
 -        }
 -      }
 -      for (const h of this.eventHandlers) h(msg);
-+      const event = this.toolIdentities.normalize(msg);
++      const event = this.toolIdentities.normalize(this.assistantMessages.normalize(msg));
 +      for (const handler of this.eventHandlers) handler(event);
      });
 -    child.on("exit", (code, signal) => {
@@ -95,7 +96,7 @@
      });
      try {
        await new Promise((resolve4, reject) => {
-@@ -172,7 +164,7 @@
+@@ -172,7 +165,7 @@
      }
      child.stderr.on("data", () => {
      });
@@ -104,7 +105,7 @@
      try {
        const state = await proc.getState();
        const sessionFile = typeof state?.sessionFile === "string" ? state.sessionFile : null;
-@@ -181,21 +173,30 @@
+@@ -181,21 +174,30 @@
          const { dirname: dirname3 } = await import("path");
          mkdirSync2(dirname3(sessionFile), { recursive: true });
        }
@@ -140,7 +141,7 @@
      }
    }
    /**
-@@ -242,7 +243,7 @@
+@@ -242,7 +244,7 @@
      if (!res.success) throw new Error(`pi set_steering_mode failed: ${res.error ?? JSON.stringify(res.data)}`);
    }
    async compact(customInstructions) {
@@ -149,7 +150,7 @@
      if (!res.success) throw new Error(`pi compact failed: ${res.error ?? JSON.stringify(res.data)}`);
      return res.data;
    }
-@@ -283,17 +284,23 @@
+@@ -283,17 +285,23 @@
      await this.writeLine(`${JSON.stringify({ type: "extension_ui_response", ...response })}
  `);
    }
@@ -179,7 +180,7 @@
      });
    }
    writeLine(line) {
-@@ -337,7 +344,7 @@
+@@ -337,7 +345,7 @@
      {
        authMethods: getAuthMethods()
      },
@@ -188,7 +189,7 @@
    );
  }
 
-@@ -534,6 +541,14 @@
+@@ -534,6 +542,14 @@
    const record = value;
    const command = record?.command ?? record?.cmd ?? record?.args?.command ?? record?.args?.cmd ?? record?.input?.command ?? record?.input?.cmd ?? record?.rawInput?.command ?? record?.rawInput?.cmd ?? record?.toolInput?.command ?? record?.toolInput?.cmd ?? record?.details?.command ?? record?.details?.cmd;
    return typeof command === "string" && command.trim() ? command : void 0;
@@ -203,7 +204,7 @@
  }
  function bashResultText(result) {
    const record = result;
-@@ -714,6 +729,7 @@
+@@ -714,6 +730,7 @@
      try {
        proc = await PiRpcProcess.spawn({
          cwd: params.cwd,
@@ -211,7 +212,7 @@
          piCommand: params.piCommand
        });
      } catch (e) {
-@@ -808,6 +824,9 @@
+@@ -808,6 +825,9 @@
      this.proc = opts.proc;
      this.conn = opts.conn;
      this.fileCommands = opts.fileCommands ?? [];
@@ -221,7 +222,19 @@
      this.proc.onEvent((ev) => this.handlePiEvent(ev));
    }
    setStartupInfo(text) {
-@@ -852,6 +871,7 @@
+@@ -822,10 +842,7 @@
+   sendStartupInfoIfPending() {
+     if (this.startupInfoSent || !this.startupInfo) return;
+     this.startupInfoSent = true;
+-    this.emit({
+-      sessionUpdate: "agent_message_chunk",
+-      content: { type: "text", text: this.startupInfo }
+-    });
++    this.emitNotice("startup", this.startupInfo, "info");
+   }
+   async prompt(message, images = []) {
+     const expandedMessage = expandSlashCommand(message, this.fileCommands);
+@@ -852,6 +869,7 @@
    }
    async cancel() {
      this.cancelRequested = true;
@@ -229,7 +242,7 @@
      if (this.turnQueue.length) {
        const queued = this.turnQueue.splice(0, this.turnQueue.length);
        for (const t of queued) t.resolve("cancelled");
-@@ -870,6 +890,8 @@
+@@ -870,6 +888,8 @@
      return this.cancelRequested;
    }
    emit(update) {
@@ -238,7 +251,20 @@
      this.lastEmit = this.lastEmit.then(
        () => this.conn.sessionUpdate({
          sessionId: this.sessionId,
-@@ -890,6 +912,7 @@
+@@ -877,6 +897,12 @@
+       })
+     ).catch(() => {
+     });
++  }
++  emitNotice(category, summary, severity = "info", details = {}) {
++    this.lastEmit = this.lastEmit.then(() => this.conn.extNotification("paperclip/pi_notice", {
++      sessionId: this.sessionId, category, severity,
++      summary: String(summary).slice(0, 4000), details
++    })).catch(() => {});
+   }
+   async flushEmits() {
+     await this.lastEmit;
+@@ -890,6 +916,7 @@
        kind: "execute",
        status: params.status,
        locations: params.locations,
@@ -246,7 +272,7 @@
        ...params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {},
        ...params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {}
      });
-@@ -903,6 +926,7 @@
+@@ -903,6 +930,7 @@
        sessionUpdate: "tool_call_update",
        toolCallId: params.toolCallId,
        status: params.status,
@@ -254,7 +280,7 @@
        _meta: {
          ...delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {},
          ...params.status === "completed" || params.status === "failed" ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {}
-@@ -920,12 +944,16 @@
+@@ -920,12 +948,16 @@
      this.cancelRequested = false;
      this.inAgentLoop = false;
      this.pendingTurn = { resolve: t.resolve, reject: t.reject };
@@ -271,7 +297,7 @@
          const authErr = maybeAuthRequiredError(err);
          if (authErr) {
            this.pendingTurn?.reject(authErr);
-@@ -946,6 +974,23 @@
+@@ -946,20 +978,36 @@
    handlePiEvent(ev) {
      const type = String(ev.type ?? "");
      switch (type) {
@@ -283,7 +309,12 @@
 +        this.turnEpoch += 1;
 +        break;
 +      }
++      case "message_start": {
++        if (ev.paperclipAssistantMessage) this.emit(piAssistantChunk(ev.paperclipAssistantMessage));
++        break;
++      }
 +      case "message_end": {
++        if (ev.paperclipAssistantMessage) this.emit(piAssistantChunk(ev.paperclipAssistantMessage));
 +        try { this.turnUsage.accept(ev.message); } catch {
 +          this.pendingTurn?.reject(new Error("Pi usage receipt is invalid"));
 +          this.pendingTurn = null;
@@ -295,7 +326,23 @@
        case "message_update": {
          const ame = ev.assistantMessageEvent;
          if (ame?.type === "text_delta" && typeof ame.delta === "string") {
-@@ -1047,7 +1092,7 @@
+-          this.emit({
+-            sessionUpdate: "agent_message_chunk",
+-            content: { type: "text", text: ame.delta }
+-          });
++          this.emit(piAssistantChunk(ev.paperclipAssistantMessage, ame.delta));
+           break;
+         }
+         if (ame?.type === "thinking_delta" && typeof ame.delta === "string") {
+-          this.emit({
+-            sessionUpdate: "agent_thought_chunk",
+-            content: { type: "text", text: ame.delta }
+-          });
++          this.emit(piAssistantChunk(ev.paperclipAssistantMessage, ame.delta, true));
+           break;
+         }
+         if (ame?.type === "toolcall_start" || ame?.type === "toolcall_delta" || ame?.type === "toolcall_end") {
+@@ -1047,7 +1095,7 @@
            if (p) {
              try {
                const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
@@ -304,7 +351,7 @@
                this.fileSnapshots.set(toolCallId, { path: p, oldText: snapshotOldText });
                if (toolName === "edit") {
                  for (const needle of getEditOldTexts(args)) {
-@@ -1125,7 +1170,7 @@
+@@ -1125,7 +1173,7 @@
          if (!isError && snapshot) {
            try {
              const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
@@ -313,7 +360,7 @@
              if (snapshot.oldText === null || newText !== snapshot.oldText) {
                hasStructuredDiff = true;
                content = [
-@@ -1154,14 +1199,16 @@
+@@ -1154,48 +1202,41 @@
          break;
        }
        case "extension_ui_request": {
@@ -324,40 +371,54 @@
 -          }
 -          void this.proc.sendExtensionUiResponse({ id, cancelled: true }).catch(() => {
 -          });
-+        if (ev.method === "notify") this.emit({
-+          sessionUpdate: "session_info_update",
-+          _meta: { paperclipPi: { notice: { message: typeof ev.message === "string" ? ev.message.slice(0, 4096) : "Pi notification", level: ev.notifyType } } }
-         });
++        if (ev.method === "notify") this.emitNotice("extension_notify", typeof ev.message === "string" ? ev.message : "Pi notification", ["warning", "error"].includes(ev.notifyType) ? ev.notifyType : "info");
 +        void this.uiBridge.handle(ev).catch(() => {
-+          this.emit({ sessionUpdate: "session_info_update", _meta: { paperclipPi: { notice: {
-+            message: "Pi structured question is unsupported or invalid; the session was stopped", level: "error"
-+          } } } });
++          this.emitNotice("invalid_question", "Pi structured question is unsupported or invalid; the session was stopped", "error");
 +          this.proc.dispose("SIGKILL");
-+        });
+         });
          break;
        }
        case "auto_retry_start": {
-@@ -1174,28 +1216,31 @@
-       case "auto_retry_end": {
-         this.emit({
-           sessionUpdate: "agent_message_chunk",
--          content: { type: "text", text: "Retry finished, resuming." }
--        });
--        break;
--      }
--      case "auto_compaction_start": {
 -        this.emit({
 -          sessionUpdate: "agent_message_chunk",
-           content: {
-             type: "text",
--            text: "Context nearing limit, running automatic compaction..."
-+            text: ev.success === true ? "Retry finished, resuming."
-+              : ev.success === false ? "Retry failed; the provider request did not recover."
-+              : "Retry finished; the provider did not report an outcome."
-           }
+-          content: { type: "text", text: formatAutoRetryMessage(ev) }
++        this.emitNotice("auto_retry_start", formatAutoRetryMessage(ev), "warning", {
++          attempt: ev.attempt, maxAttempts: ev.maxAttempts, delayMs: ev.delayMs,
++          errorMessage: typeof ev.errorMessage === "string" ? ev.errorMessage.slice(0, 4000) : undefined
          });
          break;
        }
+       case "auto_retry_end": {
+-        this.emit({
+-          sessionUpdate: "agent_message_chunk",
+-          content: { type: "text", text: "Retry finished, resuming." }
++        this.emitNotice("auto_retry_end", ev.success === true ? "Retry finished, resuming."
++          : ev.success === false ? "Retry failed; the provider request did not recover."
++          : "Retry finished; the provider did not report an outcome.", ev.success === true ? "info" : "warning", { attempt: ev.attempt, success: ev.success });
++        break;
++      }
++      case "compaction_start": {
++        this.emitNotice("compaction_start", ev.reason === "manual" ? "Compacting context..." : "Context nearing limit, running automatic compaction...", "info", { reason: ev.reason });
++        break;
++      }
++      case "compaction_end": {
++        (this.pendingTurn ? this.turnUsage : this.manualCompactionUsage)?.acceptCompaction(ev.result);
++        this.emitNotice("compaction_end", ev.aborted ? "Context compaction cancelled." : ev.errorMessage ? "Context compaction failed." : "Context compaction finished.", ev.errorMessage ? "error" : ev.aborted ? "warning" : "info", {
++          reason: ev.reason, aborted: ev.aborted, willRetry: ev.willRetry,
++          errorMessage: typeof ev.errorMessage === "string" ? ev.errorMessage.slice(0, 4000) : undefined
+         });
+         break;
+       }
+-      case "auto_compaction_start": {
+-        this.emit({
+-          sessionUpdate: "agent_message_chunk",
+-          content: {
+-            type: "text",
+-            text: "Context nearing limit, running automatic compaction..."
+-          }
+-        });
+-        break;
+-      }
 -      case "auto_compaction_end": {
 -        this.emit({
 -          sessionUpdate: "agent_message_chunk",
@@ -366,26 +427,13 @@
 -            text: "Automatic compaction finished; context was summarized to continue the session."
 -          }
 -        });
-+      case "compaction_start": {
-+        this.emit({ sessionUpdate: "agent_message_chunk", content: {
-+          type: "text", text: ev.reason === "manual" ? "Compacting context..." : "Context nearing limit, running automatic compaction..."
-+        } });
-+        break;
-+      }
-+      case "compaction_end": {
-+        (this.pendingTurn ? this.turnUsage : this.manualCompactionUsage)?.acceptCompaction(ev.result);
-+        this.emit({ sessionUpdate: "agent_message_chunk", content: {
-+          type: "text", text: ev.aborted ? "Context compaction cancelled." : ev.errorMessage ? "Context compaction failed." : "Context compaction finished."
-+        } });
-+        break;
-+      }
 +      case "summarization_retry_scheduled": {
 +        (this.pendingTurn ? this.turnUsage : this.manualCompactionUsage)?.markIncomplete();
-+        this.emit({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Context summarization is retrying a provider request." } });
++        this.emitNotice("summarization_retry_scheduled", "Context summarization is retrying a provider request.", "warning");
          break;
        }
        case "agent_start": {
-@@ -1210,9 +1255,12 @@
+@@ -1210,9 +1251,12 @@
          break;
        }
        case "agent_settled": {
@@ -399,7 +447,7 @@
            this.pendingTurn = null;
            this.inAgentLoop = false;
            const next = this.turnQueue.shift();
-@@ -1725,6 +1773,7 @@
+@@ -1725,6 +1769,7 @@
    return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join4(homedir4(), ".pi", "agent");
  }
  function getEnableSkillCommands(cwd) {
@@ -407,7 +455,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.enableSkillCommands;
    if (typeof direct === "boolean") return direct;
-@@ -1733,6 +1782,7 @@
+@@ -1733,6 +1778,7 @@
    return true;
  }
  function getQuietStartup(cwd) {
@@ -415,7 +463,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.quietStartup;
    if (typeof direct === "boolean") return direct;
-@@ -1824,6 +1874,7 @@
+@@ -1824,6 +1870,7 @@
    const out = [];
    const seen = /* @__PURE__ */ new Set();
    for (const c of [...a, ...b]) {
@@ -423,7 +471,7 @@
      if (seen.has(c.name)) continue;
      seen.add(c.name);
      out.push(c);
-@@ -1884,11 +1935,13 @@
+@@ -1884,11 +1931,13 @@
          throw RequestError3.invalidParams(`Unknown sessionId: ${sessionId}`);
        }
        const cwd = opts?.cwd ?? stored.cwd;
@@ -437,7 +485,7 @@
            piCommand: process.env.PI_ACP_PI_COMMAND
          });
        } catch (e) {
-@@ -1897,7 +1950,7 @@
+@@ -1897,7 +1946,7 @@
          }
          throw e;
        }
@@ -446,7 +494,7 @@
        const session = this.sessions.getOrCreate(sessionId, {
          cwd,
          mcpServers: opts?.mcpServers ?? [],
-@@ -1917,6 +1970,7 @@
+@@ -1917,6 +1966,7 @@
      }
    }
    async initialize(params) {
@@ -454,7 +502,7 @@
      const supportedVersion = 1;
      const requested = params.protocolVersion;
      return {
-@@ -1933,7 +1987,8 @@
+@@ -1933,7 +1983,8 @@
        }),
        agentCapabilities: {
          loadSession: true,
@@ -464,7 +512,7 @@
          promptCapabilities: {
            image: true,
            audio: false,
-@@ -1942,8 +1997,7 @@
+@@ -1942,8 +1993,7 @@
          sessionCapabilities: {
            // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
            // Enables a native session picker in clients that support it.
@@ -474,7 +522,7 @@
          }
        }
      };
-@@ -1953,7 +2007,7 @@
+@@ -1953,7 +2003,7 @@
        throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
      }
      this.lastSessionCwd = params.cwd;
@@ -483,7 +531,7 @@
      const enableSkillCommands = getEnableSkillCommands(params.cwd);
      const session = await this.sessions.create({
        cwd: params.cwd,
-@@ -1994,14 +2048,14 @@
+@@ -1994,14 +2044,14 @@
        this.cleanupFailedNewSession(session.sessionId, state);
        throw RequestError3.authRequired(
          { authMethods: getAuthMethods() },
@@ -500,7 +548,7 @@
        );
      }
      const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
-@@ -2064,34 +2118,27 @@
+@@ -2064,34 +2114,27 @@
    }
    async prompt(params) {
      const session = await this.restoreSession(params.sessionId);
@@ -547,7 +595,39 @@
        }
        if (cmd === "session") {
          const stats = await session.proc.getSessionStats();
-@@ -2432,8 +2479,18 @@
+@@ -2112,13 +2155,8 @@
+         }
+         const text = lines.length ? lines.join("\n") : `Session stats:
+ ${JSON.stringify(stats, null, 2)}`;
+-        await this.conn.sessionUpdate({
+-          sessionId: session.sessionId,
+-          update: {
+-            sessionUpdate: "agent_message_chunk",
+-            content: { type: "text", text }
+-          }
+-        });
++        session.emitNotice("session_stats", text, "info");
++        await session.flushEmits();
+         return { stopReason: "end_turn" };
+       }
+       if (cmd === "name") {
+@@ -2418,22 +2456,24 @@
+           enabled = !current;
+         }
+         await session.proc.setAutoCompaction(enabled);
+-        await this.conn.sessionUpdate({
+-          sessionId: session.sessionId,
+-          update: {
+-            sessionUpdate: "agent_message_chunk",
+-            content: {
+-              type: "text",
+-              text: `Auto-compaction ${enabled ? "enabled" : "disabled"}.`
+-            }
+-          }
+-        });
++        session.emitNotice("auto_compaction_policy", `Auto-compaction ${enabled ? "enabled" : "disabled"}.`, "info", { enabled });
++        await session.flushEmits();
+         return { stopReason: "end_turn" };
        }
      }
      const result = await session.prompt(message, images);
@@ -568,7 +648,7 @@
    }
    async cancel(params) {
      const session = this.sessions.maybeGet(params.sessionId);
-@@ -2473,7 +2530,7 @@
+@@ -2473,7 +2513,7 @@
        mcpServers: params.mcpServers
      });
      const proc = session.proc;
@@ -577,7 +657,7 @@
      this.sessions.closeAllExcept?.(session.sessionId);
      this.store.upsert({
        sessionId: params.sessionId,
-@@ -2482,7 +2539,7 @@
+@@ -2482,7 +2522,7 @@
      });
      const data = await proc.getMessages();
      const messages = Array.isArray(data?.messages) ? data.messages : [];
@@ -586,7 +666,17 @@
        const role = String(m?.role ?? "");
        if (role === "user") {
          const text = normalizePiMessageText(m?.content);
-@@ -2510,7 +2567,8 @@
+@@ -2501,16 +2541,14 @@
+         if (text) {
+           await this.conn.sessionUpdate({
+             sessionId: session.sessionId,
+-            update: {
+-              sessionUpdate: "agent_message_chunk",
+-              content: { type: "text", text }
+-            }
++            update: piHistoricalAssistantChunk(params.sessionId, messageIndex, text)
+           });
+         }
        }
        if (role === "toolResult") {
          const toolName = String(m?.toolName ?? "tool");
@@ -596,7 +686,7 @@
          const isError = Boolean(m?.isError);
          const isBash = isBashTool(toolName);
          if (isBash) {
-@@ -2524,7 +2582,7 @@
+@@ -2524,7 +2562,7 @@
                kind: "execute",
                status: "completed",
                content: bashTerminalContent(toolCallId),
@@ -605,7 +695,7 @@
              }
            });
            await this.conn.sessionUpdate({
-@@ -2535,7 +2593,8 @@
+@@ -2535,7 +2573,8 @@
                status: isError ? "failed" : "completed",
                _meta: {
                  ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
@@ -615,7 +705,7 @@
                }
              }
            });
-@@ -2549,6 +2608,7 @@
+@@ -2549,6 +2588,7 @@
              title: toolName,
              kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
              status: "completed",
@@ -623,7 +713,7 @@
              rawInput: null,
              rawOutput: m
            }
-@@ -2560,6 +2620,7 @@
+@@ -2560,6 +2600,7 @@
              sessionUpdate: "tool_call_update",
              toolCallId,
              status: isError ? "failed" : "completed",
@@ -631,7 +721,7 @@
              content: text ? [{ type: "content", content: { type: "text", text } }] : null,
              rawOutput: m
            }
-@@ -2607,6 +2668,7 @@
+@@ -2607,6 +2648,7 @@
      return response;
    }
    async deleteSession(params) {
@@ -639,7 +729,7 @@
      const stored = this.store.get(params.sessionId);
      const piSession = findPiSession(params.sessionId);
      if (!stored && !piSession) {
-@@ -2828,6 +2890,7 @@
+@@ -2828,6 +2870,7 @@
    return 0;
  }
  function buildUpdateNotice() {
@@ -647,7 +737,7 @@
    try {
      const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
      const installed = (String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()).replace(
-@@ -2848,6 +2911,7 @@
+@@ -2848,6 +2891,7 @@
    }
  }
  function buildStartupInfo(opts) {
@@ -655,7 +745,7 @@
    void opts.fileCommands;
    const md = [];
    try {
-@@ -2980,6 +3044,7 @@
+@@ -2980,6 +3024,7 @@
 
  // src/index.ts
  if (process.argv.includes("--terminal-login")) {
@@ -663,7 +753,7 @@
    const { spawnSync: spawnSync2 } = await import("child_process");
    const cmd = getPiCommand(process.env.PI_ACP_PI_COMMAND);
    const res = spawnSync2(cmd, [], {
-@@ -3019,11 +3084,12 @@
+@@ -3019,11 +3064,12 @@
    }
  });
  var stream = ndJsonStream(input, output);
@@ -680,7 +770,7 @@
    try {
 --- /dev/null
 +++ b/dist/paperclip-runtime.js
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,468 @@
 +/** Source for the helper embedded in patches/pi-acp@0.0.33.patch. */
 +import { createHash, randomUUID } from "node:crypto";
 +import { StringDecoder } from "node:string_decoder";
@@ -709,6 +799,80 @@
 +  nativePermissions: true, promptUsage: true, nativePlan: false,
 +  pendingRequestRecovery: "live-process-only",
 +});
++
++
++
++
++
++
++
++/** IDs are allocated only at actual SDK assistant message_start events. Tool
++ * iterations, retries, notices and ACP prompts cannot create assistant IDs. */
++export class PiAssistantMessages {
++          ordinal = 0;
++          active                                                  = null;
++          poisoned = false;
++                   namespace        ;
++  constructor(namespace        ) {
++    this.namespace = namespace;
++    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(namespace)) throw new Error("Pi assistant namespace is invalid");
++  }
++          fail()        { this.poisoned = true; throw new Error("Pi native assistant message boundary is invalid"); }
++  normalize(event             )              {
++    if (this.poisoned) return this.fail();
++    if (event.type === "agent_settled") {
++      if (this.active) return this.fail();
++      return event;
++    }
++    if (!["message_start", "message_update", "message_end"].includes(String(event.type))) return event;
++    const message = event.message;
++    if (!message || typeof message !== "object" || Array.isArray(message)) return this.fail();
++    const native = message               ;
++    if (native.role !== "assistant") {
++      if (event.type === "message_update" || this.active || !["user", "toolResult"].includes(String(native.role))) return this.fail();
++      return event;
++    }
++    if (!Number.isSafeInteger(native.timestamp) || (native.timestamp          ) < 0 || !Array.isArray(native.content)) return this.fail();
++    let boundary                     ;
++    if (event.type === "message_start") {
++      if (this.active || this.ordinal >= Number.MAX_SAFE_INTEGER) return this.fail();
++      const messageId = `pi-message-${createHash("sha256").update(JSON.stringify([this.namespace, ++this.ordinal])).digest("hex")}`;
++      this.active = { messageId, timestamp: native.timestamp           };
++      boundary = { messageId, phase: "start" };
++    } else {
++      if (!this.active || this.active.timestamp !== native.timestamp) return this.fail();
++      boundary = { messageId: this.active.messageId, phase: event.type === "message_end" ? "end" : "delta" };
++      if (event.type === "message_end") {
++        if (!["stop", "length", "toolUse", "error", "aborted"].includes(String(native.stopReason))) return this.fail();
++        boundary.stopReason = native.stopReason                                     ;
++        this.active = null;
++      }
++    }
++    return { ...event, paperclipAssistantMessage: boundary };
++  }
++}
++
++export function piAssistantChunk(boundaryValue         , textValue          = "", thought = false)              {
++  const boundary = record(boundaryValue);
++  const messageId = text(boundary.messageId, 96);
++  if (!/^pi-message-[a-f0-9]{64}$/.test(messageId) || !["start", "delta", "end"].includes(String(boundary.phase))) throw new Error("Pi assistant chunk lacks native provenance");
++  if (boundary.phase === "end" && !["stop", "length", "toolUse", "error", "aborted"].includes(String(boundary.stopReason))) throw new Error("Pi assistant chunk end is invalid");
++  const content = text(textValue, 262_144);
++  if (boundary.phase !== "delta" && (content || thought)) throw new Error("Pi assistant boundary cannot carry synthetic content");
++  return { sessionUpdate: thought ? "agent_thought_chunk" : "agent_message_chunk", messageId,
++    content: { type: "text", text: content },
++    _meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind: boundary.phase === "end" ? `end:${boundary.stopReason}` : boundary.phase },
++  };
++}
++
++export function piHistoricalAssistantChunk(sessionId        , messageIndex        , value        )              {
++  if (!sessionId || !Number.isSafeInteger(messageIndex) || messageIndex < 0) throw new Error("Pi historical assistant identity is invalid");
++  return { sessionUpdate: "agent_message_chunk",
++    messageId: `pi-history-message-${createHash("sha256").update(JSON.stringify([text(sessionId, 1024), messageIndex])).digest("hex")}`,
++    content: { type: "text", text: text(value, 262_144) },
++    _meta: { origin: "pi-history-assistant", source: "pi-session-history-v1", kind: "history" },
++  };
++}
 +
 +/** One trusted Pi model iteration, not one ACP prompt. Pi resets its own turnIndex
 + * on warm prompts; our ordinal is monotonic for the lifetime of the child. */

@@ -32,6 +32,7 @@ import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-po
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
 import { admitCursorInstructions, createCursorInstructionAdmission } from "./cursor-instructions.js";
+import { createCursorModeAdmission, resolveCursorSessionMode } from "./cursor-mode.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -299,12 +300,18 @@ export async function openQualifiedAcpxRuntime(
     );
   };
   const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
+  const selectedCursorMode = resolveCursorSessionMode(options.profile.agent, options.cursorMode);
+  const cursorMode = selectedCursorMode ? createCursorModeAdmission(selectedCursorMode) : null;
   const cursorInstructions = options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
-    ...(cursorInstructions ? { protocolGuardFactory: () => cursorInstructions.createGuard() } : {}),
+    ...(cursorInstructions && cursorMode ? { protocolGuardFactory: () => {
+      const instructions = cursorInstructions.createGuard();
+      const mode = cursorMode.createGuard();
+      return (direction: "inbound" | "outbound", message: unknown) => { instructions(direction, message); mode(direction, message); };
+    } } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -491,6 +498,15 @@ export async function openQualifiedAcpxRuntime(
             await commandLaunches.refreshConsumedCommand?.();
           },
         });
+        if (cursorMode && !cursorMode.isReady()) {
+          if (!runtime.setConfigOption) throw new Error("Cursor mode admission requires native mode configuration");
+          await runtime.setConfigOption({ handle: ensuredHandle, key: "mode", value: selectedCursorMode! });
+          cursorInstructions.assertReady();
+          cursorMode.assertReady();
+          await children.verifyLifetimeOwnership();
+          options.signal?.throwIfAborted();
+          await commandLaunches.refreshConsumedCommand?.();
+        }
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
@@ -506,6 +522,7 @@ export async function openQualifiedAcpxRuntime(
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
       : await boundedHandshake;
     cursorInstructions?.assertReady();
+    cursorMode?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -560,7 +577,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      requireIdentity(handle),
+      { ...requireIdentity(handle), ...(selectedCursorMode ? { cursorMode: selectedCursorMode } : {}) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

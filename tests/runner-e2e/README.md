@@ -1304,3 +1304,22 @@ cells. Discover them with `pnpm test:e2e:runner -- --list --suite copilot-protec
 See [Copilot native protection](./FIXTURES.md#copilot-native-protection) for the
 expected cancelled negative test, finite attached-process oracle, evidence limits,
 and required rebuilt runtime. Registration is not a qualification claim.
+
+
+### Cursor native interactions (candidate)
+
+The explicit-only local `cursor-native` suite exercises the native Cursor
+question callback, plan rejection/revision/acceptance, plan cancellation, and
+permission denial across browser reload. List it with
+`pnpm test:e2e:runner -- --list --suite cursor-native`. The fixture configures
+`acpxSessionMode` before the run: Plan for question/plan callbacks, Agent for
+write denial. Native request origin, exact decision bytes and post-write
+response delivery are required; semantic-tool interactions do not satisfy these
+checks. The denial case also requires independent filesystem observations and
+an API-bound process journal after provider retirement, before workspace
+removal. Complete server and database cleanup remains the outer supervisor's
+responsibility. These cases remain unqualified until paid runs pass.
+
+The full native plan text is retained in the interaction card. Exporting a plan
+file from Cursor's private HOME as a downloadable Paperclip artifact remains a
+separate capability gap; these callback tests do not claim that export works.

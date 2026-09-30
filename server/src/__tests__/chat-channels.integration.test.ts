@@ -31015,6 +31015,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it("quarantines Telegram maintenance success when credential-lease ownership is reclaimed", async () => {
+    // Global sweeps may also reconcile a retired fixture's receipt. Keep that
+    // work eligible so the fault hook proves it cannot steal another owner.
+    const retiredFixture = await seedCompany();
+    const retired = await configuredSlackEndpoint(retiredFixture);
+    const retiredThread = makeThread({ channelId: "C-LEASE-SCOPE", id: "slack:C-LEASE-SCOPE:7002.1" });
+    await deliverMessage({
+      callbacks: retired.callbacks,
+      endpointId: retired.endpoint.id,
+      thread: retiredThread.thread,
+      message: makeMessage({ id: "7002.1", text: "@maya check lease isolation", mentioned: true }),
+      trigger: "mention",
+    });
+    await retired.service.shutdown();
+    const [retiredReceipt] = await db.select().from(chatActions).where(and(
+      eq(chatActions.endpointId, retired.endpoint.id),
+      eq(chatActions.kind, "receipt_reaction"),
+    ));
+    expect(retiredReceipt).toBeDefined();
+    await db.update(chatActions).set({ status: "received" })
+      .where(eq(chatActions.id, retiredReceipt!.id));
+    await retireFixtureState([retiredFixture.companyId]);
+
     const fixture = await seedCompany();
     const botToken = "123456:telegram-lease-reclaim";
     let reclaimLease = false;
@@ -31067,7 +31089,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const { service } = createService(new FakeChatSdkRuntime(), providerFetch, {
       credentialMutationLeaseRenewalIntervalMs: 5,
       renewCredentialMutationLease: async (input) => {
-        if (!reclaimLease) return true;
+        // Force the unrelated receipt to reach its ownership check only
+        // after the Telegram fault is armed, independent of query timing.
+        if (blockCommands && input.companyId === retiredFixture.companyId) {
+          await leaseReclaimed;
+        }
+        if (input.companyId !== fixture.companyId || !reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
           .set({
@@ -31124,6 +31151,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     blockCommands = true;
 
     await service.processPendingDeliveries();
+
+    await expect(db.select({ status: chatActions.status }).from(chatActions)
+      .where(eq(chatActions.id, retiredReceipt!.id)))
+      .resolves.toEqual([{ status: "cancelled" }]);
+    await expect(db.select().from(chatEndpointLeases)
+      .where(eq(chatEndpointLeases.endpointId, retired.endpoint.id)))
+      .resolves.toEqual([]);
 
     await expect(
       db

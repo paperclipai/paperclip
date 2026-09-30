@@ -1126,6 +1126,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
   acpxCandidateProfile?: "pi" | "cursor" | "copilot";
   acpxPermissionMode?: NativeAcpxPermissionMode;
+  acpxCursorMode?: "agent" | "plan" | "ask";
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
   /** SHA-256 verified by the provider-pack authority before runner startup. */
@@ -3470,6 +3471,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string; permission?: boolean }>();
 
   constructor(readonly options: CapabilityRunnerdCodexTransportOptions) {
+    if (options.acpxCursorMode !== undefined && (options.provider !== "acpx" || options.acpxAgent !== "cursor"
+      || !["agent", "plan", "ask"].includes(options.acpxCursorMode))) {
+      throw new Error("acpxCursorMode must be agent, plan, or ask and is supported only for Cursor");
+    }
     if (options.adoptExistingRunner && !options.stateDirectory?.trim()) {
       throw new Error("native_adopted_runner_state_directory_required");
     }
@@ -4645,6 +4650,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               cwd: String(params.cwd ?? tmpdir()),
               instructions: baseInstructions,
               providerPolicy: { readOnly: params.permissions === "paperclip-runner-workspace-read-only" },
+              ...(acpxProfile!.agent === "cursor" ? { cursorMode: this.options.acpxCursorMode ?? "agent" } : {}),
               permissionMode: resolveRunnerdAcpxPermissionMode(
                 this.options.acpxPermissionMode,
               ),

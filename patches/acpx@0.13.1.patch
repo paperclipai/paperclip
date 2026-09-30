@@ -739,6 +739,24 @@ diff --git a/dist/runtime.js b/dist/runtime.js
 index a1f4a70a003792c6eacf68b6b038f37bfec1db53..896617544f6467c88da0dedf5c4867fc63e1fffe 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
+@@ -154,7 +154,7 @@ function resolveTextChunk(params) {
+ 		const contentType = asTrimmedString(contentRaw.type);
+ 		if (contentType && contentType !== "text") return null;
+ 		const text = asString(contentRaw.text);
+-		if (text && text.length > 0) return {
++		if (typeof text === "string" && (text.length > 0 || origin.messageId)) return {
+ 			type: "text_delta",
+ 			text,
+ 			stream: params.stream,
+@@ -165,7 +165,7 @@ function resolveTextChunk(params) {
+ 		};
+ 	}
+ 	const text = asString(params.payload.text);
+-	if (!text || text.length === 0) return null;
++	if (typeof text !== "string" || (text.length === 0 && !origin.messageId)) return null;
+ 	return {
+ 		type: "text_delta",
+ 		text,
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
  	current_mode_update: (payload) => statusUpdateEvent("current_mode_update", payload),
  	config_option_update: (payload) => statusUpdateEvent("config_option_update", payload),

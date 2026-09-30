@@ -30,7 +30,8 @@ export type RunnerTaskFlow =
   | "warm_three_turn"
   | "instruction_persistence"
   | "pi_native"
-  | "copilot_protection";
+  | "copilot_protection"
+  | "cursor_native";
 
 export interface SecretReference {
   type: "secret_ref";

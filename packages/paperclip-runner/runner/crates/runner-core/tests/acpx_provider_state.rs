@@ -176,6 +176,95 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
 }
 
 #[test]
+fn pi_native_boundaries_keep_progress_but_never_promote_tool_narration_or_history() {
+    for final_reason in ["stop", "length", "toolUse", "error", "aborted", "empty"] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        let mut messages = vec![
+            json!({"type":"text_delta","messageId":"history","text":"Earlier session answer","piMessageHistory":true}),
+            json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}),
+            json!({"type":"text_delta","messageId":"first","text":"Calling finish."}),
+            json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"end","stopReason":"toolUse"}}),
+            json!({"type":"text_delta","messageId":"last","text":"","piMessageBoundary":{"phase":"start"}}),
+        ];
+        if final_reason != "empty" {
+            messages.push(json!({"type":"text_delta","messageId":"last","text":"EXACT_MARKER"}));
+        }
+        messages.push(json!({"type":"text_delta","messageId":"last","text":"","piMessageBoundary":{"phase":"end","stopReason":if final_reason == "empty" { "stop" } else { final_reason }}}));
+        let count = messages.len() as u64;
+        for (index, payload) in messages.into_iter().enumerate() {
+            state
+                .accept_event(&event(
+                    index as u64 + 1,
+                    GeneratedAcpxSidecarEventType::RuntimeEvent,
+                    Some("turn-1"),
+                    payload,
+                ))
+                .unwrap();
+        }
+        let terminal = state
+            .accept_event(&event(
+                count + 1,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":"completed"}),
+            ))
+            .unwrap();
+        let replies: Vec<_> = terminal
+            .iter()
+            .filter_map(|entry| {
+                if let AcpxProviderStateEvent::AssistantMessage { text, .. } = entry {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            if matches!(final_reason, "stop" | "length") {
+                vec!["EXACT_MARKER"]
+            } else {
+                vec![]
+            }
+        );
+    }
+}
+
+#[test]
+fn pi_native_boundary_order_and_terminal_completeness_fail_closed() {
+    for malformed in [
+        json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}),
+        json!({"type":"text_delta","messageId":"other","text":"","piMessageBoundary":{"phase":"end","stopReason":"stop"}}),
+        json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"end","stopReason":"invented"}}),
+        json!({"type":"text_delta","messageId":"other","text":"Out of order"}),
+    ] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}))).unwrap();
+        assert!(state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                malformed
+            ))
+            .is_err());
+    }
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}))).unwrap();
+    assert!(state
+        .accept_event(&event(
+            2,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"})
+        ))
+        .is_err());
+}
+
+#[test]
 fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();

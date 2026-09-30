@@ -85,6 +85,17 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain("Allow Paperclip reads");
   });
 
+  it.each([undefined, "agent", "plan", "ask"])("displays saved Cursor mode %s", acpxSessionMode => {
+    const html = renderRunner({ provider: "acpx", acpxAgent: "cursor", acpxSessionMode });
+    const selected = acpxSessionMode ?? "agent";
+    expect(html).toContain('aria-label="Cursor mode"');
+    expect(html).toContain(`<option value="${selected}" selected="">`);
+  });
+
+  it.each(["claude", "copilot", "pi"])("does not expose Cursor mode for %s", acpxAgent => {
+    expect(renderRunner({ provider: "acpx", acpxAgent })).not.toContain('aria-label="Cursor mode"');
+  });
+
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 

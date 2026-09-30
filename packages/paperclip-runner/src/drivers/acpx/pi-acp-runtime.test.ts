@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeAcpFormElicitation } from "./acp-question-adapter.js";
-import { createPiLaunchSpec, PiToolIdentities, PiRpcFrames, PiTurnUsage, PiUiBridge } from "./pi-acp-runtime.js";
+import { createPiLaunchSpec, PiAssistantMessages, piAssistantChunk, PiToolIdentities, PiRpcFrames, PiTurnUsage, PiUiBridge } from "./pi-acp-runtime.js";
 
 const temporary: string[] = [];
 afterEach(async () => { vi.useRealTimers(); for (const path of temporary.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -12,6 +12,56 @@ function fixture() {
   const process = { sendExtensionUiResponse: vi.fn().mockResolvedValue(undefined) };
   return { connection, process, bridge: new PiUiBridge("session-a", connection, process) };
 }
+
+describe("Pi native assistant boundaries", () => {
+  const namespace = "00000000-0000-4000-8000-000000000000";
+  const message = (timestamp = 1, stopReason = "stop") => ({ role: "assistant", timestamp, content: [], stopReason });
+  it("assigns actual message occurrences across warm prompts and preserves empty boundaries", () => {
+    const messages = new PiAssistantMessages(namespace); const ids: unknown[] = [];
+    for (const reason of ["toolUse", "stop", "length", "aborted", "error"]) {
+      const start = messages.normalize({ type: "message_start", message: message() });
+      const delta = messages.normalize({ type: "message_update", message: message(), assistantMessageEvent: { type: "thinking_delta", delta: "thought" } });
+      const end = messages.normalize({ type: "message_end", message: message(1, reason) });
+      const chunk = piAssistantChunk(start.paperclipAssistantMessage);
+      ids.push(chunk.messageId);
+      expect(chunk).toMatchObject({ content: { text: "" }, _meta: { kind: "start" } });
+      expect(piAssistantChunk(delta.paperclipAssistantMessage, "thought", true)).toMatchObject({ messageId: chunk.messageId, sessionUpdate: "agent_thought_chunk" });
+      expect(piAssistantChunk(end.paperclipAssistantMessage)).toMatchObject({ messageId: chunk.messageId, content: { text: "" }, _meta: { kind: `end:${reason}` } });
+      messages.normalize({ type: "agent_settled" });
+    }
+    expect(new Set(ids).size).toBe(5);
+    const loaded = new PiAssistantMessages("00000000-0000-4000-8000-000000000001");
+    expect(piAssistantChunk(loaded.normalize({ type: "message_start", message: message() }).paperclipAssistantMessage).messageId).not.toBe(ids[0]);
+  });
+  it.each(["message_update", "message_end"])("rejects missing starts for %s and poisons subsequent input", type => {
+    const messages = new PiAssistantMessages(namespace);
+    expect(() => messages.normalize({ type, message: message() })).toThrow("boundary");
+    expect(() => messages.normalize({ type: "message_start", message: message() })).toThrow("boundary");
+  });
+  it.each([
+    { type: "message_start", message: message() },
+    { type: "message_end", message: message(2) },
+    { type: "message_end", message: message(1, "invented") },
+    { type: "message_update", message: { role: "assistant", content: [] } },
+    { type: "message_start", message: { role: "toolResult" } },
+    { type: "agent_settled" },
+  ])("rejects duplicate, reordered, malformed or missing ends: $type", event => {
+    const messages = new PiAssistantMessages(namespace);
+    messages.normalize({ type: "message_start", message: message() });
+    expect(() => messages.normalize(event)).toThrow("boundary");
+  });
+  it("does not mint assistant identities for history, tools, retries or compaction", () => {
+    const messages = new PiAssistantMessages(namespace);
+    for (const event of [
+      { type: "message_start", message: { role: "user" } },
+      { type: "message_end", message: { role: "toolResult" } },
+      { type: "auto_retry_end" }, { type: "compaction_end" }, { type: "agent_settled" },
+    ]) expect(messages.normalize(event)).toEqual(event);
+    expect(() => piAssistantChunk({ messageId: "invented", phase: "start" })).toThrow("provenance");
+    const start = messages.normalize({ type: "message_start", message: message() });
+    expect(() => piAssistantChunk(start.paperclipAssistantMessage, "synthetic")).toThrow("synthetic");
+  });
+});
 
 describe("Pi occurrence identity", () => {
   const namespace = "00000000-0000-4000-8000-000000000000";

@@ -2,7 +2,7 @@
 
 Evidence updated: 2026-09-29. Candidate: `2026.09.26-dd393fe`. This profile is **not live-qualified**. One authorized task-context prompt on the initial free account returned an upgrade requirement, invoked no semantic tools, and supplied no usage receipt. Its cost is unknown; the account dashboard remained unchanged at coarse precision. The user then selected another account, whose exact-model local Runner Eval passed task-context and history tools with clean terminal settlement. Its dashboard attributed 56K rounded tokens to included usage and no incremental charge; ACP still supplied no token or dollar receipt. The local Product hello subsequently passed through the real browser, server, database, native runner, and authenticated completion tool. A second local Product case passed file creation, editing, command validation, an independent exact-byte matcher, and visible workspace artifact presentation. The merged-source local Product question and revision-bound Plan approval also passed browser response and semantic-tool continuation. A serialized follow-up passed pending semantic-question recovery across a server restart. A verified native ACP probe also denied a shell write before any observed side effect. Native Cursor questions/plans and their recovery, durable permission presentation, interruption, and Daytona execution remain required qualification gates.
 
-Current source uses **profile v4**, with the instruction admission correction described below. Prior paid results and packaged v3 builds remain historical and cannot qualify the current source.
+Current source uses **profile v5**, with native session-mode admission and the instruction correction described below. All prior paid results (including v4) and packaged builds remain historical and cannot qualify v5. The earlier mode-selection limitation below describes the pre-v5 implementation.
 
 The reference is the runner's Codex app-server integration and its closed thread-item inventory in `src/provider-events.ts`. Cursor ACP and its private extension methods are the transport; the legacy Cursor adapter is unchanged.
 
@@ -38,7 +38,7 @@ The reference is the runner's Codex app-server integration and its closed thread
 | Session continuity | `session/new`, `session/load`; load replays historical messages, reasoning, tools, images and children | Existing session load/recovery boundary with identity fencing | Duplicate replay suppression and provider-death recovery need authenticated proof |
 | Session discovery | `session/list` implemented, cwd filter absolute; pagination cursor rejected | Discovered and reported | Currently unused: runner recovers only its exact recorded session; arbitrary history browsing needs company-scoped discovery API |
 | Fork/resume methods | `session/fork` and `session/resume` absent in agent implementation and return method-not-found | Unsupported | Session load is available; do not infer fork from SDK schema |
-| Modes | `agent`, `plan`, `ask`; `session/set_mode` and `current_mode_update` | Existing review/mode activity plumbing can display changes | Generic operator mode-selection surface not implemented in this provider slice |
+| Modes | `agent`, `plan`, `ask`; `session/set_config_option` returns exact mode; native mode updates are observable | v5 admits an explicit selected mode, binds recovery identity, and gates every prompt against native acknowledgement | Default Agent; mode is independent of permission policy. Plan acceptance does not switch to Agent. Native callback availability and Plan-mode completion remain unqualified |
 | Model selection | `session/set_model`, config option `model`, model-parameter options, `config_option_update`; `cursor/list_available_models` extension | Exact requested model must be selected/verified by shared admission | Authenticated listing and exact Luna variant echo passed. Native parameterized picker metadata and separate parameter changes also passed; this richer configuration path is not exposed by the runner. See the authenticated discovery evidence below |
 | Available commands | `available_commands_update`, including skills/slash commands | ACPX persists command metadata; runner canonical mapper deliberately emits no display event | Command picker and bounded command-discovery surface are not implemented |
 | Session metadata | `session_info_update` title after automatic naming | Capability documented | Runner owns normalized session identity; provider title is currently not surfaced |
@@ -312,3 +312,45 @@ ACPX contracts, seven materializer cases, and the runner TypeScript compile pass
 No paid calls or billing mutations were made. A new final-source provider pack
 and daemon, authenticated instruction semantics, and the remaining live gates
 are still required before qualification.
+
+## Cursor profile v5: admitted native session modes (2026-09-29)
+
+The explicit `acpxSessionMode` configuration selects `agent` (the default),
+`plan`, or `ask` for Cursor. The provider/sidecar field is `cursorMode`; it is
+separate from ACPX's persistent/oneshot session lifecycle. Other providers reject
+this field. Mode is included in the immutable session key and recovery identity;
+a missing or changed mode cannot reopen an existing v5 session.
+
+Admission checks the pinned native `session/new` or `session/load` response's
+mode configuration and mode state. If necessary, it sets the selected mode using
+`session/set_config_option` and requires its exact echoed configuration before
+admitting a prompt. A bare `session/set_mode` response or asynchronous
+`current_mode_update` alone is not acknowledgement. Every new native connection
+gets a fresh guard: a mismatched automatic reload blocks prompt delivery, and an
+unsolicited active mode change fails closed. Explicit startup/reopen admission
+can reassert the selected mode within the existing admission deadline and renews
+the consumed launch lease after each temporary control connection.
+
+The pinned CLI maps Agent to native `default`, Plan to `plan`, and Ask to
+`search`, and carries that metadata into the native UserMessage mode. The
+inspectable `mode-v5-offline-proof.json` executes the pinned native methods with
+storage, transport, and enum-converter doubles. Real ACPX fixture tests separately
+prove cold-manager load/control ordering and automatic reconnect rejection before
+prompt bytes. Neither is paid model/tool qualification.
+
+Native mode does not change Paperclip permission policy, company governance, or
+filesystem isolation. The native descriptions say Plan is read-only planning and
+Ask has no edits or command execution; these descriptions are not an OS sandbox
+claim. Native ACP CreatePlan acceptance does not itself mutate session mode in
+the pinned handler. An approved plan therefore stays in the selected Plan mode;
+there is no implicit promotion to Agent mode. Actual native question/plan callback
+availability, Plan-mode governed completion, and accepted/revised artifact flows
+remain pending Product qualification. Existing v4 paid results and macOS x64
+Rosetta build evidence remain historical and do not qualify v5.
+
+[The v5 declaration](../../packages/paperclip-runner/test/fixtures/cursor-acp/profile-v5-identity.json)
+binds digest `sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b`.
+Profile v5 retains the native distribution closures and instruction patch. Its
+canonical declaration adds the admitted mode policy and binds ACPX patch
+`79aad2d688b03362e8cfcbf7a08f78a8383869f6882a9c9ed66f1d18efb94f2b`, which preserves
+identified empty rich-input chunks at the native parser boundary.

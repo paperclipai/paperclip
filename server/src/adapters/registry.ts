@@ -564,6 +564,19 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       },
       {
+        key: "acpxSessionMode",
+        label: "Cursor mode",
+        type: "select" as const,
+        default: "agent",
+        options: [
+          { value: "agent", label: "Agent" },
+          { value: "plan", label: "Plan" },
+          { value: "ask", label: "Ask" },
+        ],
+        hint: "Select Cursor's session mode. Permissions and company approval rules still apply.",
+        meta: { visibleWhen: { key: "acpxAgent", value: "cursor" } },
+      },
+      {
         key: "acpxPermissionMode",
         label: "ACPX permission mode",
         type: "select" as const,

@@ -226,19 +226,25 @@ describe("buildPaperclipRunnerConfig", () => {
     expect(config).not.toHaveProperty("acpxAgent");
   });
 
-  it("does not materialize the unavailable ACPX Pi profile", () => {
+  it.each(["cursor", "copilot", "pi"])("requires an explicit %s model without substituting Claude", acpxAgent => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      model: "", adapterSchemaValues: { provider: "acpx", acpxAgent },
+    }))).toThrow("requires an explicit provider model");
     expect(buildPaperclipRunnerConfig(makeValues({
-      adapterType: "paperclip_runner",
-      model: "",
-      adapterSchemaValues: {
-        provider: "acpx",
-        acpxAgent: "pi",
-      },
-    }))).toMatchObject({
-      provider: "acpx",
-      acpxAgent: "claude",
-      model: "claude-sonnet-5",
-    });
+      model: "exact-provider-model", adapterSchemaValues: { provider: "acpx", acpxAgent },
+    }))).toMatchObject({ provider: "acpx", acpxAgent, model: "exact-provider-model" });
+  });
+
+  it.each([undefined, "agent", "plan", "ask"])("preserves Cursor session mode %s for server admission", acpxSessionMode => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      model: "exact-cursor-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "cursor", acpxSessionMode },
+    }))).toMatchObject({ provider: "acpx", acpxAgent: "cursor", acpxSessionMode: acpxSessionMode ?? "agent" });
+  });
+
+  it("rejects a Cursor mode accidentally retained on another provider", () => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      model: "exact-copilot-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "copilot", acpxSessionMode: "plan" },
+    }))).toThrow("only for Cursor");
   });
 
   it("builds a Claude Managed profile reference with explicit retention and spend controls", () => {

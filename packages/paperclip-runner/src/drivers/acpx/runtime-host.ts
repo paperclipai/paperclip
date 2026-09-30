@@ -1,3 +1,4 @@
+import { resolveCursorSessionMode, type CursorSessionMode } from "./cursor-mode.js";
 import { dirname, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
@@ -77,6 +78,7 @@ const ACPX_ADMISSION_CLEANUP_RETRY_DELAY_MS = 10;
 const ACPX_ADMISSION_CLEANUP_RESCHEDULE_MS = 1_000;
 
 export interface AcpxRuntimePortIdentity {
+  cursorMode?: CursorSessionMode;
   acpxRecordId: string;
   backendSessionId: string;
   agentSessionId: string;
@@ -153,6 +155,7 @@ export interface AcpxRuntimePortOpenOptions {
   stateDirectory: string;
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
+  cursorMode?: CursorSessionMode;
   permissionPolicy: ReturnType<typeof acpxRuntimePermissionPolicy>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** Kernel credential-home quorum inherited by the provider sentinel. */
@@ -226,6 +229,7 @@ export interface OpenAcpxRuntimeHostOptions {
   agent: QualifiedAcpxAgent;
   model: string;
   permissionMode: NativeAcpxPermissionMode;
+  cursorMode?: CursorSessionMode;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
@@ -334,6 +338,7 @@ export class AcpxRuntimeHost {
           profile,
           requestedModel: options.model,
           permissionMode: options.permissionMode,
+          cursorMode: resolveCursorSessionMode(options.agent, options.cursorMode),
           ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
@@ -562,6 +567,7 @@ export class AcpxRuntimeHost {
             stateDirectory: sandbox.stateDirectory,
             providerSessionKey: binding.profileSessionKey,
             permissionMode: binding.permissionMode,
+            cursorMode: binding.cursorMode,
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
@@ -619,6 +625,9 @@ export class AcpxRuntimeHost {
           ),
         dependencies.retainAdmissionCleanup,
       );
+      if (runtimeIdentity.cursorMode !== binding.cursorMode) {
+        throw new Error("ACPX runtime Cursor mode does not match the admitted session configuration");
+      }
       const observedIdentity: AcpxExpectedSessionIdentity = {
         kind: "acpx",
         normalizedSessionId: binding.normalizedSessionId,

@@ -126,9 +126,10 @@ test("real pinned Pi model iterations align owned identities across warm prompts
   let session;
   try {
     await writeFile(join(root, "helper.mjs"), stripTypeScriptTypes(await readFile(new URL("../src/drivers/acpx/pi-acp-runtime.ts", import.meta.url), "utf8")));
-    const { PiToolIdentities } = await import(pathToFileURL(join(root, "helper.mjs")).href);
+    const { PiToolIdentities, PiAssistantMessages, piAssistantChunk } = await import(pathToFileURL(join(root, "helper.mjs")).href);
     const namespace = "00000000-0000-4000-8000-000000000000";
     const extensionIds = new PiToolIdentities(namespace); const wrapperIds = new PiToolIdentities(namespace);
+    const assistantIds = new PiAssistantMessages(namespace); const boundaries = [];
     const events = []; const delivered = []; const displayed = []; let streams = 0;
     const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
     const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({}), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
@@ -143,11 +144,14 @@ test("real pinned Pi model iterations align owned identities across warm prompts
       } });
     }] });
     await resourceLoader.reload();
-    ({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime, settingsManager: settings, sessionManager: SessionManager.inMemory(root), resourceLoader, noTools: "builtin", thinkingLevel: "off" }));
+    const manager = SessionManager.create(root, join(root, "sessions"));
+    ({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime, settingsManager: settings, sessionManager: manager, resourceLoader, noTools: "builtin", thinkingLevel: "off" }));
     const extensionErrors = [];
     await session.bindExtensions({ onError: (error) => extensionErrors.push(error.event) });
     session.subscribe((event) => {
-      const normalized = wrapperIds.normalize(event);
+      const normalized = wrapperIds.normalize(assistantIds.normalize(event));
+      if (normalized.paperclipAssistantMessage && event.type !== "message_update") boundaries.push(piAssistantChunk(normalized.paperclipAssistantMessage));
+      if (event.type === "message_update" && ["text_delta", "thinking_delta"].includes(event.assistantMessageEvent.type)) boundaries.push(piAssistantChunk(normalized.paperclipAssistantMessage, event.assistantMessageEvent.delta, event.assistantMessageEvent.type === "thinking_delta"));
       if (event.type === "turn_start") events.push({ surface: "session", type: event.type });
       if (event.type === "tool_execution_start") displayed.push(normalized.toolCallId);
     });
@@ -156,16 +160,37 @@ test("real pinned Pi model iterations align owned identities across warm prompts
     // network model lookup, provider request, or inference is involved.
     session.agent.streamFunction = () => {
       const index = ++streams; const isTool = index % 3 !== 0;
-      const message = { role: "assistant", content: isTool ? [{ type: "toolCall", id: "call_0", name: "fixture_echo", arguments: {} }] : [{ type: "text", text: "done" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: isTool ? "toolUse" : "stop", timestamp: index };
-      return { async *[Symbol.asyncIterator]() { yield { type: "start", partial: message }; yield { type: "done", reason: message.stopReason, message }; }, result: async () => message };
+      const message = { role: "assistant", content: isTool ? [{ type: "text", text: "Calling fixture tool." }, { type: "toolCall", id: "call_0", name: "fixture_echo", arguments: {} }] : [{ type: "text", text: "done" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: isTool ? "toolUse" : "stop", timestamp: index };
+      return { async *[Symbol.asyncIterator]() { yield { type: "start", partial: message }; yield { type: "text_delta", contentIndex: 0, delta: isTool ? "Calling fixture tool." : "done", partial: message }; yield { type: "done", reason: message.stopReason, message }; }, result: async () => message };
     };
     await session.agent.prompt("fixture first"); await session.agent.waitForIdle();
     await session.agent.prompt("fixture warm"); await session.agent.waitForIdle();
     assert.deepEqual(extensionErrors, []);
     assert.equal(streams, 6); assert.equal(delivered.length, 4);
     assert.deepEqual(displayed, delivered); assert.equal(new Set(delivered).size, 4);
+    assert.equal(boundaries.filter(chunk => chunk._meta.kind === "start").length, 6);
+    assert.equal(new Set(boundaries.map(chunk => chunk.messageId)).size, 6);
+    assert.deepEqual(boundaries.filter(chunk => chunk._meta.kind.startsWith("end:")).map(chunk => chunk._meta.kind), ["end:toolUse", "end:toolUse", "end:stop", "end:toolUse", "end:toolUse", "end:stop"]);
     assert.deepEqual(events.filter((event) => event.surface === "extension").map((event) => event.turnIndex), [0, 1, 2, 0, 1, 2]);
     for (let index = 0; index < events.length; index++) if (events[index].surface === "session") assert.equal(events[index - 1]?.surface, "extension");
+    const lastId = boundaries.at(-1).messageId;
+    assert.equal(boundaries.filter(chunk => chunk.messageId === lastId).map(chunk => chunk.content.text).join(""), "done");
+    assert.ok(boundaries.some(chunk => chunk.content.text === "Calling fixture tool." && chunk.messageId !== lastId));
+    const persistedFile = manager.getSessionFile(); assert.ok(persistedFile);
+    session.dispose();
+    const loadedMessages = new PiAssistantMessages("00000000-0000-4000-8000-000000000001"); const loaded = [];
+    ({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime, settingsManager: settings, sessionManager: SessionManager.open(persistedFile), resourceLoader, noTools: "builtin", thinkingLevel: "off" }));
+    await session.bindExtensions({ onError: error => extensionErrors.push(error.event) });
+    assert.ok(session.agent.state.messages.some(message => message.role === "assistant"));
+    session.subscribe(event => { const normalized = loadedMessages.normalize(event); if (normalized.paperclipAssistantMessage && event.type !== "message_update") loaded.push(piAssistantChunk(normalized.paperclipAssistantMessage)); });
+    session.agent.streamFunction = () => {
+      const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 100 };
+      return { async *[Symbol.asyncIterator]() { yield { type: "start", partial: message }; yield { type: "done", reason: "stop", message }; }, result: async () => message };
+    };
+    await session.agent.prompt("loaded empty final"); await session.agent.waitForIdle();
+    assert.deepEqual(loaded.map(chunk => [chunk._meta.kind, chunk.content.text]), [["start", ""], ["end:stop", ""]]);
+    assert.ok(loaded.every(chunk => !boundaries.some(prior => prior.messageId === chunk.messageId)));
+
   } finally {
     session?.dispose(); await rm(root, { recursive: true, force: true });
   }

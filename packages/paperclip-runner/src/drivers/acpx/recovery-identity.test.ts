@@ -26,6 +26,22 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it("binds Cursor mode on recovery and rejects missing or changed persisted mode", async () => {
+    const fixture = await recoveryFixture();
+    const input = { ...fixture.input, profile: resolveQualifiedAcpxProfile("cursor", fixture.input.requestedModel) };
+    const agent = await createAcpxRecoveryBinding(input);
+    const plan = await createAcpxRecoveryBinding({ ...input, cursorMode: "plan" });
+    expect(agent.cursorMode).toBe("agent");
+    expect(plan.profileSessionKey).not.toBe(agent.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: plan.commandDigest, cursorMode: "plan" as const };
+    const record = createAcpxIdentityRecord(expected, plan);
+    expect(acpxProviderSessionIdentity(record, plan).cursorMode).toBe("plan");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, cursorMode: undefined }, plan, record)).toThrow(/immutable session/);
+    expect(() => verifyExpectedAcpxIdentity(expected, agent, record)).toThrow(/immutable session/);
+    expect(() => verifyExpectedAcpxIdentity(expected, plan, { ...record, cursorMode: undefined })).toThrow(/persisted runtime record/);
+    await expect(createAcpxRecoveryBinding({ ...fixture.input, cursorMode: "plan" })).rejects.toThrow(/only supported/);
+  });
+
   it("derives one stable, filesystem-safe runtime directory name", () => {
     expect(acpxRuntimeSessionDirectoryName("session/1")).toMatch(
       /^session_1-[0-9a-f]{16}$/,

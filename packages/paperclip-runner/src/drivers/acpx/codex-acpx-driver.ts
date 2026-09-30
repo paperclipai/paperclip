@@ -1,5 +1,7 @@
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { createCursorToolEvidence, type CursorToolEvidence } from "./cursor-tool-evidence.js";
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
+import { createPiMessageProjection, piBoundaryClearsFinal, type PiProjectedMessageEvent } from "./pi-message-projection.js";
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -142,6 +144,7 @@ export interface CodexAcpxDriverOptions {
   runtimeDirectory: string;
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
+  cursorMode?: "agent" | "plan" | "ask";
   providerPolicy?: { readOnly: boolean };
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
@@ -455,6 +458,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         clientCapabilities: acpxProfileClientCapabilities(this.#options.agent ?? "codex"),
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-all",
+        cursorMode: this.#options.cursorMode,
         providerPolicy: this.#options.providerPolicy,
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
@@ -898,14 +902,16 @@ class CodexAcpxSession implements HarnessSession {
         }
       },
     });
-    const toolEvidence = this.#agent === "copilot" ? createCopilotToolEvidence({
+    const evidenceFactory = this.#agent === "copilot" ? createCopilotToolEvidence
+      : this.#agent === "cursor" ? createCursorToolEvidence : undefined;
+    const toolEvidence = evidenceFactory?.({
       sessionId: this.#host.identity().backendSessionId, turnId, workingDirectory: this.#input.workingDirectory,
       active: () => this.#activeTurnId === turnId && !this.#closingStarted,
       emit: event => {
         validateAcpxRichEvent(event);
-        if (!this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) throw new Error("Copilot activity could not be retained");
+        if (!this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) throw new Error("ACP tool activity could not be retained");
       },
-    }) : undefined;
+    });
     let turn: AcpxRuntimeTurn;
     const usageBefore = await readUsageStatus(this.#host);
     try {
@@ -1270,6 +1276,7 @@ class CodexAcpxSession implements HarnessSession {
         requestedModel: identity.requestedModel,
         effectiveModel: identity.effectiveModel,
         permissionMode: identity.permissionMode,
+        ...(identity.cursorMode === undefined ? {} : { cursorMode: identity.cursorMode }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -1434,18 +1441,20 @@ class CodexAcpxSession implements HarnessSession {
       .catch(() => undefined);
   }
 
-  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, toolEvidence?: CopilotToolEvidence): Promise<void> {
+  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, toolEvidence?: CopilotToolEvidence | CursorToolEvidence): Promise<void> {
     try {
       let index = 0;
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-      const normalizeMessage = this.#agent === "grok"
+      const piMessages = this.#agent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+      const normalizeMessage = piMessages ? piMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
         this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(event)), turnId, ++index);
       }
       const result = await turn.result;
+      if (result.status === "completed") piMessages?.settle();
       await drainExtensions();
       const receipt = persistedAcpxTurnUsage(usageBefore, await readUsageStatus(this.#host), turn.requestId, this.#agent);
       if (receipt) {
@@ -1625,7 +1634,7 @@ class CodexAcpxSession implements HarnessSession {
   }
 
   #mapRuntimeEvent(
-    event: AcpRuntimeEvent,
+    event: PiProjectedMessageEvent<AcpRuntimeEvent>,
     turnId: string,
     index: number,
   ): void {
@@ -1634,7 +1643,8 @@ class CodexAcpxSession implements HarnessSession {
       const output = boundedText(event.text, 64 * 1024);
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
-      if (!isReasoning) {
+      if (!isReasoning && !event.piMessageHistory) {
+        if (piBoundaryClearsFinal(event)) this.#assistantText = "";
         const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
         if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) this.#assistantText = "";
         if (messageId) this.#assistantMessageId = messageId;
@@ -1721,7 +1731,7 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string,
     request: AcpPermissionRequest,
     context: { signal: AbortSignal; responseDelivery?: Promise<void> },
-    toolEvidence?: CopilotToolEvidence,
+    toolEvidence?: CopilotToolEvidence | CursorToolEvidence,
   ): Promise<AcpPermissionDecision> {
     const { signal } = context;
     if (this.#closed || this.#activeTurnId !== turnId || signal.aborted
@@ -2102,6 +2112,7 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
       !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
         identity.permissionMode,
       )) ||
+    (identity.cursorMode !== undefined && !["agent", "plan", "ask"].includes(identity.cursorMode)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,
     )

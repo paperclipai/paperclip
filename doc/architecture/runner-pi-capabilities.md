@@ -1,6 +1,27 @@
 # Pi rich ACP runtime
 
-Status: implementation candidate, 2026-09-29. Current profile version 7 repairs
+Status: implementation candidate, 2026-09-29. Current profile version 8 repairs
+native assistant-message attribution. Real SDK `message_start` and `message_end`
+boundaries, including empty messages, carry occurrence IDs through ACPX, the
+sidecar and both terminal reducers. Tool-use, error and aborted messages remain
+progress but cannot become a final answer. Missing or conflicting boundaries
+fail closed. Loaded history has a separate display-only identity. Retry,
+compaction, extension and command notices retain bounded, redacted severity and
+metadata on `paperclip/pi_notice`; they are never assistant final content.
+The [v8 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v8-identity.json)
+also pins the shared ACPX parser and Pi host projections. Previous sessions must
+be reopened. No paid profile-v8 qualification has run.
+
+The retained profile-v7 campaign passed native questions (15/15), then failed
+question continuation (5/6): the model emitted the exact final marker, but the
+old terminal reducer combined it with pre-tool narration. That failed Product
+result remains a failure; the remaining five cells were not launched. The v8
+credential-free regressions reproduce this boundary through the actual pinned
+SDK (fresh, warm and loaded sessions), patched wrapper, ACPX transport, sidecar,
+TypeScript driver and Rust reducer. This is deterministic repair evidence, not
+a replacement for the failed paid journey.
+
+Historical profile version 7 repairs
 MCP tool-name admission and native question labels. MCP names containing colons
 or periods, or exceeding model name limits, receive deterministic collision-checked
 aliases of at most 64 characters; authenticated calls retain the exact original
@@ -30,7 +51,8 @@ all 15 native-question checks. The following question-continuation case reached
 Done but failed the exact final-message assertion: earlier pre-tool narration
 was aggregated into the final item. Three runs settled across these two cells,
 all owned processes exited, and five later cells did not launch. The native
-message attribution defect remains open. The canonical
+message attribution defect is repaired in v8; authenticated v8 qualification
+remains pending. The canonical
 [v7 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v7-identity.json)
 binds the exact wrapper, helper, extension and three target closures.
 
@@ -100,7 +122,7 @@ boundaries explicit.
 | Surface | Pi implementation and boundary |
 | --- | --- |
 | Sessions | Native Pi JSONL create/load; resume is confined to the execution's private session home and original workspace. Cold `prompt` cannot implicitly load an arbitrary session. |
-| Text and reasoning | Upstream streams text and thought chunks. The common runner's private reasoning policy still applies; provider support does not authorize retention or display. |
+| Text and reasoning | Native start/end provenance and occurrence IDs separate pre-tool narration from the last completed assistant message; empty or tool-use terminal messages cannot promote stale text. Loaded history is display-only. The common runner's private reasoning policy still applies. |
 | Native tools | `read`, `grep`, `find`, `ls`, `write`, `edit`, and `bash` pass the immutable extension gate before execution. File roots and read-only mode are checked before and after a permission wait. The host sandbox remains authoritative for shell commands and races. |
 | Permissions | Native tool approval uses ACP `session/request_permission`, with allow once, allow for the session, and deny. Only offered options are accepted. Session grants cover an identical operation and still revalidate paths. Questions never become approvals. |
 | Questions | The owned `paperclip_native_question` tool exposes Pi `select`, `confirm`, `input`, and `editor` through ACP form elicitation. Select is single-choice with stable option IDs. Pi returns `false` for both No and dismissal of confirm, so the tool reports `negative_or_cancelled`; it never invents a confirmed answer. Other methods return explicit cancellation. Permissions and semantic Plan approval remain separate. |
@@ -109,7 +131,7 @@ boundaries explicit.
 | Plans and artifacts | Pi has no native structured plan or artifact channel. Paperclip plan and artifact semantic tools remain available through the MCP bridge; native file edits retain bounded, workspace-confined ACP diff projection. Tool text/image results are preserved, and resource blocks are recorded without following URLs. |
 | Steering | Capability-negotiated `pi/steer` issues native RPC `steer` during an active turn. `pi/follow_up` explicitly queues native RPC `follow_up`. Neither is inferred from a second ACP prompt. Each takes `{sessionId, message}` and returns `{accepted: true, sessionId, kind}` with the matching control kind. |
 | Usage | Prompt results sum actual assistant message usage receipts across continuations. Input, output, cache reads/writes, total tokens and Pi-reported pricing estimates have provenance. Context-window occupancy is not billed usage. No receipt means no usage assertion; absent cache or cost fields remain unknown. Pi calculates cost from its model catalog rates, so this is not an authoritative provider bill. |
-| Retry and compaction | Upstream retry/compaction notices are retained. `agent_settled`, rather than a transient `agent_end`, settles a prompt. A final provider error remains a failed prompt and does not become successful completion. |
+| Retry and compaction | The pinned session notice extension preserves bounded, redacted summaries, severity and known native counters/flags separately from assistant text. `agent_settled`, rather than a transient `agent_end`, settles a prompt. A final provider error remains a failed prompt. |
 | Images | The upstream ACP wrapper accepts image blocks, but `AcpxRuntimeTurnInput` and the common adapter currently forward text only. P1: implement typed image content through the common converter and then qualify the exact model; live testing alone cannot close this implementation gap. |
 | Cancellation and death | Cancellation expires live UI waits and calls native abort. Pi process exit rejects pending RPC requests and all active/queued turns. Partial RPC frames, oversized frames, and malformed JSON fail closed. |
 | Fork and clone | Native Pi RPC exposes `fork(entryId)`, `clone`, and `get_fork_messages`; the ACP wrapper and Paperclip controls do not map them. P2: add explicit admitted session operations and verified lineage before exposing controls. |
@@ -441,7 +463,7 @@ that those targets have executed successfully.
 
 ### Installation authority and token semantics
 
-`verifyPiInstallation(profile)` admits only profile version 7 and the source-owned
+`verifyPiInstallation(profile)` admits only profile version 8 and the source-owned
 Pi identity. It resolves `provider-assets/pi/<platform>-<arch>` inside the verified
 Runner package, checks the complete runtime against source-pinned closure hashes,
 and opens a guarded immutable native snapshot. The snapshot bootstrap binds Node,

@@ -6,6 +6,7 @@ import {
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
@@ -67,5 +68,19 @@ describe("Paperclip Runner permission defaults", () => {
   it("preserves an explicit Codex model", () => {
     expect(resolvePaperclipRunnerModel("codex", "gpt-5.5")).toBe("gpt-5.5");
     expect(resolvePaperclipRunnerModel("codex", "  gpt-5.5  ")).toBe("gpt-5.5");
+  });
+});
+
+
+describe("Cursor session mode admission", () => {
+  it.each([undefined, "agent", "plan", "ask"])("retains mode %s with an explicit Cursor default", mode => {
+    expect(resolvePaperclipRunnerCursorMode("acpx", "cursor", mode)).toBe(mode ?? "agent");
+  });
+  it.each([null, "", "auto", "PLAN", true, {}, ["plan"]])("rejects invalid mode %j", mode => {
+    expect(() => resolvePaperclipRunnerCursorMode("acpx", "cursor", mode)).toThrow("Cursor session mode");
+  });
+  it.each([["codex", "cursor"], ["acpx", "copilot"], ["acpx", "pi"], ["acpx", "claude"]])("rejects mode on %s/%s", (provider, agent) => {
+    expect(resolvePaperclipRunnerCursorMode(provider, agent, undefined)).toBeUndefined();
+    expect(() => resolvePaperclipRunnerCursorMode(provider, agent, "plan")).toThrow("only for Cursor");
   });
 });

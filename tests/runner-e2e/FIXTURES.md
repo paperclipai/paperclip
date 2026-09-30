@@ -312,3 +312,12 @@ process journal accepts the API runner PID only after checking its OS start time
 process group, exact run ID argument and `per_turn` argument; it never treats a
 retained warm daemon as a leaked per-run process or signals an API-provided PID.
 Directory-watch coverage also rejects parent device/inode replacement or removal.
+
+
+The manual `cursor-native` suite has four local Cursor candidate cells with
+one expected provider run each and a 120-second provider deadline. Browser
+choices, rejection feedback, native origin/decision receipts, workspace checks
+and provider retirement are independently checked. Failed or missing cleanup
+assertions fail the final report even if the native interaction passed. No
+native callback, private-HOME artifact export, or paid qualification is inferred
+from a semantic question or plan result.

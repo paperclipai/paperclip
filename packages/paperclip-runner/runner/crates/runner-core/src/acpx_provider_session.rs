@@ -34,6 +34,14 @@ pub enum AcpxPermissionMode {
     DenyAll,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorMode {
+    Agent,
+    Plan,
+    Ask,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpxProviderSessionIdentity {
@@ -48,6 +56,8 @@ pub struct AcpxProviderSessionIdentity {
     pub effective_model: String,
     #[serde(default)]
     pub permission_mode: Option<AcpxPermissionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_mode: Option<CursorMode>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -68,6 +78,7 @@ pub struct AcpxProviderSessionConfig {
     pub normalized_session_id: String,
     pub working_directory: PathBuf,
     pub permission_mode: AcpxPermissionMode,
+    pub cursor_mode: Option<CursorMode>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -98,6 +109,11 @@ impl AcpxProviderSessionConfig {
             )));
         }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
+        if (self.agent == "cursor") != self.cursor_mode.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX Cursor mode must be explicit for Cursor and absent for other agents",
+            ));
+        }
         if matches!(self.agent.as_str(), "pi" | "cursor" | "copilot")
             && self.provider_policy.is_none()
         {
@@ -169,6 +185,7 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.requested_model != self.model
                 || expected_identity.effective_model != self.model
                 || expected_identity.permission_mode != Some(self.permission_mode)
+                || expected_identity.cursor_mode != self.cursor_mode
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -1188,6 +1205,27 @@ impl Drop for AcpxProviderSession {
     }
 }
 
+fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Value]) -> Value {
+    let mut params = json!({
+        "runtimeDirectory": config.runtime_directory,
+        "normalizedSessionId": config.normalized_session_id,
+        "workingDirectory": config.working_directory,
+        "agent": config.agent,
+        "model": config.model,
+        "permissionMode": config.permission_mode,
+        "permissionModePinned": config.permission_mode_pinned,
+        "providerPolicy": config.provider_policy,
+        "systemInstructions": config.system_instructions,
+        "runtimeContext": config.runtime_context,
+        "tools": &sidecar_tools,
+        "expectedIdentity": config.expected_identity,
+    });
+    if let Some(mode) = config.cursor_mode {
+        params["cursorMode"] = json!(mode);
+    }
+    params
+}
+
 fn bootstrap(
     transport: &mut AcpxSidecarTransport,
     config: &AcpxProviderSessionConfig,
@@ -1208,20 +1246,7 @@ fn bootstrap(
 
     let opened = transport.request(
         GeneratedAcpxSidecarCommand::SessionOpen,
-        json!({
-            "runtimeDirectory": config.runtime_directory,
-            "normalizedSessionId": config.normalized_session_id,
-            "workingDirectory": config.working_directory,
-            "agent": config.agent,
-            "model": config.model,
-            "permissionMode": config.permission_mode,
-            "permissionModePinned": config.permission_mode_pinned,
-            "providerPolicy": config.provider_policy,
-            "systemInstructions": config.system_instructions,
-            "runtimeContext": config.runtime_context,
-            "tools": &sidecar_tools,
-            "expectedIdentity": config.expected_identity,
-        }),
+        session_open_params(config, &sidecar_tools),
     )?;
     let identity = verify_open_response(&opened, transport.process_id(), config)?;
     let turn_controls = verified_turn_controls(opened.get("turnControls"), &config.agent)?;
@@ -1307,6 +1332,7 @@ fn verify_open_response(
         || identity.requested_model != config.model
         || identity.effective_model != config.model
         || identity.permission_mode != Some(config.permission_mode)
+        || identity.cursor_mode != config.cursor_mode
         || config
             .expected_identity
             .as_ref()
@@ -1527,5 +1553,144 @@ mod permission_mode_tests {
         assert!(
             serde_json::from_value::<AcpxPermissionMode>(serde_json::json!("unknown")).is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod cursor_mode_tests {
+    use super::*;
+
+    fn config() -> AcpxProviderSessionConfig {
+        let operations = Vec::new();
+        AcpxProviderSessionConfig {
+            transport: AcpxSidecarTransportConfig {
+                command: std::env::current_exe().unwrap(),
+                args: Vec::new(),
+                verified_launch: None,
+                request_timeout: Duration::from_secs(1),
+                shutdown_grace: Duration::from_millis(100),
+            },
+            agent: "cursor".to_owned(),
+            model: "explicit-model".to_owned(),
+            run_id: "run-1".to_owned(),
+            catalog_revision: 1,
+            runtime_directory: std::env::temp_dir(),
+            normalized_session_id: "session-1".to_owned(),
+            working_directory: std::env::temp_dir(),
+            permission_mode: AcpxPermissionMode::ApproveReads,
+            cursor_mode: Some(CursorMode::Plan),
+            permission_mode_pinned: true,
+            provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
+            system_instructions: String::new(),
+            runtime_context: Value::Null,
+            tool_set: AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            expected_identity: None,
+        }
+    }
+    fn identity() -> AcpxProviderSessionIdentity {
+        AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: format!("sha256:{}", "1".repeat(64)),
+            workspace_digest: format!("sha256:{}", "2".repeat(64)),
+            requested_model: "explicit-model".to_owned(),
+            effective_model: "explicit-model".to_owned(),
+            permission_mode: Some(AcpxPermissionMode::ApproveReads),
+            cursor_mode: Some(CursorMode::Plan),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        }
+    }
+    #[test]
+    fn cursor_mode_is_closed_and_not_defaulted_in_rust() {
+        for (name, mode) in [
+            ("agent", CursorMode::Agent),
+            ("plan", CursorMode::Plan),
+            ("ask", CursorMode::Ask),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<CursorMode>(json!(name)).unwrap(),
+                mode
+            );
+            assert_eq!(serde_json::to_value(mode).unwrap(), json!(name));
+        }
+        for value in [json!("Agent"), json!("autopilot"), json!(null), json!(1)] {
+            assert!(serde_json::from_value::<CursorMode>(value).is_err());
+        }
+        let mut config = config();
+        config.validate().unwrap();
+        config.cursor_mode = None;
+        assert!(config.validate().is_err());
+        config.agent = "copilot".to_owned();
+        config.cursor_mode = Some(CursorMode::Agent);
+        assert!(config.validate().is_err());
+        config.cursor_mode = None;
+        config.validate().unwrap();
+    }
+    #[test]
+    fn open_wire_and_identity_bind_exact_cursor_mode() {
+        let mut config = config();
+        for mode in [CursorMode::Agent, CursorMode::Plan, CursorMode::Ask] {
+            config.cursor_mode = Some(mode);
+            assert_eq!(session_open_params(&config, &[])["cursorMode"], json!(mode));
+            let mut identity = identity();
+            identity.cursor_mode = Some(mode);
+            let response = json!({"sidecarPid": 100, "status": {}, "identity": identity});
+            assert_eq!(
+                verify_open_response(&response, 100, &config)
+                    .unwrap()
+                    .cursor_mode,
+                Some(mode)
+            );
+            for wrong in [
+                None,
+                Some(CursorMode::Agent),
+                Some(CursorMode::Plan),
+                Some(CursorMode::Ask),
+            ] {
+                if wrong == Some(mode) {
+                    continue;
+                }
+                let mut changed = response.clone();
+                changed["identity"]["cursorMode"] = json!(wrong);
+                assert!(verify_open_response(&changed, 100, &config).is_err());
+            }
+        }
+        config.agent = "copilot".to_owned();
+        config.cursor_mode = None;
+        assert!(session_open_params(&config, &[])
+            .get("cursorMode")
+            .is_none());
+        let mut other = identity();
+        other.cursor_mode = None;
+        assert!(serde_json::to_value(&other)
+            .unwrap()
+            .get("cursorMode")
+            .is_none());
+        let response = json!({"sidecarPid": 100, "status": {}, "identity": other});
+        verify_open_response(&response, 100, &config).unwrap();
+    }
+    #[test]
+    fn warm_reopen_and_suspension_reject_mode_changes() {
+        let mut config = config();
+        let identity = identity();
+        config.expected_identity = Some(identity.clone());
+        config.validate().unwrap();
+        config.cursor_mode = Some(CursorMode::Ask);
+        assert!(config.validate().is_err());
+        let mut changed = identity.clone();
+        changed.cursor_mode = Some(CursorMode::Agent);
+        assert!(verify_suspend_response(
+            &json!({"suspended": true, "identity": changed}),
+            &identity
+        )
+        .is_err());
     }
 }
