@@ -44,6 +44,19 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
+    const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Explicit continuation needed", idempotencyKey: "cursor-plan-wait:event" } });
+    expect(arbitrate({ assessment: passive, cursorPlanWaitAuthorized: true })).toMatchObject({
+      toStatus: "in_progress", reasonCode: "native_plan_accepted_waiting_for_continuation", effects: [],
+    });
+    expect(arbitrate({ assessment: passive })).toMatchObject({ reasonCode: "live_continuation_registered" });
+    expect(arbitrate({ assessment: passive, cursorPlanWaitAuthorized: true, terminalState: "failed" }).reasonCode).not.toBe("native_plan_accepted_waiting_for_continuation");
+    expect(arbitrate({ assessment: passive, cursorPlanWaitAuthorized: true, priorIssueStatus: "cancelled" }).toStatus).toBe("cancelled");
+    expect(arbitrate({ assessment: passive, cursorPlanWaitAuthorized: true, governanceGate: { kind: "interaction", id: "pending" } }).toStatus).toBe("in_review");
+  });
+
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -477,7 +490,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v6",
+        policyVersion: "phase6-v7",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

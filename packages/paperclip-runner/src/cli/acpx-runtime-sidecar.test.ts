@@ -1,3 +1,5 @@
+import { stripTypeScriptTypes } from "node:module";
+import { cursorPlanToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -39,6 +41,25 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("emits the native plan tool identity from the actual sidecar input boundary", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("async function waitForExtensionInput(");
+    const end = source.indexOf("\nfunction elicitationResponse(", start);
+    const code = stripTypeScriptTypes(source.slice(start, end));
+    const emitted: any[] = [], inputs = new Map();
+    const invoke = new Function("cursorPlanToolIdentity", "requireAcpxResponseDelivery", "emit", "inputs", `
+      const turnId="turn", openParams={agent:"cursor"}, initializedAgent="cursor", MAX_PENDING_INPUTS=16;
+      let requestSequence=0;
+      const stableRequestId=()=>"input-request";
+      ${code}
+      return waitForExtensionInput;
+    `)(cursorPlanToolIdentity, (context: any) => context.responseDelivery, (...args: any[]) => emitted.push(args), inputs);
+    const abort = new AbortController();
+    const pending = invoke("turn", { method: "cursor/create_plan", details: { toolCallId: "tool with spaces" }, questionSet: { schema: "paperclip.question_set.v1", questions: [] }, cancel: () => ({ cancelled: true }) }, { requestId: 0, signal: abort.signal, responseDelivery: Promise.resolve() });
+    expect(emitted).toEqual([["runtime.input_requested", expect.objectContaining({ toolCallId: "tool with spaces", origin: { adapter: "acpx-runtime-sidecar", provider: "cursor", method: "cursor/create_plan" } }), "turn"]]);
+    abort.abort(); await expect(pending).resolves.toEqual({ cancelled: true });
+    expect(inputs.size).toBe(0);
+  });
   it.each(["cursor", "copilot", "pi"])("binds native tool evidence to the active sidecar turn for %s", agent => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("    const evidenceFactory =");

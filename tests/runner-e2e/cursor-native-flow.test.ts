@@ -2,7 +2,7 @@ import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { cursorNativeWorkspaceSnapshot } from "./cursor-native-flow.js";
+import { cursorNativeWorkspaceSnapshot, hasCursorAcceptedPlanWait } from "./cursor-native-flow.js";
 import { cursorNativeCaseDesigns, cursorNativePlanArtifactGate, cursorNativeTasks } from "./cursor-native-cases.js";
 
 it("keeps native mode/permission choices explicit and artifact export pending", () => {
@@ -59,4 +59,23 @@ it("refuses remote native execution before touching API when bootstrap or cleanu
     api: { get: async () => { apiCalls++; throw new Error("must not call"); } },
   } as any)).rejects.toThrow(/owned pre-action observer/);
   expect(apiCalls).toBe(0);
+});
+
+it("requires the exact passive accepted-plan disposition without mode promotion or extra work", () => {
+  const state = { issue: { id: "issue", status: "in_progress" }, interactions: [{ status: "answered" }], runs: [{ id: "run", nativeIssueId: "issue", runtimeMode: "native", status: "succeeded", runnerProfileJson: { nativeExecutionInput: { provider: { cursorMode: "plan" } } }, resultJson: { finalizationPhase: "committed", finalizationReasonCode: "native_plan_accepted_waiting_for_continuation", authoritativeDecision: "in_progress" } }] };
+  expect(hasCursorAcceptedPlanWait(state)).toBe(true);
+  const mutations = [
+    (s: typeof state) => { s.issue.status = "done"; },
+    (s: typeof state) => { s.runs[0]!.status = "failed"; },
+    (s: typeof state) => { s.runs[0]!.nativeIssueId = "foreign"; },
+    (s: typeof state) => { s.runs[0]!.runnerProfileJson.nativeExecutionInput.provider.cursorMode = "agent"; },
+    (s: typeof state) => { s.runs[0]!.resultJson.finalizationReasonCode = "live_continuation_registered"; },
+    (s: typeof state) => { s.runs[0]!.resultJson.finalizationPhase = "pending"; },
+    (s: typeof state) => { s.runs.push(structuredClone(s.runs[0]!)); },
+    (s: typeof state) => { s.interactions[0]!.status = "pending"; },
+  ];
+  for (const mutate of mutations) { const changed = structuredClone(state); mutate(changed); expect(hasCursorAcceptedPlanWait(changed)).toBe(false); }
+  expect(cursorNativeTasks.find(task => task.id === "native-plan-reject-revise-accept")!.expectedTerminalState).toEqual({ issue: "in_progress", run: "succeeded" });
+  const prompt = cursorNativeTasks.find(task => task.id === "native-plan-reject-revise-accept")!.buildPrompt("test");
+  expect(prompt).toContain("do not implement, change modes, call paperclip_finish, or start another turn");
 });

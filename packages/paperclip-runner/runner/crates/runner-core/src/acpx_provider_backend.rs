@@ -215,7 +215,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b",
+                "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -2803,7 +2803,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b",
+                "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
                 None,
                 None,
                 "explicit-model",
@@ -2846,7 +2846,7 @@ mod tests {
             let mut previous_contract = value.clone();
             previous_contract["commandDigest"] = json!(match agent {
                 "cursor" =>
-                    "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+                    "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b",
                 "copilot" =>
                     "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
                 "pi" => "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",

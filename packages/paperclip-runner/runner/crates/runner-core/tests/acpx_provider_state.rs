@@ -766,3 +766,63 @@ fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_ne
             .is_err());
     }
 }
+
+#[test]
+fn cursor_plan_parent_identity_survives_decode_pending_and_terminal_projection() {
+    use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+    use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
+    for id in [
+        "x".repeat(160),
+        "x".repeat(161),
+        "x".repeat(240),
+        "é".repeat(120),
+    ] {
+        for status in ["completed", "cancelled", "failed"] {
+            let mut state = AcpxProviderState::new("run-1").unwrap();
+            state.begin_turn("turn-1").unwrap();
+            let context = AcpxEventProjectionContext {
+                run_id: "run-1".into(),
+                normalized_session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                provider_turn_id: None,
+                item_id: "item-1".into(),
+            };
+            let input = state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}}))).unwrap();
+            let created = project_acpx_state_event(&context, &input[0]).unwrap();
+            let tool = normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ToolCall,
+                &json!({"type":"tool_call","toolCallId":id,"kind":"execute","status":"pending"}),
+                Some("execute"),
+                "item-1",
+                "turn-1",
+                0,
+            );
+            assert_eq!(
+                created[0].payload["request"]["itemId"],
+                tool[0].payload["executionId"]
+            );
+            let ended = state
+                .accept_event(&event(
+                    2,
+                    GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                    Some("turn-1"),
+                    json!({"status":status}),
+                ))
+                .unwrap();
+            let terminal = project_acpx_state_event(&context, &ended[0]).unwrap();
+            assert_eq!(
+                terminal[0].payload["request"]["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+            assert_eq!(
+                terminal[0].payload["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+        }
+    }
+    for id in ["x".repeat(241), format!("{}x", "é".repeat(120))] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        assert!(state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"provider":"cursor","method":"cursor/create_plan"}}))).is_err());
+    }
+}

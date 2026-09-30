@@ -1,6 +1,6 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v6";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v7";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -108,6 +108,8 @@ export function arbitrateNativeStatus(input: {
   governanceResolvedForRun?: boolean;
   externalChatResponseWaitAuthorization?:
     "authorized" | "revoked" | "not_applicable";
+  /** Server-verified accepted Cursor Plan request and normal provider terminal. */
+  cursorPlanWaitAuthorized?: boolean;
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   reviewOwnerUserId?: string | null;
@@ -431,6 +433,21 @@ export function arbitrateNativeStatus(input: {
       toStatus: input.priorIssueStatus,
       reasonCode: "board_response_wait_superseded",
       unblockDescriptor: null,
+      effects: [],
+    };
+  }
+  if (
+    input.cursorPlanWaitAuthorized === true &&
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake"
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress", toStatus: "in_progress",
+      reasonCode: "native_plan_accepted_waiting_for_continuation",
+      unblockDescriptor: null,
+      // An answered native plan is not task completion or permission to
+      // change modes. Only a new explicit user cause may continue the work.
       effects: [],
     };
   }

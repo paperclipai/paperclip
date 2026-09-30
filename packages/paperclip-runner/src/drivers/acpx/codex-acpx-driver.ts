@@ -1,3 +1,4 @@
+import { cursorPlanToolIdentity, cursorToolExecutionId } from "./cursor-plan-tool-identity.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "./cursor-tool-evidence.js";
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
@@ -1451,7 +1452,9 @@ class CodexAcpxSession implements HarnessSession {
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
-        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(event)), turnId, ++index);
+        const activity = this.#agent === "cursor" && event.type === "tool_call" && typeof event.toolCallId === "string"
+          ? { ...event, toolCallId: cursorToolExecutionId(event.toolCallId) } : event;
+        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(activity)), turnId, ++index);
       }
       const result = await turn.result;
       if (result.status === "completed") piMessages?.settle();
@@ -1695,8 +1698,10 @@ class CodexAcpxSession implements HarnessSession {
       || this.#pendingRuntimeRequests.size >= MAX_PENDING_RUNTIME_REQUESTS) return input.cancel();
     const responseDelivery = requireAcpxResponseDelivery(context);
     const requestId = stableId("acpx-request", `${turnId}:${++this.#runtimeRequestSequence}:${typeof context.requestId}:${context.requestId}`);
+    const toolCallId = cursorPlanToolIdentity(this.#agent, input);
+    const itemId = toolCallId === undefined ? requestId : cursorToolExecutionId(toolCallId);
     const request: HarnessRuntimeRequest = {
-      requestId, requestKind: "elicitation", method: input.method, turnId, itemId: requestId,
+      requestId, requestKind: "elicitation", method: input.method, turnId, itemId,
       status: "pending", prompt: boundedText(input.questionSet.title ?? "Provider needs input", 1_000),
       details: input.details ?? {}, input: structuredClone(input.questionSet),
       origin: { adapter: "acpx-runtime", provider: this.#agent, method: input.method },
@@ -1708,7 +1713,7 @@ class CodexAcpxSession implements HarnessSession {
         pending.cleanup();
         this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(request, {
           action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        }), { turnId, itemId });
         settle(input.cancel());
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1723,7 +1728,7 @@ class CodexAcpxSession implements HarnessSession {
       });
       context.signal.addEventListener("abort", cancel, { once: true });
       if (!this.#emit("runtime_request.created", { request: runtimeInputProtocolPayload(request) },
-        { turnId, itemId: requestId }) || context.signal.aborted) cancel();
+        { turnId, itemId }) || context.signal.aborted) cancel();
     });
   }
 

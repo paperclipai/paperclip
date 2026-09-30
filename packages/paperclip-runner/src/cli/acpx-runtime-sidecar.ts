@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cursorPlanToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
@@ -847,6 +848,7 @@ async function waitForExtensionInput(
 ): Promise<Record<string, unknown>> {
   if (turnId !== activeTurnId || context.signal.aborted || inputs.size >= MAX_PENDING_INPUTS) return input.cancel();
   const responseDelivery = requireAcpxResponseDelivery(context);
+  const toolCallId = cursorPlanToolIdentity(openParams?.agent ?? initializedAgent, input);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, context.requestId);
   return await new Promise((settle) => {
     const abort = () => {
@@ -867,6 +869,7 @@ async function waitForExtensionInput(
     context.signal.addEventListener("abort", abort, { once: true });
     emit("runtime.input_requested", {
       requestId, questionSet: input.questionSet,
+      ...(toolCallId === undefined ? {} : { toolCallId }),
       origin: { adapter: "acpx-runtime-sidecar", provider: openParams?.agent ?? initializedAgent ?? "unknown", method: input.method },
     }, activeTurnId);
     if (context.signal.aborted) abort();

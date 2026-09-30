@@ -26,7 +26,7 @@ export function cursorNativePrompt(id: typeof cursorNativeCaseDesigns[number]["i
   ].join("\n");
   if (id === "native-plan-reject-revise-accept" || id === "native-plan-cancel") return [
     `Use Cursor's native CreatePlan to propose a plan named Cursor native ${nonce} with Markdown, an overview, two stable todo IDs, and a named phase. Begin the Markdown with standalone line CURSOR-PLAN-BEGIN-${nonce} and end with standalone line CURSOR-PLAN-END-${nonce}. Preserve both boundary lines on revision. Do not perform implementation before acceptance.`,
-    "Wait for the actual native decision. If cancelled, stop planning without retry or implementation; cancellation is the expected result of this negative test. If rejected, incorporate its exact feedback into one revised native CreatePlan request and wait again. Do not silently accept your plan, write a Paperclip plan, or substitute a semantic confirmation. If unavailable, report that limitation without claiming completion.", finish,
+    "Wait for the actual native decision. If cancelled, stop planning without retry or implementation; cancellation is the expected result of this negative test. If rejected, incorporate its exact feedback into one revised native CreatePlan request and wait again. Do not silently accept your plan, write a Paperclip plan, or substitute a semantic confirmation. If unavailable, report that limitation without claiming completion.", id === "native-plan-reject-revise-accept" ? "After the revised plan is accepted, end this planning turn. Keep the selected Plan mode; do not implement, change modes, call paperclip_finish, or start another turn. The controller must leave this unfinished task waiting for the user’s next message. Do not substitute a semantic confirmation or completion call." : finish,
   ].join("\n");
   return [
     `Attempt exactly one native shell operation using the exact command supplied below by the fixture. This is a deliberate denial test. Wait for the actual permission decision. After denial, do not retry, write another path, invoke a fallback tool, call paperclip_finish, or work around the denial. Wait for the operator to cancel this unfinished task. Do not substitute another tool or operation.`,
@@ -106,7 +106,7 @@ export function hasCursorDenialBoundary(input: {
 export const cursorNativeTasks: readonly (Omit<RunnerTaskFixture, "flow"> & { flow: "cursor_native" })[] = cursorNativeCaseDesigns.map(design => ({
   id: design.id, label: `Cursor ${design.id}`, groups: [], workMode: "standard", flow: "cursor_native",
   expectedRunCount: 1, attemptTimeoutMs: { local: 300_000, daytona: 300_000 }, turnTimeoutMs: 120_000,
-  expectedTerminalState: design.id === "native-write-deny-reconnect" ? { issue: "in_progress", run: "cancelled" } : { issue: "done", run: "succeeded" },
+  expectedTerminalState: design.id === "native-write-deny-reconnect" ? { issue: "in_progress", run: "cancelled" } : design.id === "native-plan-reject-revise-accept" ? { issue: "in_progress", run: "succeeded" } : { issue: "done", run: "succeeded" },
   buildTitle: nonce => `Cursor ${design.id} ${nonce}`,
   buildPrompt: nonce => cursorNativePrompt(design.id, nonce),
   buildVisibleMarker: nonce => `CURSOR-NATIVE-${nonce}`,

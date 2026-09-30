@@ -1,3 +1,4 @@
+import { readNativeCursorPlanWait } from "./native-cursor-plan-wait.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
@@ -8325,6 +8326,10 @@ async function executePaperclipNativeSessionWithinScope(
               if (terminalEvent.eventType !== "turn.completed") return null;
               const governedWait = await resolvePendingGovernedWait();
               if (governedWait) return governedWait;
+              if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor" && input.execution.provider.cursorMode === "plan") {
+                const planWait = await readNativeCursorPlanWait(input.db, input.execution.binding);
+                if (planWait?.source.terminalEventId === terminalEvent.sourceEventId) return planWait.result;
+              }
               const [conversation] = await input.db
                 .select({ agentId: issues.conversationAgentId })
                 .from(issues)

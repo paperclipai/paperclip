@@ -57,11 +57,13 @@ pub enum AcpxProviderStateEvent {
         details: Value,
     },
     InputRequest {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
     },
     RuntimeRequestEnded {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Option<Value>,
         origin: Option<Value>,
@@ -87,6 +89,7 @@ pub enum AcpxProviderStateEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 struct PendingInput {
+    tool_call_id: Option<String>,
     runtime_request_id: String,
     value_bytes: usize,
     question_set: Value,
@@ -282,11 +285,13 @@ impl AcpxProviderState {
                 }])
             }
             AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id,
                 question_set,
                 origin,
             } => {
                 let value_bytes = value_bytes(&question_set)?
+                    + tool_call_id.as_ref().map(|value| value.len()).unwrap_or(0)
                     + origin.as_ref().map(value_bytes).transpose()?.unwrap_or(0);
                 self.admit_runtime_request(&request_id, value_bytes)?;
                 let runtime_request_id = project_acpx_runtime_request_id(&request_id)
@@ -306,6 +311,7 @@ impl AcpxProviderState {
                     .insert(
                         request_id.clone(),
                         PendingInput {
+                            tool_call_id: tool_call_id.clone(),
                             runtime_request_id,
                             value_bytes,
                             question_set: question_set.clone(),
@@ -320,6 +326,7 @@ impl AcpxProviderState {
                 }
                 self.pending_runtime_request_bytes += value_bytes;
                 Ok(vec![AcpxProviderStateEvent::InputRequest {
+                    tool_call_id,
                     request_id,
                     question_set,
                     origin,
@@ -697,6 +704,7 @@ impl AcpxProviderState {
             events.push(AcpxProviderStateEvent::RuntimeRequestEnded {
                 request_id,
                 question_set: None,
+                tool_call_id: None,
                 origin: None,
                 status,
             });
@@ -705,6 +713,7 @@ impl AcpxProviderState {
             events.push(AcpxProviderStateEvent::RuntimeRequestEnded {
                 request_id,
                 question_set: Some(pending.question_set),
+                tool_call_id: pending.tool_call_id,
                 origin: pending.origin,
                 status,
             });

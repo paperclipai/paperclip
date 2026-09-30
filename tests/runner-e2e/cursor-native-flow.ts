@@ -29,6 +29,17 @@ export function hasCursorNativeCardBinding(card: Row, event: Row, runId: string)
     && isDeepStrictEqual(card.payload.questionSet, event.payload.request.input);
 }
 
+/** This is a successful planning boundary, not an implementation/completion claim. */
+export function hasCursorAcceptedPlanWait(state: { issue: Row; runs: Row[]; interactions: Row[] }): boolean {
+  if (state.runs.length !== 1 || state.issue.status !== "in_progress" || state.interactions.some(card => card.status === "pending")) return false;
+  const run = state.runs[0]!;
+  return run.status === "succeeded" && run.runtimeMode === "native" && run.nativeIssueId === state.issue.id
+    && run.runnerProfileJson?.nativeExecutionInput?.provider?.cursorMode === "plan"
+    && run.resultJson?.finalizationPhase === "committed"
+    && run.resultJson?.finalizationReasonCode === "native_plan_accepted_waiting_for_continuation"
+    && run.resultJson?.authoritativeDecision === "in_progress";
+}
+
 export interface CursorRemoteNativeFixture {
   binding: CursorRemoteBinding; remoteCwd: string; actionFile: string;
   snapshot(label: string): Promise<CursorRemoteSnapshot>;
@@ -96,7 +107,7 @@ export async function runCursorNativeFlow(input: {
   const remote = execution.environment.id === "daytona";
   if (!design || !["local", "daytona"].includes(execution.environment.id) || execution.profile.qualificationCandidate !== "cursor") throw new Error("Cursor native fixtures require an explicit isolated Cursor candidate");
   if (remote && (!input.remoteBootstrap || !input.registerBeforeEnvironmentTeardownAssertion)) throw new Error("Cursor Daytona requires an owned pre-action observer and pre-teardown verification");
-  if (!remote && design.id === "native-write-deny-reconnect" && !input.registerCleanupAssertion) throw new Error("Cursor denial requires authoritative post-cleanup verification");
+  if (!remote && ["native-write-deny-reconnect", "native-plan-reject-revise-accept"].includes(design.id) && !input.registerCleanupAssertion) throw new Error("Cursor denial requires authoritative post-cleanup verification");
   const checks: Check[] = []; let issue: Row = {}; let runs: Row[] = [];
   const check = (id: string, passed: boolean, detail: string) => { checks.push({ id, passed, detail }); expect(passed, detail).toBe(true); };
   const events = (runId: string) => collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
@@ -195,7 +206,8 @@ export async function runCursorNativeFlow(input: {
         await sampleDenied("after-cleanup", snapshot);
         finalCheck("remote-cancel-terminal", cancellationProven && runs[0]?.status === "cancelled" && issue.status === "in_progress", "Explicit native cancellation remains durable without false task completion");
         finalCheck("remote-no-denied-effect", snapshot.watcher.targetMutationCount === 0 && Boolean(deniedRequest) && hasCursorDenialBoundary({ request: deniedRequest, expectedRequestId: deniedRequest?.requestId ?? "", expectedToolCallId: deniedRequest?.details.toolCallId ?? "", path: deniedPath, bootstrapReadProof: remoteFixture ? { actionFile: remoteFixture.actionFile, events: denialRunEvents } : undefined, samples, notices: denialNotices, runId: runs[0]?.id ?? "", turnId: denialTurnId }), "Exact denied native command caused no remote file effect through provider retirement");
-      } else if (design.id !== "native-plan-reject-revise-accept") {
+      } else {
+        if (design.id === "native-plan-reject-revise-accept") finalCheck("remote-plan-still-passive", hasCursorAcceptedPlanWait(await load()), "Accepted planning remains passive through remote retirement without an automatic follow-up run");
         finalCheck("remote-no-workspace-effects", hasCursorRemoteWorkspaceUnchanged(snapshot, remoteBaseline!), "Native question or cancelled plan caused no remote workspace mutation through retirement");
       }
       if (cleanupChecks.some(row => !row.passed)) throw new Error("Cursor remote cleanup evidence is incomplete or observed an effect");
@@ -216,6 +228,17 @@ export async function runCursorNativeFlow(input: {
     if (design.id === "native-write-deny-reconnect" && runs.length === 1) { denialRunEvents = runEvents; denialNotices = readCursorToolEvidence(runEvents, runs[0]!.id); }
     return { issue, runs, interactions, runEvents };
   };
+  if (!remote && design.id === "native-plan-reject-revise-accept") input.registerCleanupAssertion!(async () => {
+    const current = await load();
+    const currentWorkspace = await cursorNativeWorkspaceSnapshot(input.workspacePath);
+    const cleanupChecks = [
+      { id: "plan-still-passive-after-cleanup", passed: hasCursorAcceptedPlanWait(current), detail: "One succeeded planning run remains unfinished without automatic follow-up through fixture cleanup" },
+      { id: "plan-workspace-unchanged-after-cleanup", passed: isDeepStrictEqual(currentWorkspace, baseline), detail: "Accepted planning caused no workspace effect through fixture cleanup" },
+    ];
+    await input.evidence("cursor-native-plan-wait-cleanup.json", { ...current, baseline, currentWorkspace, checks: cleanupChecks });
+    if (cleanupChecks.some(row => !row.passed)) throw new Error("Accepted Cursor plan did not remain a passive no-effect boundary");
+    return cleanupChecks;
+  });
   const reject = (state: Awaited<ReturnType<typeof load>>) => state.runs.length > 1 ? "Unexpected extra Cursor provider run" : state.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Cursor provider run failed" : undefined;
   async function pending(seen: Set<string>) {
     const state = await pollUntil({ label: "exact native Cursor callback", deadlineAt: input.deadlineAt, load,
@@ -335,6 +358,24 @@ export async function runCursorNativeFlow(input: {
       const comments = await api.get<Row[]>(`/api/issues/${issue.id}/comments`);
       await input.evidence("api-state.json", { ...cancelled, run: runs[0], comments, checks, notices: denialNotices, commandSha256: deniedCommand!.commandSha256, cancelRequestedAt, runEventsByRun: [{ runId: native.runId, events: cancelled.runEvents }] });
       await input.capture("final-state", "Cursor denied command cancelled; task remains unfinished", "final-state.png");
+      return { issue, runs, checks };
+    }
+    if (design.id === "native-plan-reject-revise-accept") {
+      await pollUntil({ label: "accepted Cursor plan waiting for explicit continuation", deadlineAt: input.deadlineAt, load, reject, accept: hasCursorAcceptedPlanWait });
+      const observedAt = Date.now();
+      const final = await pollUntil({ label: "passive Cursor plan stability", deadlineAt: input.deadlineAt, load,
+        reject: state => hasCursorAcceptedPlanWait(state) ? undefined : "Accepted plan started follow-up work or lost its passive disposition",
+        accept: state => hasCursorAcceptedPlanWait(state) && Date.now() - observedAt >= 2_000, intervalMs: 250 });
+      if (remote) remoteFinal = await remoteFixture!.finish();
+      await sampleWorkspace("accepted-plan-terminal");
+      check("accepted-plan-passive-terminal", hasCursorAcceptedPlanWait(final), "Successful planning remains in progress with exact controller wait reason and selected Plan mode");
+      const comments = await api.get<Row[]>(`/api/issues/${issue.id}/comments`);
+      const summary = "Plan accepted. This task is waiting for your next message. This run used Plan mode; no implementation or task completion is claimed.";
+      check("explicit-plan-next-action", comments.some(comment => comment.createdByRunId === runs[0]!.id && comment.body === summary), "The original planning run durably presents explicit user continuation");
+      await page.reload(); await expect(page.getByText(summary, { exact: true }).last()).toBeVisible();
+      await expect(page.getByTestId("issue-detail-header").getByRole("button", { name: "Change status (current: In Progress)", exact: true })).toBeVisible();
+      await input.evidence("api-state.json", { ...final, run: runs[0], comments, checks, passiveObservedFrom: observedAt, passiveObservedUntil: Date.now(), runEventsByRun: [{ runId: runs[0]!.id, events: final.runEvents }] });
+      await input.capture("final-state", "Accepted Cursor plan waiting for the next user message", "final-state.png");
       return { issue, runs, checks };
     }
     const final = await pollUntil({ label: "Cursor native completion", deadlineAt: input.deadlineAt, load, reject,

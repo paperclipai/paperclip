@@ -24,6 +24,26 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it.each(["tool-1", "tool with spaces", "🧭/plan", "x".repeat(300)])("binds a native Cursor plan request to its actual projected tool identity: %s", async toolCallId => {
+    const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", cursorMode: "plan", providerPolicy: { readOnly: false } }, {
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "arbitrary tool display", kind: "execute", status: "pending" }],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-plan-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const toolEvents = collectUntil(session.events(), "tool.execution.started");
+    const { turnId } = await session.startTurn({ message: { text: "Plan" } });
+    const tool = (await toolEvents).find(e => e.eventType === "tool.execution.started")!;
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onExtensionRequest!;
+    const reply = callback("cursor/create_plan", { sessionId: "backend-1", toolCallId, plan: "# Full plan", todos: [] }, { requestId: 1, signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    const events = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    expect(request.itemId).toBe(tool.payload.executionId);
+    expect(events.find(e => e.eventType === "runtime_request.created")!.payload.request).toMatchObject({ itemId: tool.payload.executionId });
+    await session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "cancel" } });
+    await expect(reply).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    fixture.finishTurn({ status: "completed" });
+    await session.close({ reason: "plan identity verified" });
+  });
   it("keeps Pi retry-only activity as a rich notice without inventing a final answer", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-pi-notice", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
