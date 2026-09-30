@@ -74,6 +74,10 @@ const SENSITIVE_KEYS = new Set<string>([
   "browsercode",
   "authorization_code",
   "authorizationcode",
+  // A pasted `claude setup-token` token on an AI connection create request.
+  // It stays valid for a year, so a rejected request must not log it.
+  "setuptoken",
+  "setup_token",
   // The workspace login handoff ticket (PAP-17572). It is a signed bearer
   // credential carried as a query parameter, so it must never reach a log line
   // even though the exchange itself answers 302.
