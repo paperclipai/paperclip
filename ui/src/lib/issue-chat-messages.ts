@@ -289,6 +289,8 @@ export function stabilizeThreadMessages(
   };
 }
 
+export type IssueChatThreadOrder = "oldest_first" | "newest_first";
+
 function sortByCreated<T extends { createdAt: Date | string; id: string }>(items: readonly T[]) {
   return [...items].sort((a, b) => {
     const diff = toTimestamp(a.createdAt) - toTimestamp(b.createdAt);
@@ -1165,6 +1167,7 @@ export function buildIssueChatMessages(args: {
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
+  threadOrder?: IssueChatThreadOrder;
   issueId?: string;
   companyId?: string | null;
   projectId?: string | null;
@@ -1183,6 +1186,7 @@ export function buildIssueChatMessages(args: {
     transcriptsByRunId,
     hasOutputForRun,
     includeSucceededRunsWithoutOutput = false,
+    threadOrder = "oldest_first",
     issueId,
     companyId,
     projectId,
@@ -1279,7 +1283,10 @@ export function buildIssueChatMessages(args: {
 
   return orderedMessages
     .sort((a, b) => {
-      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
+      const direction = threadOrder === "newest_first" ? -1 : 1;
+      if (a.createdAtMs !== b.createdAtMs) return direction * (a.createdAtMs - b.createdAtMs);
+      // Same-timestamp ties keep their forward local ordering so a handoff
+      // comment still precedes the confirmation card it produced.
       if (a.order !== b.order) return a.order - b.order;
       return a.message.id.localeCompare(b.message.id);
     })
