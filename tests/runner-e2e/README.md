@@ -1375,7 +1375,7 @@ connection-authorization qualification.
 | --- | --- |
 | `human-authority` | A tenant administrator action waits for human direction without assigning work to a manager who lacks access. |
 | `hiring-permission` | A worker without hiring permission asks for authorized direction; no agent or hire approval is created. |
-| `requester-scope` | A confidentiality conflict produces a question addressed to the requesting user while the worker retains the task. |
+| `requester-scope` | A confidentiality conflict produces a human-input question the requesting user can answer while the worker retains the task. |
 
 Each cell creates an ordinary worker and a manager with assignment permission
 but no hiring permission or external administrator capability. Both receive the
@@ -1427,12 +1427,14 @@ contribute to the existing billing contract. Evidence includes the waiting and
 final task screenshots, saved checkpoints, final observations, source revision,
 profile/model, catalog digest, and SHA-256 fingerprints of both changed skill
 files and the grader/flow in `snapshots/blocker-guidance.json`. Grader version
-`paperclip.blocker-guidance.v5` requires the approved public note, a saved answer
+`paperclip.blocker-guidance.v6` requires the approved public note, a saved answer
 before the confirmation wake, and a new worker reply after the waiting checkpoint,
 accepts writable confirmations and multiple questions, and records `inputUx` separately from
 the blocking checks. Direct text input is the preferred UX for these open-ended
 requests; a valid confirmation can satisfy the waiting contract while losing
-that UX dimension. Earlier results retain their original grades. Version 5 changes the requester
+that UX dimension. Version 6 permits an omitted user addressee and verifies that
+the actual requester resolved the scope question; it rejects a conflicting
+explicit recipient or a different resolver. Earlier results retain their original grades. Version 5 changes the requester
 answer to an exact approved note, so older live measurements do not qualify this
 new output requirement. Version 2
 diagnostics exposed local Claude skill shadowing and a redundant browser reply

@@ -161,15 +161,15 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 
 **Human input questions.**
 
-For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace the user ID, `detail`, the prompt, and the idempotency key for your question). `questionSet` controls presentation; the matching `questions` entry is required storage compatibility and must not be sent alone.
+For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). `questionSet` controls presentation; the matching `questions` entry is required storage compatibility and must not be sent alone.
 
-Resolve the user ID from the triggering comment or task's requester context before sending. For a scope question, it must be the actual requester. For an administrator action, address the known authorized person; if no specific person is known, omit `addresseeUserId` but retain `human_only`. Do not guess IDs or infer authority from a title. Agent-directed scope questions instead use `addresseeAgentId` and omit `resolverPolicy`.
+Omit `addresseeUserId` for ordinary questions.
+In Agent Chat, Paperclip addresses the question to the conversation owner automatically. On a task, explicit addressing is optional when only a particular person should respond; use that person's exact Paperclip user ID, including any prefix. The server rejects unknown or unauthorized recipients. Do not guess IDs or infer authority from a title. Agent-directed questions use `addresseeAgentId` and omit `resolverPolicy`.
 
 ```json
 {
   "kind": "ask_user_questions",
   "idempotencyKey": "question:{issueId}:detail:v1",
-  "addresseeUserId": "{requesting-user-id}",
   "resolverPolicy": "human_only",
   "continuationPolicy": "wake_assignee",
   "payload": {
@@ -597,7 +597,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **@-mentions** are context links and never trigger heartbeats, assign work, or forward comments to another task. For machine-authored comments, resolve the target agent and use `[@Agent Name](agent://<agent-id>)`. To request work, assign a task or use an explicit review request.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Handle blockers directly.** Identify the exact missing capability or authority. Do not reassign blocked work or create a task for a manager or another agent merely because you are stuck. A title or reporting line does not grant access or authority. For a human-only action, use the connection/approval flow when available; otherwise save an interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"` on the current task, keep yourself assigned, and leave it `in_review`. Use the complete [human-input payload](#asking-for-human-input). Verify the recipient's actual capability and permission before offering delegation as an option or creating a bounded task for them. Never delegate to bypass a permission denial; a human answer also does not grant a missing permission.
-- **Address scope decisions to the requester.** For a user request, set `addresseeUserId` to the triggering comment's `authorUserId`, or the issue's `createdByUserId` when that user is the requester, plus `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"`. For an agent request, set `addresseeAgentId` to the requesting agent and omit `resolverPolicy`. Keep the task assigned to yourself and `in_review` while waiting. Do not substitute a manager or an invented identity.
+- **Keep scope decisions on the current task.** Save a human-input interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"`. Keep the task assigned to yourself and `in_review` while waiting. Explicit addressing is optional when the decision needs a particular person. For an agent-directed question, set `addresseeAgentId` and omit `resolverPolicy`. Do not substitute a manager or invent an identity.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 

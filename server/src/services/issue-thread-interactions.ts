@@ -21,6 +21,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  authUsers,
   companySecretProposals,
   companies,
   documents,
@@ -93,6 +94,8 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { authorizationService } from "./authorization.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import {
   logActivity,
   publishActivity,
@@ -597,12 +600,13 @@ function isEquivalentCreateRequest(
   row: IssueThreadInteractionRow,
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
+  defaultAddresseeUserId: string | null = null,
 ) {
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
     (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) &&
-    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) &&
+    (row.addresseeUserId ?? defaultAddresseeUserId) === (input.addresseeUserId ?? defaultAddresseeUserId) &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -3324,6 +3328,24 @@ export function issueThreadInteractionService(
       const data = normalizeCreateInteractionInput(
         createIssueThreadInteractionSchema.parse(input),
       );
+      // Chat ownership is server-owned and immutable. Ordinary human questions
+      // must not depend on a model copying an opaque user identity correctly.
+      let defaultAddresseeUserId: string | null = null;
+      if (data.kind === "ask_user_questions" && !data.addresseeAgentId) {
+        const [conversation] = await db
+          .select({ agentId: issues.conversationAgentId, userId: issues.conversationUserId })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+        if (conversation?.agentId && conversation.userId) {
+          defaultAddresseeUserId = conversation.userId;
+          if (data.addresseeUserId && data.addresseeUserId !== defaultAddresseeUserId) {
+            throw unprocessable("Chat questions must address the conversation owner; omit addresseeUserId", {
+              code: "interaction_chat_addressee_mismatch",
+            });
+          }
+          data.addresseeUserId = defaultAddresseeUserId;
+        }
+      }
       const usedDeprecatedResolverPolicyAlias =
         data.resolverPolicy === "board_or_agents" ||
         data.resolverPolicy === "board_only";
@@ -3417,7 +3439,7 @@ export function issueThreadInteractionService(
           idempotencyKey: normalizedData.idempotencyKey,
         });
         if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+          if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) {
             throw conflict(
               "Interaction idempotency key already exists for a different request",
               {
@@ -3514,7 +3536,7 @@ export function issueThreadInteractionService(
         const result = await db.transaction(async (tx) => {
           await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
           const [issueRow] = await tx
-            .select({ status: issues.status, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+            .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
             .from(issues)
             .where(
               and(
@@ -3525,6 +3547,26 @@ export function issueThreadInteractionService(
             .for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          if (data.addresseeUserId) {
+            const [user] = await tx.select({ id: authUsers.id }).from(authUsers)
+              .where(eq(authUsers.id, data.addresseeUserId));
+            // Use the normal board mutation policy, including viewer restrictions,
+            // local/instance-admin eligibility and Cloud's no-stale-admin rule.
+            const decision = user && await authorizationService(tx).decide({
+              actor: {
+                type: "board",
+                userId: user.id,
+                source: isCloudManagedInstance() ? "cloud_tenant" : "session",
+              },
+              action: "issue:mutate",
+              resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
+            });
+            if (!decision?.allowed) {
+              throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
+                code: "interaction_addressee_user_unavailable",
+              });
+            }
           }
           if (
             data.kind === "ask_user_questions" &&
@@ -3692,7 +3734,7 @@ export function issueThreadInteractionService(
           idempotencyKey: normalizedData.idempotencyKey,
         });
         if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+        if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) {
           throw conflict(
             "Interaction idempotency key already exists for a different request",
             {

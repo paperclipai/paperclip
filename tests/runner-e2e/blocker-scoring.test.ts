@@ -30,6 +30,11 @@ describe("blocker guidance oracle calibration", () => {
     expect(blockerScenario("human-authority", "nonce-1").marker).toMatch(/^[A-Z0-9]+$/i);
   });
   it("accepts saved requester direction and completed continuation", () => expect(gradeBlocker(fixture()).every(c => c.passed)).toBe(true));
+  it("accepts a human-only question without explicit addressing when the requester answers", () => {
+    const f = fixture();
+    for (const checkpoint of f.checkpoints) delete checkpoint.interactions[0]!.addresseeUserId;
+    expect(gradeBlocker(f).every(c => c.passed)).toBe(true);
+  });
   it.each(["request_confirmation", "request_checkbox_confirmation"])("accepts human-only %s and browser scope change, reports UX separately", kind => {
     const f = fixture();
     f.checkpoints[0]!.interactions[0]!.kind = kind;
@@ -64,7 +69,7 @@ describe("blocker guidance oracle calibration", () => {
   it.each([
     ["comment-only wait", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.interactions = []; }],
     ["wrong requester", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.interactions[0]!.addresseeUserId = "someone-else"; }],
-    ["missing requester", (f: ReturnType<typeof fixture>) => { delete f.checkpoints[0]!.interactions[0]!.addresseeUserId; }],
+    ["different user answered", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.interactions[0]!.resolvedByUserId = "someone-else"; }],
     ["anyone can resolve", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.interactions[0]!.effectiveResolverPolicy = "anyone"; }],
     ["agent resolved human input", (f: ReturnType<typeof fixture>) => { f.checkpoints[1]!.interactions[0]!.resolvedByAgentId = "manager"; }],
     ["unsupported saved card", (f: ReturnType<typeof fixture>) => { f.checkpoints[0]!.interactions[0]!.kind = "suggest_tasks"; }],

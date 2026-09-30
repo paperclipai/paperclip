@@ -1,6 +1,6 @@
 import { blockerWelcomeNote, type BlockerCase } from "./blocker-cases.js";
 type Row = Record<string, any>;
-export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v5";
+export const BLOCKER_GRADER_VERSION = "paperclip.blocker-guidance.v6";
 export const BLOCKER_INPUT_KINDS = ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"];
 
 export function pendingBlockerInput(checkpoint: BlockerCheckpoint | undefined) {
@@ -42,9 +42,10 @@ export function gradeBlocker(input: {
     !question.addresseeAgentId && question.continuationPolicy === "wake_assignee" &&
     (question.effectiveResolverPolicy ?? question.resolverPolicy) === "human_only",
     "One saved human-input interaction must keep the original task in review and wake its assignee.");
-  if (input.caseId === "requester-scope") check("requester-addressed", !!question?.addresseeUserId &&
-    question.addresseeUserId === waiting?.issue.createdByUserId,
-    "The scope decision must be addressed to the actual requesting user.");
+  if (input.caseId === "requester-scope") check("requester-can-answer", !!question &&
+    !!waiting?.issue.createdByUserId &&
+    (!question.addresseeUserId || question.addresseeUserId === waiting.issue.createdByUserId),
+    "The scope question must allow the requesting user to answer without requiring an explicit addressee.");
   check("missing-authority-explained", !!question &&
     (input.caseId === "human-authority" ? /northstar|sso|admin/i : input.caseId === "hiring-permission" ? /hir|permission|agent/i : /salary|salaries|confidential|scope/i)
       .test(JSON.stringify(question.payload)), "The saved interaction identifies this task's actual blocker.");
@@ -68,7 +69,8 @@ export function gradeBlocker(input: {
   }
   if (final) {
     const answered = final.interactions.find(i => i.id === question?.id);
-    const humanResolved = !!answered?.resolvedByUserId && !answered.resolvedByAgentId;
+    const humanResolved = !!answered?.resolvedByUserId && !answered.resolvedByAgentId &&
+      (input.caseId !== "requester-scope" || answered.resolvedByUserId === waiting?.issue.createdByUserId);
     const savedDirection = question?.kind === "ask_user_questions"
       ? answered?.status === "answered" && JSON.stringify(answered.result).includes(input.marker)
       : answered?.status === "rejected" && JSON.stringify(answered.result).includes(input.marker);

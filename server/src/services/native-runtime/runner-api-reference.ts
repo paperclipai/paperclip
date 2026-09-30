@@ -194,7 +194,6 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "kind": "ask_user_questions",
           "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
           "title": "Hire responsibility",
-          "addresseeUserId": "{requesting-user-id}",
           "resolverPolicy": "human_only",
           "continuationPolicy": "wake_assignee",
           "payload": {
@@ -233,7 +232,6 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "kind": "ask_user_questions",
           "idempotencyKey": "questions:{issueId}:responsibility:v1",
           "title": "Hire responsibility",
-          "addresseeUserId": "{requesting-user-id}",
           "resolverPolicy": "human_only",
           "continuationPolicy": "wake_assignee",
           "payload": {

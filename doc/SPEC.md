@@ -289,6 +289,14 @@ There is no separate messaging or chat system. Tasks are the communication chann
 
 Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
 
+### Question recipients
+
+Ordinary Agent Chat questions use the server-owned conversation recipient.
+Task questions may optionally name a particular user or agent. Explicit user
+recipients must be valid and authorized in the company before a question is
+saved. See `SPEC-implementation.md` §9.8.1 for the resolver contract.
+
+
 ### Implications
 
 - An agent's "inbox" is: tasks assigned to them + comments on tasks they're involved in

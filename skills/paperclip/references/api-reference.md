@@ -668,7 +668,7 @@ When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
 2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. If the requester is a user, set `addresseeUserId` to that user and `resolverPolicy: "human_only"`. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; an explicit `addresseeUserId` is optional when only a particular person should respond. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 
@@ -924,7 +924,9 @@ Ask only when missing input materially blocks the request. A direct request or s
 
 Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
 
-Address a user's scope decision to that actual requester with `addresseeUserId`: use the triggering comment's `authorUserId`, or the issue's `createdByUserId` when it matches the requester context. Replace the placeholder in the examples below with that resolved ID. For an administrator action, use the known authorized person's ID; omit the addressee only if no specific person is known, and retain `human_only`. Agent-directed scope questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
+Omit `addresseeUserId` for ordinary questions.
+Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user.
+Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
 
 **Text answer (copy this complete payload)**
 
@@ -936,7 +938,6 @@ POST /api/issues/{issueId}/interactions
   "kind": "ask_user_questions",
   "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
   "title": "Hire responsibility",
-  "addresseeUserId": "{requesting-user-id}",
   "resolverPolicy": "human_only",
   "continuationPolicy": "wake_assignee",
   "payload": {
@@ -971,7 +972,6 @@ POST /api/issues/{issueId}/interactions
   "kind": "ask_user_questions",
   "idempotencyKey": "questions:{issueId}:responsibility:v1",
   "title": "Hire responsibility",
-  "addresseeUserId": "{requesting-user-id}",
   "resolverPolicy": "human_only",
   "continuationPolicy": "wake_assignee",
   "payload": {
