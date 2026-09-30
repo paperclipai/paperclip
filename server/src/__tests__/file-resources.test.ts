@@ -208,6 +208,20 @@ describeEmbeddedPostgres("workspace file resources", () => {
     await tempDb?.cleanup();
   });
 
+  it("withholds private task files and private cross-project targets", async () => {
+    const { projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+    await fs.writeFile(path.join(projectRoot, "secret.txt"), "PRIVATE_FILE", "utf8");
+    await fs.writeFile(path.join(targetProjectRoot, "secret.txt"), "PRIVATE_TARGET", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    await db.update(issues).set({ visibility: "private", responsibleUserId: "owner" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(404);
+    await db.update(issues).set({ visibility: "open" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(200);
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.targetProjectId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ projectId: graph.targetProjectId, workspaceId: graph.targetProjectWorkspaceId, path: "secret.txt" }).expect(404);
+  });
+
   it("resolves and reads a project file without exposing absolute paths", async () => {
     const { root, projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });

@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
-import { authorizationService } from "../authorization.js";
+import { approvalReadSqlCondition, canActorReadApproval, authorizationService, issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
@@ -431,6 +431,7 @@ export class PaperclipRunnerToolAuthority {
             eq(issues.companyId, this.binding.companyId),
             eq(issues.parentId, this.binding.issueId),
             isNull(issues.hiddenAt),
+            await issueReadSqlCondition(this.db, this.#privacyActor(context.run)),
           ))
           .orderBy(desc(issues.createdAt), desc(issues.id))
           .limit(101);
@@ -448,8 +449,8 @@ export class PaperclipRunnerToolAuthority {
           },
           connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
           acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
-          sourcePlanApproval: await handoffPlanContext(this.db, context.issue),
-          childReviewOutcomes: await childReviewOutcomes(this.db, this.binding.companyId, this.binding.issueId),
+          sourcePlanApproval: await handoffPlanContext(this.db, context.issue, this.#privacyActor(context.run)),
+          childReviewOutcomes: await childReviewOutcomes(this.db, this.binding.companyId, this.binding.issueId, this.#privacyActor(context.run)),
           ...(this.binding.nativeReview ? {
             assignedReview: (await getNativeReviewAssignment(this.db, {
               ...this.binding, contextSnapshot: this.binding.nativeReview,
@@ -477,7 +478,7 @@ export class PaperclipRunnerToolAuthority {
         return { comments: comments.reverse() };
       }
       case "search_tasks": {
-        const tasks = await issueService(this.db).list(this.binding.companyId);
+        const tasks = await issueService(this.db).list(this.binding.companyId, { readCondition: await issueReadSqlCondition(this.db, this.#privacyActor(context.run)) });
         const query = typeof input.query === "string" ? input.query.toLowerCase() : "";
         const statuses = Array.isArray(input.statuses) ? new Set(input.statuses.filter((value): value is string => typeof value === "string")) : null;
         return { tasks: tasks.filter((task) =>
@@ -503,7 +504,7 @@ export class PaperclipRunnerToolAuthority {
         return { actor: redactedActor(actor) };
       }
       case "list_approvals":
-        return { approvals: await approvalService(this.db).list(this.binding.companyId) };
+        return { approvals: await approvalService(this.db).list(this.binding.companyId, undefined, await approvalReadSqlCondition(this.db, this.#privacyActor(context.run))) };
       case "get_approval": {
         const approval = await this.#approval(requiredString(input.approvalId));
         return { approval };
@@ -516,6 +517,7 @@ export class PaperclipRunnerToolAuthority {
             eq(issueApprovals.approvalId, approval.id),
             eq(issueApprovals.companyId, this.binding.companyId),
             eq(issues.companyId, this.binding.companyId),
+            await issueReadSqlCondition(this.db, this.#privacyActor(context.run)),
           ));
         return { approval, tasks: tasks.map((row) => row.issue) };
       }
@@ -728,7 +730,14 @@ export class PaperclipRunnerToolAuthority {
   async #approval(id: string) {
     const approval = await approvalService(this.db).getById(id);
     if (!approval || approval.companyId !== this.binding.companyId) throw new Error("paperclip_runner_approval_not_found");
+    const context = await this.#boundContext();
+    if (!(await canActorReadApproval(this.db, this.#privacyActor(context.run), id))) throw new Error("paperclip_runner_approval_not_found");
     return approval;
+  }
+
+  #privacyActor(run: { responsibleUserId: string | null }): AuthorizationActor {
+    return { type: "agent", agentId: this.binding.agentId, companyId: this.binding.companyId,
+      runId: this.binding.runId, source: "agent_jwt", onBehalfOfUserId: run.responsibleUserId };
   }
 
   async #boundContext() {
@@ -771,6 +780,9 @@ export class PaperclipRunnerToolAuthority {
         throw forbidden("The assigned review is no longer available to this run.");
       }
     }
+    const privacy = await authorizationService(this.db).decide({ actor: this.#privacyActor(row.run), action: "issue:read",
+      resource: { type: "issue", companyId: this.binding.companyId, issueId: row.issue.id } });
+    if (!privacy.allowed) throw forbidden("The task is no longer available to this run");
     return row;
   }
 

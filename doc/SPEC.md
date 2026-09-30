@@ -156,7 +156,7 @@ Hierarchical reporting structure. CEO at top, reports cascade down.
 
 **Full visibility across the org.** Every agent can see the entire org chart, all tasks, all agents. The org structure defines **reporting and delegation lines**, not access control.
 
-Visibility settings on an agent profile (where supported) do not alter company-level visibility for tasks, projects, issues, comments, costs, or activity. Those work-object privacy controls are not a V1 feature until centralized scoped authorization is in place.
+Visibility settings on an agent profile do not control task privacy. Work is company-open by default; opt-in private tasks and projects use centralized authorization as specified in `SPEC-implementation.md` and `ISSUE-PRIVACY.md`. Sharing a child grants access to it and its descendants. Ancestors and siblings require separate access.
 
 Each agent publishes a short description of their responsibilities and capabilities — almost like skills ("when I'm relevant"). This lets other agents discover who can help with what.
 
@@ -287,7 +287,7 @@ All agent communication flows through the **task system**.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
-Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with the task's selected visibility. New execution tasks are ordinary project tasks, not structural children of the conversation; private-source restrictions still flow through their run provenance. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
 
 ### Implications
 

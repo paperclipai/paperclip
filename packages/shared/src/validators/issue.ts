@@ -688,6 +688,7 @@ const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
   goalId: z.string().guid().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
   unblockDescriptor: z

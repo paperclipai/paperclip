@@ -1256,10 +1256,8 @@ describeEmbeddedPostgres(
       expect(
         unmentionedComment.status,
         JSON.stringify(unmentionedComment.body),
-      ).toBe(403);
-      expect(unmentionedComment.body.details.code).toBe(
-        "issue_write_actor_class_excluded",
-      );
+      ).toBe(404);
+      expect(unmentionedComment.body).toEqual({ error: "Issue not found" });
     });
 
     it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
@@ -1626,7 +1624,7 @@ describeEmbeddedPostgres(
         const before = await snapshot(db);
         const res = await attempt.req();
         expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(
-          403,
+          ["LT approvals", "LT-15/16", "LT-19", "LT-26 child", "LT-26 company issue", "LT-26 interaction", "LT-06 resume", "LT-06 blocker mutation"].includes(attempt.id) ? 403 : 404,
         );
         expectNoCanary(res.body, ...forbiddenMarkers);
         const after = await snapshot(db);
@@ -1769,7 +1767,7 @@ describeEmbeddedPostgres(
       for (const attempt of attempts) {
         const res = await attempt.req();
         expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(
-          403,
+          404,
         );
         expectNoCanary(res.body, ...forbiddenMarkers);
       }

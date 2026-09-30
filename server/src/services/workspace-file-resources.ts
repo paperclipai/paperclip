@@ -1,3 +1,4 @@
+import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -1031,9 +1032,23 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
+  async function visibleCandidates(candidates: WorkspaceCandidate[]) {
+    if (!actor) return candidates;
+    const visible: WorkspaceCandidate[] = [];
+    for (const candidate of candidates) {
+      const rows = candidate.workspaceKind === "execution_workspace"
+        ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), await executionWorkspaceReadSqlCondition(db, actor)))
+        : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+          .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
+      if (rows.length) visible.push(candidate);
+    }
+    return visible;
+  }
   async function getIssue(issueId: string): Promise<IssueRow> {
-    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId)).limit(1);
+    const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), actor ? await issueReadSqlCondition(db, actor) : undefined)).limit(1);
     if (!issue) throw notFound("Issue not found");
     return issue;
   }
@@ -1059,7 +1074,9 @@ export function workspaceFileResourceService(db: Db) {
       throw unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" });
     }
 
-    return candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name });
+    const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+    if (!candidate) throw notFound("Project workspace not found");
+    return candidate;
   }
 
   async function listCandidates(
@@ -1126,7 +1143,7 @@ export function workspaceFileResourceService(db: Db) {
       }
     }
 
-    return candidates;
+    return visibleCandidates(candidates);
   }
 
   async function loadAvailabilityTargets(
@@ -1166,9 +1183,8 @@ export function workspaceFileResourceService(db: Db) {
           error: unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" }),
         });
       } else {
-        targets.set(targetKey, {
-          candidate: candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name }),
-        });
+        const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+        targets.set(targetKey, candidate ? { candidate } : { error: notFound("Project workspace not found") });
       }
     }
     return targets;
@@ -1200,7 +1216,7 @@ export function workspaceFileResourceService(db: Db) {
       seen.add(row.workspace.id);
       candidates.push(candidateFromProjectWorkspace(row.workspace, row.project));
     }
-    return candidates;
+    return visibleCandidates(candidates);
   }
 
   async function discoverUniqueProjectWorkspaceMatch<T>(

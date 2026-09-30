@@ -667,6 +667,36 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 
 No Docker or external database is required for this mode.
 
+## Issue Privacy Rollout
+
+`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the canonical opt-in issue/project privacy predicate:
+
+- `enforce` (default): return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
+- `shadow`: log structured would-deny decisions but preserve existing reads; use only for rollout diagnosis
+- `off`: skip the predicate and shadow logging
+
+Grant checks read current database state; there is no positive privacy cache.
+Sharing a task grants access to that task and its private descendants. Parents
+and siblings need separate grants. An agent's access is intersected with its
+run's responsible user's current access.
+
+`enforce` is the production default. `shadow` and `off` disclose private data and
+are only temporary diagnostic overrides. The old branch's historical sign-off
+does not qualify the current runtime. See [ISSUE-PRIVACY.md](./ISSUE-PRIVACY.md)
+for the model, validation coverage, break-glass behavior, and residual risks.
+
+Issue-bound heartbeat runs inherit the same read predicate through the stored
+`heartbeat_runs.scope_kind = 'issue'` and `issue_id` binding. Issue deletion
+nulls the foreign key but preserves the explicit issue scope as a fail-closed
+tombstone. Workspace-operation history is either deleted with its direct issue
+or run binding, or remains bound to that fail-closed run tombstone, so it cannot
+become company-level maintenance data through foreign-key nulling. In enforce mode, direct run detail, transcript,
+event, log, and workspace-operation reads return `404` to non-members. Company
+run-history and live-run lists retain a metadata-only row with timing, status,
+token usage, and cost for budget oversight; issue identifiers, summaries, and
+run content are omitted. Runs without an issue binding keep company-level
+maintenance-run visibility.
+
 ## Storage in Dev (Auto-Handled)
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:

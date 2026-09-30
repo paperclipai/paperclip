@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  authUsers,
+  companyMemberships,
   agents,
   approvals,
   companies,
@@ -1284,6 +1286,8 @@ describe("PaperclipRunnerToolAuthority", () => {
       status: "running", runtimeMode: "native", nativeIssueId: issueId,
       invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(authUsers).values(["person-a", "person-b"].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values(["person-a", "person-b"].map(principalId => ({ companyId, principalType: "user", principalId, status: "active", membershipRole: "operator" })));
     const origin = await initializeRunIdentity(db, {
       companyId, runId, issueId, responsibleUserId: "person-a", cause: "instruction",
     });

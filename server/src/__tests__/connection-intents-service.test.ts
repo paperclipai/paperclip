@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
   aiProviderDefaults,
   agentWakeupRequests,
   issueComments,
@@ -95,6 +96,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       issuePrefix: "CONN",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Responsible user", email: "responsible@example.test", createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({
       companyId,
       principalType: "user",

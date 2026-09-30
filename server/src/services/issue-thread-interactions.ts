@@ -106,6 +106,7 @@ import {
 } from "./issue-review-policy.js";
 import {
   issueService,
+  ensureAssignmentIssueAccessGrant,
   readAcceptedPlanConfirmationTarget,
   runWorkspaceIsFinalized,
 } from "./issues.js";
@@ -3594,6 +3595,13 @@ export function issueThreadInteractionService(
               payload: data.payload,
             })
             .returning();
+
+          if (row.addresseeAgentId || row.addresseeUserId) {
+            const [privacyIssue] = await tx.select().from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+            await ensureAssignmentIssueAccessGrant(tx, { ...privacyIssue!,
+              assigneeAgentId: row.addresseeAgentId, assigneeUserId: row.addresseeUserId,
+            }, null, { agentId: actor.agentId, userId: actor.userId });
+          }
 
           // An agent replacing its own still-pending card supersedes the older
           // one so the thread never accumulates stale sibling cards. This covers

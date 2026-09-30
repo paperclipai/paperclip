@@ -3322,9 +3322,20 @@ const heartbeatRunListColumns = {
   responsibleUserId: heartbeatRuns.responsibleUserId,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
+  scopeKind: heartbeatRuns.scopeKind,
+  issueId: heartbeatRuns.issueId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
   status: heartbeatRuns.status,
+  inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
+  cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
+  outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),
+  totalTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'totalTokens')::numeric`.as("totalTokens"),
+  costUsd: sql<number | null>`coalesce(
+    (${heartbeatRuns.resultJson} ->> 'costUsd')::numeric,
+    (${heartbeatRuns.resultJson} ->> 'cost_usd')::numeric,
+    (${heartbeatRuns.resultJson} ->> 'total_cost_usd')::numeric
+  )`.as("costUsd"),
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
   error: heartbeatRuns.error,
@@ -3379,34 +3390,17 @@ const heartbeatRunSummaryListColumns = {
 } as const;
 
 const heartbeatRunListContextColumns = {
-  contextIssueId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
-  contextTaskId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as(
-    "contextWakeCommentId",
-  ),
-  contextWakeReason: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as(
-    "contextWakeTriggerDetail",
-  ),
+  contextIssueId: sql<string | null>`coalesce(
+    ${heartbeatRuns.issueId}::text,
+    ${heartbeatRuns.contextSnapshot} ->> 'issueId'
+  )`.as("contextIssueId"),
+  contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
+  contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
+  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+  contextWakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
+  contextWakeSource: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
+  contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
 } as const;
 
 const heartbeatRunListResultColumns = {
@@ -3554,6 +3548,8 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  scopeKind: heartbeatRuns.scopeKind,
+  issueId: heartbeatRuns.issueId,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -3587,9 +3583,7 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
-  issueId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  issueId: heartbeatRuns.issueId,
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -14114,6 +14108,8 @@ export function heartbeatService(
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          scopeKind: "issue",
+          issueId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
@@ -15330,7 +15326,10 @@ export function heartbeatService(
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    // A retry inherits the durable authorization scope of its source run. Do
+    // not promote an untrusted or legacy contextSnapshot.issueId into a new
+    // issue binding: that could either violate the FK or misclassify history.
+    const issueId = run.scopeKind === "issue" ? run.issueId : null;
 
     if (!baseSchedule) {
       const exhaustion = {
@@ -15886,6 +15885,8 @@ export function heartbeatService(
           .values({
             companyId: run.companyId,
             agentId: run.agentId,
+          scopeKind: run.scopeKind,
+          issueId,
             invocationSource: "automation",
             triggerDetail: "system",
             status: "scheduled_retry",
@@ -28348,6 +28349,8 @@ export function heartbeatService(
               ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
               companyId: agent.companyId,
               agentId,
+            scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
+            issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
               invocationSource: source,
               triggerDetail,
               status: "queued",
@@ -28620,6 +28623,8 @@ export function heartbeatService(
         .values({
           companyId: agent.companyId,
           agentId,
+          scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
+          issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
           invocationSource: source,
           triggerDetail,
           status: "queued",

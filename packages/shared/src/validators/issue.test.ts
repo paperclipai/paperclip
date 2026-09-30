@@ -15,6 +15,14 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("accepts private visibility without adding defaults to updates", () => {
+    expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
+    expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");
+    expect(updateIssueSchema.parse({}).visibility).toBeUndefined();
+    expect(updateIssueSchema.parse({ visibility: "private" }).visibility).toBe("private");
+    expect(updateIssueSchema.safeParse({ visibility: "secret" }).success).toBe(false);
+  });
+
   it("validates the typed recovery display snapshot while retaining older metadata", () => {
     const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
     const recovery = { kind: "disposition_repair_escalated", actionId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null };
