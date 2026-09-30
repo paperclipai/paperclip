@@ -116,7 +116,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await toolAccessService(db).githubReadConnectionIds(otherCompany.id, "alice")).toEqual([]);
     const ownConnection = savedConnections.find(connection => connection.name === "personal")!;
     expect(await toolAccessService(db).githubReadHeaders(companyId, ownConnection.id, "alice")).toEqual({ Authorization: `Bearer ${personal}` });
-    for (const name of ["other-person", "restricted"]) {
+    for (const name of ["other-person", "restricted", "legacy-personal"]) {
       await expect(toolAccessService(db).githubReadHeaders(companyId, savedConnections.find(connection => connection.name === name)!.id, "alice")).rejects.toThrow(/authorization/);
     }
     await expect(toolAccessService(db).githubReadHeaders(otherCompany.id, ownConnection.id, "alice", true)).rejects.toThrow(/unavailable/);

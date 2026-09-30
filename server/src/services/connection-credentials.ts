@@ -117,13 +117,12 @@ export async function writeConnectionCredential(
   return { secret, created: true, definitionId: createdDefinitionId };
 }
 
-/** The same owner/declaration checks apply during setup, testing and execution. */
-export async function resolveConnectionGrantSecret(
+/** Validate metadata without reading secret values, including for connection pickers. */
+export async function validateConnectionGrantSecretOwnership(
   db: CredentialDb,
   connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
   grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId">,
   ref: ToolCredentialSecretRef,
-  context: ConsumerContext,
 ) {
   const [secret] = await db.select().from(companySecrets).where(and(
     eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, connection.companyId),
@@ -137,6 +136,19 @@ export async function resolveConnectionGrantSecret(
       code: "grant_credential_invalid", connectionId: connection.id, grantId: grant.id, credential: ref.configPath,
     });
   }
+  return secret;
+}
+
+/** The same owner/declaration checks apply during setup, testing and execution. */
+export async function resolveConnectionGrantSecret(
+  db: CredentialDb,
+  connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
+  grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId">,
+  ref: ToolCredentialSecretRef,
+  context: ConsumerContext,
+) {
+  const secret = await validateConnectionGrantSecretOwnership(db, connection, grant, ref);
+  const personal = grant.kind === "user";
   const accessContext = { ...context, consumerType: "tool_connection" as const, consumerId: connection.id,
     configPath: ref.configPath, responsibleUserId: grant.subjectUserId };
   const vault = secretService(db);

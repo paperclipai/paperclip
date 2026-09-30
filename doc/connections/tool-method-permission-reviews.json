@@ -604,7 +604,6 @@
       "policy": "explicit",
       "requestedScopes": [
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-        "https://www.googleapis.com/auth/calendar.events.freebusy",
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
@@ -624,7 +623,6 @@
       "policy": "explicit",
       "requestedScopes": [
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-        "https://www.googleapis.com/auth/calendar.events.freebusy",
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
@@ -717,7 +715,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/documents.readonly"
       ],
       "capability": "read",
@@ -735,7 +732,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/documents.readonly"
       ],
       "capability": "read",
@@ -753,8 +749,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/documents"
       ],
       "capability": "write",
@@ -772,8 +766,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/documents"
       ],
       "capability": "write",
@@ -899,7 +891,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/spreadsheets.readonly"
       ],
       "capability": "read",
@@ -917,7 +908,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/spreadsheets.readonly"
       ],
       "capability": "read",
@@ -935,8 +925,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/spreadsheets"
       ],
       "capability": "write",
@@ -954,8 +942,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/spreadsheets"
       ],
       "capability": "write",
@@ -988,7 +974,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/presentations.readonly"
       ],
       "capability": "read",
@@ -1006,7 +991,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/presentations.readonly"
       ],
       "capability": "read",
@@ -1024,8 +1008,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/presentations"
       ],
       "capability": "write",
@@ -1043,8 +1025,6 @@
       "auth": "oauth",
       "policy": "explicit",
       "requestedScopes": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/presentations"
       ],
       "capability": "write",
