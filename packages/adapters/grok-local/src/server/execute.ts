@@ -86,7 +86,7 @@ async function resolveReasoningEffort(
 }
 
 function isGrokCliUsageRejection(text: string): boolean {
-  return /^\s*(?:error:\s*)?(?:--[\w/-]+:\s*)?(?:unknown effort level|unknown option|unknown flag|unrecognized argument|invalid value for)\b/im.test(text);
+  return /^\s*(?:error:\s*)?(?:--[\w/-]+:\s*)?(?:unknown effort level|unknown option|unknown flag|unrecognized argument|unexpected argument|invalid value)\b/im.test(text);
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {

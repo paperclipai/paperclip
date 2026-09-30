@@ -237,6 +237,9 @@ describe("grok_local execute", () => {
     "unknown flag: --turbo",
     "unrecognized argument '--turbo'",
     "invalid value for --model: missing-model",
+    "error: invalid value 'bogus' for '--permission-mode <mode>'",
+    "--permission-mode: invalid value: bogus",
+    "unexpected argument '--nope'",
     "Grok failed to start\nerror: unknown option '--turbo'",
   ])("marks a failed CLI usage rejection as configuration incomplete: %s", async (stderr) => {
     const ctx = await makeCtx("cli-usage-rejection", await makeTempRoot());
@@ -259,7 +262,13 @@ describe("grok_local execute", () => {
     expect((await execute(ctx)).errorCode).toBe("configuration_incomplete");
   });
 
-  it.each(["network error", "network error while reporting unknown option '--turbo'"])(
+  it.each([
+    "network error",
+    "network error while reporting unknown option '--turbo'",
+    "network error while reporting invalid value 'bogus' for '--permission-mode <mode>'",
+    "network error while reporting --permission-mode: invalid value: bogus",
+    "network error while reporting unexpected argument '--nope'",
+  ])(
     "leaves unrelated failures retryable: %s", async (stderr) => {
       const ctx = await makeCtx("transient-failure", await makeTempRoot());
       runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), exitCode: 1, stdout: "", stderr });
@@ -268,9 +277,14 @@ describe("grok_local execute", () => {
     },
   );
 
-  it("does not mark a successful launch as configuration incomplete", async () => {
+  it.each([
+    "unknown option '--turbo'",
+    "error: invalid value 'bogus' for '--permission-mode <mode>'",
+    "--permission-mode: invalid value: bogus",
+    "unexpected argument '--nope'",
+  ])("does not mark a successful launch as configuration incomplete: %s", async (stderr) => {
     const ctx = await makeCtx("successful-cli-launch", await makeTempRoot());
-    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stderr: "unknown option '--turbo'" });
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stderr });
 
     expect((await execute(ctx)).errorCode).toBeUndefined();
   });

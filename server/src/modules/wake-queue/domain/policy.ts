@@ -210,6 +210,7 @@ export type ReleaseRecoveryReviewParticipantFacts = {
   applies: boolean;
   /** True when the finishing run was itself a review-participant-recovery retry. */
   isExecutionReviewParticipantRecoveryRun: boolean;
+  isConfigurationIncompleteFailedRun: boolean;
 };
 
 export type ReleaseRecoveryImmediateFacts = {
@@ -391,9 +392,13 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
     const shouldBlock =
       !shared.recoveryAgentInvokable ||
       !shared.recoveryAgentPresent ||
-      reviewParticipant.isExecutionReviewParticipantRecoveryRun;
+      reviewParticipant.isExecutionReviewParticipantRecoveryRun ||
+      reviewParticipant.isConfigurationIncompleteFailedRun;
     if (shouldBlock) {
-      return { kind: "blocked", notice: "execution_review_participant" };
+      const notice: ReleaseRecoveryBlockedNoticeKind = reviewParticipant.isConfigurationIncompleteFailedRun
+        ? "configuration_incomplete"
+        : "execution_review_participant";
+      return { kind: "blocked", notice };
     }
     return { kind: "queue_review_participant_recovery" };
   }

@@ -698,7 +698,7 @@ describe("releaseIssueExecution", () => {
     expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
   });
 
-  it.each([null, "configuration_incomplete", "model_not_found"])(
+  it.each([null, "provider_unavailable", "configuration_incomplete", "model_not_found"])(
     "requests a conversation retry only for retryable review-participant failures (%s)", async (errorCode) => {
       const run: RunSnapshot = {
         ...RUN,
@@ -722,13 +722,20 @@ describe("releaseIssueExecution", () => {
 
       const result = await releaseIssueExecution({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
 
+      const configurationIncomplete = errorCode === "configuration_incomplete" || errorCode === "model_not_found";
       const conversationRetries = result.postCommitEffects.filter((effect) => effect.kind === "conversation_retry_requested");
-      expect(conversationRetries).toEqual(errorCode === null ? [{
+      expect(conversationRetries).toEqual(configurationIncomplete ? [] : [{
         kind: "conversation_retry_requested",
         companyId: RUN.companyId,
         runId: RUN.id,
         reviewParticipant: true,
-      }] : []);
+      }]);
+      if (configurationIncomplete) {
+        expect(result.outcome).toMatchObject({ kind: "blocked", noticeKind: "configuration_incomplete" });
+      } else {
+        expect(result.outcome.kind).toBe("released");
+      }
+      expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
     },
   );
 

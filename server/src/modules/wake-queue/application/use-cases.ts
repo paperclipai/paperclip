@@ -585,6 +585,8 @@ async function runReleaseRecoveryTail(
       applies: reviewParticipantApplies,
       isExecutionReviewParticipantRecoveryRun:
         isExecutionReviewParticipantRecoveryRun(run),
+      isConfigurationIncompleteFailedRun:
+        isConfigurationIncompleteFailedRun(run),
     },
     immediate: {
       applies: immediateApplies,
@@ -646,12 +648,11 @@ async function runReleaseRecoveryTail(
 
   if (
     run.conversationContinuation &&
-    ["failed", "timed_out", "interrupted"].includes(run.status) &&
-    !isConfigurationIncompleteFailedRun(run)
+    ["failed", "timed_out", "interrupted"].includes(run.status)
   ) {
-    // Do not create an uncounted immediate successor inside the issue lock.
-    // The host's idempotent scheduler claims it after commit with the same
-    // retry counter used by restart and process-loss recovery.
+    // The policy excludes configuration-incomplete failures from queued recovery.
+    // Conversation retries use the host's idempotent post-commit scheduler,
+    // sharing the retry counter with restart and process-loss recovery.
     postCommitEffects.push({
       kind: "conversation_retry_requested",
       companyId: run.companyId,
