@@ -20,6 +20,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
+const mockGetCurrentBoardAccess = vi.hoisted(() => vi.fn());
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
@@ -29,6 +30,18 @@ vi.mock("@/api/auth", () => ({
 }));
 
 vi.mock("@/api/health", () => ({ healthApi: mockHealthApi }));
+
+vi.mock("@/api/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/access")>();
+  return {
+    ...actual,
+    accessApi: { ...actual.accessApi, getCurrentBoardAccess: mockGetCurrentBoardAccess },
+  };
+});
+
+vi.mock("@/context/CompanyContext", () => ({
+  useOptionalCompany: () => ({ selectedCompanyId: "company-1" }),
+}));
 
 vi.mock("@/lib/browserNavigation", () => ({
   navigateTopLevel: mockNavigateTopLevel,
@@ -95,6 +108,22 @@ function cloudStacksPortfolio(role: string) {
   };
 }
 
+/** Board access snapshot for a signed-in member of company-1 at the given company role. */
+function boardAccess(
+  membershipRole: "owner" | "admin" | "operator" | "viewer",
+  overrides: { isInstanceAdmin?: boolean; source?: string } = {},
+) {
+  return {
+    user: { id: "user-1", email: "jane@example.com", name: "Jane Example", image: null },
+    userId: "user-1",
+    isInstanceAdmin: overrides.isInstanceAdmin ?? false,
+    companyIds: ["company-1"],
+    memberships: [{ companyId: "company-1", membershipRole, status: "active" as const }],
+    source: overrides.source ?? "session",
+    keyId: null,
+  };
+}
+
 describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
 
@@ -114,6 +143,9 @@ describe("SidebarAccountMenu", () => {
       enableIsolatedWorkspaces: false,
     });
     mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
+    // Default to a company owner: the self-hosted Invite shortcut needs the
+    // `users:invite` grant, which owners and admins hold.
+    mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("owner"));
   });
 
   afterEach(() => {
@@ -618,6 +650,81 @@ describe("SidebarAccountMenu", () => {
     // The settings-independent entries stay put.
     expect(popover?.querySelector('a[aria-label="View profile"]')).not.toBeNull();
     expect(popover?.textContent).toContain("Documentation");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("offers no self-hosted invite shortcut to members without the invite grant (%#)", async (AccountMenu) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+    // Operators and viewers lack `users:invite`; the Invites tab would only
+    // show them a permission error, so the menu must not offer it.
+    mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("operator"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AccountMenu deploymentMode="authenticated" open />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockGetCurrentBoardAccess).toHaveBeenCalledOnce();
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Invite");
+    expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
+    expect(popover?.querySelector('a[aria-label="View profile"]')).not.toBeNull();
+    expect(popover?.textContent).toContain("Documentation");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([
+    ["instance admin", boardAccess("viewer", { isInstanceAdmin: true })],
+    ["local board", boardAccess("viewer", { source: "local_implicit" })],
+    ["company admin", boardAccess("admin")],
+  ])("offers the self-hosted invite shortcut to a %s", async (_label, access) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+    mockGetCurrentBoardAccess.mockResolvedValue(access);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="authenticated" open />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    const inviteLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="/company/settings/members?tab=invites"]',
+    );
+    expect(inviteLink?.textContent).toBe("Invite");
 
     await act(async () => {
       root.unmount();

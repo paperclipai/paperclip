@@ -13,6 +13,7 @@ import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useCanInviteCompanyMembers } from "@/hooks/useCompanyInviteAccess";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useStagingCommit } from "@/hooks/useStagingCommit";
@@ -129,7 +130,11 @@ export function SidebarAccountMenu({
   // only once the stack metadata is known; the in-app Invites tab is never a
   // fallback there because it drives a different invitation flow.
   const cloudInviteUrl = useCloudInviteUrl();
-  const inviteHref = isCloud ? cloudInviteUrl : INVITES_PATH;
+  // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
+  // to boards that hold it (company owner/admin, instance admins, local
+  // boards) so a plain member is never sent to a permission error.
+  const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
+  const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
   const showInvite =
     hiddenSettingsLoaded &&
     inviteHref !== null &&
