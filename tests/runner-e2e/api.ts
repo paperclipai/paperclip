@@ -9,6 +9,22 @@ async function failureMessage(response: APIResponse, method: string) {
   return `${method} ${response.url()} returned ${response.status()}${text ? `: ${text}` : ""}`;
 }
 
+/** Preserve HTTP status independently of diagnostic response text. */
+export class RunnerApiHttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); this.name = "RunnerApiHttpError"; }
+}
+
+/** Admission-only diagnostics. Never retain the rejected value or its cause. */
+export class RemoteAdmissionReadError extends Error {
+  constructor(
+    readonly endpoint: "issue" | "run" | "leases",
+    readonly failureClass: "candidate_failure" | "transient_infrastructure" | "permanent_infrastructure",
+  ) {
+    super(`Remote admission ${endpoint} read failed (${failureClass}); diagnostics withheld`);
+    this.name = "RemoteAdmissionReadError";
+  }
+}
+
 export class RunnerApi {
   readonly baseURL: string;
 
@@ -18,9 +34,9 @@ export class RunnerApi {
     this.baseURL = `http://127.0.0.1:${port}`;
   }
 
-  async get<T>(path: string): Promise<T> {
-    const response = await this.request.get(path);
-    if (!response.ok()) throw new Error(await failureMessage(response, "GET"));
+  async get<T>(path: string, options?: { timeout: number }): Promise<T> {
+    const response = await (options ? this.request.get(path, options) : this.request.get(path));
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
     return response.json() as Promise<T>;
   }
 

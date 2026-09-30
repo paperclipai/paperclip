@@ -1349,6 +1349,26 @@ separate from the native operation under test; unknown or extra writes/commands
 still fail. SDK 0.203.0, immutable image and executable digests, public run/lease
 ownership, sandbox labels and workspace sentinel are verified before execution.
 
+Bootstrap admission uses the existing authored case deadline, including cold
+snapshot provisioning, with the fixture’s existing 42-second installation and
+teardown reserve subtracted before admission. It does not impose a separate
+20-second lease deadline or extend the case budget.
+Every poll rechecks task/run ownership and run status, and requires exactly one
+unambiguous active lease for that run and task. A stopped run fails as soon as its read completes, even if another endpoint
+fails or remains pending. At most three reads are outstanding, each with a
+transport timeout bounded by admission and 30 seconds. Late responses cannot
+change saved evidence or start another poll. Missing reads
+cannot admit a lease; successful ownership/status reads are retained.
+Admission and observer setup failures save bounded, allowlisted read status,
+run-stage, lease-count and classified read-failure evidence;
+this evidence does not infer a provider-side cause. Admission GET failures are normalized once to fixed endpoint labels, generic
+messages and explicit failure classes. Typed HTTP status and pinned transport
+timeout shapes preserve infrastructure classification without response bodies,
+URLs or original cause chains in thrown errors. Malformed responses never admit. A recovered API failure does
+not reclassify a later successfully observed state timeout.
+The initial provider's instruction-file read window remains 20 seconds after
+provider startup, and no action is published before the observer is armed.
+
 The observer watches registered targets (including transient create/delete), user
 workspace changes and the exact runner process plus descendants. The single
 controller-owned `.paperclip-runtime/paperclip-runner` subtree is excluded from
