@@ -203,15 +203,20 @@ function registerRouteMocks() {
     logActivity: mockLogActivity,
   }));
 
-  vi.doMock("../services/cross-issue-influence-limit.js", () => ({
-    observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
-    crossIssueInfluenceLimitError: vi.fn(),
-    crossIssueInfluenceRunContextError: () => new HttpError(
-      403,
-      "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-      { code: "cross_issue_influence_run_context_required" },
-    ),
-  }));
+  vi.doMock("../services/cross-issue-influence-limit.js", async () => {
+    // Only the counter is stubbed. The denial builder and the header probe stay real so
+    // the route's 403 copy is the copy an agent actually reads — a hand-written stub here
+    // is exactly how "send the header you already sent" stayed shipped (OIG-308).
+    const actual = await vi.importActual<
+      typeof import("../services/cross-issue-influence-limit.js")
+    >("../services/cross-issue-influence-limit.js");
+    return {
+      observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+      crossIssueInfluenceLimitError: vi.fn(),
+      crossIssueInfluenceRunContextError: actual.crossIssueInfluenceRunContextError,
+      runIdHeaderWasSent: actual.runIdHeaderWasSent,
+    };
+  });
 
   vi.doMock("../services/runner-goals.js", () => ({
     runnerGoalService: () => mockRunnerGoalService,
@@ -1096,6 +1101,60 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(401);
     expect(res.body.error).toBe("Agent run id required");
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  describe("the run-context 403 names which failure this is", () => {
+    // OIG-308: the probe agent in OIG-307 hit this 403 three times, proved with `curl -v`
+    // that X-Paperclip-Run-Id was on the wire, found the advice already satisfied,
+    // concluded the server was broken, invented a root cause and ended its heartbeat.
+    // The two cases must not read the same.
+    const unresolvedRunId = "99999999-9999-4999-8999-999999999999";
+
+    async function denial(headers: Record<string, string>) {
+      const app = await createApp({
+        type: "agent",
+        agentId: ownerAgentId,
+        companyId,
+        source: "agent_key",
+        // No runId: the actor layer never resolved one, whatever the wire carried.
+      });
+      // A comment, not a PATCH: the PATCH path hits the checkout-ownership 401 first on
+      // an `in_progress` issue, and commenting is the write the OIG-307 probe was making.
+      return await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .set(headers)
+        .send({ body: "Status update from agent." });
+    }
+
+    it("tells a caller that sent no header to send it", async () => {
+      const res = await denial({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details.code).toBe("cross_issue_influence_run_context_required");
+      expect(res.body.details.sanctionedPath).toContain("Send the `X-Paperclip-Run-Id` header");
+    });
+
+    it("tells a caller whose header arrived to check the transport, not to resend", async () => {
+      const res = await denial({ "X-Paperclip-Run-Id": unresolvedRunId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      // Same code and boundary: only the human-facing advice may differ.
+      expect(res.body.details.code).toBe("cross_issue_influence_run_context_required");
+      expect(res.body.details.sanctionedPath)
+        .not.toContain("Send the `X-Paperclip-Run-Id` header");
+      expect(res.body.details.sanctionedPath).toContain("sandbox-bridge header allowlist");
+    });
+
+    it("keeps the boundary stable and never echoes the run id it saw", async () => {
+      const absent = await denial({});
+      const arrived = await denial({ "X-Paperclip-Run-Id": unresolvedRunId });
+
+      expect(arrived.body.details.boundary).toBe(absent.body.details.boundary);
+      expect(arrived.body.details.sanctionedPath)
+        .not.toBe(absent.body.details.sanctionedPath);
+      // The body is agent-visible; presence may leak, the run id may not.
+      expect(JSON.stringify(arrived.body)).not.toContain(unresolvedRunId);
+    });
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

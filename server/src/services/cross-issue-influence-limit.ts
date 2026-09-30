@@ -27,10 +27,32 @@ export type CrossIssueInfluenceDecision = {
   enforceAt: string;
 };
 
-export function crossIssueInfluenceRunContextError() {
+/** The header carrying the caller's heartbeat run, as Express lower-cases it. */
+export const RUN_ID_HEADER = "x-paperclip-run-id";
+
+/**
+ * Did the caller's `X-Paperclip-Run-Id` header survive the transport and reach us?
+ *
+ * Presence only. The value is a run id and the denial body is agent-visible, so it is
+ * tested here and discarded — never returned, logged, or echoed.
+ */
+export function runIdHeaderWasSent(req: { header(name: string): string | undefined }): boolean {
+  return typeof req.header(RUN_ID_HEADER) === "string";
+}
+
+export function crossIssueInfluenceRunContextError(
+  options: { runHeaderPresent?: boolean } = {},
+) {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
-  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
+  //
+  // `runHeaderPresent` picks between "you never sent it", "it arrived but did not
+  // resolve", and — when omitted, because the request is not in hand — a hedge that
+  // covers both. Advising a header the caller demonstrably already sent is what sent
+  // the OIG-307 probe agent hunting its own request instead of the transport.
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+    runHeaderPresent: options.runHeaderPresent,
+  });
   return forbidden(body.error, body.details);
 }
 
@@ -82,7 +104,7 @@ export async function observeCrossIssueInfluence(
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
-  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
+  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
 
   return db.transaction(async (tx) => {
     const run = await tx
@@ -106,7 +128,7 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
@@ -133,7 +155,7 @@ export async function observeCrossIssueInfluence(
         ((target.assigneeAgentId && target.assigneeAgentId === input.agentId) ||
           (target.checkoutRunId && target.checkoutRunId === input.runId)),
       );
-      if (!ownsTarget) throw crossIssueInfluenceRunContextError();
+      if (!ownsTarget) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
       // Same-issue semantics: an agent acting on an issue it owns is not fan-out, so
       // the write is admitted uncharged, exactly as a scoped run's write to its own
       // source issue is below.

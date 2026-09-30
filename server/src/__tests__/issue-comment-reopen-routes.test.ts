@@ -209,11 +209,19 @@ vi.mock("../services/external-objects.js", () => ({
   externalObjectService: () => mockExternalObjectService,
 }));
 
-vi.mock("../services/cross-issue-influence-limit.js", () => ({
-  observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
-  crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
-  crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
-}));
+vi.mock("../services/cross-issue-influence-limit.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../services/cross-issue-influence-limit.js")
+  >("../services/cross-issue-influence-limit.js");
+  return {
+    observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
+    crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
+    // The route reads the raw header through this; keep it real so the stubbed denial
+    // above is still reached the same way production reaches it.
+    runIdHeaderWasSent: actual.runIdHeaderWasSent,
+  };
+});
 
 function createApp() {
   const app = express();

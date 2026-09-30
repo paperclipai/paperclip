@@ -3,8 +3,10 @@ import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
   crossIssueInfluenceLimitError,
+  crossIssueInfluenceRunContextError,
   evaluateCrossIssueInfluenceLimit,
   observeCrossIssueInfluence,
+  runIdHeaderWasSent,
 } from "../services/cross-issue-influence-limit.ts";
 
 function counterDb(
@@ -286,5 +288,121 @@ describe("cross-issue influence limit rollout", () => {
       now: new Date(CROSS_ISSUE_INFLUENCE_ENFORCE_AT.getTime() - 1),
     })).resolves.toMatchObject({ count: 1, allowed: true });
     expect(fake.inserted).toHaveLength(1);
+  });
+});
+
+describe("run-context denial distinguishes an absent header from an unresolved one", () => {
+  function fakeRequest(headers: Record<string, string>) {
+    return { header: (name: string) => headers[name.toLowerCase()] };
+  }
+
+  function pathOf(error: ReturnType<typeof crossIssueInfluenceRunContextError>) {
+    return (error.details as { sanctionedPath: string }).sanctionedPath;
+  }
+
+  it("reads presence of the run header, never its value", () => {
+    expect(runIdHeaderWasSent(fakeRequest({}))).toBe(false);
+    expect(runIdHeaderWasSent(fakeRequest({
+      "x-paperclip-run-id": "11111111-1111-4111-8111-111111111111",
+    }))).toBe(true);
+    // A header forwarded but blanked in transit still arrived; that is not "never sent".
+    expect(runIdHeaderWasSent(fakeRequest({ "x-paperclip-run-id": "" }))).toBe(true);
+  });
+
+  it("looks the header up under the name Express normalizes to", () => {
+    const looked: string[] = [];
+    runIdHeaderWasSent({
+      header: (name: string) => {
+        looked.push(name);
+        return undefined;
+      },
+    });
+    expect(looked).toEqual(["x-paperclip-run-id"]);
+  });
+
+  it("tells a caller that sent nothing to send the header", () => {
+    const error = crossIssueInfluenceRunContextError({ runHeaderPresent: false });
+
+    expect(error.status).toBe(403);
+    expect((error.details as { code: string }).code)
+      .toBe("cross_issue_influence_run_context_required");
+    expect(pathOf(error)).toContain("Send the `X-Paperclip-Run-Id` header");
+  });
+
+  it("tells a caller whose header arrived to check the transport, not to resend", () => {
+    const error = crossIssueInfluenceRunContextError({ runHeaderPresent: true });
+
+    expect(error.status).toBe(403);
+    expect((error.details as { code: string }).code)
+      .toBe("cross_issue_influence_run_context_required");
+    expect(pathOf(error)).not.toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(pathOf(error)).toContain("sandbox-bridge header allowlist");
+  });
+
+  it("hedges when the request is not in hand, so no branch is asserted wrongly", () => {
+    expect(pathOf(crossIssueInfluenceRunContextError()))
+      .toBe(pathOf(crossIssueInfluenceRunContextError({ runHeaderPresent: undefined })));
+    // The hedge names both, unlike either decided branch.
+    expect(pathOf(crossIssueInfluenceRunContextError()))
+      .toContain("If the request had no run id");
+  });
+
+  it("keeps the code and boundary identical across all three branches", () => {
+    // Callers and tests match on `code`; only the human-facing copy may differ.
+    const branches = [undefined, false, true].map((runHeaderPresent) =>
+      crossIssueInfluenceRunContextError({ runHeaderPresent }).details as {
+        code: string;
+        boundary: string;
+        sanctionedPath: string;
+      },
+    );
+    for (const branch of branches) {
+      expect(branch.code).toBe("cross_issue_influence_run_context_required");
+      expect(branch.boundary).toBe(branches[0].boundary);
+    }
+    // ...and the advice genuinely differs, or the branch bought nothing.
+    expect(new Set(branches.map((branch) => branch.sanctionedPath)).size).toBe(3);
+  });
+
+  it("reports a run id that failed to resolve as arrived, since the caller supplied one", async () => {
+    // Every path into `observeCrossIssueInfluence` already proved `req.actor.runId`
+    // truthy, so a refusal inside it is never "you did not send the header".
+    const fake = counterDb();
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "attacker-controlled-run-id",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        sanctionedPath: expect.stringContaining("sandbox-bridge header allowlist"),
+      },
+    });
+  });
+
+  it("reports an unscoped run that does not own the target as arrived too", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      assigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      checkoutRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        // OIG-221's ownership guidance must survive the new branch.
+        sanctionedPath: expect.stringContaining("assigned to you or checked out by this run"),
+      },
+    });
   });
 });

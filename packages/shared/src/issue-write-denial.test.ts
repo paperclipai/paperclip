@@ -98,6 +98,55 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).toContain("no issue scope");
   });
 
+  it("tells a caller whose run header never reached the server to send it", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      runHeaderPresent: false,
+    });
+    expect(copy.sanctionedPath).toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    // Absent is the one branch where re-sending is the fix, so never call it futile.
+    expect(copy.sanctionedPath).not.toContain("cannot help");
+    // The server cannot tell "never sent" from "stripped in transit", so it names both.
+    expect(copy.sanctionedPath).toContain("sandbox-bridge header allowlist");
+    expect(copy.description).toContain("No `X-Paperclip-Run-Id` header reached the server");
+  });
+
+  it("stops advising the header once the server has seen it arrive", () => {
+    // Regression (OIG-308): a probe agent confirmed with `curl -v` that the header was
+    // on the wire, read advice it had already satisfied, invented a wrong root cause
+    // and ended its heartbeat. Observed presence must change the advice, not just the
+    // refusal — and it must still name the ownership path OIG-221 added.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      runHeaderPresent: true,
+    });
+    expect(copy.sanctionedPath).not.toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(copy.sanctionedPath).toContain("already arrived, so re-sending it cannot help");
+    expect(copy.sanctionedPath).toContain("sandbox-bridge header allowlist");
+    expect(copy.sanctionedPath).toContain("assigned to you or checked out by this run");
+    expect(copy.sanctionedPath).toContain("documents");
+    expect(copy.description).toContain("did reach the server");
+  });
+
+  it("keeps one code, boundary, status and tone across all three run-context branches", () => {
+    // Callers and tests match on `code`; only the human-facing copy may differ.
+    const branches = [undefined, false, true].map((runHeaderPresent) =>
+      describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+        runHeaderPresent,
+      }),
+    );
+    for (const branch of branches) {
+      expect(branch.code).toBe("cross_issue_influence_run_context_required");
+      expect(branch.boundary).toBe(branches[0].boundary);
+      expect(branch.status).toBe(branches[0].status);
+      expect(branch.tone).toBe(branches[0].tone);
+      expect(branch.whoCanAct).toBe(branches[0].whoCanAct);
+    }
+    // ...and the copy genuinely differs, or the branch bought nothing.
+    expect(new Set(branches.map((branch) => branch.sanctionedPath)).size).toBe(3);
+    expect(new Set(branches.map((branch) => branch.description)).size).toBe(3);
+  });
+
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
