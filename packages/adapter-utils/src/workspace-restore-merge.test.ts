@@ -10,6 +10,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
   directorySnapshotSha256,
+  disposeDirectorySnapshot,
   classifyWorkspaceRestoreFailure,
   describeWorkspaceRestoreFailure,
   mergeDirectoryWithBaseline,
@@ -41,6 +42,7 @@ describe("workspace restore merge", () => {
 
     const snapshot = await captureDirectorySnapshot(rootDir, { exclude: [] });
     const serialized = serializeDirectorySnapshot(snapshot);
+    if (serialized.version !== 1) throw new Error("Expected legacy in-memory snapshot");
     const restored = parseDirectorySnapshot(serialized);
 
     expect(serialized.entries.map(([relativePath]) => relativePath)).toEqual([
@@ -101,6 +103,24 @@ describe("workspace restore merge", () => {
     await expect(
       readFile(path.join(targetDir, "manual-qa", "environment-matrix", "ssh", "codex_local.md"), "utf8"),
     ).resolves.toBe("ssh codex\n");
+  });
+
+  it("preserves a host file replacing a deleted baseline directory and continues the restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-conflict-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    const sourceDir = path.join(rootDir, "source");
+    await mkdir(path.join(targetDir, "replaced", "nested"), { recursive: true });
+    await mkdir(sourceDir);
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [], diskBacked: true });
+    try {
+      await rm(path.join(targetDir, "replaced"), { recursive: true });
+      await writeFile(path.join(targetDir, "replaced"), "host change");
+      await writeFile(path.join(sourceDir, "other.txt"), "sandbox change");
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+      expect(await readFile(path.join(targetDir, "replaced"), "utf8")).toBe("host change");
+      expect(await readFile(path.join(targetDir, "other.txt"), "utf8")).toBe("sandbox change");
+    } finally { await disposeDirectorySnapshot(baseline); }
   });
 
   it("ignores non-file entries when capturing snapshots", async () => {
@@ -584,4 +604,57 @@ describe("workspace restore merge", () => {
       }
     });
   });
+});
+
+describe("conflict-preserving directory restore", () => {
+  it("preflights competing edits before applying any other change and deduplicates replay", async () => {
+    const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-cas-")));
+    const source = path.join(root, "source"), target = path.join(root, "target");
+    try {
+      await mkdir(target);
+      await writeFile(path.join(target, "conflict"), "baseline");
+      const baseline = await captureDirectorySnapshot(target);
+      await fsPromises.cp(target, source, { recursive: true });
+      await writeFile(path.join(source, "conflict"), "incoming");
+      await writeFile(path.join(source, "independent"), "also incoming");
+      await writeFile(path.join(target, "conflict"), "board");
+      await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" })).rejects.toMatchObject({ code: "DIRECTORY_MERGE_CONFLICT", paths: ["conflict"] });
+      await expect(stat(path.join(target, "independent"))).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(path.join(target, "conflict"), "baseline");
+      await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject", afterApply: async () => { throw new Error("receipt interrupted"); } })).rejects.toThrow("receipt interrupted");
+      await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" });
+      expect(await readFile(path.join(target, "independent"), "utf8")).toBe("also incoming");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves a newly added child when another run removes or replaces its parent", async () => {
+    const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-delete-cas-")));
+    const source = path.join(root, "source"), target = path.join(root, "target");
+    try {
+      await mkdir(path.join(target, "folder"), { recursive: true });
+      const baseline = await captureDirectorySnapshot(target);
+      await mkdir(source);
+      await writeFile(path.join(target, "folder", "new"), "concurrent");
+      await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" })).rejects.toMatchObject({ paths: ["folder/new"] });
+      expect(await readFile(path.join(target, "folder", "new"), "utf8")).toBe("concurrent");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+
+it("strict preflight preserves excluded descendants when a directory becomes a file", async () => {
+  const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-excluded-cas-")));
+  const target = path.join(root, "target"), source = path.join(root, "source");
+  await mkdir(path.join(target, "folder", "node_modules"), { recursive: true });
+  await writeFile(path.join(target, "folder", "node_modules", "keep"), "excluded contents");
+  const baseline = await captureDirectorySnapshot(target, { exclude: ["*/node_modules"], diskBacked: true });
+  try {
+    await mkdir(source);
+    await writeFile(path.join(source, "folder"), "replacement");
+    await writeFile(path.join(source, "independent"), "must not partially apply");
+    await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" }))
+      .rejects.toMatchObject({ code: "DIRECTORY_MERGE_CONFLICT", paths: expect.arrayContaining(["folder/node_modules/keep"]) });
+    expect(await readFile(path.join(target, "folder", "node_modules", "keep"), "utf8")).toBe("excluded contents");
+    await expect(stat(path.join(target, "independent"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await disposeDirectorySnapshot(baseline); await rm(root, { recursive: true, force: true }); }
 });

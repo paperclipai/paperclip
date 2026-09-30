@@ -412,7 +412,7 @@ describe("built-in agent routes", () => {
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockBuiltInAgentService.reset).toHaveBeenCalledWith(companyId, "briefs", {});
+    expect(mockBuiltInAgentService.reset).toHaveBeenCalledWith(companyId, "briefs", {}, expect.objectContaining({ type: "agent", agentId: "manager-agent" }));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "agent",

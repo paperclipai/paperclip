@@ -4,8 +4,14 @@ import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
-const { probeInstallation } = vi.hoisted(() => ({ probeInstallation: vi.fn() }));
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: probeInstallation }));
+const { probeInstallation, probeGrokInstallation } = vi.hoisted(() => ({
+  probeInstallation: vi.fn(),
+  probeGrokInstallation: vi.fn(),
+}));
+vi.mock("@paperclipai/paperclip-runner/live", () => ({
+  probeAcpxClaudeInstallation: probeInstallation,
+  probeAcpxGrokInstallation: probeGrokInstallation,
+}));
 
 // The registry registers a login capability for the two built-in interactive
 // adapters. The test checks the scalar values and the presence of the required
@@ -86,7 +92,10 @@ describe("built-in runtime connection tool delivery", () => {
 
 
 describe("native ACPX environment checks", () => {
-  beforeEach(() => { probeInstallation.mockReset().mockResolvedValue(undefined); });
+  beforeEach(() => {
+    probeInstallation.mockReset().mockResolvedValue(undefined);
+    probeGrokInstallation.mockReset().mockResolvedValue(undefined);
+  });
   afterEach(() => vi.restoreAllMocks());
 
   const context = {
@@ -109,6 +118,17 @@ describe("native ACPX environment checks", () => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
     expect(result.status).toBe("pass");
     expect(probeInstallation).toHaveBeenCalledWith(context.config.model);
+  });
+
+  it.each([true, false])("checks Grok's own installation readiness (%s)", async (ready) => {
+    if (!ready) probeGrokInstallation.mockRejectedValueOnce(new Error("Grok executable digest mismatch"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context,
+      config: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" },
+    });
+    expect(result.status).toBe(ready ? "pass" : "fail");
+    expect(probeGrokInstallation).toHaveBeenCalledWith("grok-4.7");
+    expect(probeInstallation).not.toHaveBeenCalled();
   });
 
   it("does not use the host platform to reject a remote environment", async () => {

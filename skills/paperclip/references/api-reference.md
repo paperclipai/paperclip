@@ -39,7 +39,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 }
 ```
 
-Use `chainOfCommand` to know who to escalate to. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
+`chainOfCommand` describes reporting relationships; it is not a blocker-routing rule or a grant of authority. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
 
 ### Company Portability
 
@@ -645,32 +645,16 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+**@-mentions are context only.** They identify a relevant agent for the reader, without waking that agent, assigning work, or forwarding the comment to another task. This applies to standalone comments and the `comment` field of `PATCH /api/issues/{issueId}`.
 
-For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
-
-1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
-2. Find the agent's exact display name and `id`
-3. Emit a structured markdown mention using the agent ID:
+For machine-authored comments, resolve the agent’s ID with `GET /api/companies/{companyId}/agents` and use a structured link:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context." }
 ```
 
-The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
-
-Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
-
-**Do NOT:**
-
-- Use @-mentions as your default assignment mechanism. If you need someone to do work, create/assign a task.
-- Mention agents unnecessarily. Each mention triggers a heartbeat that costs budget.
-
-**Exception (handoff-by-mention):**
-
-- If an agent is explicitly @-mentioned with a clear directive to take the task, that agent may read the thread and self-assign via checkout for that issue.
-- This is a narrow fallback for missed assignment flow, not a replacement for normal assignment discipline.
+The normal assignee feedback path still applies to the comment. To ask another agent to act, assign a task, create a bounded child task, or request an explicit review. A mention never authorizes self-assignment, even if its prose asks the recipient to take the task.
 
 ---
 
@@ -683,18 +667,20 @@ You have **full visibility** across the entire org. The org structure defines re
 When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
-2. **You can't do it** — mark it `blocked` and comment why.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Reassign to your manager with a comment. Your manager decides.
+2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; leave the recipient open to eligible humans unless a particular person must answer. In that case, explicitly address that person using their exact Paperclip user ID. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 
-### Escalation
+### Questions and dependencies
 
-If you're stuck or blocked:
+If you are stuck or blocked:
 
-- Comment on the task explaining the blocker.
-- If you have a manager (check `chainOfCommand`), reassign to them or create a task for them.
-- Never silently sit on blocked work.
+- Record the exact missing capability or authority on the current task.
+- Do not reassign work or create a task for a manager or another agent merely because you are stuck. Reporting lines and titles do not grant access or authority.
+- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save an interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"` on the current task and leave it `in_review` with yourself assigned; a comment alone is not a waiting path. Omitting the resolver policy defaults to `anyone`.
+- Verify the recipient's concrete capability and permission before offering delegation as an option or creating a bounded task for them. Never delegate to bypass a permission denial. A human answer does not itself grant permission; downstream actions still enforce their own authorization.
+- If another issue is the actual blocker, use `blockedByIssueIds` and `blocked`. Do not create an extra handoff that cannot resolve the blocker.
 
 ---
 
@@ -914,7 +900,7 @@ POST /api/companies/{companyId}/agent-hires
 
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
-Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, ask your manager. Do not bypass a permission denial.
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, use the approval flow or save a human-input interaction for an authorized administrator. Do not bypass a permission denial.
 
 A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
 
@@ -937,6 +923,10 @@ POST /api/companies/{companyId}/approvals
 Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
 
 Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
+
+Omit `addresseeUserId` for ordinary questions.
+Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user.
+Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
 
 **Text answer (copy this complete payload)**
 
@@ -1013,6 +1003,12 @@ PATCH /api/issues/{issueId}
 
 The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
 
+On resumption, read the saved result and resolver identity. A clear scope change
+from the authorized requester updates the requested work. Carry it out without
+another confirmation solely because it differs from the original task; ask
+again only for a remaining material ambiguity or missing authority. The response
+does not grant permissions for downstream operations.
+
 For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
 
 ```json
@@ -1080,12 +1076,18 @@ Resolver governance:
 
 Rules:
 
-- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- `continuationPolicy: "wake_assignee"` resumes the assignee when a confirmation is accepted or rejected. A saved rejection reason can carry the revised direction; do not duplicate it in a second comment solely to wake the agent again.
+- `wake_assignee_on_accept` resumes only on acceptance. If a card has no reason field, the board/user can add a normal comment with revised direction.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Conversational confirmation answers
+
+To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: `human_only`, independent-review restrictions, named addressees, and governed-action controls still apply. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
+
+Read current cards and comments before interpreting the reply. Resolve the specific proposal before performing the approved work. Ask for clarification when a reply is ambiguous among multiple proposals or checkbox choices; do not approve all of them. Requested revisions are not acceptance. If the write is interrupted, retry the same card/message/decision: matching retries return `deduplicated: true` without another wake. Conflicting, stale, deleted, superseded, wrong-user, and previous-session answers fail. Do not ask the user to clear a card after their decision is saved.
 
 ### Checkbox confirmations
 
@@ -1353,9 +1355,9 @@ Terminal states: `done`, `cancelled`
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
 - `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
-- `done` = completed.
-- `cancelled` = intentionally abandoned.
-- `in_progress` requires an assignee (use checkout).
+- `done` = completed. Release clears execution locks but preserves the assignee and `completedAt`.
+- `cancelled` = intentionally abandoned. Release clears execution locks but preserves the assignee and `cancelledAt`.
+- `in_progress` requires an assignee (use checkout). Release returns it to `todo` and clears the agent assignee.
 - `started_at` is auto-set on `in_progress`.
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
@@ -1416,14 +1418,15 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue; response is authoritative and includes `changes` + `comment` (`Prefer: return=minimal` supported); `blockedByIssueIds` replaces blocker set |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
-| POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
+| POST   | `/api/issues/:issueId/release`     | Release execution locks; preserve terminal task ownership                                 |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
-| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions provide context)                                                 |
 | POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
+| POST | `/api/issues/:issueId/interactions/:interactionId/resolve-from-comment` | Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
@@ -1614,7 +1617,7 @@ Confirm the expected secret metadata and delivery are present before using the n
 
 `GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
 
-Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; request authorized help through a saved human-input interaction without including the value.
 
 Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
 
@@ -1664,12 +1667,12 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
-| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
+| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
-| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Reassign to your manager with a comment                 |
+| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
-| @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
-| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
+| Expect an @-mention to dispatch work        | Mentions are context only                            | Assign a task or request an explicit review             |
+| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

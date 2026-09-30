@@ -83,6 +83,8 @@ Research, clarify, and develop full plans here using the conversation's plan doc
 
 When the user asks to approve a plan before handoff, publish the plan and create a revision-bound approval card before ending the turn. With native tools, call request_human_input using interactionKind: "confirmation", targetRevisionId from the saved document's latestRevisionId, a revision-specific idempotencyKey, and continuationPolicy: "wake_assignee". Set payload.target to { type: "issue_document", key: "plan", revisionId: latestRevisionId }. Through the HTTP API, POST the equivalent request_confirmation interaction to /api/issues/{issueId}/interactions. A written request to approve in your reply does not create an approval card. After requested revisions, create a fresh card for the newly saved revision. This applies to explicitly requested plan approval; ordinary conversation replies and draft planning do not need confirmation. In Ask mode, discuss the plan without creating or revising documents or approval cards.
 
+When a user answers a pending confirmation in chat, read the latest cards and user comments, identify the specific proposal and decision, and persist it before acting: POST /api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment with { commentId: the user message ID, decision: "accept" or "reject" }. Use call_api on native runners. For a checkbox confirmation, also send selectedOptionIds for the choices the user actually approved; defaults alone are not consent. An ambiguous "yes" with multiple pending proposals requires clarification, not approving all of them. A requested revision is not acceptance. Do not use this endpoint for question forms or governed tool/secret approvals. Respect resolver-policy denials. If saving the decision fails, re-read the card and retry the same decision when appropriate before doing the approved work; never leave it pending and proceed anyway. If a card is already resolved, use its recorded outcome. Do not ask the user to clear a card after recording their answer.
+
 Before handing off work, inspect available projects and repositories. Every task you create from this chat must belong to a suitable project. Reuse an appropriate existing project; otherwise use create_project. Consider all relevant available repositories and pass repositoryIds for one or multiple repositories when the work spans them. For existing GitHub repositories you can access that are absent from the catalog, pass their HTTPS repositoryUrls; this registers them with the project without creating remote GitHub repositories. You may combine known IDs and URLs and attach multiple repositories. The direct HTTP equivalent is POST /api/companies/{companyId}/projects with name, repositoryIds and/or repositoryUrls arrays, and an idempotencyKey. Include all selected repositories in that creation; do not combine these arrays with workspace. Never invent repository IDs or substitute inaccessible repositories. Ask when the choice is materially ambiguous or required access is missing. Non-code projects may need no repository.
 
 Create ordinary assigned tasks, never subtasks of this conversation. Give each task a clear outcome, context, acceptance criteria, project, and appropriate assignee. Use create_task with initialPlan to copy the relevant plan into the new task before execution starts. If using the HTTP API directly, POST /api/companies/{companyId}/issues with projectId, assigneeAgentId, status: "todo", initialPlan containing the relevant plan Markdown, and an idempotencyKey; omit parentId. Putting a plan in description does not create the task's plan document. Verify the new task's plan document before claiming the handoff is complete. Preserve the original plan here. Carry forward only the remaining execution steps, not completed planning, approval, project creation, or task creation steps. Include the source conversation ID, approved plan revision ID, and accepted interaction ID so the worker can verify the recorded approval. State the approved scope and what is already done; do not claim the new plan document has its own approval. The worker should execute that authorized scope, and ask again only if scope changes or another applicable gate requires it. When splitting work, include the relevant part of the plan in each task. Create and link each task before claiming it exists.
@@ -91,7 +93,7 @@ For review or follow-up tasks, include the existing source materials the assigne
 
 For status updates, distinguish recorded task status from active execution and verified progress. Read the latest relevant comments and run outcome before explaining a blocker or claiming work is underway. Use the advertised API tools for another task's details when needed. A completed dependency does not prove a block is stale; report the assignee's recorded reason. Agent configuration may be redacted: an empty configuration object without configuration-read permission does not prove settings are disabled or at their defaults. If the evidence is unavailable, say what you could verify and what remains unknown rather than guessing or recommending a status change.
 
-Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
+Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Paperclip will bring completed handed-off tasks back as a new input here so you can explain the result and link it without another user message. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
 
 /** A reset keeps history visible, but parked input from a stopped session cannot become a new turn. */
 export function currentConversationCommentCondition() {
@@ -202,6 +204,53 @@ export async function prepareConversationTurn(
           ),
         );
     }
+    // An answer to a historical question references its original user message.
+    // Keep that provenance, but do not mistake already answered later messages
+    // for new work. Only advance through a successful, durably answered turn in
+    // this same session; queued, failed, or response-less turns do not qualify.
+    if (context.interactionKind === "ask_user_questions" && context.interactionStatus === "answered"
+      && typeof context.interactionId === "string" && typeof context.conversationReplyBoundaryCommentId !== "string") {
+      const [answered] = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.id, context.interactionId), eq(issueThreadInteractions.companyId, run.companyId),
+        eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.kind, "ask_user_questions"),
+        eq(issueThreadInteractions.status, "answered"),
+      ));
+      if (answered) {
+        const progress = await tx.select({
+          id: issueComments.id,
+          handled: sql<boolean>`exists (select 1 from ${heartbeatRuns} completed
+            where completed.company_id = ${run.companyId}::uuid and completed.agent_id = ${issue.conversationAgentId}::uuid
+              and completed.status = 'succeeded' and completed.context_snapshot->>'issueId' = ${issueId}
+              and completed.context_snapshot->>'conversationSessionGeneration' = ${String(generation)}
+              and coalesce(completed.context_snapshot->>'wakeCommentId', completed.context_snapshot->>'commentId') = issue_comments.id::text
+              and (exists (select 1 from issue_comments reply where reply.company_id = ${run.companyId}::uuid
+                and reply.issue_id = ${issueId}::uuid and reply.created_by_run_id = completed.id
+                and reply.author_agent_id = ${issue.conversationAgentId}::uuid and reply.deleted_at is null)
+                or exists (select 1 from issue_thread_interactions question where question.company_id = ${run.companyId}::uuid
+                  and question.issue_id = ${issueId}::uuid and question.source_run_id = completed.id
+                  and question.created_by_agent_id = ${issue.conversationAgentId}::uuid)))`,
+        }).from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
+          isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId), isNull(issueComments.authorAgentId),
+          sql`${issueComments.authorUserId} is not null`,
+          comment ? sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${comment.id}::uuid)` : sql`false`,
+        )).orderBy(issueComments.createdAt, issueComments.id);
+        let replyBoundary = commentId;
+        let firstUnhandled: string | null = null;
+        for (const candidate of progress) {
+          if (!candidate.handled) { firstUnhandled = candidate.id; break; }
+          replyBoundary = candidate.id;
+        }
+        context.conversationReplyBoundaryCommentId = replyBoundary;
+        // Freeze the visible history too. Include prior replies, but never pull
+        // an unhandled or newly arriving message into this historical answer.
+        const [replayThrough] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt),
+          firstUnhandled ? sql`(${issueComments.createdAt}, ${issueComments.id}) < (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${firstUnhandled}::uuid)` : undefined,
+        )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+        context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
+      }
+    }
     await tx
       .update(issues)
       .set({
@@ -281,9 +330,11 @@ export async function settleConversationTurn(
     // Messages arriving during the reply remain actionable, including the
     // crash window between their comment commit and wake enqueue.
     const wakeId =
-      typeof context.wakeCommentId === "string"
-        ? context.wakeCommentId
-        : context.commentId;
+      typeof context.conversationReplyBoundaryCommentId === "string"
+        ? context.conversationReplyBoundaryCommentId
+        : typeof context.wakeCommentId === "string"
+          ? context.wakeCommentId
+          : context.commentId;
     const [wake] =
       typeof wakeId === "string"
         ? await tx
@@ -356,6 +407,7 @@ export async function conversationReplay(
   companyId: string,
   issueId: string,
   wakeCommentId: string | null,
+  throughCommentId?: string,
 ) {
   const [issue] = await db
     .select()
@@ -368,13 +420,14 @@ export async function conversationReplay(
         .from(issueComments)
         .where(eq(issueComments.id, issue.conversationBoundaryCommentId))
     : [];
-  const [wake] = wakeCommentId
+  const replayCutoffId = throughCommentId ?? wakeCommentId;
+  const [wake] = replayCutoffId
     ? await db
         .select()
         .from(issueComments)
         .where(
           and(
-            eq(issueComments.id, wakeCommentId),
+            eq(issueComments.id, replayCutoffId),
             eq(issueComments.issueId, issueId),
           ),
         )
@@ -391,7 +444,9 @@ export async function conversationReplay(
           ? sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${boundary.id}::uuid)`
           : undefined,
         wake
-          ? sql`(${issueComments.createdAt}, ${issueComments.id}) < (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)`
+          ? throughCommentId
+            ? sql`(${issueComments.createdAt}, ${issueComments.id}) <= (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)`
+            : sql`(${issueComments.createdAt}, ${issueComments.id}) < (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)`
           : undefined,
       ),
     )

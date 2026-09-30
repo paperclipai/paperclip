@@ -31,6 +31,9 @@ export type {
   NativeCodexApprovalPolicy,
   NativeExecutionInput,
   NativeExecutionInputV4,
+  NativeExecutionInputV5,
+  NativeCompletionSource,
+  NativeCompletionSources,
   NativeInteractionResponseEnvelope,
   NativeOpenCodePermissionMode,
   NativePlanningContext,
@@ -68,12 +71,14 @@ const sourceUrl = new URL(
 const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
 export const NativeSessionCleanupQuarantinedError =
   runner.NativeSessionCleanupQuarantinedError;
 export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
+export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;

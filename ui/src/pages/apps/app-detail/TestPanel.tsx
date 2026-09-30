@@ -1360,6 +1360,7 @@ function ErrorResult({
   error: { message: string; reasonCode: string | null };
 }) {
   const hints = errorHints(error.message, error.reasonCode);
+  const needsReconnect = isReconnectError(error.reasonCode);
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
@@ -1383,7 +1384,9 @@ function ErrorResult({
           ))}
         </ul>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">Adjust the input above and try again.</p>
+      <p className="mt-3 text-xs text-muted-foreground">
+        {needsReconnect ? "After reconnecting, run this action again." : "Adjust the input above and try again."}
+      </p>
       <p className="mt-1 text-xs text-muted-foreground">
         Also visible in the{" "}
         <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
@@ -1653,7 +1656,17 @@ function safeStringify(value: unknown): string {
  * board-accepted copy-spec error-hint lookup (NOT_FOUND / PERMISSION_DENIED /
  * INVALID_ARGUMENT / RATE_LIMIT) with the locked generic fallback otherwise.
  */
+function isReconnectError(reasonCode: string | null | undefined): boolean {
+  return reasonCode === "grant_credential_invalid" || reasonCode === "oauth_insufficient_scope";
+}
+
 export function errorHints(message: string, reasonCode: string | null | undefined): string[] {
+  if (reasonCode === "grant_credential_invalid") {
+    return ["Ask the connection owner to reconnect it from Connectors with a fresh key or server URL."];
+  }
+  if (reasonCode === "oauth_insufficient_scope") {
+    return ["Reconnect the app and allow the permissions required for this action."];
+  }
   const haystack = `${reasonCode ?? ""} ${message}`.toUpperCase();
   if (haystack.includes("NOT_FOUND")) {
     return [

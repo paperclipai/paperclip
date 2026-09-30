@@ -1,3 +1,10 @@
+import { setIssueTitle } from "../issue-title.js";
+import { externalObjectService } from "../external-objects.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { setIssueTitleSchema } from "@paperclipai/shared";
+import { authorizeInstructionCommit } from "../agent-instruction-authorization.js";
+import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
+import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
@@ -24,13 +31,16 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { assetService } from "../assets.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden } from "../../errors.js";
+import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
+import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  assets,
+  runnerApiResponseReservations,
   agents,
   agentWakeupRequests,
   chatEndpoints,
@@ -43,7 +53,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -79,8 +89,9 @@ import {
 } from "./chat-attachment-read.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
+  "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
-  "get_task_context", "get_task_history", "search_tasks", "report_progress",
+  "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title",
   "request_human_input",
   "create_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
@@ -113,6 +124,7 @@ type Binding = {
   readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
   currentWakeComments?: CurrentWakeCommentsBinding;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   enqueueWakeup?: (agentId: string, options: {
     source: "assignment";
@@ -132,6 +144,25 @@ type ToolReceipt = {
   input: unknown;
   result: unknown;
 };
+
+// Coalesce live callers, but never use this process-local lock as crash proof.
+// The database attempt record below is the authority after process loss.
+const instructionCallLocks = new WeakMap<Db, Map<string, Promise<void>>>();
+const instructionPreWriteFailureStatuses = new Set([400, 401, 403, 404, 409, 422]);
+async function withInstructionCallLock<T>(db: Db, key: string, work: () => Promise<T>): Promise<T> {
+  let locks = instructionCallLocks.get(db);
+  if (!locks) instructionCallLocks.set(db, locks = new Map());
+  const previous = locks.get(key);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  locks.set(key, pending);
+  await previous;
+  try { return await work(); }
+  finally {
+    release();
+    if (locks.get(key) === pending) locks.delete(key);
+  }
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -225,7 +256,11 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools), ...(this.binding.assignedMcpTools?.definitions() ?? []), ...definitions];
+    const connectionTools = [...RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+      ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools)];
+    const assignedTools = this.binding.assignedMcpTools?.definitions((tools) =>
+      runnerCodexDynamicToolsFit([...connectionTools, ...tools, ...definitions])) ?? [];
+    return [...connectionTools, ...assignedTools, ...definitions];
   }
 
   async execute(call: {
@@ -360,6 +395,15 @@ export class PaperclipRunnerToolAuthority {
       throw new Error("paperclip_runner_tool_mode_denied");
     }
     switch (call.tool) {
+      case "read_agent_instructions":
+      case "get_agent_instruction_history":
+        return executeAgentInstructionTool({ db: this.db, binding: {
+          companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+        }, tool: call.tool, arguments: call.arguments });
+      case "update_agent_instructions":
+      case "restore_agent_instructions": {
+        return this.#withInstructionMutationReceipt(call.tool, call.callId, input);
+      }
       case "create_skill": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
@@ -508,6 +552,7 @@ export class PaperclipRunnerToolAuthority {
       case "create_task": return this.#createTask(input,
         (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
       case "reassign_task": return this.#reassignTask(input);
+      case "set_task_title": return this.#setTaskTitle(input);
       case "set_dependencies": return this.#setDependencies(input);
       case "register_deliverable": return this.#registerDeliverable(input);
       default: throw new Error("paperclip_runner_tool_not_bound");
@@ -523,6 +568,8 @@ export class PaperclipRunnerToolAuthority {
     const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
     const execute = async () => {
+      let reservationId: string | undefined;
+      let storageAttempted = false;
       const current = await this.#boundContext();
       if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) throw new Error("paperclip_runner_tool_not_advertised");
       return executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
@@ -533,10 +580,34 @@ export class PaperclipRunnerToolAuthority {
           validateRunnerApiCall(input, { ...context, workMode: fresh.issue.workMode });
         },
         readFile: (file) => this.#readApiFile(file),
+        reserveResponseCapture: async () => {
+          const reservation = await this.#reserveApiResponseCapture();
+          reservationId = reservation.id;
+          return (completedBytes, cleaned) => reservation.settle(completedBytes, cleaned, storageAttempted);
+        },
         saveResponse: async (bytes, contentType) => {
+          if (!reservationId) throw new Error("API response storage reservation is missing");
           const storage = this.binding.storage ?? getStorageService();
-          const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, body: bytes });
-          const asset = await assetService(this.db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
+          storageAttempted = true;
+          const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
+          const asset = await this.db.transaction(async tx => {
+            await this.#lockApiCaptureCompany(tx as unknown as Db);
+            const asset = await assetService(tx as unknown as Db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
+            await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
+            return asset;
+          }).catch(async error => {
+            // A failed commit acknowledgement can still leave a committed
+            // asset. A locking read waits out that transaction before proving
+            // the reservation is unlinked and safe to compensate.
+            const reservation = await this.db.select({ assetId: runnerApiResponseReservations.assetId })
+              .from(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId))).for("update")
+              .then(rows => rows[0]).catch(() => undefined);
+            if (reservation?.assetId === null) {
+              const removed = await storage.deleteObject(this.binding.companyId, saved.objectKey).then(() => true, () => false);
+              if (removed) storageAttempted = false;
+            }
+            throw error;
+          });
           const activity = await persistActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId, issueId: this.binding.issueId, action: "asset.created", entityType: "asset", entityId: asset.id, details: { source: "runner.call_api", byteSize: saved.byteSize } });
           publishActivity(activity.publication);
           return { artifactId: asset.id, url: `/api/assets/${asset.id}/content`, contentType, byteSize: saved.byteSize, sha256: saved.sha256 };
@@ -583,6 +654,68 @@ export class PaperclipRunnerToolAuthority {
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
     });
     return result;
+  }
+
+  async #lockApiCaptureCompany(tx: Db): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`runner-api-capture:${this.binding.companyId}`}, 0))`);
+  }
+
+  async #reserveApiResponseCapture() {
+    const release = acquireRunnerApiResponseSlot(this.binding.companyId);
+    let id: string;
+    try {
+      id = await this.db.transaction(async tx => {
+        await this.#lockApiCaptureCompany(tx as unknown as Db);
+        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const resultJson = record(locked.run.resultJson);
+        const used = resultJson.apiResponseCaptureBytes ?? 0;
+        if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
+          || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
+          throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+        }
+        // One company lock covers all runs/processes. Stored assets include
+        // snapshots from before reservations existed; attached reservations
+        // are excluded so completed snapshots are counted exactly once.
+        const [usage] = await tx.select({ bytes: sql<string>`
+          coalesce((select sum(${assets.byteSize}) from ${assets}
+            where ${assets.companyId} = ${this.binding.companyId}
+              and ${assets.objectKey} like ${`${this.binding.companyId}/runner-api/%`}), 0)
+          + coalesce((select sum(${runnerApiResponseReservations.reservedBytes}) from ${runnerApiResponseReservations}
+            where ${runnerApiResponseReservations.companyId} = ${this.binding.companyId}
+              and ${runnerApiResponseReservations.assetId} is null), 0)` }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
+        const companyBytes = Number(usage.bytes);
+        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || companyBytes + RUNNER_API_RESPONSE_MAX_BYTES > runnerApiCompanyCaptureMaxBytes()) {
+          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage quota is exhausted. Read an existing asset or ask the operator to remove old snapshots or increase the quota.");
+        }
+        // Reserve worst-case bytes durably before creating a temporary file.
+        // Interrupted/failed captures keep the reservation, preventing retry
+        // loops and process restarts from resetting this run's disk-I/O budget.
+        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
+        const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
+        return reservation.id;
+      });
+    } catch (error) { release(); throw error; }
+    let settled = false;
+    return { id, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
+      if (settled) return;
+      settled = true;
+      try {
+        await this.db.transaction(async tx => {
+          await this.#lockApiCaptureCompany(tx as unknown as Db);
+          // Reclaim a handled pre-storage failure only after disk cleanup.
+          // Crashes, failed cleanup, and ambiguous storage failures keep their
+          // reservation until an operator reconciles the possible orphan data.
+          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, id), isNull(runnerApiResponseReservations.assetId)));
+          if (completedBytes === undefined) return;
+          const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
+          if (!run) return;
+          const resultJson = record(run.resultJson);
+          const used = resultJson.apiResponseCaptureBytes;
+          if (typeof used !== "number" || !Number.isSafeInteger(used) || used < RUNNER_API_RESPONSE_MAX_BYTES) return;
+          await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used - RUNNER_API_RESPONSE_MAX_BYTES + completedBytes } }).where(eq(heartbeatRuns.id, run.id));
+        });
+      } finally { release(); }
+    } };
   }
 
   async #readApiFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }> {
@@ -1119,6 +1252,25 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
+  async #setTaskTitle(input: Record<string, unknown>): Promise<unknown> {
+    const titleInput = setIssueTitleSchema.parse(input);
+    requiredString(titleInput.idempotencyKey);
+    // Use the shared title receipt so native and HTTP retries have the same
+    // identity and cannot overwrite a later user edit when switching surfaces.
+    const { result, publication } = await this.db.transaction(async (tx) => {
+      await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+      return setIssueTitle(tx as unknown as Db, this.binding.companyId, this.binding.issueId, titleInput, {
+        actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId,
+      });
+    });
+    if (publication) publishActivity(publication);
+    const syncExternalObjects = this.binding.syncIssueExternalObjects ?? externalObjectService(this.db, {
+      enabled: async () => (await instanceSettingsService(this.db).getExperimental()).enableExternalObjects === true,
+    }).syncIssueSafely;
+    await syncExternalObjects(this.binding.issueId);
+    return result;
+  }
+
   async #setDependencies(input: Record<string, unknown>): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     if (!Array.isArray(input.blockedByTaskIds)) {
@@ -1371,6 +1523,109 @@ export class PaperclipRunnerToolAuthority {
     return null;
   }
 
+  async #withInstructionMutationReceipt(
+    tool: "update_agent_instructions" | "restore_agent_instructions",
+    callId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
+    const key = `instruction:${callId}`;
+    const digest = createHash("sha256").update(canonicalJson(input)).digest("hex");
+    const targetAgentId = typeof input.targetAgentId === "string" ? input.targetAgentId : this.binding.agentId;
+    const authorize = async (tx: Db) => {
+      const [target] = await tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
+        .where(and(eq(agents.id, targetAgentId), eq(agents.companyId, this.binding.companyId)));
+      if (!target) throw notFound("Agent not found");
+      return authorizeInstructionCommit(tx, {
+        type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+        agentId: this.binding.agentId, runId: this.binding.runId,
+      }, target);
+    };
+    return withInstructionCallLock(this.db, `${this.binding.companyId}:${this.binding.runId}:${key}`, async () => {
+      // A filesystem rename cannot roll back with PostgreSQL. Commit proof of
+      // the attempt *before* permitting that effect. If the effect transaction
+      // or its acknowledgement is lost, a missing result is unknown, not a
+      // license to run the instruction write a second time.
+      const reserved = await this.db.transaction(async (tx) => {
+        const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const bound = await authorize(tx as unknown as Db);
+        const resultJson = record(context.run.resultJson);
+        if (record(resultJson.semanticToolReceipts)[key] !== undefined) return false;
+        const attempts = record(resultJson.instructionToolAttempts);
+        const prior = record(attempts[key]);
+        if (attempts[key] !== undefined) {
+          if (prior.operationId !== tool || prior.inputDigest !== digest) {
+            throw new Error("paperclip_runner_tool_idempotency_conflict");
+          }
+          const failure = record(prior.failure);
+          if (typeof failure.status === "number" && instructionPreWriteFailureStatuses.has(failure.status)
+            && typeof failure.message === "string") {
+            throw new HttpError(failure.status, failure.message, failure.details);
+          }
+          throw new SemanticToolOutcomeUnknownError(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
+        }
+        if (Object.keys(attempts).length >= 512) throw badRequest("Run instruction mutation limit reached");
+        attempts[key] = { operationId: tool, inputDigest: digest, targetAgentId };
+        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+          .where(eq(heartbeatRuns.id, this.binding.runId));
+        await tx.insert(activityLog).values({
+          companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId,
+          agentId: this.binding.agentId, runId: this.binding.runId,
+          responsibleUserId: bound.type === "agent" ? bound.onBehalfOfUserId : null,
+          action: "agent.instruction_write_attempted", entityType: "agent", entityId: targetAgentId,
+          details: { callId, operationId: tool, inputDigest: digest },
+        });
+        return true;
+      });
+      try {
+        return await this.#withMutationReceipt(tool, key, input, (tx) =>
+          executeAgentInstructionTool({ db: tx, binding: {
+            companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+          }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+      } catch (error) {
+        // Instruction validation, authorization and CAS errors precede the
+        // file write. Storage errors and lost commit acknowledgements do not
+        // prove that a reserved filesystem effect rolled back.
+        if (!reserved) throw error;
+        if (error instanceof HttpError && instructionPreWriteFailureStatuses.has(error.status)) {
+          const failure = { status: error.status, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) };
+          try {
+            // Save the definite failure before exposing it as a final answer.
+            // This is evidence of the admitted call, not another mutation, so
+            // retain it even if the run stopped after the effect rolled back.
+            await this.db.transaction(async (tx) => {
+              const [run] = await tx.select().from(heartbeatRuns).where(and(
+                eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId),
+                eq(heartbeatRuns.agentId, this.binding.agentId),
+              )).for("update");
+              if (!run) throw new Error("instruction_failure_run_missing");
+              const resultJson = record(run.resultJson);
+              const attempts = record(resultJson.instructionToolAttempts);
+              const prior = record(attempts[key]);
+              if (prior.operationId !== tool || prior.inputDigest !== digest
+                || record(resultJson.semanticToolReceipts)[key] !== undefined) {
+                throw new Error("instruction_failure_receipt_conflict");
+              }
+              attempts[key] = { ...prior, failure };
+              await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+                .where(eq(heartbeatRuns.id, this.binding.runId));
+            });
+          } catch (persistenceError) {
+            throw new SemanticToolOutcomeUnknownError(
+              `paperclip_runner_instruction_failure_receipt_unavailable call_id=${callId}`,
+              { cause: new AggregateError([error, persistenceError], "Definite instruction failure could not be saved") },
+            );
+          }
+          throw error;
+        }
+        throw new SemanticToolOutcomeUnknownError(
+          `paperclip_runner_instruction_outcome_unknown call_id=${callId}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+    });
+  }
+
   async #withMutationReceipt(
     operationId: string,
     idempotencyKey: string,
@@ -1604,7 +1859,7 @@ export class PaperclipRunnerToolAuthority {
               acceptLabel: normalizedPayload.acceptLabel ?? "Confirm",
               rejectLabel: normalizedPayload.rejectLabel ?? "Request changes",
               rejectRequiresReason: normalizedPayload.rejectRequiresReason ?? false,
-              supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? true,
+              supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? false,
             } : {}),
           },
         } as never, { agentId: this.binding.agentId, userId: null, identityContextId });
@@ -1696,6 +1951,7 @@ function redactedTask(task: typeof issues.$inferSelect) {
     companyId: task.companyId,
     identifier: task.identifier,
     title: task.title,
+    titleNeedsGeneration: task.titleNeedsGeneration,
     description: task.description,
     status: task.status,
     statusVersion: task.statusVersion,

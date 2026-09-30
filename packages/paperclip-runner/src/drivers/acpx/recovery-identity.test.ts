@@ -76,6 +76,21 @@ describe("ACPX recovery identity", () => {
     ).not.toThrow();
   });
 
+  it("rejects restoration across task execution-policy changes", async () => {
+    const fixture = await recoveryFixture();
+    const readonly = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: true } });
+    const writable = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: false } });
+    const record = createAcpxIdentityRecord(fixture.expected, readonly);
+    expect(readonly.profileSessionKey).not.toBe(writable.profileSessionKey);
+    expect(readonly.profileDigest).not.toBe(writable.profileDigest);
+    expect(() => verifyExpectedAcpxIdentity(fixture.expected, writable, record)).toThrow("persisted runtime record");
+    const changedRoots = await createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: true, protectedPaths: ["/another-protected-root"] } });
+    expect(changedRoots.profileSessionKey).not.toBe(readonly.profileSessionKey);
+    await expect(createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: "yes" as never } })).rejects.toThrow("valid task execution policy");
+  });
+
   it("uses collision-resistant roots and policy-bound provider keys", async () => {
     const fixture = await recoveryFixture();
     const otherSession = await createAcpxRecoveryBinding({

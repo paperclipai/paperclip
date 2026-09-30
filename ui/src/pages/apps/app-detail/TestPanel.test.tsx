@@ -324,6 +324,29 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Preview");
   });
 
+  it.each(["grant_credential_invalid", "oauth_insufficient_scope"])("guides %s failures to reconnect instead of changing action inputs", async (reasonCode) => {
+    runTestCallMock.mockResolvedValue({
+      decision: "allowed",
+      invocationId: "inv-credential",
+      error: { message: "The connection must be reconnected.", reasonCode },
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Read a sheet"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+
+    expect(container.textContent).toContain("After reconnecting, run this action again.");
+    expect(container.textContent).not.toContain("Adjust the input above");
+    expect(container.textContent).not.toContain("Check the field formats");
+    expect(container.textContent).toContain(reasonCode === "grant_credential_invalid"
+      ? "Ask the connection owner to reconnect"
+      : "allow the permissions required for this action");
+  });
+
   it("renders a failure card (not 'Worked') when an allowed call returns isError:true", async () => {
     // The gateway let the call through (decision:"allowed") but the upstream MCP
     // tool failed at the tool layer — the envelope carries isError + an error.

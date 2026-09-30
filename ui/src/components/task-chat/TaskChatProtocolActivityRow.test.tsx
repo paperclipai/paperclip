@@ -178,7 +178,7 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(row?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')?.querySelectorAll("path")).toHaveLength(3);
   });
 
-  it("shows a notice as a warning and full-width message without metadata or a disclosure", () => {
+  it("keeps a notice readable and preserves metadata in a collapsed disclosure", () => {
     const summary = "Project-local configuration is disabled.\nTrust the repository to load its hooks.";
     render({
       id: "notice", kind: "protocol", surface: "provider_activity", family: "provider_notice",
@@ -186,12 +186,26 @@ describe("TaskChatProtocolActivityRow", () => {
       details: [
         { label: "Category", value: "configWarning" },
         { label: "Recoverable", value: "Yes" },
+        { label: "Provider", value: "pi" },
+        { label: "Provenance", value: "provider_native" },
         { label: "Summary", value: summary },
       ], steps: [], links: [], children: [],
     });
-    expect(container.textContent).toBe(`Warning${summary}`);
+    expect(container.textContent).toContain(`Warning${summary}`);
     expect(container.querySelector("p")?.textContent).toBe(summary);
-    expect(container.querySelector("dl")).toBeNull();
+    const disclosure = container.querySelector("details");
+    expect(disclosure).not.toBeNull();
+    expect(disclosure?.open).toBe(false);
+    expect(disclosure?.querySelector("summary")?.textContent).toBe("Details");
+    expect(Array.from(disclosure?.querySelectorAll("dt") ?? [], (term) => term.textContent)).toEqual([
+      "Category", "Recoverable", "Provider", "Provenance",
+    ]);
+    expect(Array.from(disclosure?.querySelectorAll("dd") ?? [], (value) => value.textContent)).toEqual([
+      "configWarning", "Yes", "pi", "provider_native",
+    ]);
+    expect(disclosure?.textContent).not.toContain(summary);
+    act(() => disclosure?.querySelector("summary")?.click());
+    expect(disclosure?.open).toBe(true);
     expect(container.querySelector("button")).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-protocol-activity-icon"]')).not.toBeNull();
   });
@@ -214,6 +228,7 @@ describe("TaskChatProtocolActivityRow", () => {
 
     const row = container.querySelector('[data-testid="task-chat-protocol-activity-row"]');
     expect(row?.querySelector("button")).toBeNull();
+    expect(row?.querySelector("details")).toBeNull();
     expect(row?.querySelector('[aria-expanded]')).toBeNull();
   });
 });

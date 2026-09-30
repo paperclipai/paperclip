@@ -161,6 +161,7 @@ export interface EnvironmentEventRecord {
     | "acquireLease"
     | "resumeLease"
     | "releaseLease"
+    | "stopLease"
     | "destroyLease"
     | "realizeWorkspace"
     | "execute"
@@ -187,6 +188,7 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onAcquireLease?: (params: PluginEnvironmentAcquireLeaseParams) => Promise<PluginEnvironmentLease>;
     onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
     onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
+    onStopLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt>;
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
@@ -212,6 +214,8 @@ export interface EnvironmentTestHarness extends TestHarness {
   resumeLease(params: PluginEnvironmentResumeLeaseParams): Promise<PluginEnvironmentLease>;
   /** Invoke the environment driver's releaseLease hook. */
   releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
+  /** Stop and preserve an allocation independently of its release policy. */
+  stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt>;
   /** Invoke the environment driver's destroyLease hook. */
   destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Invoke the environment driver's realizeWorkspace hook. */
@@ -2726,6 +2730,9 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async releaseLease(params) {
       return callHook("releaseLease", driver.onReleaseLease, params, "onReleaseLease");
+    },
+    async stopLease(params) {
+      return callHook("stopLease", driver.onStopLease, params, "onStopLease");
     },
     async destroyLease(params) {
       return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");

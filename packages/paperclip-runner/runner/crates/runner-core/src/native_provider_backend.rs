@@ -19,6 +19,14 @@ enum SelectedExecutor {
 }
 
 impl CommandExecutor for SelectedExecutor {
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.can_reconcile_result_delivery(),
+            Self::Acpx(executor) => executor.can_reconcile_result_delivery(),
+            Self::Managed(executor) => executor.can_reconcile_result_delivery(),
+        }
+    }
+
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.retained_events(),
@@ -172,6 +180,13 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        self.select_recovery()?;
+        self.selected
+            .as_mut()
+            .map_or(Ok(false), CommandExecutor::can_reconcile_result_delivery)
+    }
+
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.selected
             .as_mut()

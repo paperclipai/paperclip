@@ -650,7 +650,9 @@ export const providerDescriptorSchema = {
       "enum": [
         "pi",
         "claude",
-        "codex"
+        "codex",
+        "cursor",
+        "copilot"
       ]
     },
     "requestedModel": {
@@ -691,6 +693,9 @@ export const providerDescriptorSchema = {
         "null"
       ],
       "maxLength": 240
+    },
+    "turnControls": {
+      "$ref": "#/$defs/turnControls"
     }
   },
   "allOf": [
@@ -868,6 +873,24 @@ export const providerDescriptorSchema = {
       }
     }
   ],
+  "$defs": {
+    "turnControls": {
+      "type": "object",
+      "required": [
+        "steering",
+        "queuedFollowUp"
+      ],
+      "properties": {
+        "steering": {
+          "type": "boolean"
+        },
+        "queuedFollowUp": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "additionalProperties": false
 } as const;
 
@@ -1820,6 +1843,65 @@ export const providerEventSchema = {
         },
         "summary": {
           "$ref": "#/$defs/shortText"
+        },
+        "provenance": {
+          "type": "object",
+          "required": [
+            "method",
+            "eventType",
+            "sessionId",
+            "turnId"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "eventType": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "sessionId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "agentId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "timestamp": {
+              "type": "string",
+              "maxLength": 80
+            }
+          },
+          "additionalProperties": false
+        },
+        "details": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 4000
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -2628,7 +2710,7 @@ export const questionSetSchema = {
     },
     "description": {
       "type": "string",
-      "maxLength": 4000
+      "maxLength": 100000
     },
     "submitLabel": {
       "type": "string",
@@ -2920,6 +3002,181 @@ export const requestSchema = {
   "$id": "https://paperclip.dev/schemas/prp/v1/request.schema.json",
   "title": "PRP request",
   "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schema",
+        "requestKind",
+        "requestId",
+        "type",
+        "status",
+        "prompt",
+        "choices",
+        "origin",
+        "turnId"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.runtime_request.v2"
+        },
+        "requestKind": {
+          "const": "permission_approval"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "type": {
+          "const": "permission"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "resolved",
+            "expired",
+            "cancelled"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "label"
+            ],
+            "properties": {
+              "key": {
+                "enum": [
+                  "accept",
+                  "accept_for_session",
+                  "decline",
+                  "cancel"
+                ]
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "additionalProperties": false
+          },
+          "allOf": [
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "accept"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "accept_for_session"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "decline"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "cancel"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            }
+          ]
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "origin": {
+          "type": "object",
+          "required": [
+            "adapter"
+          ],
+          "properties": {
+            "adapter": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "method": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          },
+          "additionalProperties": false
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "itemId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 240
+        }
+      },
+      "additionalProperties": false
+    },
     {
       "type": "object",
       "required": [
@@ -4383,6 +4640,9 @@ export const eventV2Schema = {
             "properties": {
               "sessionGoals": {
                 "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+              },
+              "turnControls": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json#/$defs/turnControls"
               }
             },
             "additionalProperties": true

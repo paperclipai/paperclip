@@ -15,6 +15,7 @@ export interface RunnerSelectorOptions {
   ui: boolean;
   debug: boolean;
   maxParallel: number;
+  maxAutomaticRetries: number;
 }
 
 export class RunnerSelectorError extends Error {}
@@ -44,6 +45,7 @@ export function parseRunnerSelectors(
     ui: false,
     debug: false,
     maxParallel: Number(process.env.PAPERCLIP_E2E_MAX_PARALLEL ?? "1"),
+    maxAutomaticRetries: 1,
   };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
@@ -57,6 +59,10 @@ export function parseRunnerSelectors(
       const value = valueFor(args, index, flag);
       index += 1;
       options.maxParallel = Number(value);
+    } else if (flag === "--max-automatic-retries") {
+      const value = valueFor(args, index, flag);
+      index += 1;
+      options.maxAutomaticRetries = Number(value);
     } else if (
       [
         "--id",
@@ -82,6 +88,11 @@ export function parseRunnerSelectors(
 
   if (!Number.isInteger(options.maxParallel) || options.maxParallel < 1) {
     throw new RunnerSelectorError("--max-parallel must be a positive integer");
+  }
+  if (![0, 1].includes(options.maxAutomaticRetries)) {
+    throw new RunnerSelectorError(
+      "--max-automatic-retries must be 0 or 1",
+    );
   }
 
   const hasDimensions =

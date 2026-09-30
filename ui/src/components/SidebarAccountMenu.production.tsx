@@ -15,6 +15,7 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
+import { useStagingCommit } from "@/hooks/useStagingCommit";
 import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -138,6 +139,7 @@ export function SidebarAccountMenu({
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
+  const stagingCommit = useStagingCommit(open);
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -190,23 +192,37 @@ export function SidebarAccountMenu({
         >
           <div className="h-24 bg-(image:--gradient-extract-25)" />
           <div className="-mt-8 px-4 pb-4">
-            <Link
-              to={profileHref}
-              aria-label="View profile"
-              onClick={closeNavigationChrome}
-              className="flex items-start gap-3 rounded-xl transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <div className="rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
+            {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
+            <div className="relative flex items-start gap-3">
+              <Link
+                to={profileHref}
+                aria-label="View profile"
+                onClick={closeNavigationChrome}
+                className="absolute inset-0 rounded-xl transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <div className="pointer-events-none relative rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
                 <Avatar size="lg">
                   {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
                   <AvatarFallback>{initials}</AvatarFallback>
                 </Avatar>
               </div>
-              <div className="min-w-0 flex-1 pt-1">
+              <div className="pointer-events-none relative min-w-0 flex-1 pt-1">
                 <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
+                {stagingCommit ? (
+                  <a
+                    className="pointer-events-auto block truncate font-mono text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground hover:underline focus-visible:underline"
+                    href={`https://github.com/paperclipai/paperclip/commit/${stagingCommit}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`View commit ${stagingCommit} on GitHub`}
+                    title={stagingCommit}
+                  >
+                    SHA {stagingCommit.slice(0, 7)}
+                  </a>
+                ) : null}
               </div>
-            </Link>
+            </div>
 
             <div className="mt-4 space-y-1">
               {showInvite && inviteHref ? (

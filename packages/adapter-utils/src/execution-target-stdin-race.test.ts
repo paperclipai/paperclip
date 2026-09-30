@@ -122,10 +122,10 @@ describe("stdin file race (parent PAP-4037)", () => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function waitFor(check: () => boolean, timeoutMs = 4_000): Promise<void> {
+  async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 4_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (check()) return;
+      if (await check()) return;
       await delay(20);
     }
     throw new Error("Timed out waiting for condition.");
@@ -492,7 +492,246 @@ describe("stdin file race (parent PAP-4037)", () => {
     }
   });
 
+  it.each([
+    ...["prepare", "append", "finalize", "late-finalize"].map((stage) =>
+      [stage, "Request failed with status code 502"] as const),
+    ...[502, 503, 504].map((status) =>
+      ["finalize", `Cloudflare sandbox bridge request failed with HTTP ${status}.`] as const),
+  ])(
+    "recovers a transient %s failure (%s) without repeating or reordering stdin",
+    async (stage, failure) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-retry-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-child.mjs");
+      await writeFile(childPath, "process.stdin.on('data', (c) => process.stdout.write(c));\n", "utf8");
+      const first = "first-" + "x".repeat(70_000);
+      let delivered = "";
+      let injected = false;
+      let lateFinalize: (() => Promise<RunProcessResult>) | undefined;
+      const local = createLocalSandboxRunner();
+      const runner = {
+        execute: async (input: Parameters<typeof local.execute>[0]) => {
+          const script = input.args?.[1] ?? "";
+          const matches = script.includes("/stdin/000000000001.json") && (
+            stage === "prepare" ? script.includes("mkdir -p") :
+            stage === "append" ? script.startsWith("printf") : script.startsWith("base64 -d")
+          );
+          if (matches && !injected) {
+            injected = true;
+            if (stage === "late-finalize") lateFinalize = () => local.execute(input);
+            else if (stage !== "prepare") await local.execute(input);
+            // The provider can lose the response after the receiver consumed
+            // the file. A retry must not repeat those bytes on the ACP stream.
+            if (stage === "finalize") await waitFor(() => delivered === first, 8_000);
+            throw new Error(failure);
+          }
+          return local.execute(input);
+        },
+      };
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stdin-retry",
+        target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+        runtimeRootDir: path.join(rootDir, "runtime"),
+        adapterKey: "acpx", command: process.execPath, args: [childPath], cwd: rootDir, env: {},
+      });
+      let peer: net.Socket | undefined;
+      try {
+        const source = await readFile(bridge!.agentCommand, "utf8");
+        const port = Number(/port: (\d+)/.exec(source)![1]);
+        const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+        peer = net.createConnection({ host: "127.0.0.1", port });
+        peer.on("error", () => {});
+        peer.setEncoding("utf8");
+        let buffer = "";
+        peer.on("data", (chunk) => {
+          buffer += chunk;
+          const lines = buffer.split("\n");
+          buffer = lines.pop()!;
+          for (const line of lines) {
+            const frame = JSON.parse(line) as DeliveredFrame;
+            delivered += collectDelivered([frame]);
+          }
+        });
+        await new Promise<void>((resolve) => peer!.once("connect", resolve));
+        for (const text of [first, "-second"])
+          peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from(text).toString("base64") }) + "\n");
+        await waitFor(() => delivered.endsWith("-second"), 10_000);
+        expect(injected).toBe(true);
+        expect(delivered).toBe(first + "-second");
+        if (lateFinalize) {
+          // A provider can return 502 while its original finalize still runs.
+          // Cleanup may invalidate its private upload, but it cannot touch
+          // the retry's data or repeat input after newer messages arrived.
+          await lateFinalize();
+          peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from("-third").toString("base64") }) + "\n");
+          await waitFor(() => delivered.endsWith("-third"), 8_000);
+          expect(delivered).toBe(first + "-second-third");
+        }
+        await waitFor(async () => {
+          const files = await readdir(path.join(rootDir, "runtime", "process-sessions"), { recursive: true });
+          return files.every((file) => !file.endsWith(".paperclip-upload.b64") && !file.endsWith(".paperclip-upload.decoded"));
+        });
+      } finally {
+        peer?.destroy();
+        await bridge?.stop();
+      }
+    },
+    20_000,
+  );
+
+  it.each([
+    ["Request failed with status code 502", 3],
+    ["Request failed with status code 503", 3],
+    ["Request failed with status code 504", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 502.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 503.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 504.", 3],
+    ["Request failed with status code 403", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 403.", 1],
+    ["Remote command failed: Request failed with status code 502", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 502. sensitive-input", 1],
+    ["Remote command failed: sensitive-input", 1],
+  ] as const)("bounds input failure %s to %i attempts and stops later writes", async (failure, expectedAttempts) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-failed-"));
+    cleanupDirs.push(rootDir);
+    let attempts = 0;
+    let laterWrite = false;
+    let stderr = "";
+    const runner = createLocalSandboxRunner(async (script) => {
+      if (!script.startsWith("mkdir -p")) return;
+      if (script.includes("/stdin/000000000002.json")) laterWrite = true;
+      if (script.includes("/stdin/000000000001.json")) {
+        attempts += 1;
+        throw new Error(failure);
+      }
+    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-failed",
+      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+      runtimeRootDir: path.join(rootDir, "runtime"),
+      adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},
+      onLog: async (stream, chunk) => { if (stream === "stderr") stderr += chunk; },
+    });
+    let peer: net.Socket | undefined;
+    try {
+      const source = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(source)![1]);
+      const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+      peer = net.createConnection({ host: "127.0.0.1", port });
+      peer.setEncoding("utf8");
+      peer.on("error", () => {});
+      let output = "";
+      peer.on("data", (chunk) => { output += chunk; });
+      const closed = new Promise<void>((resolve) => peer!.on("close", () => resolve()));
+      await new Promise<void>((resolve) => peer!.once("connect", resolve));
+      for (const text of ["first", "second"])
+        peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from(text).toString("base64") }) + "\n");
+      await closed;
+      expect(attempts).toBe(expectedAttempts);
+      expect(laterWrite).toBe(false);
+      expect(JSON.parse(output)).toEqual({ type: "error", message: "ACP process session input delivery failed." });
+      expect(stderr).toContain("ACP process session input delivery failed.");
+      expect(stderr).not.toContain(failure);
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  }, 15_000);
+
+  it("stops after exhausted input retries even when failure logging stalls", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-log-stall-"));
+    cleanupDirs.push(rootDir);
+    let attempts = 0;
+    let loggingStarted = false;
+    let releaseLog!: () => void;
+    const stalledLog = new Promise<void>((resolve) => { releaseLog = resolve; });
+    const runner = createLocalSandboxRunner(async (script) => {
+      if (script.startsWith("mkdir -p") && script.includes("/stdin/000000000001.json")) {
+        attempts += 1;
+        throw new Error("Request failed with status code 502");
+      }
+    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-log-stall",
+      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+      runtimeRootDir: path.join(rootDir, "runtime"),
+      adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},
+      onLog: async (stream) => {
+        if (stream === "stderr") {
+          loggingStarted = true;
+          await stalledLog;
+        }
+      },
+    });
+    let peer: net.Socket | undefined;
+    let stop: Promise<void> | undefined;
+    try {
+      const source = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(source)![1]);
+      const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+      peer = net.createConnection({ host: "127.0.0.1", port });
+      peer.setEncoding("utf8");
+      peer.on("error", () => {});
+      let output = "";
+      peer.on("data", (chunk) => { output += chunk; });
+      const closed = new Promise<void>((resolve) => peer!.once("close", resolve));
+      await new Promise<void>((resolve) => peer!.once("connect", resolve));
+      peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from("input").toString("base64") }) + "\n");
+      await closed;
+      expect(attempts).toBe(3);
+      expect(loggingStarted).toBe(true);
+      expect(JSON.parse(output)).toEqual({ type: "error", message: "ACP process session input delivery failed." });
+      let stopped = false;
+      stop = bridge!.stop().then(() => { stopped = true; });
+      // Teardown has a three-second acknowledgement budget. It must finish
+      // while the run-log promise remains unresolved, including local cleanup.
+      await waitFor(() => stopped, 6_000);
+      await expect(lstat(bridge!.agentCommand)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      releaseLog();
+      peer?.destroy();
+      await (stop ?? bridge?.stop());
+    }
+  }, 15_000);
+
   // ---- Host atomic-write tests ------------------------------------------
+
+  it.each(["fails", "stalls"])("preserves the upload failure when best-effort cleanup %s", async (cleanupMode) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-upload-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const local = createLocalSandboxRunner();
+    const uploadFailure = new Error("Request failed with status code 502");
+    let cleanupAttempted = false;
+    let rejectCleanup!: (error: Error) => void;
+    const stalledCleanup = new Promise<never>((_resolve, reject) => { rejectCleanup = reject; });
+    // Observe the test-owned promise even in the immediate-failure case.
+    void stalledCleanup.catch(() => {});
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      remoteCwd: rootDir,
+      runner: {
+        execute: async (input) => {
+          const script = input.args?.[1] ?? "";
+          if (script.startsWith("rm -f")) {
+            cleanupAttempted = true;
+            if (cleanupMode === "stalls") return stalledCleanup;
+            throw new Error("Request failed with status code 403");
+          }
+          const result = await local.execute(input);
+          if (script.startsWith("printf")) throw uploadFailure;
+          return result;
+        },
+      },
+    });
+    try {
+      await expect(Promise.race([
+        client.writeTextFile(path.join(rootDir, "message.json"), "test input"),
+        delay(1_000).then(() => { throw new Error("Upload waited for stalled cleanup"); }),
+      ])).rejects.toBe(uploadFailure);
+      expect(cleanupAttempted).toBe(true);
+    } finally {
+      rejectCleanup(new Error("Cleanup unavailable"));
+    }
+  });
 
   // A runner that executes each bridge shell script on the local filesystem,
   // so the test exercises the real command-managed `writeTextFile` script.
@@ -572,7 +811,7 @@ describe("stdin file race (parent PAP-4037)", () => {
     expect(finalizeScript).toBeDefined();
     expect(finalizeScript).toContain(`mv `);
     expect(finalizeScript).not.toContain(`> '${jsonPath}'`);
-    expect(finalizeScript).toContain(`> '${jsonPath}.paperclip-upload.decoded'`);
+    expect(finalizeScript).toMatch(/> '[^']+\.paperclip-upload\.decoded'/);
   });
 
   it("never exposes a partial .json file under a concurrent reader (command-managed host write)", async () => {

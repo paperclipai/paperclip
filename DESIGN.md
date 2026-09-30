@@ -56,6 +56,11 @@ paused.” and “Resume this task to send a message.” with a “Resume task�
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
 
+Pending questions, confirmations, and other task-thread inputs appear in a separate
+card directly above the ordinary composer. The composer stays available for new
+messages while the card is open. Dismissing a card leaves a pending indicator that
+can reopen it; resolving or skipping the input removes that indicator.
+
 ## Enforcement (what "compliant" means for the extraction run)
 
 - **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved.
@@ -103,3 +108,5 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
 - **Reduced motion is honored at the token layer.** A `prefers-reduced-motion: reduce`
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
+
+Agent Chat keeps pending questions as compact “Unanswered question” entries at their original position in history. A newer user message dismisses the old question form without resolving it. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.

@@ -25,6 +25,11 @@ import {
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
+  buildExecutionWorkspaceAdapterConfig,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "../services/execution-workspace-policy.ts";
+import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -867,6 +872,52 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchCreatedByRuntime).toBe(true);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  it("retains the project provision command when an issue overrides its base branch", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"));
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "provision-worktree.sh"),
+      "#!/usr/bin/env bash\necho 'Unexpected repository provision fallback' >&2\nexit 1\n",
+    );
+    await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add fallback provisioner"]);
+    await runGit(repoRoot, ["branch", "release"]);
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy: parseProjectExecutionWorkspacePolicy({
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", baseRef: "main", provisionCommand: "true" },
+      }),
+      issueSettings: parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", baseRef: "release" },
+      }),
+      mode: "isolated_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+    try {
+      const workspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config,
+        issue: { id: "issue-1", identifier: "TEST-1", title: "Keep project setup" },
+        agent: { id: "agent-1", name: "Test agent", companyId: "company-1" },
+      });
+      expect(workspace.created).toBe(true);
+      expect(workspace.baseRefSha).toBe(await readGit(repoRoot, ["rev-parse", "release"]));
+      await expect(fs.stat(path.join(workspace.cwd, ".git"))).resolves.toBeTruthy();
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it("defaults the repo-provided worktree provisioner for git worktree strategies", async () => {

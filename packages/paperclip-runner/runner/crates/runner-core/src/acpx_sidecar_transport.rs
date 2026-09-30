@@ -98,9 +98,13 @@ impl AcpxSidecarTransport {
         let credential_keys: &[&str] = match agent {
             "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
             "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
+            "pi" => &["OPENROUTER_API_KEY"],
+            "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "copilot" => &["COPILOT_GITHUB_TOKEN"],
             _ => {
                 return Err(LocalRunnerError::invalid(
-                    "ACPX sidecar credentials require a qualified claude or codex agent",
+                    "ACPX sidecar credentials require a known agent profile",
                 ))
             }
         };
@@ -123,9 +127,15 @@ impl AcpxSidecarTransport {
             // The qualified sidecar configures the runner-owned gateway. Keep
             // its credential with the name/URL; unrelated secrets stay excluded.
             "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "PAPERCLIP_ACPX_BUILTIN_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
+        if matches!(agent, "pi" | "cursor" | "copilot") {
+            // Credential values alone are not proof of an explicit task binding.
+            // The sidecar checks this controller-minted provider/session marker.
+            keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
+        }
         keys.extend_from_slice(credential_keys);
         Self::start_with_environment_keys(config, &keys)
     }
@@ -686,6 +696,9 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
         "AGENT_DISCONNECTED" => return "agent_disconnected",
         "AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
+        "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
         "SESSION_MODE_REPLAY_FAILED" => return "session_mode_replay_failed",
         "SESSION_MODEL_REPLAY_FAILED" => return "session_model_replay_failed",
@@ -793,6 +806,30 @@ mod tests {
             };
             assert!(message.contains(expected), "unexpected error: {message}");
             assert!(!message.contains("Q7Z9"), "error leaked input: {message}");
+        }
+    }
+
+    #[test]
+    fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
+        for (code, expected) in [
+            ("COPILOT_AUTH_REQUIRED", "authentication_required"),
+            ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
+            ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
+            ("COPILOT_AUTH_REQUIRED_EXTRA", "unclassified"),
+            ("COPILOT_REQUEST_FAILED", "unclassified"),
+            ("UNKNOWN_CANDIDATE_FAILURE", "unclassified"),
+        ] {
+            let error = ResponseError {
+                code: code.to_owned(),
+                message:
+                    "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
+                        .to_owned(),
+                retryable: false,
+            };
+            let classification = response_error_classification(&error);
+            assert_eq!(classification, expected);
+            assert!(!classification.contains("canary"));
+            assert!(!classification.contains("secret"));
         }
     }
 

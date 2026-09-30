@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactDiagnosticText } from "../../packages/adapter-utils/src/command-redaction.js";
 
 const SECRET_SHAPES = [
+  /\b(?:github_pat_|ghp_)[A-Za-z0-9_]{16,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{16,}\b/g,
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:openrouter|daytona)[-_]?(?:api)?[-_]?key["'=:\s]+[A-Za-z0-9._-]{12,}\b/gi,
@@ -14,11 +15,27 @@ const SENSITIVE_JSON_KEY =
 
 export function normalizedSecrets(values: readonly (string | undefined)[]) {
   return [
-    ...new Set(
-      values
-        .map((value) => value?.trim())
-        .filter((value): value is string => Boolean(value)),
-    ),
+    ...new Set(values.flatMap((value) => {
+      const trimmed = value?.trim();
+      if (!trimmed) return [];
+      if (trimmed.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(trimmed) as unknown;
+          // Subscription credentials are structured JSON. A log may contain an
+          // individual token or identity rather than the whole serialized file.
+          const leaves = (value: unknown, depth = 0): string[] => {
+            if (depth > 8) return [];
+            if (typeof value === "string") return value.length >= 8 ? [value] : [];
+            if (!value || typeof value !== "object") return [];
+            return Object.entries(value).flatMap(([key, child]) => [
+              ...(key.includes("::") ? [key] : []), ...leaves(child, depth + 1),
+            ]);
+          };
+          return [trimmed, ...leaves(parsed)];
+        } catch { /* Preserve ordinary non-JSON secrets. */ }
+      }
+      return [trimmed];
+    })),
   ].sort((left, right) => right.length - left.length);
 }
 

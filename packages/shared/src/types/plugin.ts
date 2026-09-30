@@ -206,6 +206,13 @@ export interface PluginEnvironmentDriverDeclaration {
   /** Optional description for operator-facing docs or UI affordances. */
   description?: string;
   /**
+   * Default provider budget for a fresh lease acquisition, in milliseconds.
+   * The host adds RPC overhead. A valid explicit config.timeoutMs overrides
+   * this default; bridgeRequestTimeoutMs can extend the resulting budget.
+   * Omit to retain the worker's normal RPC timeout. This is not lease lifetime.
+   */
+  defaultAcquireTimeoutMs?: number;
+  /**
    * Sandbox providers must opt in before the host retains and resumes provider
    * leases across runs. Providers without this flag keep per-run acquire/release
    * behavior even if their config schema exposes a reuse-like setting.

@@ -28,6 +28,10 @@ export interface ConnectionSearchResultItem {
     key: string;
     label: string;
     auth: "oauth" | "api_key" | "none";
+    /** Discovery is open across purposes; connection_request creates tool cards. */
+    purpose?: "tool" | "channel" | "ai";
+    /** Company-scoped setup destination for methods with a separate setup flow. */
+    setupPath?: string;
   }>;
   state: ConnectionAvailabilityState;
   connectionId: string | null;
@@ -57,6 +61,8 @@ export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "appli
 
 export interface ConnectionIntentSetupOptions {
   aiConnection?: import("../ai-connections.js").AiConnectionBinding;
+  /** Legacy authentication stays unchanged until the normal validated agent update succeeds. */
+  aiConnectionRequiresAdoption?: boolean;
   /** Selected account, including an unavailable default. Reconnect must preserve its identity. */
   aiRepair?: {
     connection: import("../ai-connections.js").AiManagedConnectionSummary;

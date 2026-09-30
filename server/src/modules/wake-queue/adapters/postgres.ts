@@ -1,4 +1,5 @@
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
@@ -411,6 +412,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         const referencedChildren = children.filter((child) => child.identifier !== null && references.includes(child.identifier));
         return referencedChildren.length === 1 && referencedChildren[0].status === "done";
       });
+    },
+
+    async isCompletedOnboardingHandoffWake(input) {
+      return isCompletedOnboardingHandoffWake(tx, input);
     },
 
     async reopenIssue({ companyId, issueId }) {

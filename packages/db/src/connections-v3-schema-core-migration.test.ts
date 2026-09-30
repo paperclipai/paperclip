@@ -42,6 +42,11 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`DROP TABLE IF EXISTS "ai_connection_defaults"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
+    // Browser Use is a later grant consumer; rewind its empty fixture tables too.
+    await sql`DROP TABLE IF EXISTS "browser_use_browsers"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_runs"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_sessions"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_settings"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;

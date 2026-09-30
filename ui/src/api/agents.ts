@@ -1,10 +1,16 @@
 import type {
   Agent,
+  ConnectionIntentInteraction,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
   AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
+  AgentInstructionHistory,
+  AgentInstructionCandidate,
+  ResolveAgentInstructionCandidate,
+  AgentInstructionDiff,
+  AgentInstructionSnapshot,
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
@@ -103,6 +109,9 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>
+    api.post<ConnectionIntentInteraction>(withCompanyScope(`/agents/${agentId}/connection-intents/${interactionId}/adopt`, companyId), { connectionId }),
+
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
@@ -167,12 +176,26 @@ export const agentsApi = {
     ),
   saveInstructionsFile: (
     id: string,
-    data: { path: string; content: string; clearLegacyPromptTemplate?: boolean },
+    data: { path: string; content: string; baseRevisionId?: string | null; baseHash?: string | null; clearLegacyPromptTemplate?: boolean },
     companyId?: string,
   ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
-  deleteInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
+  instructionCandidates: (id: string, companyId?: string) =>
+    api.get<AgentInstructionCandidate[]>(agentPath(id, companyId, "/instructions-bundle/candidates")),
+  resolveInstructionCandidate: (id: string, runId: string, data: ResolveAgentInstructionCandidate, companyId?: string) =>
+    api.post<AgentInstructionsFileDetail>(agentPath(id, companyId, `/instructions-bundle/candidates/${runId}/resolve`), data),
+  instructionHistory: (id: string, path: string, companyId?: string, cursor?: string) =>
+    api.get<AgentInstructionHistory>(agentPath(id, companyId, `/instructions-bundle/history?path=${encodeURIComponent(path)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)),
+  instructionRevision: (id: string, path: string, revisionId: string, companyId?: string) =>
+    api.get<AgentInstructionSnapshot>(agentPath(id, companyId, `/instructions-bundle/revision/${revisionId}?path=${encodeURIComponent(path)}`)),
+  instructionDiff: (id: string, path: string, from: string, to: string, companyId?: string) =>
+    api.get<AgentInstructionDiff>(agentPath(id, companyId, `/instructions-bundle/diff?path=${encodeURIComponent(path)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)),
+  restoreInstructions: (id: string, data: { path: string; revisionId: string; baseRevisionId: string }, companyId?: string) =>
+    api.post<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/restore"), data),
+  downloadInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
+    `/api${agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}&download=true`)}`,
+  deleteInstructionsFile: (id: string, relativePath: string, companyId?: string, baseHash?: string) =>
     api.delete<AgentInstructionsBundle>(
-      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
+      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}${baseHash ? `&baseHash=${baseHash}` : ""}`),
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),

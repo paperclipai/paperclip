@@ -5,4 +5,4 @@ export * from "./durable-live-session-store.js";
 export * from "./runnerd-codex-transport.js";
 export * from "./turn-stream.js";
 
-export { probeAcpxClaudeInstallation } from "../drivers/acpx/installation-integrity.js";
+export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "../drivers/acpx/installation-integrity.js";

@@ -1,3 +1,7 @@
+import { connectionIntentService } from "../services/connection-intents.js";
+import { completeConnectionIntentSchema } from "@paperclipai/shared";
+import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
+import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
@@ -38,6 +42,8 @@ import {
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
+  restoreAgentInstructionSchema,
+  resolveAgentInstructionCandidateSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
@@ -63,7 +69,11 @@ import {
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/native-agent-runtime-inheritance.js";
-import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
+import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
+import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
+import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
+import { instructionPath } from "../services/agent-instruction-files.js";
+import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -724,7 +734,17 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
+  const agentFiles = agentFileStore(db);
+  const instructionRevisions = agentInstructionRevisionService(db);
+  const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
+  function instructionFileDetail(snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
+    receipt?: import("@paperclipai/shared").AgentInstructionCommitReceipt) {
+    const path = snapshot.revision.entryFile;
+    return { path, content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
+      language: path.toLowerCase().endsWith(".md") ? "markdown" : "text", markdown: path.toLowerCase().endsWith(".md"),
+      isEntryFile: true, editable: true, deprecated: false, virtual: false };
+  }
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -5067,8 +5087,24 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    await assertCanReadAgent(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    if (agentInstructionsBundleMode(existing) === "external") {
+      await assertCanReadAgent(req, existing);
+    } else {
+      await authorizeInstructionRead(db, req.actor, { companyId: existing.companyId, id: existing.id });
+    }
+    if (agentInstructionsBundleMode(existing) !== "external") {
+      const target = { companyId: existing.companyId, agentId: existing.id };
+      const current = await instructionRevisions.readCurrent(target, req.actor);
+      if (current) {
+        try { await instructionRevisions.materializeCurrent(target); }
+        catch (error) {
+          const bundle = await instructions.getBundle(existing);
+          bundle.warnings.push(`Saved instruction revision needs materialization: ${error instanceof Error ? error.message : String(error)}`);
+          res.json(bundle); return;
+        }
+      }
+    }
     res.json(await instructions.getBundle(existing));
   });
 
@@ -5124,8 +5160,12 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    await assertCanReadAgent(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    if (agentInstructionsBundleMode(existing) === "external") {
+      await assertCanReadAgent(req, existing);
+    } else {
+      await authorizeInstructionRead(db, req.actor, { companyId: existing.companyId, id: existing.id });
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -5133,6 +5173,19 @@ export function agentRoutes(
       return;
     }
 
+    if (req.query.download === "true" && agentInstructionsBundleMode(existing) === "managed") {
+      const download = await agentFiles.download(existing.companyId, existing.id, relativePath, req.actor);
+      if (download === null) throw notFound("Agent file not found");
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.attachment(relativePath.split("/").at(-1)!);
+      res.setHeader("Content-Length", download.size);
+      await pipeline(download.stream, res); return;
+    }
+    if (agentInstructionsBundleMode(existing) !== "external" && instructionPath(relativePath) === deriveBundleState(existing).entryFile) {
+      const snapshot = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
+      if (snapshot) { res.json(instructionFileDetail(snapshot)); return; }
+    }
     res.json(await instructions.readFile(existing, relativePath));
   });
 
@@ -5140,9 +5193,42 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    const entryFile = deriveBundleState(existing).entryFile;
+    if (instructionPath(req.body.path) === entryFile) {
+      assertExternalInstructionsAdmin(req, existing);
+      if (req.body.baseHash !== undefined) req.body.baseRevisionId = req.body.baseHash === null ? null : agentFileTokenFromHash(req.body.baseHash);
+      if (req.body.baseRevisionId === undefined) throw unprocessable("Read the entry and supply baseRevisionId (null for a new entry)", { code: "INSTRUCTION_BASE_REQUIRED" });
+      // Clearing legacy prompt configuration remains a protected config change.
+      if (req.body.clearLegacyPromptTemplate) await assertCanManageInstructionsPath(req, existing);
+      const receipt = await instructionRevisions.commit({ companyId: existing.companyId, agentId: existing.id,
+        entryFile, content: req.body.content, baseRevisionId: req.body.baseRevisionId,
+        source: req.actor.type === "board" ? "board" : "api" }, req.actor);
+      if (req.actor.type === "agent" && req.actor.runId) {
+        await instructionWorkingCopies.acknowledgeExplicitSave({ companyId: existing.companyId, agentId: existing.id,
+          runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
+          contentHash: receipt.revision.contentHash }).catch(() => undefined);
+      }
+      if (req.body.clearLegacyPromptTemplate) {
+        const fresh = await svc.getById(existing.id);
+        if (fresh) {
+          const adapterConfig = { ...asRecord(fresh.adapterConfig) };
+          delete adapterConfig.promptTemplate;
+          delete adapterConfig.bootstrapPromptTemplate;
+          await svc.update(existing.id, { adapterConfig });
+        }
+      }
+      res.json(instructionFileDetail(receipt, receipt));
+      return;
+    }
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
 
+    if (agentInstructionsBundleMode(existing) === "managed" && req.body.path !== "promptTemplate.legacy.md") {
+      if (req.body.baseHash === undefined) throw unprocessable("Read the file and supply baseHash (null for a new file)");
+      await agentFiles.write({ companyId: existing.companyId, agentId: existing.id, path: req.body.path,
+        bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
+      res.json(await instructions.readFile(existing, req.body.path)); return;
+    }
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,
@@ -5184,6 +5270,66 @@ export function agentRoutes(
     res.json(result.file);
   });
 
+  router.get("/agents/:id/instructions-bundle/candidates", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    res.json(await instructionWorkingCopies.list(existing.companyId, existing.id, req.actor));
+  });
+
+  router.post("/agents/:id/instructions-bundle/candidates/:runId/resolve", validate(resolveAgentInstructionCandidateSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const runId = req.params.runId as string;
+    if (!isUuidLike(runId)) throw unprocessable("Invalid instruction candidate run id");
+    const receipt = await instructionWorkingCopies.resolve({ companyId: existing.companyId, agentId: existing.id,
+      runId, baseRevisionId: req.body.baseRevisionId, content: req.body.content }, req.actor);
+    res.json(instructionFileDetail(receipt, receipt));
+  });
+
+  router.get("/agents/:id/instructions-bundle/history", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+    if (cursor && !isUuidLike(cursor)) throw unprocessable("Invalid history cursor");
+    res.json(await instructionRevisions.history({ companyId: existing.companyId, agentId: existing.id, entryFile, cursor }, req.actor));
+  });
+  router.get("/agents/:id/instructions-bundle/revision/:revisionId", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const revisionId = req.params.revisionId as string;
+    if (!isUuidLike(revisionId)) throw unprocessable("Invalid instruction revision id");
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    res.json(await instructionRevisions.readRevision({ companyId: existing.companyId, agentId: existing.id, entryFile, revisionId }, req.actor));
+  });
+  router.get("/agents/:id/instructions-bundle/diff", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const fromRevisionId = typeof req.query.from === "string" ? req.query.from : "";
+    const toRevisionId = typeof req.query.to === "string" ? req.query.to : "";
+    if (!isUuidLike(fromRevisionId) || !isUuidLike(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    res.json(await instructionRevisions.diff({ companyId: existing.companyId, agentId: existing.id, entryFile, fromRevisionId, toRevisionId }, req.actor));
+  });
+  router.post("/agents/:id/instructions-bundle/restore", validate(restoreAgentInstructionSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const receipt = await instructionRevisions.restore({ companyId: existing.companyId, agentId: existing.id,
+      entryFile: req.body.path, baseRevisionId: req.body.baseRevisionId, revisionId: req.body.revisionId }, req.actor);
+    if (req.actor.type === "agent" && req.actor.runId) {
+      await instructionWorkingCopies.acknowledgeExplicitSave({ companyId: existing.companyId, agentId: existing.id,
+        runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
+        contentHash: receipt.revision.contentHash }).catch(() => undefined);
+    }
+    res.json(instructionFileDetail(receipt, receipt));
+  });
+
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
@@ -5197,6 +5343,12 @@ export function agentRoutes(
       return;
     }
 
+    if (agentInstructionsBundleMode(existing) === "managed") {
+      const baseHash = typeof req.query.baseHash === "string" && /^[a-f0-9]{64}$/.test(req.query.baseHash) ? req.query.baseHash : null;
+      if (baseHash === null) throw unprocessable("Read the file and supply baseHash before deleting it");
+      await agentFiles.write({ companyId: existing.companyId, agentId: existing.id, path: relativePath, bytes: null, baseHash }, req.actor);
+      res.json(await instructions.getBundle(existing)); return;
+    }
     const actor = getActorInfo(req);
     const result = await instructions.deleteFile(existing, relativePath);
     await logActivity(db, {
@@ -5215,6 +5367,34 @@ export function agentRoutes(
     });
 
     res.json(result.bundle);
+  });
+
+  router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
+    assertBoard(req);
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const userId = responsibleUserForAiRequest(req);
+    const intents = connectionIntentService(db);
+    const interactionId = req.params.interactionId as string;
+    const loaded = await intents.loadIntent(interactionId);
+    if (loaded.issue.companyId !== agent.companyId || loaded.interaction.payload.requestingAgentId !== agent.id) throw notFound("Connection intent not found");
+    if (!userId || loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can adopt this connection");
+    const connectionId = req.body.connectionId as string;
+    if (loaded.interaction.status === "accepted" && loaded.interaction.result?.connectionId === connectionId) {
+      res.json(loaded.interaction);
+      return;
+    }
+    if (loaded.interaction.status !== "pending") throw conflict("Connection intent is already resolved");
+    const setup = await intents.setupOptions(interactionId);
+    if (!setup.aiConnectionRequiresAdoption || !setup.aiConnection) throw conflict("The agent’s AI configuration changed. Reload the task and try again.");
+    // Probe in the agent's execution environment without installing access.
+    // The binding, install, audit, and card resolution commit together below.
+    const validatedConnectionId = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
+    if (validatedConnectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
+    res.json(await intents.complete(interactionId, connectionId, userId, {
+      validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection },
+    }));
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

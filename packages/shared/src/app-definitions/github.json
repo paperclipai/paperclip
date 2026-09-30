@@ -67,7 +67,8 @@
           "type": "password",
           "required": true,
           "placeholder": "github_pat_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

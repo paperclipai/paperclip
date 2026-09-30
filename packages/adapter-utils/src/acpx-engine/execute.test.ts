@@ -38,6 +38,7 @@ import {
 } from "./execute.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
+import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
@@ -586,6 +587,32 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
     expect(configOptions).toEqual([]);
+  });
+
+  it.each(["claude", "codex", "gemini", "kimi", "custom"])("delivers the shared owned sections at the %s ACP turn boundary", async (agent) => {
+    const root = await makeTempRoot();
+    const context = createPromptContextFixture();
+    const config = { agent, agentCommand: "node ./fixture-acp.js", cwd: root, stateDir: path.join(root, "state"), mode: "persistent" };
+    const fresh = await runExecutor(config, { context });
+    expect(fresh.turnInputs).toHaveLength(1);
+    const prompt = String(fresh.turnInputs[0]?.text ?? "");
+    expect(prompt).toContain(context.paperclipTaskMarkdownAssignment);
+    expect(prompt).toContain(context.paperclipTaskCommunicationGuidance);
+    expect(prompt).not.toContain('"objective":');
+    expect(prompt).not.toContain("### Issue description");
+    expect(prompt).toContain('"id":"comment-first"');
+    expect(prompt).toContain('"id":"comment-second"');
+    expect(prompt).toContain('"id":"comment-scope"');
+    expect(prompt.indexOf('"id":"comment-first"')).toBeLessThan(prompt.indexOf('"id":"comment-second"'));
+    expect(prompt).toContain("Untrusted continuation evidence");
+    expect(prompt).toContain("receipt-1");
+    const resumed = await runExecutor(config, { context, runtime: { sessionParams: fresh.result.sessionParams } });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    const resumedPrompt = String(resumed.turnInputs[0]?.text ?? "");
+    expect(resumedPrompt).toContain(context.paperclipTaskMarkdownAssignmentCompact);
+    expect(resumedPrompt).not.toContain(context.paperclipTaskCommunicationGuidance);
+    expect(resumedPrompt).not.toContain('"id":"comment-first"');
+    expect(resumedPrompt).toContain('"id":"comment-second"');
   });
 
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
@@ -1573,6 +1600,55 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(authStat.isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
+
+  it.each(["OPENAI_API_KEY", "CODEX_API_KEY"] as const)(
+    "uses isolated API-key auth instead of the host ChatGPT login for %s",
+    async (keyName) => {
+      const root = await makeTempRoot();
+      const sourceCodexHome = path.join(root, "source-codex-home");
+      const paperclipHome = path.join(root, "paperclip-home");
+      await fs.mkdir(sourceCodexHome, { recursive: true });
+      const sourceAuth = path.join(sourceCodexHome, "auth.json");
+      await fs.writeFile(sourceAuth, JSON.stringify({ tokens: "host-login" }), "utf8");
+      const managedHome = path.join(
+        paperclipHome, "instances", "test-instance", "companies", "company-1",
+        "acp-engine", "agents", "agent-1", "codex-home",
+      );
+      await fs.mkdir(managedHome, { recursive: true });
+      const managedAuth = path.join(managedHome, "auth.json");
+      if (process.platform === "win32") {
+        await fs.writeFile(managedAuth, JSON.stringify({ tokens: "stale-login" }), "utf8");
+      } else {
+        await fs.symlink(sourceAuth, managedAuth);
+      }
+
+      vi.stubEnv("CODEX_HOME", sourceCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "test-instance");
+      vi.stubEnv("OPENAI_API_KEY", "");
+      vi.stubEnv("CODEX_API_KEY", "");
+      try {
+        const { sessionInputs } = await runExecutor({
+          agent: "codex",
+          stateDir: path.join(root, "state"),
+          env: { [keyName]: "sk-acp-test-key" },
+          paperclipRuntimeSkills: [],
+          paperclipSkillSync: { desiredSkills: [] },
+        });
+        const sessionEnv = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+        expect(sessionEnv.CODEX_HOME).toBe(managedHome);
+        expect(sessionEnv.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
+        expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(false);
+        expect(JSON.parse(await fs.readFile(managedAuth, "utf8"))).toEqual({ OPENAI_API_KEY: "sk-acp-test-key" });
+        expect(await fs.readFile(sourceAuth, "utf8")).toBe(JSON.stringify({ tokens: "host-login" }));
+        if (process.platform !== "win32") {
+          expect((await fs.stat(managedAuth)).mode & 0o777).toBe(0o600);
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("sets GROK_HOME for a Grok run from the company Grok home, and leaves CODEX_HOME unchanged for a Codex run", async () => {
     const root = await makeTempRoot();
@@ -2954,7 +3030,67 @@ describe("gemini ACP flag selection", () => {
     expect(result.errorCode).toBe("acpx_timeout");
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
+    expect(result.resultJson).toMatchObject({ acpObservedEventCount: 0, acpPendingToolCount: 0, acpToolInventoryComplete: true });
+    expect(result.resultJson).not.toHaveProperty("acpLastEventAgeMs");
   }, 15_000);
+});
+
+describe("ACP activity diagnostics", () => {
+  it.each(["terminal", "relay_error", "no_events"])(
+    "snapshots %s activity before usage reads, failure logging, and cleanup", async (outcome) => {
+      const root = await makeTempRoot();
+      const cwd = path.join(root, "worktree");
+      await fs.mkdir(cwd, { recursive: true });
+      let currentNow = 1000;
+      let statusReads = 0;
+      const execute = createAcpxEngineExecutor({
+        now: () => currentNow,
+        createRuntime: () => ({
+          ...buildRuntime(),
+          getStatus: async () => {
+            if (++statusReads > 1) currentNow += 100_000;
+            return null;
+          },
+          startTurn: () => ({
+            events: (async function* () {
+              if (outcome !== "no_events") {
+                yield { type: "tool_call", toolCallId: "private-pending-id", title: "private command", kind: "execute", status: "in_progress" };
+                yield { type: "tool_call", toolCallId: "private-done-id", title: "private read", kind: "read", status: "in_progress" };
+                yield { type: "tool_call", toolCallId: "private-done-id", status: "completed" };
+                yield { type: "tool_call", toolCallId: "private-cancelled-id", status: "cancelled" };
+                yield { type: "tool_call", toolCallId: "private-failed-id", status: "failed" };
+                yield { type: "status", text: "terminal/create private receipt" };
+              }
+              currentNow = 10_000;
+              if (outcome === "relay_error") throw new Error("relay failed");
+            })(),
+            result: Promise.resolve({ status: "failed", error: new Error("turn failed") }),
+            cancel: async () => {},
+          }),
+          close: async () => { currentNow += 100_000; },
+        }) as never,
+      });
+      const result = await execute({
+        runId: "activity-run", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+        context: {}, onMeta: async () => {},
+        onLog: async (_stream: string, text: string) => {
+          if (text.includes('"type":"acpx.error"')) currentNow += 100_000;
+        },
+      } as never);
+      expect(result.exitCode).toBe(1);
+      expect(result.resultJson).toMatchObject({
+        acpObservedEventCount: outcome === "no_events" ? 0 : 6,
+        acpPendingToolCount: outcome === "no_events" ? 0 : 1,
+        acpToolInventoryComplete: outcome === "no_events",
+      });
+      if (outcome === "no_events") expect(result.resultJson).not.toHaveProperty("acpLastEventAgeMs");
+      else expect(result.resultJson?.acpLastEventAgeMs).toBe(9000);
+      const diagnostics = Object.fromEntries(Object.entries(result.resultJson ?? {}).filter(([key]) => key.startsWith("acp")));
+      expect(JSON.stringify(diagnostics)).not.toContain("private");
+      expect(currentNow).toBeGreaterThan(10_000);
+    },
+  );
 });
 
 describe("summarizeAcpxTurnUsage", () => {
@@ -6355,10 +6491,30 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     };
   }
 
+  it("collects instructions after confirmed close on a thrown provider turn, before workspace restore", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const { paperclipStops, anyStopped } = stubBridges();
+    const order: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      stagingLocks: new Map(), warmHandles: new Map(), stagedRuntimes: new Map(),
+      createRuntime: () => ({ ensureSession: async () => okHandle, startTurn: () => throwingTurn(),
+        close: async () => { order.push("close"); } }) as never,
+    });
+    const result = await execute({ runId: "instruction-stop-failure",
+      ...remoteArgs(stateDir, localCwd, executionTarget, { onProviderStopped: async () => {
+        expect(anyStopped(paperclipStops)).toBe(true);
+        order.push("collect");
+      } }),
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(order).toEqual(["close", "collect"]);
+  });
+
   it("test_teardown_continues_after_one_teardown_step_fails", async () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     const { paperclipStops, processStops, anyStopped } = stubBridges();
     const stagingLocks = new Map<string, Promise<unknown>>();
+    const collectInstructions = vi.fn(async () => {});
     const logs: Array<{ stream: string; text: string }> = [];
     const execute = createAcpxEngineExecutor({
       stagingLocks,
@@ -6378,6 +6534,7 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     const result = await execute({
       runId: "td-continue",
       ...remoteArgs(stateDir, localCwd, executionTarget, {
+        onProviderStopped: collectInstructions,
         onLog: async (stream: "stdout" | "stderr", text: string) => {
           logs.push({ stream, text });
         },
@@ -6385,6 +6542,7 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     } as never);
 
     expect(result.exitCode).toBe(1);
+    expect(collectInstructions).not.toHaveBeenCalled();
     // The close failure did not stop the bridge stops or the lease release.
     expect(anyStopped(paperclipStops)).toBe(true);
     expect(anyStopped(processStops)).toBe(true);
@@ -6393,6 +6551,36 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     expect(
       logs.some((entry) => entry.stream === "stderr" && entry.text.includes('teardown step "runtime-close" failed')),
     ).toBe(true);
+  });
+
+  it("restores managed home and releases the lease when instruction collection rejects", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const { paperclipStops, processStops, anyStopped } = stubBridges();
+    const stagingLocks = new Map<string, Promise<unknown>>();
+    const order: string[] = [];
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(),
+      prepareRemoteManagedHome: async (input) => ({
+        stagedRuntime: await input.stage([]),
+        teardown: async () => { order.push("restore"); return { ok: true }; },
+      }),
+      createRuntime: () => ({ ensureSession: async () => okHandle, startTurn: () => throwingTurn(),
+        close: async () => { order.push("close"); } }) as never,
+    });
+    const result = await execute({ runId: "instruction-collection-reject",
+      ...remoteArgs(stateDir, localCwd, executionTarget, {
+        onProviderStopped: async () => { order.push("collect"); throw new Error("collector failed reading /private/test-instructions/AGENTS.md"); },
+        onLog: async (_stream: string, text: string) => { logs.push(text); },
+      }),
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(order).toEqual(["close", "collect", "restore"]);
+    expect(anyStopped(paperclipStops)).toBe(true);
+    expect(anyStopped(processStops)).toBe(true);
+    expect(stagingLocks.size).toBe(0);
+    expect(logs.some(text => text.includes('teardown step "instruction-collection" failed: Instruction collection failed'))).toBe(true);
+    expect(logs.some(text => text.includes("/private/test-instructions"))).toBe(false);
   });
 
   it("test_staging_lease_releases_in_finally_on_every_exit_path", async () => {

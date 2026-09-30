@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { PausedComposerPreview } from "../prototypes/PausedTaskComposer";
 
 const meta = {
-  title: "Tasks/Composer/Paused task takeover",
+  title: "Composer/Paused task takeover",
   component: PausedComposerPreview,
   parameters: {
     layout: "fullscreen",

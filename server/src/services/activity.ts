@@ -450,7 +450,7 @@ export function activityService(db: Db) {
       const runIds = runs.map((run) => run.runId);
       if (runIds.length === 0) return runs;
 
-      const exhaustionRows = await db
+      const exhaustionRowsQuery = db
         .select({
           runId: heartbeatRunEvents.runId,
           message: heartbeatRunEvents.message,
@@ -465,13 +465,7 @@ export function activityService(db: Db) {
         )
         .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id));
 
-      const retryExhaustedReasonByRunId = new Map<string, string>();
-      for (const row of exhaustionRows) {
-        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
-        retryExhaustedReasonByRunId.set(row.runId, row.message);
-      }
-
-      const leaseRows = await db
+      const leaseRowsQuery = db
         .select({
           lease: environmentLeases,
           environment: {
@@ -490,6 +484,28 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(environmentLeases.lastUsedAt), desc(environmentLeases.createdAt));
 
+      // Only stored, current plan revisions can support a saved-plan link.
+      // Do not trust an adapter's claim that it wrote a document.
+      const savedPlanQuery = runs.some((run) => hasWorkspaceRestoreFailure(run.resultJson))
+        ? db.select({ revisionId: documentRevisions.id, runId: documentRevisions.createdByRunId })
+          .from(issueDocuments)
+          .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
+          .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId), eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, companyId)))
+          .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
+          .limit(1)
+        : Promise.resolve([]);
+      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
+        exhaustionRowsQuery,
+        leaseRowsQuery,
+        executionProjectionsForRuns(db, companyId, runIds),
+        savedPlanQuery,
+      ]);
+      const retryExhaustedReasonByRunId = new Map<string, string>();
+      for (const row of exhaustionRows) {
+        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
+        retryExhaustedReasonByRunId.set(row.runId, row.message);
+      }
+
       const leaseByRunId = new Map<string, (typeof leaseRows)[number]>();
       for (const row of leaseRows) {
         if (row.lease.heartbeatRunId && !leaseByRunId.has(row.lease.heartbeatRunId)) {
@@ -497,17 +513,6 @@ export function activityService(db: Db) {
         }
       }
 
-      const executionByRunId = await executionProjectionsForRuns(db, companyId, runIds);
-      // Only stored, current plan revisions can support a saved-plan link.
-      // Do not trust an adapter's claim that it wrote a document.
-      const [savedPlan] = runs.some((run) => hasWorkspaceRestoreFailure(run.resultJson))
-        ? await db.select({ revisionId: documentRevisions.id, runId: documentRevisions.createdByRunId })
-          .from(issueDocuments)
-          .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
-          .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId), eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, companyId)))
-          .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
-          .limit(1)
-        : [];
       return runs.map((run) => {
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;

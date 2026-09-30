@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
@@ -8,16 +10,20 @@ import {
   openRouterBreadthExcludedModelIds,
   openRouterBreadthProfiles,
   openRouterBreadthTasks,
+  contextIntegrityProfiles,
   localIntegrityTasks,
   runnerProfiles,
   runnerSuites,
   runnerTasks,
   daytonaWarmContinuityTask,
+  daytonaLargeJournalTask,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
+  pendingContextIntegrityProfiles,
   suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
+import { assertRunnerE2EPrerequisites, UNQUALIFIED_PROFILE_GAPS } from "./prerequisites.js";
 import {
   buildMatrixJobs,
   parseRunnerSelectors,
@@ -26,6 +32,65 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it.each(["daytona-journal-continuity"])(
+    "%s retains native processes with fixed external instructions",
+    (suiteId) => {
+      const suite = runnerSuites.find(suite => suite.id === suiteId)!;
+      const input = {
+        executionId: "warm-instructions", environmentId: "env-1",
+        environmentFixtureId: "daytona" as const, workspacePath: "/workspace",
+        secretRefs: { OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const } },
+      };
+      const profile = suite.profiles.find(profile => profile.id === "runner-codex")!;
+      const config = profile.buildAgent(input).adapterConfig as Record<string, unknown>;
+      expect(config).toMatchObject({
+        instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md", idleTimeoutMs: 300_000,
+      });
+      expect(readFileSync(String(config.instructionsFilePath), "utf8")).toContain("Preserve the workspace files across turns");
+      expect(suite.definitionMetadata).toMatchObject({ nativeInstructions: "fixed-external" });
+      expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(input).adapterConfig)
+        .not.toHaveProperty("instructionsBundleMode", "external");
+      const legacy = suite.profiles.find(profile => profile.id === "legacy-codex");
+      if (legacy) expect(legacy.buildAgent(input).adapterConfig).not.toHaveProperty("instructionsBundleMode", "external");
+    },
+  );
+
+  it("keeps the large Git filename workload explicit-only with three real turns", () => {
+    const suite = runnerSuites.find(suite => suite.id === "daytona-git-streaming")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(runnerMatrix.filter(entry => entry.suite.id === suite.id)).toHaveLength(1);
+    expect(suite.tasks[0]).toMatchObject({ expectedRunCount: 3, flow: "warm_three_turn", turnTimeoutMs: 15 * 60_000, attemptTimeoutMs: { daytona: 50 * 60_000 } });
+    expect(daytonaWarmContinuityTask).toMatchObject({ turnTimeoutMs: 10 * 60_000, attemptTimeoutMs: { daytona: 30 * 60_000 } });
+    expect(suite.definitionMetadata).toMatchObject({ generatedFileCount: 60_000, filenameBytes: 39_828_890, nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25 });
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+    };
+    const buildInput = { executionId: "heavy-git", environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace", secretRefs };
+    const adapterConfig = suite.profiles[0]!.buildAgent(buildInput).adapterConfig as Record<string, unknown>;
+    expect(adapterConfig).toMatchObject({ idleTimeoutMs: 1_200_000, instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md" });
+    expect(readFileSync(String(adapterConfig.instructionsFilePath), "utf8").trim()).not.toBe("");
+    expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(buildInput).adapterConfig).toMatchObject({ idleTimeoutMs: 300_000 });
+    const environmentInput = { executionId: "heavy-git", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    expect(suite.environments[0]!.buildEnvironment(environmentInput).config).toMatchObject({ runnerIdleTimeoutMs: 1_200_000, autoStopInterval: 25, autoArchiveInterval: 30 });
+    expect(daytonaWarmEnvironment.buildEnvironment(environmentInput).config).toMatchObject({ autoStopInterval: 5 });
+  });
+  it("validates context-integrity task IDs and selectable groups", () => {
+    const task = contextIntegrityTasks[0]!;
+    const originalId = task.id;
+    const originalGroups = task.groups;
+    try {
+      task.id = runnerTasks[0]!.id;
+      expect(() => validateRunnerCatalog()).toThrow("Duplicate task fixture ids");
+      task.id = originalId;
+      task.groups = ["not-a-selectable-group" as typeof task.groups[number]];
+      expect(() => validateRunnerCatalog()).toThrow("declares unknown groups");
+    } finally {
+      task.id = originalId;
+      task.groups = originalGroups;
+    }
+  });
+
   it("supplies an actionable human review in native warm completion examples", () => {
     const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
     for (const [index, prompt] of prompts.entries()) {
@@ -64,25 +129,25 @@ describe("runner E2E catalog", () => {
   });
 
   it("validates the core, local-integrity, breadth, and warm suites", () => {
-    expect(runnerProfiles).toHaveLength(7);
+    expect(runnerProfiles).toHaveLength(8);
     expect(openRouterBreadthProfiles).toHaveLength(4);
     expect(runnerEnvironments).toHaveLength(2);
     expect(runnerTasks).toHaveLength(3);
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      8, 46, 23, 47, 52, 28, 18, 6, 6, 42, 14, 10, 2,
+      6, 30, 3, 16, 16, 2, 6, 8, 46, 23, 47, 20, 52, 28, 18, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(302);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(302);
+    expect(validateRunnerCatalog()).toHaveLength(433);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(433);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
-    ).toHaveLength(42);
+    ).toHaveLength(48);
     expect(
       runnerMatrix.filter(
         (entry) => entry.suite.id === "local-session-integrity",
       ),
-    ).toHaveLength(14);
+    ).toHaveLength(16);
     expect(
       runnerMatrix.filter(
         (entry) => entry.suite.id === "openrouter-model-breadth",
@@ -98,7 +163,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(371);
+    ).toBe(385);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -184,6 +249,20 @@ describe("runner E2E catalog", () => {
         ],
       }),
     ).not.toBe(suiteDefinitionHash(suite));
+  });
+
+  it("keeps large-journal stress explicit-only and uses the ordinary warm workflow", () => {
+    const suite = runnerSuites.find((candidate) => candidate.id === "daytona-journal-continuity")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(suite.expectedMatrixSize).toBe(1);
+    expect(suite.profiles.map((profile) => profile.id)).toEqual(["runner-codex"]);
+    expect(daytonaLargeJournalTask.flow).toBe("warm_three_turn");
+    expect(daytonaLargeJournalTask.buildPrompt("nonce")).toContain("240 separate execution-tool calls");
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce")).toHaveLength(2);
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce").join("\n")).not.toContain("notes/warm-memory.txt");
+    expect(daytonaWarmContinuityTask.buildPrompt("nonce")).toContain("notes/warm-memory.txt");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"]))
+      .some((cell) => cell.suite.id === suite.id)).toBe(false);
   });
 
   it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {
@@ -360,6 +439,47 @@ describe("runner E2E catalog", () => {
           entry.requiredCredentials.includes("DAYTONA_API_KEY"),
         ),
     ).toBe(true);
+  });
+
+  it("lists pending Kimi and Grok context profiles without treating them as qualified", () => {
+    expect(pendingContextIntegrityProfiles.map((profile) => profile.id)).toEqual([
+      "legacy-kimi-cli",
+      "legacy-kimi-acp",
+      "legacy-grok",
+    ]);
+    expect(contextIntegrityProfiles.map((profile) => profile.id)).toEqual(
+      expect.arrayContaining(pendingContextIntegrityProfiles.map((profile) => profile.id)),
+    );
+    expect(UNQUALIFIED_PROFILE_GAPS.pi).toMatch(/no qualified model source/);
+  });
+
+  it("blocks pending profiles before provider admission", () => {
+    const pending = runnerMatrix.filter((entry) =>
+      pendingContextIntegrityProfiles.some((profile) => profile.id === entry.profile.id),
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect(() => assertRunnerE2EPrerequisites(pending)).toThrow(/No provider credentials were loaded or sent/);
+  });
+
+  it("binds pending provider credentials through secret references only", () => {
+    for (const profile of pendingContextIntegrityProfiles) {
+      const payload = profile.buildAgent({
+        environmentId: "fixture-company",
+        environmentFixtureId: "local",
+        workspacePath: "/tmp/runner-e2e-workspace",
+        secretRefs: {
+          [profile.credential]: {
+            type: "secret_ref",
+            secretId: "22222222-2222-4222-8222-222222222222",
+            version: "latest",
+          },
+        },
+        executionId: `pending-${profile.id}`,
+      });
+      expect(payload.adapterConfig).toMatchObject({
+        env: { [profile.credential]: { type: "secret_ref" } },
+      });
+    }
   });
 
   it("pins legacy Codex and Claude to their classic CLI engines", () => {
@@ -550,6 +670,31 @@ describe("runner E2E selectors", () => {
     ]);
   });
 
+  it("keeps Grok artifact and stop/resume qualification explicit in both environments", () => {
+    const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "grok-qualification"]));
+    expect(selected).toHaveLength(16);
+    for (const environment of ["local", "daytona"]) {
+      for (const task of ["build-revise", "stop-new-resume", "continuity-restart"]) {
+        expect(selected.some(execution => execution.id === `grok-qualification.runner-acpx-grok.${environment}.${task}`)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps subscription qualification separate and never injects an API key", () => {
+    const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "grok-subscription-qualification"]));
+    expect(selected).toHaveLength(16);
+    const all = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
+    for (const execution of selected) {
+      expect(all.some(candidate => candidate.id === execution.id)).toBe(false);
+      expect(execution.requiredCredentials).toEqual(execution.environment.id === "daytona"
+        ? ["GROK_AUTH_JSON", "DAYTONA_API_KEY"] : ["GROK_AUTH_JSON"]);
+      expect(execution.profile.buildAgent({
+        environmentId: "env", environmentFixtureId: execution.environment.id,
+        workspacePath: "/tmp/workspace", secretRefs: {}, executionId: "subscription",
+      })).toMatchObject({ adapterConfig: { provider: "acpx", acpxAgent: "grok", env: {} } });
+    }
+  });
+
   it("selects a suite without exploding its environment matrix", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "openrouter-model-breadth"]),
@@ -572,7 +717,7 @@ describe("runner E2E selectors", () => {
       "daytona",
     ]);
     const selected = selectRunnerExecutions(options);
-    expect(selected).toHaveLength(13);
+    expect(selected).toHaveLength(16);
     expect(
       selected.every(
         (entry) =>
@@ -591,10 +736,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(171);
-    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(148);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(171);
+    expect(jobs).toHaveLength(179);
+    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(26);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(153);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(179);
     expect(
       jobs.find(
         (job) =>
@@ -627,5 +772,23 @@ describe("runner E2E selectors", () => {
     expect(() =>
       parseRunnerSelectors(["--all", "--max-parallel", "0"]),
     ).toThrow("positive integer");
+  });
+
+  it("accepts an explicit zero or one automatic retry", () => {
+    expect(parseRunnerSelectors(["--all"]).maxAutomaticRetries).toBe(1);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "0"])
+        .maxAutomaticRetries,
+    ).toBe(0);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "1"])
+        .maxAutomaticRetries,
+    ).toBe(1);
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "2"]),
+    ).toThrow("0 or 1");
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "-1"]),
+    ).toThrow("0 or 1");
   });
 });

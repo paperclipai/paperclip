@@ -1,3 +1,5 @@
+import { AdapterStopTimeoutError, type AdapterStopContext } from "./adapter-stop-timeout.js";
+
 /** Live adapter ownership shared by routes and scheduler service instances. */
 export function createAdapterExecutionControl() {
   const controller = new AbortController();
@@ -67,6 +69,7 @@ export async function registerAdapterExecutionControl(
 export async function waitForAdapterStop(
   settled: Promise<void>,
   timeoutMs = 60_000,
+  diagnostics?: AdapterStopContext,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -76,9 +79,7 @@ export async function waitForAdapterStop(
         timer = setTimeout(
           () =>
             reject(
-              new Error(
-                "Execution is still stopping; termination has not been verified.",
-              ),
+              new AdapterStopTimeoutError(timeoutMs, diagnostics),
             ),
           timeoutMs,
         );

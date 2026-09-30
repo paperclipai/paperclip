@@ -321,6 +321,7 @@ export {
   connectionMethodSupportsCatalogSetup,
   connectionMethodSupportsAutomaticOAuth,
   credentialConfigPath,
+  connectionCredentialConfigPath,
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   getAvailableConnectionMethod,
@@ -1944,6 +1945,8 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  setIssueTitleSchema,
+  type SetIssueTitle,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
@@ -1960,6 +1963,7 @@ export {
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
+  retryWorkspaceExportSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -2001,6 +2005,8 @@ export {
   requestItemVerdictsResultSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
+  resolveConfirmationFromCommentSchema,
+  type ResolveConfirmationFromComment,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
@@ -2782,5 +2788,20 @@ export * from "./slack-tools.js";
 
 export { MEMORY_CONNECTOR_IDS, isMemoryConnectorId, type MemoryConnectorId } from "./memory-connectors.js";
 export * from "./connection-routing.js";
+export * from "./connection-search.js";
 
-export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath } from "./workspace-restore.js";
+export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, isNativeWorkspaceExportRepairCause } from "./workspace-restore.js";
+
+
+export type { AgentInstructionErrorCode, AgentInstructionErrorDetails, AgentInstructionSource, AgentInstructionRevision, AgentInstructionSnapshot, AgentInstructionCommitReceipt, AgentInstructionHistory, AgentInstructionDiff } from "./types/agent.js";
+export { restoreAgentInstructionSchema } from "./validators/agent.js";
+
+export type { AgentInstructionCandidate } from "./types/agent.js";
+export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCandidate } from "./validators/agent.js";
+
+export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
+export * from "./browser-use.js";
+
+export * from "./types/skill-source.js";
+export * from "./validators/skill-source.js";
+export * from "./github-skill-repository.js";

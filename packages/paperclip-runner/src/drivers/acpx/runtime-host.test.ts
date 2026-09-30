@@ -358,6 +358,32 @@ describe("ACPX runtime host", () => {
         await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
         await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The prepared native envelope v3 carries the selected skill explicitly;
+      // its task object intentionally has no internal description field. Keep
+      // this boundary covered across a fresh open and a provider reopen.
+      for (let index = 0; index < 2; index += 1) {
+        const host = await AcpxRuntimeHost.open(
+          { ...options, runtimeContext: context },
+          dependencies,
+        );
+        const message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v3",
+          requestedSkills: ["assigned"],
+          task: {
+            identifier: "PAP-1",
+            title: "Assigned task",
+            prompt: "A prepared direct user request",
+            workMode: "standard",
+          },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        host.startTurn({ text: message, requestId: `prepared-skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`,
+          requestId: `prepared-skill-turn-${index}`,
+        });
+        await host.close({ reason: "prepared envelope reopen test" });
+      }
       // The same agent's next ordinary task must not inherit the command.
       const ordinary = await AcpxRuntimeHost.open(
         { ...options, runtimeContext: context }, dependencies,
@@ -371,6 +397,25 @@ describe("ACPX runtime host", () => {
         text: ordinaryMessage, requestId: "ordinary-task",
       });
       await ordinary.close({ reason: "ordinary task verified" });
+      const ordinaryPrepared = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryPreparedMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v3",
+        requestedSkills: [],
+        task: {
+          identifier: "PAP-2",
+          title: "An ordinary task",
+          prompt: "Mention /assigned in a note",
+          workMode: "standard",
+        },
+      });
+      ordinaryPrepared.startTurn({ text: ordinaryPreparedMessage, requestId: "ordinary-prepared-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryPreparedMessage,
+        requestId: "ordinary-prepared-task",
+      });
+      await ordinaryPrepared.close({ reason: "ordinary prepared task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);
@@ -738,7 +783,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow();
   });
 
-  it("rejects Pi before installation or runtime launch", async () => {
+  it("rejects Pi without an explicit task policy before installation or runtime launch", async () => {
     const fixture = await hostFixture();
     const verifyInstallation = vi.fn();
     const openRuntime = vi.fn();
@@ -756,9 +801,35 @@ describe("ACPX runtime host", () => {
           reportRetainedCleanupFailure: vi.fn(),
         },
       ),
-    ).rejects.toThrow("descriptor-confined verified launch");
+    ).rejects.toThrow("explicit task execution policy");
     expect(verifyInstallation).not.toHaveBeenCalled();
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("binds Pi task policy independently of permissions and rejects an uninstalled candidate", async () => {
+    const fixture = await hostFixture();
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    const profile = resolveQualifiedAcpxProfile("pi", model);
+    const openRuntime = vi.fn(async (options: AcpxRuntimePortOpenOptions) => {
+      expect(options.launchEnvironment.PAPERCLIP_PI_READ_ONLY).toBe("1");
+      expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBe("Bound instructions");
+      expect(JSON.parse(options.launchEnvironment.PAPERCLIP_PI_READ_ROOTS!)).toEqual([]);
+      expect(options.permissionMode).toBe("approve-all");
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }) });
+    });
+    const options = { ...fixture.options, agent: "pi" as const, model,
+      permissionMode: "approve-all" as const, providerPolicy: { readOnly: true }, systemInstructions: "Bound instructions" };
+    await expect(AcpxRuntimeHost.open(options, { openRuntime, reportRetainedCleanupFailure: vi.fn() }))
+      .rejects.toThrow("verified candidate distribution is not installed");
+    expect(openRuntime).not.toHaveBeenCalled();
+    const host = await AcpxRuntimeHost.open(options, fixture.dependencies({
+      verifyInstallation: async () => ({ commandDigest: profile.commandDigest,
+        agentServerPackageJsonPath: join(fixture.root, "package.json"), agentRuntimePackageJsonPath: null,
+        openCommand: async () => ({ spawn: () => { throw new Error("not used"); }, close: async () => {} }),
+      }), openRuntime,
+    }));
+    await host.close({ reason: "policy verified" });
+    expect(openRuntime).toHaveBeenCalledOnce();
   });
 
   it("selects and verifies Claude's qualified reported model", async () => {
@@ -851,6 +922,25 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow(/does not match its profile/);
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(["expired credential", "provider process died"])("cleans Grok credentials after failed initialization: %s", async (failure) => {
+    const fixture = await hostFixture();
+    let home = "";
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "grok", model: "grok-4.7", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "test-expired", refresh_token: "test-refresh" } }) },
+    }, fixture.dependencies({ openRuntime: async (options) => {
+      home = options.launchEnvironment.GROK_HOME!;
+      expect(options.permissionMode).toBe("approve-reads");
+      expect(options.launchEnvironment).not.toHaveProperty("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET");
+      expect(await readFile(join(home, "auth.json"), "utf8")).toContain("test-expired");
+      throw new Error(failure);
+    } }))).rejects.toThrow(failure);
+    for (const filename of ["auth.json", "auth-refresh.json"]) {
+      await expect(readFile(join(home, filename))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("cleans credentials and command leases when provider open fails", async () => {
@@ -1201,6 +1291,8 @@ describe("ACPX runtime host", () => {
     const turn = runtimeTurn();
     const startTurn = vi.fn(() => turn);
     const onElicitation = vi.fn();
+    const onExtensionRequest = vi.fn();
+    const onExtensionNotification = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -1218,12 +1310,16 @@ describe("ACPX runtime host", () => {
         text: "Complete the task.",
         requestId: "turn-1",
         onElicitation,
+        onExtensionRequest,
+        onExtensionNotification,
       }),
     ).toBe(turn);
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
       onElicitation,
+      onExtensionRequest,
+      onExtensionNotification,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),
@@ -1238,6 +1334,34 @@ describe("ACPX runtime host", () => {
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
     );
+  });
+
+  it("clones ephemeral capabilities and fences steering controls to an acknowledged active turn", async () => {
+    const fixture = await hostFixture();
+    const turn = runtimeTurn();
+    const runtime = Object.assign(runtimePort({ startTurn: () => turn }), {
+      steeringCapability: () => ({ steering: true, queuedFollowUp: true }),
+      steerActiveTurn: vi.fn(async () => undefined),
+      queueFollowUp: vi.fn(async () => undefined),
+    });
+    const clientCapabilities = { _meta: { fixture: { enabled: true } } };
+    let observed: Record<string, unknown> | undefined;
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" }, clientCapabilities,
+    }, fixture.dependencies({ openRuntime: async (options) => { observed = options.clientCapabilities; return runtime; } }));
+    expect(observed).toEqual(clientCapabilities);
+    expect(observed).not.toBe(clientCapabilities);
+    await expect(host.steerActiveTurn("Early")).rejects.toThrow("active turn");
+    host.startTurn({ text: "Start", requestId: "turn-1" });
+    await expect(host.steerActiveTurn("Wrong turn", "turn-other")).rejects.toThrow("active turn");
+    await host.steerActiveTurn("Steer", "turn-1");
+    await host.queueFollowUp("Next", "turn-1");
+    expect(runtime.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Steer", "turn-1");
+    expect(runtime.queueFollowUp).toHaveBeenCalledExactlyOnceWith("Next", "turn-1");
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    await host.close({ reason: "controls tested" });
+    await expect(host.queueFollowUp("Too late", "turn-1")).rejects.toThrow("active turn");
   });
 
   it("rejects oversized turn inputs before calling the runtime", async () => {

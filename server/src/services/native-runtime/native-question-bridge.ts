@@ -200,7 +200,7 @@ async function authorizedNativeRun(
   return run ? { ...run, requestId } : null;
 }
 
-/** Materialize a canonical runtime input request as the existing task-thread card. */
+/** Materialize questions; permission requests use the privileged runtime card. */
 export async function projectNativeRuntimeRequest(input: {
   db: Db;
   binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId" | "normalizedSessionId" | "runnerSourceInstanceId">;
@@ -218,12 +218,41 @@ export async function projectNativeRuntimeRequest(input: {
   if (
     !request
     || request.schema !== "paperclip.runtime_request.v2"
-    || request.requestKind !== "runtime"
-    || request.type !== "input"
     || request.status !== "pending"
     || typeof request.requestId !== "string"
     || !REQUEST_ID_PATTERN.test(request.requestId)
   ) {
+    throw new Error("native_runtime_request_invalid");
+  }
+  if (request.requestKind === "permission_approval" && request.type === "permission") {
+    const choices = Array.isArray(request.choices) ? request.choices.map(record) : [];
+    const supported = new Set(["accept", "accept_for_session", "decline", "cancel"]);
+    if (
+      typeof request.turnId !== "string"
+      || request.turnId !== input.event.turnId
+      || (request.itemId != null && typeof request.itemId !== "string")
+      || (request.itemId ?? null) !== (input.event.itemId ?? null)
+      || typeof request.prompt !== "string"
+      || !request.prompt.trim()
+      || request.prompt.length > 4000
+      || choices.length === 0
+      || choices.length > 4
+      || choices.some((choice) => !choice
+        || typeof choice.key !== "string" || !supported.has(choice.key)
+        || typeof choice.label !== "string" || !choice.label.trim() || choice.label.length > 500)
+      || new Set(choices.map((choice) => choice?.key)).size !== choices.length
+      || (request.details !== undefined && !record(request.details))
+    ) {
+      throw new Error("native_runtime_permission_invalid");
+    }
+    // The committed run event itself feeds TaskChatProtocolCard. Its decisions
+    // go through the instance-admin runtime-request route and the exact pending
+    // turn, not the human-only question-response delivery path. Returning here
+    // allows the durable coordinator to acknowledge the event without creating
+    // a second, less-privileged interaction or changing any offered choices.
+    return null;
+  }
+  if (request.requestKind !== "runtime" || request.type !== "input") {
     throw new Error("native_runtime_request_invalid");
   }
   const questionSet = parsePaperclipQuestionSet(request.input);
@@ -307,7 +336,10 @@ export async function deliverNativeQuestionResponse(
     return "not_native";
   }
   const run = await authorizedNativeRun(db, interaction);
-  if (!run) return "not_native";
+  // A historical question can be answered after its provider turn has ended.
+  // Fall through to durable fresh-wake delivery instead of waiting forever for
+  // a command target that cannot return for this terminal run.
+  if (!run || ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) return "not_native";
   const response = canonicalResponse(interaction.payload.questionSet, interaction.result.answers);
   const target = activeTargets.get(run.id);
   if (
