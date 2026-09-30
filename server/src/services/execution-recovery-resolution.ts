@@ -12,6 +12,7 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  workspaceOperations,
   type Db,
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
@@ -22,6 +23,93 @@ import {
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
+
+/**
+ * Causes that are safe to hand to an agent holding `recovery:reconcile`
+ * instead of the board. Each entry names both the recovery-action cause and
+ * the originating run errorCode, because `legacy_execution_requires_reconciliation`
+ * is also reached by paths (e.g. exhausted automatic retries) that are not the
+ * zero-partial-write orphaned-run case this permission exists for. Widen this
+ * list deliberately, one verified cause at a time.
+ */
+const SERVER_VERIFIED_RECONCILE_ALLOWLIST: ReadonlyArray<{
+  cause: string;
+  runErrorCodes: readonly string[];
+}> = [
+  {
+    cause: "legacy_execution_requires_reconciliation",
+    runErrorCodes: ["orphaned_running_run", "orphaned_running_run_issue_terminal"],
+  },
+];
+
+/**
+ * Everything here is derived from server-recorded state (the recovery
+ * action's own cause/evidence and the referenced run/workspace-operations
+ * rows) — never from the caller's request body. This is what lets an agent
+ * with `recovery:reconcile` bypass the board gate: the server, not the
+ * caller, is asserting the run is terminal, its provider is confirmed
+ * stopped, and it left no partial writes to double-apply.
+ */
+export async function isServerVerifiedZeroOperationRecovery(input: {
+  db: Db;
+  companyId: string;
+  cause: string | null | undefined;
+  runId: unknown;
+}): Promise<boolean> {
+  const allowlisted = SERVER_VERIFIED_RECONCILE_ALLOWLIST.find(
+    (entry) => entry.cause === input.cause,
+  );
+  if (!allowlisted) return false;
+  const runId = typeof input.runId === "string" ? input.runId : null;
+  if (!runId) return false;
+
+  const [run] = await input.db
+    .select()
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.id, runId),
+      ),
+    );
+  if (
+    !run ||
+    !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status) ||
+    !run.errorCode ||
+    !allowlisted.runErrorCodes.includes(run.errorCode)
+  ) {
+    return false;
+  }
+
+  // Provider process confirmed stopped — never trust the caller's
+  // `providerStopped: true` claim for this decision.
+  for (const pid of [
+    run.processPid,
+    run.processGroupId ? -run.processGroupId : null,
+  ]) {
+    if (!pid) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
+      return false;
+    }
+    return false; // signal 0 did not throw: the process is still alive.
+  }
+
+  const [{ count }] = await input.db
+    .select({ count: sql<number>`count(*)` })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, input.companyId),
+        eq(workspaceOperations.heartbeatRunId, runId),
+      ),
+    );
+  if (Number(count) > 0) return false;
+
+  return true;
+}
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {

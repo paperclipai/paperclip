@@ -8,6 +8,7 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
+  isServerVerifiedZeroOperationRecovery,
 } from "../services/execution-recovery-resolution.js";
 import {
   storedSteeringAcknowledgement,
@@ -9219,15 +9220,38 @@ export function issueRoutes(
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
-          assertBoard(req);
+          const sourceRunId =
+            activeRecoveryAction.evidence.runId ??
+            activeRecoveryAction.evidence.sourceRunId;
+          // The board gate below exists because a dead run may have half-
+          // performed writes; resuming blind risks double-applying them. An
+          // agent holding recovery:reconcile may resolve this without a board
+          // actor ONLY when the server itself — never the caller's request
+          // body — has verified there is nothing to double-apply.
+          const serverVerifiedReconcile =
+            req.actor.type === "agent" &&
+            Boolean(req.actor.agentId) &&
+            (await access.hasPermission(
+              lockedIssue.companyId,
+              "agent",
+              req.actor.agentId!,
+              "recovery:reconcile",
+            )) &&
+            (await isServerVerifiedZeroOperationRecovery({
+              db: tx as unknown as Db,
+              companyId: lockedIssue.companyId,
+              cause: activeRecoveryAction.cause,
+              runId: sourceRunId,
+            }));
+          if (!serverVerifiedReconcile) {
+            assertBoard(req);
+          }
           await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,
             issueId: lockedIssue.id,
             agentId: lockedIssue.assigneeAgentId,
-            sourceRunId:
-              activeRecoveryAction.evidence.runId ??
-              activeRecoveryAction.evidence.sourceRunId,
+            sourceRunId,
             decision: executionReconciliation,
           });
         } else if (executionReconciliation) {

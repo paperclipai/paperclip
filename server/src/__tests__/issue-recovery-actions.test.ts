@@ -13,6 +13,7 @@ import {
   agentWakeupRequests,
   activityLog,
   companies,
+  companyMemberships,
   createDb,
   environmentLeases,
   environments,
@@ -24,6 +25,8 @@ import {
   issueThreadInteractions,
   workspaceOperations,
   issues,
+  principalPermissionGrants,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -152,6 +155,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
+    await db.delete(workspaceOperations);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
@@ -159,6 +163,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(environments);
     await db.delete(issueInboxArchives);
     await db.delete(issues);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
@@ -238,6 +244,21 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: input.status ?? "running",
       startedAt: new Date("2026-05-13T18:00:00.000Z"),
       contextSnapshot: input.issueId ? { issueId: input.issueId } : undefined,
+    });
+  }
+
+  async function grantRecoveryReconcile(companyId: string, agentId: string) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      status: "active",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      permissionKey: "recovery:reconcile",
     });
   }
 
@@ -2893,5 +2914,160 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  describe("recovery:reconcile server-verified bypass", () => {
+    async function seedOrphanedRunRecovery(options: {
+      errorCode?: string | null;
+      cause?: string;
+    } = {}) {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+      const runId = randomUUID();
+      await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "failed" });
+      if (options.errorCode !== null) {
+        await db
+          .update(heartbeatRuns)
+          .set({ errorCode: options.errorCode ?? "orphaned_running_run" })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+      const [action] = await db
+        .insert(issueRecoveryActions)
+        .values({
+          companyId,
+          sourceIssueId,
+          kind: "active_run_watchdog",
+          status: "active",
+          ownerType: "agent",
+          ownerAgentId: coderId,
+          cause: options.cause ?? "legacy_execution_requires_reconciliation",
+          fingerprint: runId,
+          nextAction: "Reconcile the orphaned run.",
+          evidence: { runId },
+        })
+        .returning();
+      // The API request itself must be attributed to a live, persisted run
+      // (the cross-issue-influence run-context check requires this for any
+      // agent actor) — distinct from the terminal run being reconciled.
+      const actingRunId = randomUUID();
+      await seedHeartbeatRun({
+        companyId,
+        agentId: coderId,
+        runId: actingRunId,
+        issueId: sourceIssueId,
+        status: "running",
+      });
+      return { companyId, coderId, sourceIssueId, runId, actingRunId, action: action! };
+    }
+
+    function resolveBody(input: { actionId: string; runId: string }) {
+      return {
+        actionId: input.actionId,
+        outcome: "restored" as const,
+        sourceIssueStatus: "todo" as const,
+        executionReconciliation: {
+          runId: input.runId,
+          providerStopped: true as const,
+          actionOutcome: "not_performed" as const,
+          outcomeEvidence:
+            "Host sandbox teardown orphaned this run before any workspace write; nothing to reconcile.",
+        },
+      };
+    }
+
+    it("lets an agent holding recovery:reconcile resolve a zero-operation orphaned-run action without a board actor", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery();
+      await grantRecoveryReconcile(companyId, coderId);
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const resolved = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(200);
+
+      expect(resolved.body.issue).toMatchObject({ id: sourceIssueId, status: "todo" });
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("resolved");
+    });
+
+    it("still requires a board actor when the run recorded a workspace operation, regardless of the claimed outcome", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery();
+      await grantRecoveryReconcile(companyId, coderId);
+      await db.insert(workspaceOperations).values({
+        companyId,
+        heartbeatRunId: runId,
+        issueId: sourceIssueId,
+        phase: "workspace_setup",
+        status: "succeeded",
+      });
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        // Spoofing providerStopped/actionOutcome in the request body must not
+        // help: the server derives both from its own records, never the caller.
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("active");
+    });
+
+    it("still requires a board actor for a reconciliation cause outside the server-verified allowlist", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery({
+        cause: "uncertain_provider_action",
+      });
+      await grantRecoveryReconcile(companyId, coderId);
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+    });
+
+    it("still requires a board actor for a legacy-cause run that was not itself the orphaned-run backstop", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery({
+        errorCode: "execution_recovery_budget_exhausted",
+      });
+      await grantRecoveryReconcile(companyId, coderId);
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+    });
+
+    it("still requires a board actor when the agent does not hold recovery:reconcile", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery();
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("active");
+    });
+
+    it("still lets a board actor resolve the same zero-operation orphaned-run action", async () => {
+      const { sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery();
+      const app = createApp();
+
+      const resolved = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(200);
+
+      expect(resolved.body.issue).toMatchObject({ id: sourceIssueId, status: "todo" });
+    });
   });
 });

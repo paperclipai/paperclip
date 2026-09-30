@@ -1,5 +1,11 @@
 # @paperclipai/shared
 
+## Unreleased
+
+### Patch Changes
+
+- Add `recovery:reconcile` to `PERMISSION_KEYS`.
+
 ## 0.3.1
 
 ### Patch Changes
