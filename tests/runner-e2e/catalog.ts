@@ -993,6 +993,24 @@ const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
 );
 
+// Managed agent folders deliberately checkpoint and close the provider before
+// collecting files. The native warm-process oracle needs fixed instructions.
+const warmCodexContinuityProfiles = codexContinuityProfiles.map((profile) =>
+  profile.generation !== "native" ? profile : {
+    ...profile,
+    buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      return { ...agent, adapterConfig: {
+        ...(agent.adapterConfig as Record<string, unknown>),
+        instructionsBundleMode: "external",
+        instructionsRootPath: fileURLToPath(new URL("./fixtures/warm-continuity/", import.meta.url)),
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: fileURLToPath(new URL("./fixtures/warm-continuity/AGENTS.md", import.meta.url)),
+      } };
+    },
+  },
+);
+
 export const connectionReviewSuite: RunnerSuiteFixture = {
   id: "connection-reviews",
   label: "Governed Connection Reviews",
@@ -1276,10 +1294,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description:
       "Three browser-driven turns on one reusable Daytona sandbox for legacy and native Codex.",
     groups: ["daytona", "warm"],
-    profiles: codexContinuityProfiles,
+    profiles: warmCodexContinuityProfiles,
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
+    definitionMetadata: { version: 2, nativeInstructions: "fixed-external" },
   },
   {
     id: "daytona-journal-continuity",
@@ -1287,11 +1306,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     manualOnly: true,
     description: "Continue the same native session after separate ordinary tool invocations and their output grow its durable journal beyond 2 MiB.",
     groups: ["daytona", "warm"],
-    profiles: codexContinuityProfiles.filter((profile) => profile.id === "runner-codex"),
+    profiles: warmCodexContinuityProfiles.filter((profile) => profile.id === "runner-codex"),
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaLargeJournalTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 4, journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
+    definitionMetadata: { version: 5, nativeInstructions: "fixed-external", journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
   },
   {
     id: "daytona-git-streaming",

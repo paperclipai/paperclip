@@ -242,7 +242,11 @@ three browser-driven turns on one issue. Every turn reads and extends the same
 nonce file, verifies host copy-back, records scheduler/run/end-to-end timing,
 and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
-runner instance, PID, and process-start identity. Each turn is bounded to ten
+runner instance, PID, and process-start identity. Native warm and large-journal
+cells use fixed external instructions: managed agent folders intentionally
+checkpoint and close the provider for stopped-process file collection, preserving
+the conversation but not the live PID. The `instruction-persistence` suite
+qualifies that separate lifecycle. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
