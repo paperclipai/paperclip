@@ -32,7 +32,7 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
-  it.each(["daytona-warm-continuity", "daytona-journal-continuity"])(
+  it.each(["daytona-journal-continuity"])(
     "%s retains native processes with fixed external instructions",
     (suiteId) => {
       const suite = runnerSuites.find(suite => suite.id === suiteId)!;
@@ -258,7 +258,9 @@ describe("runner E2E catalog", () => {
     expect(suite.profiles.map((profile) => profile.id)).toEqual(["runner-codex"]);
     expect(daytonaLargeJournalTask.flow).toBe("warm_three_turn");
     expect(daytonaLargeJournalTask.buildPrompt("nonce")).toContain("240 separate execution-tool calls");
-    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce")).toEqual(daytonaWarmContinuityTask.buildFollowupMessages!("nonce"));
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce")).toHaveLength(2);
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce").join("\n")).not.toContain("notes/warm-memory.txt");
+    expect(daytonaWarmContinuityTask.buildPrompt("nonce")).toContain("notes/warm-memory.txt");
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"]))
       .some((cell) => cell.suite.id === suite.id)).toBe(false);
   });

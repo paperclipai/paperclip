@@ -1,3 +1,4 @@
+import { warmManagedFileEvidence } from "./warm-managed-files.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
@@ -1540,6 +1541,11 @@ for (const execution of executions) {
             await writeSanitizedJson(snapshotsDir, `git-finalization-turn-${completedTurn}.json`, finalization, secrets);
             expect(finalization.passed, finalization.failures.join("; ")).toBe(true);
           }
+          if (execution.suite.id === "daytona-warm-continuity") {
+            const evidence = await warmManagedFileEvidence(api, fixtures.agent.id, sortRunsChronologically(waitingState.taskRuns).at(-1)!.id, completedTurn, nonce, execution.profile.generation === "native");
+            await writeSanitizedJson(snapshotsDir, `managed-warm-turn-${completedTurn}.json`, evidence, secrets);
+            expect(evidence.passed, JSON.stringify(evidence.checks)).toBe(true);
+          }
           const expectedPrefix = `${Array.from(
             { length: completedTurn },
             (_, index) => `T${index + 1}-${nonce}`,
@@ -1821,6 +1827,11 @@ for (const execution of executions) {
                 : "unknown",
           };
         });
+      }
+      if (execution.suite.id === "daytona-warm-continuity") {
+        const evidence = await warmManagedFileEvidence(api, fixtures.agent.id, selectedRuns.at(-1)!.id, 3, nonce, execution.profile.generation === "native");
+        await writeSanitizedJson(snapshotsDir, "managed-warm-turn-3.json", evidence, secrets);
+        expect(evidence.passed, JSON.stringify(evidence.checks)).toBe(true);
       }
       const finalRun = selectedRuns.at(-1)!;
       const run =

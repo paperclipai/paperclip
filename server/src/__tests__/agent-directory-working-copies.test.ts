@@ -31,10 +31,10 @@ describe("persistent agent directories", () => {
   const initial = "\uFEFF# Original\r\n☃\n";
   const target = () => ({ companyId, agentId });
   const board = () => ({ type: "board" as const, userId, source: "session" as const });
-  async function run() {
+  async function run(options: { warm?: boolean; reuseRunId?: string } = {}) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
-    return (await copies.prepare({ ...target(), runId, cwd: home }))!;
+    return (await copies.prepare({ ...target(), runId, cwd: home, ...options }))!;
   }
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-working-copies-")));
@@ -443,6 +443,109 @@ describe("persistent agent directories", () => {
     expect(after.context.aggregateDigest).toBe(before.context.aggregateDigest);
     expect(after.context.instructions.bundle.fileCount).toBe(1);
   });
+  it("checkpoints three managed turns into one live directory, fences old cleanup, and persists after retirement", async () => {
+    let copy = await run({ warm: true });
+    const original = copy;
+    for (let turn = 1; turn <= 3; turn++) {
+      await fs.appendFile(path.join(copy.localRoot, "memory.txt"), `turn ${turn}\n`);
+      const saved = (await copies.checkpointWarm({ companyId, runId: copy.runId }))!;
+      expect(saved.state).toBe("warm_saved");
+      expect(saved.processStoppedAt).toBeNull();
+      expect(await agentFileStore(db).read(companyId, agentId, "memory.txt", board())).toEqual(Buffer.from(Array.from({ length: turn }, (_, i) => `turn ${i + 1}\n`).join("")));
+      await copies.release(companyId, copy.runId);
+      expect(await fs.stat(copy.localRoot)).toBeTruthy();
+      if (turn < 3) {
+        expect(await copies.canReuseWarm(companyId, agentId, copy.runId)).toBe(true);
+        copy = await run({ warm: true, reuseRunId: copy.runId });
+        expect(copy.executionRoot).toBe(original.executionRoot);
+        await copies.collectStopped({ companyId, runId: original.runId });
+        await copies.release(companyId, original.runId);
+        expect(await fs.stat(copy.localRoot)).toBeTruthy();
+      }
+    }
+    // A child may write after the last turn's checkpoint; session retirement
+    // must collect this delta using the current owner, not the first run.
+    await fs.writeFile(path.join(copy.localRoot, "late.txt"), "after turn");
+    expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.state).toBe("saved");
+    await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    const fresh = await run();
+    expect(await fs.readFile(path.join(fresh.localRoot, "memory.txt"), "utf8")).toBe("turn 1\nturn 2\nturn 3\n");
+    expect(await fs.readFile(path.join(fresh.localRoot, "late.txt"), "utf8")).toBe("after turn");
+  });
+  it("retires loaded instruction edits while allowing ordinary personal-file edits to stay warm", async () => {
+    const copy = await run({ warm: true });
+    await fs.writeFile(path.join(copy.localRoot, entryFile), "# New loaded policy\n");
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
+    expect(await copies.canReuseWarm(companyId, agentId, copy.runId)).toBe(false);
+    await copies.collectStopped({ companyId, runId: copy.runId });
+    const fresh = await run({ warm: true });
+    expect(fresh.executionRoot).not.toBe(copy.executionRoot);
+    expect(await fs.readFile(path.join(fresh.localRoot, entryFile), "utf8")).toBe("# New loaded policy\n");
+  });
+  it("refreshes after editor changes and preserves concurrent unrelated files", async () => {
+    const copy = await run({ warm: true });
+    await fs.writeFile(path.join(copy.localRoot, "mine.txt"), "from run");
+    await agentFileStore(db).write({ ...target(), path: "board.txt", bytes: Buffer.from("from board"), baseHash: null }, board());
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.state).toBe("warm_saved");
+    expect(await copies.canReuseWarm(companyId, agentId, copy.runId)).toBe(false);
+    expect(await fs.readFile(path.join(root, "board.txt"), "utf8")).toBe("from board");
+    expect(await fs.readFile(path.join(root, "mine.txt"), "utf8")).toBe("from run");
+    await copies.collectStopped({ companyId, runId: copy.runId });
+  });
+  it("keeps an invalid warm checkpoint unsaved and requests stopped collection", async () => {
+    const copy = await run({ warm: true });
+    await fs.symlink(root, path.join(copy.localRoot, "escape"));
+    const failed = await copies.checkpointWarm({ companyId, runId: copy.runId });
+    expect(failed?.state).toBe("prepared");
+    expect(failed?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
+    expect(failed?.processStoppedAt).toBeNull();
+    expect(await copies.canReuseWarm(companyId, agentId, copy.runId)).toBe(false);
+    await fs.rm(path.join(copy.localRoot, "escape"));
+    expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.state).toBe("unchanged");
+  });
+  it("rejects over-quota warm changes without replacing saved bytes, then permits a clean future run", async () => {
+    const copy = await run({ warm: true });
+    const handle = await fs.open(path.join(copy.localRoot, "too-large.bin"), "w");
+    await handle.truncate(MAX_AGENT_FILE_BYTES + 1); await handle.close();
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
+    const stopped = (await copies.collectStopped({ companyId, runId: copy.runId }))!;
+    expect(stopped).toMatchObject({ state: "unavailable", errorCode: "AGENT_FILES_LIMIT_EXCEEDED" });
+    expect(stopped.receipt?.storageWarning).toContain("Agent storage is full");
+    expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+    await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await run({ warm: true })).toBeTruthy();
+  });
+  it("rechecks authorization even for an unchanged warm checkpoint", async () => {
+    const copy = await run({ warm: true });
+    await copies.checkpointWarm({ companyId, runId: copy.runId });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.companyId, companyId));
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
+    expect(await copies.canReuseWarm(companyId, agentId, copy.runId)).toBe(false);
+    expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.state).toBe("unavailable");
+  });
+  it("reclaims a warm remote owner after verified sandbox destruction without claiming unsaved tail bytes", async () => {
+    const copy = await run({ warm: true });
+    await fs.writeFile(path.join(copy.localRoot, "saved.txt"), "checkpoint");
+    await copies.checkpointWarm({ companyId, runId: copy.runId });
+    const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/task";
+    const lease = { id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId, provider: "daytona", providerLeaseId: "destroyed-warm" };
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ ...lease, status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }) } });
+    await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native" }).where(eq(heartbeatRuns.id, copy.runId));
+    const saved = (await copies.get(companyId, copy.runId))!;
+    await db.update(agentInstructionWorkingCopies).set({ location: `remote:${environmentId}`,
+      executionRoot: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId),
+      receipt: { ...saved.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    copies = agentInstructionWorkingCopyService(db);
+    await copies.recoverStopped();
+    const recovered = (await copies.get(companyId, copy.runId))!;
+    expect(recovered).toMatchObject({ state: "unavailable", errorCode: "AGENT_FILES_FINAL_COLLECTION_UNAVAILABLE" });
+    expect(recovered.receipt?.cleanupPending).toBe(false);
+    expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("checkpoint");
+    await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("uses the workspace transport to restore after destruction of the remote filesystem", async () => {
     const remoteCwd = path.join(home, "remote-task");
     await fs.mkdir(remoteCwd, { recursive: true });
@@ -494,6 +597,52 @@ describe("persistent agent directories", () => {
     await expect(fs.stat(path.join(second.executionRoot, "task-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     await copies.collectStopped({ companyId, runId: second.runId, target: executionTarget });
     await copies.release(companyId, second.runId);
+  });
+
+  it("checkpoints and reuses the remote directory through the real transport without copying unchanged bytes", async () => {
+    const remoteCwd = path.join(home, "warm-remote-task");
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const runner: import("@paperclipai/adapter-utils/command-managed-runtime").CommandManagedRuntimeRunner = {
+      execute: async input => {
+        const startedAt = new Date().toISOString();
+        const env = { ...process.env, ...input.env };
+        const args = [...(input.args ?? [])];
+        if (input.stdin != null && (args[0] === "-c" || args[0] === "-lc")) {
+          env.PAPERCLIP_TEST_STDIN = input.stdin;
+          args[1] = `printf '%s' "$PAPERCLIP_TEST_STDIN" | (${args[1]})`;
+        }
+        try {
+          const result = await execFile(input.command, args, { cwd: input.cwd, env, timeout: input.timeoutMs, maxBuffer: 32 * 1024 * 1024 });
+          return { exitCode: 0, signal: null, timedOut: false, stdout: result.stdout, stderr: result.stderr, pid: null, startedAt };
+        } catch (error) {
+          const e = error as { code?: number; signal?: NodeJS.Signals; stdout?: string; stderr?: string };
+          return { exitCode: typeof e.code === "number" ? e.code : 1, signal: e.signal ?? null, timedOut: false, stdout: e.stdout ?? "", stderr: e.stderr ?? "", pid: null, startedAt };
+        }
+      },
+    };
+    const executionTarget = { kind: "remote" as const, transport: "sandbox" as const, environmentId: randomUUID(), remoteCwd, runner };
+    const prepare = async (reuseRunId?: string) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+      return (await copies.prepare({ ...target(), runId, cwd: home, target: executionTarget, warm: true, reuseRunId }))!;
+    };
+    let copy = await prepare();
+    const original = copy;
+    await fs.writeFile(path.join(copy.executionRoot, "image.bin"), Buffer.alloc(32768, 93));
+    for (let turn = 1; turn <= 3; turn++) {
+      await fs.appendFile(path.join(copy.executionRoot, "memory.txt"), `turn ${turn}\n`);
+      const saved = (await copies.checkpointWarm({ companyId, runId: copy.runId, target: executionTarget }))!;
+      expect(saved, JSON.stringify({ code: saved.errorCode, message: saved.errorMessage })).toMatchObject({ state: "warm_saved", errorCode: null });
+      if (turn > 1) expect(saved.receipt?.checkpointStats).toMatchObject({ copiedFiles: 1, copiedBytes: turn * 7, hashedBytes: turn * 7 });
+      expect(await fs.readFile(path.join(root, "memory.txt"), "utf8")).toBe(Array.from({ length: turn }, (_, i) => `turn ${i + 1}\n`).join(""));
+      expect((await fs.readdir(path.dirname(copy.localRoot))).filter(name => name.startsWith("checkpoint-"))).toEqual([]);
+      expect((await fs.readdir(path.join(copy.executionRoot, ".paperclip-runtime"))).filter(name => name.startsWith("checkpoint-"))).toEqual([]);
+      if (turn < 3) { copy = await prepare(copy.runId); expect(copy.executionRoot).toBe(original.executionRoot); }
+    }
+    await copies.collectStopped({ companyId, runId: original.runId, target: executionTarget });
+    expect(await fs.stat(copy.executionRoot)).toBeTruthy();
+    await copies.collectStopped({ companyId, runId: copy.runId, target: executionTarget });
+    await expect(fs.stat(copy.executionRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages SSH agent files at the registered root without a nested task workspace", async () => {

@@ -230,9 +230,8 @@ a warning while full and clear it after cleanup. Rejected bytes must not replace
 the saved file. This adds at most one 256 MiB saved fixture per isolated agent.
 The deadline is twenty minutes per cell, with six expected provider runs;
 normal instance/Daytona cleanup, screenshots, evidence, and billing apply. Run with
-`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed agent directories
-checkpoint and close the provider before collection while retaining conversation
-state. The separate `daytona-warm-continuity` suite covers warm runtime behavior.
+`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed directories in per-turn sessions collect after provider stop. The separate
+`daytona-warm-continuity` suite covers incremental saves while retaining a live native process.
 
 `daytona-warm-continuity` (**Daytona Warm Continuity**) is exactly two paid
 cells: legacy Codex and Runner Codex against one reusable warm Daytona
@@ -242,11 +241,12 @@ three browser-driven turns on one issue. Every turn reads and extends the same
 nonce file, verifies host copy-back, records scheduler/run/end-to-end timing,
 and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
-runner instance, PID, and process-start identity. Native warm and large-journal
-cells use fixed external instructions: managed agent folders intentionally
-checkpoint and close the provider for stopped-process file collection, preserving
-the conversation but not the live PID. The `instruction-persistence` suite
-qualifies that separate lifecycle. Each warm turn is bounded to ten
+runner instance, PID, and process-start identity. The ordinary warm cell uses
+managed instructions and edits AGENT_HOME on every turn: a growing memory file,
+an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
+the canonical bytes after every turn. Native checkpoint receipts must show only
+the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
+The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
@@ -270,10 +270,9 @@ over the agent setting. Large copyback plus the next preparation
 can exceed the normal five-minute idle window; the PID and process-fingerprint
 continuity checks remain strict. The ordinary warm-continuity cell keeps its
 existing five-minute policy.
-This cell uses a fixed external instruction bundle. Managed agent folders
-intentionally checkpoint and stop the provider after every turn for file
-collection; external instructions allow this cell to test retained-process
-continuity without changing that collection policy.
+This Git stress cell uses a fixed external instruction bundle to isolate workspace
+transfer from managed agent-file persistence. The ordinary warm cell separately
+requires incremental managed-file checkpoints and the same strict process continuity.
 It seeds an empty local Git project, creates 60,000 small untracked files through
 the real provider, then performs the same three browser-driven review turns.
 Each later turn updates all 60,000 generated files to distinct turn-specific

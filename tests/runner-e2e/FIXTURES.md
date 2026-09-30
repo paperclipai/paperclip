@@ -108,10 +108,12 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines. Native warm-process fixtures use fixed external
-instructions; managed agent folders intentionally stop the provider for collection
-at each turn and cannot satisfy the stable-PID oracle. Keep that oracle strict
-and retain managed-folder coverage in `instruction-persistence`.
+ten-minute turn deadlines. The ordinary warm fixture uses managed instructions,
+updates AGENT_HOME each turn, and verifies memory, an unchanged 8 MiB binary and
+a deletion through public file APIs. Native turns 2 and 3 must copy/hash only the
+changed memory file, with a saved receipt and the same provider PID. Journal and
+Git stress fixtures retain fixed external bundles as controls. Keep the stable-PID
+oracle strict; `instruction-persistence` also covers cold restarts and quota handling.
 Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent

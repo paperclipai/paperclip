@@ -276,6 +276,7 @@ import {
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
+  reserveWarmNativeInstructionDirectory,
   closeIdleWarmNativeSessionsForRestart,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
@@ -5918,6 +5919,121 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  describe("managed directory warm checkpoints", () => {
+    const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+      turnId: "turn", normalizedSessionId: "managed", providerSessionId: "provider", driverKind: "test", driverVersion: "1",
+      nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    async function start(name: string, checkpoint = true) {
+      const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, executionWorkspaceId: name },
+        session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+      const close = vi.fn(async () => undefined);
+      const session = { close };
+      const collectStopped = vi.fn(async () => undefined);
+      const checkpointWarm = vi.fn(async () => checkpoint);
+      const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: name, remoteCwd: `/tmp/${name}`, sandboxLeaseAcquisition: { outcome: "created" as const, providerLeaseId: name } };
+      const copy = { runId: current.binding.runId, root: `/tmp/${name}/home`, collectStopped, checkpointWarm, hasChanges: vi.fn(async () => true) };
+      state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession?.(session); return result; });
+      const run = (next: NativeExecutionInputV1, nextCopy = copy) => executePaperclipNativeSession({
+        db: leaseDb(next), execution: next, runnerInstanceId: name, runnerExecutionTarget: target, instructionWorkingCopy: nextCopy });
+      await run(current);
+      const reserve = (canReuse: () => Promise<boolean>, nextTarget = target) => reserveWarmNativeInstructionDirectory({
+        companyId: current.binding.companyId, agentId: current.binding.agentId, previousRunId: current.binding.runId,
+        runId: `${name}-two`, target: nextTarget, canReuse });
+      return { current, copy, close, session, target, run, reserve };
+    }
+    afterEach(async () => { await closeIdleWarmNativeSessionsForRestart(); });
+
+    it("saves each turn while retaining the provider and collects only the latest directory owner at retirement", async () => {
+      const f = await start("managed-retained");
+      expect(f.copy.checkpointWarm).toHaveBeenCalledOnce();
+      expect(f.copy.hasChanges).not.toHaveBeenCalled();
+      expect(f.close).not.toHaveBeenCalled();
+      const reservation = await f.reserve(async () => true);
+      expect(reservation?.reuseRunId).toBe(f.current.binding.runId);
+      const secondCopy = { ...f.copy, runId: "managed-retained-two", collectStopped: vi.fn(async () => undefined) };
+      reservation!.adopt(secondCopy.root, secondCopy.collectStopped);
+      state.execute.mockImplementationOnce(async options => {
+        expect(options.existingSession).toBe(f.session);
+        await options.onSession?.(f.session); return result;
+      });
+      await f.run({ ...f.current, binding: { ...f.current.binding, runId: secondCopy.runId } }, secondCopy);
+      await reservation!.release();
+      expect(f.close).not.toHaveBeenCalled();
+      expect(f.copy.checkpointWarm).toHaveBeenCalledTimes(2);
+      await closeWarmNativeSessionsForEnvironment({ environmentId: f.target.environmentId, reason: "test retirement" });
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).not.toHaveBeenCalled();
+      expect(secondCopy.collectStopped).toHaveBeenCalledOnce();
+    });
+
+    it("stops before collecting when a checkpoint cannot stabilize", async () => {
+      const f = await start("managed-fallback", false);
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).toHaveBeenCalled();
+      expect(f.close.mock.invocationCallOrder[0]).toBeLessThan(f.copy.collectStopped.mock.invocationCallOrder[0]!);
+    });
+
+    it.each(["canonical-edit", "replaced-environment", "authorization-error"])("retires before admission for %s", async reason => {
+      const f = await start(`managed-${reason}`);
+      const validation = vi.fn(async () => { if (reason === "authorization-error") throw new Error("authorization revoked"); return reason !== "canonical-edit"; });
+      const attempt = f.reserve(validation, reason === "replaced-environment" ? { ...f.target, remoteCwd: "/different" } : f.target);
+      if (reason === "authorization-error") await expect(attempt).rejects.toThrow("authorization revoked");
+      else expect(await attempt).toBeNull();
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).toHaveBeenCalledOnce();
+      if (reason === "replaced-environment") expect(validation).not.toHaveBeenCalled();
+    });
+
+    it("retains failed containment for retry and forbids warm reuse until it succeeds", async () => {
+      const f = await start("managed-stop-failure");
+      f.close.mockRejectedValueOnce(new Error("containment failed"));
+      await expect(f.reserve(async () => false)).rejects.toThrow("containment failed");
+      expect(f.copy.collectStopped).not.toHaveBeenCalled();
+      const canReuse = vi.fn(async () => true);
+      expect(await f.reserve(canReuse)).toBeNull();
+      expect(canReuse).not.toHaveBeenCalled();
+      expect(f.close).toHaveBeenCalledTimes(2);
+      expect(f.copy.collectStopped).toHaveBeenCalledOnce();
+    });
+    it("cleans up the successor if preparation fails after directory handoff", async () => {
+      const f = await start("managed-failed-preparation");
+      const reservation = await f.reserve(async () => true);
+      const collectSuccessor = vi.fn(async () => undefined);
+      reservation!.adopt(f.copy.root, collectSuccessor);
+      await reservation!.release();
+      await reservation!.release();
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).not.toHaveBeenCalled();
+      expect(collectSuccessor).toHaveBeenCalledOnce();
+    });
+
+    it("preserves a handed-off directory when configuration rotates the old provider", async () => {
+      const f = await start("managed-policy-rotation");
+      const reservation = await f.reserve(async () => true);
+      const nextCopy = { ...f.copy, runId: "managed-policy-rotation-two", collectStopped: vi.fn(async () => undefined) };
+      reservation!.adopt(nextCopy.root, nextCopy.collectStopped);
+      const replacement = { close: vi.fn(async () => undefined) };
+      state.execute.mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        expect(f.close).toHaveBeenCalledOnce();
+        expect(nextCopy.collectStopped).not.toHaveBeenCalled();
+        await options.onSession?.(replacement); return result;
+      });
+      await f.run({ ...f.current, binding: { ...f.current.binding, runId: nextCopy.runId },
+        session: { ...f.current.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 120_000 } } }, nextCopy);
+      await reservation!.release();
+      expect(nextCopy.collectStopped).not.toHaveBeenCalled();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: f.target.environmentId, reason: "test" });
+      expect(nextCopy.collectStopped).toHaveBeenCalledOnce();
+    });
+    it("cannot reuse a provider with a different registered directory", async () => {
+      const f = await start("managed-root-replaced");
+      state.execute.mockImplementationOnce(async options => { expect(options.existingSession).toBeUndefined(); return result; });
+      await f.run({ ...f.current, binding: { ...f.current.binding, runId: "managed-root-two" } }, { ...f.copy, root: "/new/home" });
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).toHaveBeenCalledOnce();
+    });
+  });
   it.each([
     { changed: false, closeFails: false },
     { changed: true, closeFails: false },

@@ -224,6 +224,7 @@ import {
   claimNativeRestartRecoveries,
   closeWarmNativeSessionsForEnvironment,
   closeIdleWarmNativeSessionsForRestart,
+  reserveWarmNativeInstructionDirectory,
   currentNativeControllerIdentity,
   dispatchNativeSessionResumptions,
   detachNativeSessionsForRestart,
@@ -20231,6 +20232,7 @@ export function heartbeatService(
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let nativeOwnershipHeld = false;
+    let nativeInstructionReservation: Awaited<ReturnType<typeof reserveWarmNativeInstructionDirectory>> = null;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
     let nativeWorkspaceSync: Awaited<
@@ -22410,6 +22412,20 @@ export function heartbeatService(
       const executionTarget = realizationResult.executionTarget;
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
+      const recordInstructionSave = async (saved: NonNullable<Awaited<ReturnType<typeof instructionCopies.get>>>) => {
+        const receipt = parseObject(saved.receipt);
+        const storageWarning = readNonEmptyString(receipt.storageWarning);
+        const state = saved.errorCode === "AGENT_FILES_CHECKPOINT_UNSTABLE" ? "pending_collection"
+          : saved.state === "warm_saved" ? readNonEmptyString(receipt.checkpointState) ?? "saved" : saved.state;
+        instructionSave = { state, entryFile: saved.entryFile,
+          ...(isAgentDirectoryCopy(saved) ? { contract: "agent_files", appliedCandidateHash: saved.candidateHash, checkpointStats: receipt.checkpointStats }
+            : { revisionId: parseObject(receipt.revision).id ?? null }), storageWarning, errorCode: saved.errorCode, errorMessage: saved.errorMessage };
+        await appendRunEvent(run, { eventType: "instruction_save", stream: "system",
+          level: !saved.errorCode && !storageWarning && ["saved", "unchanged", "resolved"].includes(state) ? "info" : "warn",
+          message: storageWarning ?? (state === "saved" ? "Agent files saved."
+            : state === "unchanged" ? "Instruction working copy is unchanged."
+              : saved.errorMessage ?? "Instruction edits were not saved."), payload: instructionSave });
+      };
       const collectStoppedInstructions = async () => {
         if (!instructionCopy) return;
         let saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
@@ -22419,17 +22435,7 @@ export function heartbeatService(
           saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
         }
         if (!saved) return;
-        const receipt = parseObject(saved.receipt);
-        const storageWarning = readNonEmptyString(receipt.storageWarning);
-        instructionSave = { state: saved.state, entryFile: saved.entryFile,
-          ...(isAgentDirectoryCopy(saved) ? { contract: "agent_files", appliedCandidateHash: saved.candidateHash }
-            : { revisionId: parseObject(receipt.revision).id ?? null }), storageWarning, errorCode: saved.errorCode, errorMessage: saved.errorMessage };
-        await appendRunEvent(run, { eventType: "instruction_save", stream: "system",
-          level: !storageWarning && ["saved", "unchanged", "resolved"].includes(saved.state) ? "info" : "warn",
-          message: storageWarning ?? (saved.state === "saved" ? "Agent files saved."
-            : saved.state === "unchanged" ? "Instruction working copy is unchanged."
-              : saved.errorMessage ?? "Instruction edits were not saved. Review the preserved candidate in the agent instruction editor."),
-          payload: instructionSave });
+        if (saved.state !== "superseded") await recordInstructionSave(saved);
       };
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
@@ -23254,11 +23260,23 @@ export function heartbeatService(
             const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
             const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
             const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
+            const warmFiles = nativeRuntimeResolution.kind === "native" && nativeRuntimeResolution.profile.backend === "codex_app_server" &&
+              (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+                ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
+                : parseObject(agent.adapterConfig).lifecycleMode === "warm");
+            if (warmFiles && taskSessionForRun?.lastRunId) {
+              nativeInstructionReservation = await reserveWarmNativeInstructionDirectory({ companyId: agent.companyId, agentId: agent.id,
+                previousRunId: taskSessionForRun.lastRunId, runId: run.id, target: executionTarget,
+                canReuse: () => instructionCopies.canReuseWarm(agent.companyId, agent.id, taskSessionForRun!.lastRunId!),
+              });
+            }
             instructionCopy = await instructionCopies.prepare({
               companyId: agent.companyId, agentId: agent.id, runId: run.id,
               target: executionTarget, cwd: executionWorkspace.cwd,
               legacy: Object.keys(priorFileInput).length > 0 && priorWorkingCopy.kind !== "agent_files",
+              warm: warmFiles, reuseRunId: nativeInstructionReservation?.reuseRunId,
             });
+            if (instructionCopy) nativeInstructionReservation?.adopt(instructionCopy.executionRoot, collectStoppedInstructions);
           } catch (error) {
             if ((error as { status?: number }).status !== 403) throw error;
             // Missing write identity must not break a background run's read-only
@@ -24432,6 +24450,13 @@ export function heartbeatService(
                     onLog,
                     onEvent: onAdapterEvent,
                     instructionWorkingCopy: instructionCopy ? {
+                      runId: run.id,
+                      root: instructionCopy.executionRoot,
+                      ...(instructionCopy.receipt?.warm === true ? { checkpointWarm: async () => {
+                        const saved = await instructionCopies.checkpointWarm({ companyId: agent.companyId, runId: run.id, target: executionTarget });
+                        if (saved) await recordInstructionSave(saved);
+                        return saved?.state === "warm_saved" && saved.errorCode === null;
+                      } } : {}),
                       hasChanges: () => instructionCopies.hasChanges({ companyId: agent.companyId, runId: run.id, target: executionTarget }),
                       collectStopped: collectStoppedInstructions,
                     } : undefined,
@@ -24914,6 +24939,7 @@ export function heartbeatService(
               "failed to revoke heartbeat-run MCP gateway tokens",
             );
           }
+          await nativeInstructionReservation?.release();
           await instructionCopies.release(agent.companyId, run.id);
         }
         // Reconcile the referenced-project set against the real remote staging outcome. A referenced
@@ -26222,6 +26248,7 @@ export function heartbeatService(
         }
       }
     } finally {
+      await nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       try {
