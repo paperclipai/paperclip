@@ -302,7 +302,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td>
 
-**Company Portability** — Preview, export, and import organization packages with agents, skills, and optional projects, routines, tasks, and attachments. Secret values and machine-specific paths are excluded. Packages share an operating setup; full-instance recovery uses backups.
+**Company Portability** — Preview, export, and import organization packages with agents, skills, and optional projects, routines, tasks, and attachments. Referenced secret values are omitted; review packages before sharing because plain environment values and local paths can remain. Packages share an operating setup; full-instance recovery uses backups.
 
 </td>
 </tr>
