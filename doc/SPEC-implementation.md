@@ -1197,10 +1197,11 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
-The dashboard agent cards show each linked task at most once. When multiple
-runs belong to one task, the card uses the first active or recent run. Runs
-without a linked task remain separate cards. The live runs page can show every
-run.
+The dashboard agent cards show each linked task at most once. The server selects
+distinct task cards before it applies the dashboard card limit. When multiple
+runs belong to one task, an active run takes precedence over completed runs.
+Runs without a linked task remain separate cards. The live runs page can show
+every run.
 
 ## 10.10 Error Semantics
 

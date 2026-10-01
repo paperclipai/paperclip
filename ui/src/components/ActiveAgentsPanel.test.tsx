@@ -146,6 +146,7 @@ describe("ActiveAgentsPanel", () => {
     expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
       minCount: 4,
       limit: undefined,
+      distinctTasks: false,
     });
 
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
@@ -183,6 +184,11 @@ describe("ActiveAgentsPanel", () => {
     });
     await flushReact();
 
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
+      minCount: 4,
+      limit: 4,
+      distinctTasks: true,
+    });
     expect([...container.querySelectorAll(".dashboard-agent-card")].map((card) =>
       card.querySelector('a[aria-label$=". View run"]')?.getAttribute("href"),
     )).toEqual([
@@ -225,6 +231,7 @@ describe("ActiveAgentsPanel", () => {
     expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
       minCount: 50,
       limit: 50,
+      distinctTasks: false,
     });
     expect(container.textContent).not.toContain("more active/recent");
     expect(container.textContent).not.toContain("Run output");

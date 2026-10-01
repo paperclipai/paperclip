@@ -61,17 +61,22 @@ export function ActiveAgentsPanel({
   showTranscripts = false,
   dedupeLinkedTasks = false,
 }: ActiveAgentsPanelProps) {
-  const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }] as const;
+  const effectiveFetchLimit = fetchLimit ?? (dedupeLinkedTasks ? cardLimit : undefined);
+  const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit: effectiveFetchLimit, dedupeLinkedTasks }] as const;
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
-    resourceKey: `live-runs:${queryScope}:${minRunCount}:${fetchLimit ?? "default"}`,
+    resourceKey: `live-runs:${queryScope}:${minRunCount}:${effectiveFetchLimit ?? "default"}:${dedupeLinkedTasks}`,
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, {
+      minCount: minRunCount,
+      limit: effectiveFetchLimit,
+      distinctTasks: dedupeLinkedTasks,
+    }),
     enabled: sharedLiveRuns.enabled,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
