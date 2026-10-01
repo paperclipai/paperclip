@@ -13339,6 +13339,23 @@ export function toolAccessService(
           ),
         )
         .limit(1);
+      // A second connection of the same app (a dedicated agent identity next to
+      // the company's GitHub, say) cannot take a name another profile already
+      // holds (tool_profiles_company_name_uq). Keep the suffixed name setup chose.
+      const [sameName] = await tx
+        .select({ id: toolProfiles.id })
+        .from(toolProfiles)
+        .where(
+          and(
+            eq(toolProfiles.companyId, companyId),
+            eq(toolProfiles.name, connection.name),
+            ...(existingProfile ? [ne(toolProfiles.id, existingProfile.id)] : []),
+          ),
+        )
+        .limit(1);
+      const profileName = sameName
+        ? `${connection.name} (${connection.id.replace(/-/g, "").slice(0, 8)})`
+        : connection.name;
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -13418,7 +13435,7 @@ export function toolAccessService(
         const [updated] = await tx
           .update(toolProfiles)
           .set({
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -13437,7 +13454,7 @@ export function toolAccessService(
           .values({
             companyId,
             profileKey,
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",

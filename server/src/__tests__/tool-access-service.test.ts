@@ -6256,6 +6256,39 @@ describeEmbeddedPostgres("tool access service", () => {
     ).resolves.toHaveLength(1);
   });
 
+  it("finishes a connection whose name another connection's profile already holds", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connect = async () => {
+      mockToolsList([{ name: "archive_read", annotations: { readOnlyHint: true } }]);
+      return service.connectGalleryApp(
+        company.id,
+        { link: "https://fixture.example/mcp", authMode: "none", name: "Archive" },
+        { actorType: "user", actorId: "board" },
+      );
+    };
+    const finish = async (connected: Awaited<ReturnType<typeof connect>>) =>
+      service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: connected.actions.readOnly.map((action) => action.catalogEntryId),
+        askFirstCatalogEntryIds: [],
+        access: { agentIds: [(await createAgent(db, company.id)).id] },
+      });
+
+    const first = await connect();
+    const firstFinished = await finish(first);
+    const second = await connect();
+    // Two connections of one app can share a display name: an older connection
+    // revived by a new setup keeps the plain name it was created with.
+    await db.update(toolConnections).set({ name: "Archive" }).where(eq(toolConnections.id, second.connectionId));
+
+    // Finishing used to rename this profile to plain "Archive", which the first
+    // connection's profile holds: a unique violation surfaced as a 500.
+    const secondFinished = await finish(second);
+
+    expect(firstFinished.profile.name).toBe("Archive");
+    expect(secondFinished.profile.name).toBe(`Archive (${second.connectionId.replace(/-/g, "").slice(0, 8)})`);
+  });
+
   it("reconnects an exact active custom MCP connection without duplicating its identity", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -15478,13 +15511,18 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
 
-    await db.insert(toolProfiles).values({
-      companyId: company.id,
-      profileKey: `conflict-${randomUUID()}`,
-      name: "Conflicting app profile",
-      status: "active",
-      defaultAction: "deny",
-    });
+    // Force the late profile rename to fail. Finish falls back to a suffixed
+    // name when the plain one is taken, so occupy both.
+    await db.insert(toolProfiles).values(
+      ["Conflicting app profile", `Conflicting app profile (${connect.connectionId.replace(/-/g, "").slice(0, 8)})`]
+        .map((name) => ({
+          companyId: company.id,
+          profileKey: `conflict-${randomUUID()}`,
+          name,
+          status: "active" as const,
+          defaultAction: "deny" as const,
+        })),
+    );
     await db
       .update(toolConnections)
       .set({ name: "Conflicting app profile", updatedAt: new Date() })
