@@ -1001,6 +1001,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         : undefined;
 
+    const parsedSessionId = parsedStream.sessionId ?? (asString(parsed?.session_id, "") || null);
+    const rawResolvedSessionId = parsedSessionId ?? opts.fallbackSessionId;
+    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const poisonedPreviousMessageId = parsed ? isClaudePoisonedPreviousMessageIdError(parsed) : false;
+    // Validate-before-persist guard: never persist a sessionId whose transcript
+    // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
+    // session id; if the last entry contains a non-`msg_`-prefixed
+    // `previous_message_id`, every subsequent `--resume` hits a 400 from
+    // /v1/messages and the issue is permanently unrecoverable until the
+    // sessionId is dropped server-side. Drop here so resolveNextSessionState
+    // calls clearTaskSessions on the next heartbeat.
+    const shouldDropSessionForPoison = poisonedPreviousMessageId;
+    const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
+    const resolvedSessionParams = resolvedSessionId
+      ? ({
+        sessionId: resolvedSessionId,
+        cwd,
+        promptBundleKey: promptBundle.bundleKey,
+        mcpServerIdentity: runtimeMcpIdentity,
+        ...(executionTargetIsRemote
+          ? {
+              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+            }
+          : {}),
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+        ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+      } as Record<string, unknown>)
+      : null;
+
     if (proc.timedOut) {
       return {
         exitCode: proc.exitCode,
@@ -1009,7 +1039,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        ...(parsedSessionId
+          ? {
+              sessionId: resolvedSessionId,
+              sessionParams: resolvedSessionParams,
+              sessionDisplayId: resolvedSessionId,
+            }
+          : {}),
+        clearSession:
+          clearSessionForMaxTurns ||
+          poisonedPreviousMessageId ||
+          Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
       };
     }
 
@@ -1109,11 +1149,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? ("per_run" as const)
       : null;
 
-    const rawResolvedSessionId =
-      parsedStream.sessionId ??
-      (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
-    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
-    const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
     // Fable 5 policy refusals exit cleanly (exitCode=0, is_error=false), so this
     // is intentionally independent of `failed` — otherwise a refusal looks like a
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
@@ -1122,31 +1157,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
     const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
-    // Validate-before-persist guard: never persist a sessionId whose transcript
-    // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
-    // session id; if the last entry contains a non-`msg_`-prefixed
-    // `previous_message_id`, every subsequent `--resume` hits a 400 from
-    // /v1/messages and the issue is permanently unrecoverable until the
-    // sessionId is dropped server-side. Drop here so resolveNextSessionState
-    // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
-    const shouldDropSessionForPoison = poisonedPreviousMessageId;
-    const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
-    const resolvedSessionParams = resolvedSessionId
-      ? ({
-        sessionId: resolvedSessionId,
-        cwd,
-        promptBundleKey: promptBundle.bundleKey,
-        mcpServerIdentity: runtimeMcpIdentity,
-        ...(executionTargetIsRemote
-          ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-            }
-          : {}),
-        ...(workspaceId ? { workspaceId } : {}),
-        ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-        ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-      } as Record<string, unknown>)
-      : null;
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;

@@ -671,16 +671,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
-      if (attempt.proc.timedOut) {
-        return {
-          exitCode: attempt.proc.exitCode,
-          signal: attempt.proc.signal,
-          timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
-          clearSession: clearSessionOnMissingSession,
-        };
-      }
-
       const resolvedSessionId =
         attempt.parsed.sessionId ??
         (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
@@ -698,6 +688,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : {}),
           } as Record<string, unknown>)
         : null;
+
+      if (attempt.proc.timedOut) {
+        // Keep the session OpenCode already streamed so the retry or the next
+        // wake resumes it instead of starting cold and repeating the same work.
+        return {
+          exitCode: attempt.proc.exitCode,
+          signal: attempt.proc.signal,
+          timedOut: true,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          ...(attempt.parsed.sessionId
+            ? {
+                sessionId: resolvedSessionId,
+                sessionParams: resolvedSessionParams,
+                sessionDisplayId: resolvedSessionId,
+              }
+            : {}),
+          clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
+        };
+      }
 
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);

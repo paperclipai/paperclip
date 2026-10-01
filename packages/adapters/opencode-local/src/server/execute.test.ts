@@ -47,6 +47,41 @@ describe("OpenCode local skill injection", () => {
     await fs.rm(configHome, { recursive: true, force: true });
   });
 
+  it("preserves the streamed session when execution times out", async () => {
+    const commandPath = path.join(configHome, "fake-opencode-timeout");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      stdout: JSON.stringify({ type: "text", sessionID: "timeout-session", part: { text: "Working" } }),
+    }));
+
+    const result = await execute({
+      runId: "run-timeout",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath, cwd: configHome, model: "openai/gpt-5", timeoutSec: 10,
+        env: { HOME: configHome, OPENCODE_ALLOW_ALL_MODELS: "1" },
+      },
+      context: {},
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      errorMessage: "Timed out after 10s",
+      sessionId: "timeout-session",
+      sessionDisplayId: "timeout-session",
+      sessionParams: { sessionId: "timeout-session", cwd: configHome },
+      clearSession: false,
+    });
+  });
+
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {
     const commandPath = path.join(configHome, "fake-opencode");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });

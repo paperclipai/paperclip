@@ -95,6 +95,49 @@ describe("claude remote execution", () => {
     }
   });
 
+  it("preserves the streamed session when CLI execution times out before a result", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-timeout-"));
+    cleanupDirs.push(rootDir);
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      stdout: [
+        JSON.stringify({ type: "system", subtype: "init", session_id: "timeout-session" }),
+        JSON.stringify({ type: "assistant", session_id: "timeout-session", message: { content: [{ type: "text", text: "Working" }] } }),
+      ].join("\n"),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-timeout",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli", command: "test-runtime", cwd: rootDir, timeoutSec: 10,
+        env: { HOME: rootDir, CLAUDE_CONFIG_DIR: path.join(rootDir, "claude-config") },
+      },
+      context: {},
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      errorCode: "timeout",
+      errorMessage: "Timed out after 10s",
+      sessionId: "timeout-session",
+      sessionDisplayId: "timeout-session",
+      sessionParams: { sessionId: "timeout-session", cwd: rootDir },
+      clearSession: false,
+    });
+    expect(result.sessionParams?.promptBundleKey).toEqual(expect.any(String));
+    expect(result.sessionParams?.mcpServerIdentity).toEqual(expect.any(String));
+  });
+
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
     vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
     vi.stubEnv("ANTHROPIC_MODEL", "host-only-model");
