@@ -92,7 +92,7 @@ export function AuthPage() {
     password.trim().length > 0 &&
     (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
 
-  if (healthQuery.isLoading || isSessionLoading || session) {
+  if (isSessionLoading || session) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <PaperclipLoading className="min-h-0" />
