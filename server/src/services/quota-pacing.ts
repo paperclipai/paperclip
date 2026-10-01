@@ -182,6 +182,12 @@ function pacingWindow(windows: QuotaWindow[], kind: "session" | "weekly"): Quota
   };
 }
 
+/** When a result's provider answered; `fallback` when the result does not say or says a later time. */
+function resultFetchedAt(result: ProviderQuotaResult, fallback: Date): Date {
+  const fetchedAtMs = result.fetchedAt ? Date.parse(result.fetchedAt) : Number.NaN;
+  return Number.isFinite(fetchedAtMs) && fetchedAtMs < fallback.getTime() ? new Date(fetchedAtMs) : fallback;
+}
+
 function normalizeSettings(settings: QuotaPacingSettings): QuotaPacingSettings {
   return {
     ...settings,
@@ -225,6 +231,11 @@ interface ProviderQuotaCache {
 export interface QuotaPacingControllerOptions {
   /** Reads the stored pacing settings. */
   loadSettings: () => Promise<QuotaPacingSettings>;
+  /**
+   * Reads the quota windows. Defaults to the shared read that the Costs page
+   * also uses, so a poll right after a page load reuses its result instead of
+   * sending a second provider request.
+   */
   fetchQuotaWindows?: () => Promise<ProviderQuotaResult[]>;
   /** Called when a provider's mode relaxes, so queued runs can start at once. */
   onModeRelaxed?: (providers: QuotaPacingProvider[]) => void | Promise<void>;
@@ -404,7 +415,9 @@ export function createQuotaPacingController(options: QuotaPacingControllerOption
           session: pacingWindow(ok.windows, "session"),
           weekly: pacingWindow(ok.windows, "weekly"),
         };
-        entry.polledAt = polledAt;
+        // A shared quota read can serve a result that another caller fetched
+        // a moment ago; its age counts toward staleness.
+        entry.polledAt = resultFetchedAt(ok, polledAt);
         entry.lastError = null;
         anyOk = true;
         continue;

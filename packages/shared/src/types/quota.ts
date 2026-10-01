@@ -37,4 +37,10 @@ export interface ProviderQuotaResult {
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];
+  /**
+   * when the server fetched this result from the provider (ISO 8601). The
+   * server reuses a result for a short time, so it can be older than the
+   * request that returned it.
+   */
+  fetchedAt?: string | null;
 }

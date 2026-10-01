@@ -282,6 +282,8 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    // Shared with quota pacing: a fresh cached result is reused, so page
+    // loads do not add provider requests on top of the pacing poll.
     const results = await fetchAllQuotaWindows();
     res.json(results);
   });
