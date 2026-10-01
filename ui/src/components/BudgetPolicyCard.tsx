@@ -34,12 +34,21 @@ export function BudgetPolicyCard({
   isSaving,
   compact = false,
   variant = "card",
+  enforceable = true,
 }: {
   summary: BudgetPolicySummary;
   onSave?: (amountCents: number) => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
+  /**
+   * False when the deployment books every run as `subscription_included`. The
+   * policy amount is still real and still editable, but its utilization derives
+   * from a spend sum that is structurally 0, so the percentage, the bar, and the
+   * remaining amount would all read a permanent healthy 0% and imply a cap that
+   * can never fire.
+   */
+  enforceable?: boolean;
 }) {
   const [draftBudget, setDraftBudget] = useState(centsInputValue(summary.amount));
 
@@ -49,7 +58,8 @@ export function BudgetPolicyCard({
 
   const parsedDraft = parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
-  const progress = summary.amount > 0 ? Math.min(100, summary.utilizationPercent) : 0;
+  const showUtilization = enforceable && summary.amount > 0;
+  const progress = showUtilization ? Math.min(100, summary.utilizationPercent) : 0;
   const StatusIcon = summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
   const isPlain = variant === "plain";
 
@@ -59,7 +69,11 @@ export function BudgetPolicyCard({
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {showUtilization
+            ? `${summary.utilizationPercent}% of limit`
+            : summary.amount > 0
+              ? "Not enforceable on subscription billing"
+              : "No cap configured"}
         </div>
       </div>
       <div>
@@ -78,7 +92,11 @@ export function BudgetPolicyCard({
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {showUtilization
+            ? `${summary.utilizationPercent}% of limit`
+            : summary.amount > 0
+              ? "Not enforceable on subscription billing"
+              : "No cap configured"}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
@@ -97,7 +115,7 @@ export function BudgetPolicyCard({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span>{showUtilization ? formatCents(summary.remainingAmount) : summary.amount > 0 ? "n/a" : "No budget set"}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
