@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../../packages/shared/src/portability-hash.js";
 import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
+import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import { assertCopilotRemoteRetirement, copilotRemoteDeniedSample, type CopilotRemoteSnapshot } from "./copilot-protection-evidence.js";
 import { readCopilotToolEvidence } from "./copilot-evidence.js";
 import { readCursorToolEvidence } from "./cursor-native-evidence.js";
@@ -39,8 +40,8 @@ function canonicalRows(events: readonly unknown[], scope: ActiveStopScope) {
   const seen = new Set<number>(), source = new Set<string>();
   for (const row of rows) {
     const e = rec(rec(row.payload).prpEvent);
-    fail(row.companyId === scope.companyId && row.runId === scope.runId && row.protocolSchemaVersion === 1
-      && e.schema === "paperclip.prp.event.v1" && e.schemaVersion === 1 && e.sourceKind === "runner" && e.runId === scope.runId
+    fail(row.companyId === scope.companyId && row.runId === scope.runId && isValidNativePrpEnvelope(e, row.protocolSchemaVersion)
+      && e.sourceKind === "runner" && e.runId === scope.runId
       && e.eventType === row.eventType && Number.isSafeInteger(row.seq) && row.seq > 0 && !seen.has(row.seq)
       && id(e.sourceInstanceId) && Number.isSafeInteger(e.sourceSeq) && e.sourceSeq > 0
       && e.sourceEventId === `${e.sourceInstanceId}:${e.runId}:${e.sourceSeq}` && !source.has(e.sourceEventId), "invalid/duplicate/foreign canonical row");

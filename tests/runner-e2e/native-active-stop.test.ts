@@ -44,8 +44,51 @@ function fixture(provider: ActiveStopProvider = "copilot") {
 const frame = (row: Row) => row.payload.prpEvent;
 const payload = (row: Row) => frame(row).payload;
 function settled() { const f = fixture(); const pending = f.pending(); f.settle(); return { f, pending, read: () => readActiveStopSettlement({ ...f.state(), pending, dispatchMonotonicNs: (BigInt(pending.observedMonotonicNs) + 1n).toString() }) }; }
+function withSessionPrefix(provider: ActiveStopProvider = "cursor") {
+  const f = fixture(provider);
+  // The retained failed attempt contained v1 session.started followed by these
+  // v2 session events before its v1 tool/permission events. Keep that shape;
+  // this synthetic fixture supplies the otherwise required native tool proof.
+  for (const row of f.events) {
+    row.seq += 30; frame(row).sourceSeq += 3;
+    frame(row).sourceEventId = `source:run:${frame(row).sourceSeq}`;
+  }
+  const prefix = [f.row(17, "session.started", {}),
+    f.row(19, "session.capabilities.updated", { sessionGoals: null }),
+    f.row(21, "session.goal.snapshot", { goal: null, workingNow: false })];
+  prefix.forEach((row, index) => {
+    const e = frame(row); e.turnId = null; e.sourceSeq = index + 1; e.sourceEventId = `source:run:${index + 1}`;
+    if (index > 0) { row.protocolSchemaVersion = 2; e.schema = "paperclip.prp.event.v2"; e.schemaVersion = 2; }
+  });
+  f.events.unshift(...prefix);
+  return f;
+}
 
 describe("definitely active native permission Stop", () => {
+  it.each(["cursor", "copilot"] as const)("accepts the mixed v1/v2 session prefix before strict %s pending proof", provider => {
+    const f = withSessionPrefix(provider);
+    expect(f.pending()).toMatchObject({ requestId: "request", toolCallId: "tool", permissionSourceSeq: 6, requestSourceSeq: 7 });
+  });
+  it.each([
+    ["schema/version mismatch", (f: ReturnType<typeof withSessionPrefix>) => { frame(f.events[1]!).schemaVersion = 1; }],
+    ["row/envelope mismatch", (f: ReturnType<typeof withSessionPrefix>) => { f.events[1]!.protocolSchemaVersion = 1; }],
+    ["unknown schema", (f: ReturnType<typeof withSessionPrefix>) => { frame(f.events[1]!).schema = "paperclip.prp.event.v3"; frame(f.events[1]!).schemaVersion = f.events[1]!.protocolSchemaVersion = 3; }],
+    ["foreign session source", (f: ReturnType<typeof withSessionPrefix>) => { frame(f.events[1]!).sourceKind = "provider"; }],
+  ] as const)("still rejects %s in a mixed-version stream", (_label, mutate) => {
+    const f = withSessionPrefix(); mutate(f); expect(f.pending).toThrow("invalid/duplicate/foreign canonical row");
+  });
+  it("does not let a valid v2 prefix hide the retained Cursor incomplete-evidence failure", () => {
+    const f = withSessionPrefix();
+    const notice = f.events.find(row => row.eventType === "provider.notice.recorded")!;
+    payload(notice).provenance.eventType = "evidence_incomplete";
+    payload(notice).details = Object.entries({ stage: "evidence_incomplete", toolCallId: "unavailable", reason: "projection_failed" }).map(([name, value]) => ({ name, value }));
+    expect(f.pending).toThrow("Cursor evidence is explicitly incomplete");
+  });
+  it("still requires the original native tool ID on the durable card after a valid v2 prefix", () => {
+    const f = withSessionPrefix();
+    delete payload(f.events.find(row => row.eventType === "runtime_request.created")!).request.details.toolCallId;
+    expect(f.pending).toThrow("native notice/card identity mismatch");
+  });
   it.each(["cursor", "copilot"] as const)("binds %s's unanswered callback to cancelled provider settlement and caller-owned Stop", provider => {
     const f = fixture(provider), pending = f.pending(); f.settle();
     expect(readActiveStopSettlement({ ...f.state(), pending, dispatchMonotonicNs: (BigInt(pending.observedMonotonicNs) + 1n).toString() })).toMatchObject({
