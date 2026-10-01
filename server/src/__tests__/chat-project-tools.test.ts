@@ -3,11 +3,12 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, issues, heartbeatRuns, projects, companyMemberships } from "@paperclipai/db";
+import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { activityService } from "../services/activity.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -189,6 +190,56 @@ const support = await getEmbeddedPostgresTestSupport();
 
     await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", issueIds: [f.issueId] } } } }).where(eq(agents.id, f.agentId));
     await expect(call(f, "create_task", { title: "Exact scope is not a subtree", idempotencyKey: "exact-child" })).rejects.toThrow(/outside.*boundary/);
+  });
+
+  it("authorizes workspace-derived projects before creating children of a projectless root", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const settings = instanceSettingsService(server.db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, f.issueId));
+      const [executionWorkspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId,
+        projectId: f.projectId, projectWorkspaceId: f.projectWorkspaceId, mode: "shared", strategyType: "project_primary", name: "Outside root" }).returning();
+      const boundary = { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId };
+      await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: boundary } } }).where(eq(agents.id, f.agentId));
+      const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+      const before = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
+      const paths = [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`];
+      const selections = [{ projectWorkspaceId: f.projectWorkspaceId }, { executionWorkspaceId: executionWorkspace.id },
+        { inheritExecutionWorkspaceFromIssueId: f.blockerId }];
+      const create = async (path: string, selection: Record<string, string>) => {
+        const response = await fetch(`${server.apiUrl}${path}`, {
+          method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ title: `Workspace scope ${randomUUID()}`, parentId: f.issueId,
+            assigneeAgentId: f.agentId, status: "backlog", ...selection }),
+        });
+        return { status: response.status, body: await response.json() };
+      };
+      for (const path of paths) {
+        for (const selection of selections) {
+          if (path.endsWith("/children") && selection.inheritExecutionWorkspaceFromIssueId) continue;
+          const response = await create(path, selection);
+          expect(response.status, JSON.stringify(response.body)).toBe(403);
+        }
+      }
+      expect(await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toEqual(before);
+
+      await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustBoundary: { ...boundary, projectIds: [f.projectId] },
+      } } }).where(eq(agents.id, f.agentId));
+      for (const path of paths) {
+        for (const selection of selections) {
+          if (path.endsWith("/children") && selection.inheritExecutionWorkspaceFromIssueId) continue;
+          const response = await create(path, selection);
+          expect(response.status, JSON.stringify(response.body)).toBe(201);
+          expect(response.body.projectId).toBe(f.projectId);
+          expect(response.body.executionPolicy.authorizationPolicy.trustBoundary.projectIds).toEqual([f.projectId]);
+        }
+      }
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
   });
 
   it("keeps the responsible user's assignment restrictions on low-trust self-assignment", async () => {

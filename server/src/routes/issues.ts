@@ -4851,6 +4851,45 @@ export function issueRoutes(
     return parent.projectId ?? null;
   }
 
+  async function resolveCreateAssignmentProjectId(input: {
+    companyId: string;
+    projectId?: string | null;
+    parentId?: string | null;
+    inheritExecutionWorkspaceFromIssueId?: string | null;
+    projectWorkspaceId?: string | null;
+    executionWorkspaceId?: string | null;
+    executionWorkspacePreference?: string | null;
+    executionWorkspaceSettings?: unknown;
+  }) {
+    // Match create()'s project precedence before checking any assignment or
+    // trust policy. A workspace or explicit inheritance source can supply the
+    // project even when a caller omits projectId and the parent is projectless.
+    if (input.projectId) return input.projectId;
+    const sourceId = input.inheritExecutionWorkspaceFromIssueId ?? input.parentId;
+    const source = sourceId ? await svc.getById(sourceId) : null;
+    if (sourceId && (!source || source.companyId !== input.companyId)) throw notFound("Workspace inheritance issue not found");
+    if (source?.projectId) return source.projectId;
+    const projectWorkspaceId = input.projectWorkspaceId ?? source?.projectWorkspaceId;
+    if (projectWorkspaceId) {
+      const [workspace] = await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId)));
+      if (!workspace) throw notFound("Project workspace not found");
+      return workspace.projectId;
+    }
+    if ((await instanceSettings.getExperimental()).enableIsolatedWorkspaces) {
+      const hasExecutionOverride = input.executionWorkspaceId !== undefined ||
+        input.executionWorkspacePreference !== undefined || input.executionWorkspaceSettings !== undefined;
+      const executionWorkspaceId = input.executionWorkspaceId ?? (hasExecutionOverride ? null : source?.executionWorkspaceId);
+      if (executionWorkspaceId) {
+        const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
+          .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId)));
+        if (!workspace) throw notFound("Execution workspace not found");
+        return workspace.projectId;
+      }
+    }
+    return null;
+  }
+
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -11735,11 +11774,7 @@ export function issueRoutes(
           : {}),
       };
       const createAssignmentScope = {
-        projectId: await resolveAssignmentProjectId({
-          companyId,
-          projectId: createBody.projectId ?? undefined,
-          parentIssueId: createBody.parentId,
-        }),
+        projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId }),
         parentIssueId: createBody.parentId ?? null,
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: rawCreateBody.assigneeUserId ?? null,
@@ -11791,6 +11826,7 @@ export function issueRoutes(
         null;
       const createInput = {
         ...createBody,
+        projectId: createAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
@@ -12082,7 +12118,7 @@ export function issueRoutes(
           : {}),
       };
       const childAssignmentScope = {
-        projectId: createBody.projectId ?? parent.projectId ?? null,
+        projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId: parent.companyId, parentId: parent.id }),
         parentIssueId: parent.id,
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: createBody.assigneeUserId ?? null,
@@ -12131,13 +12167,14 @@ export function issueRoutes(
         {
           id: issueId,
           companyId: parent.companyId,
-          projectId: createBody.projectId ?? parent.projectId ?? null,
+          projectId: childAssignmentScope.projectId,
           executionPolicy,
         },
         actor,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
+        projectId: childAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
