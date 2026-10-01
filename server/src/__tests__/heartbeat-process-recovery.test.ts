@@ -279,6 +279,14 @@ function spawnAliveProcess() {
   });
 }
 
+/** Detached leader: on POSIX its pid is also the provider process group id. */
+function spawnDetachedProcessGroup() {
+  return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    detached: true,
+  });
+}
+
 function isPidAlive(pid: number | null | undefined) {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0)
     return false;
@@ -3605,6 +3613,111 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ownerType: "board",
       }),
     ]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "records a verified control-plane stop and schedules the bounded retry instead of a board hold",
+    async () => {
+      const child = spawnDetachedProcessGroup();
+      childProcesses.add(child);
+      const processGroupId = child.pid ?? null;
+      expect(processGroupId).not.toBeNull();
+      const { runId, issueId } = await seedRunFixture({
+        adapterType: "process",
+        agentStatus: "running",
+        processPid: child.pid ?? null,
+        processGroupId,
+      });
+      runningProcesses.set(runId, { child, graceSec: 5, processGroupId });
+      try {
+        const result = await heartbeatService(db).drainRunningRunsForShutdown(
+          "SIGTERM",
+          new Date("2026-03-19T00:06:00.000Z"),
+        );
+        expect(result.interruptedRunIds).toEqual([runId]);
+        await waitForPidExit(child.pid!);
+
+        const [run] = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId));
+        expect(run).toMatchObject({
+          status: "interrupted",
+          errorCode: "server_shutdown_interrupted",
+        });
+        // The drain stored the evidence of a stop it could verify, and the
+        // bounded retry owns the continuation: a deploy no longer parks the
+        // issue behind a board-owned hold.
+        expect(
+          (run.resultJson as Record<string, unknown> | null | undefined)
+            ?.executionRecovery,
+        ).toMatchObject({
+          kind: "server_shutdown",
+          providerStopped: true,
+          controlPlaneInitiated: true,
+          processGroupId,
+        });
+        expect(result.retryRunIds).toHaveLength(1);
+        expect(
+          await db
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+        ).toEqual([]);
+      } finally {
+        runningProcesses.delete(runId);
+      }
+    },
+  );
+
+  it("keeps the reconciliation hold when the shutdown stop covers only the direct pid", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    const { runId, issueId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+    });
+    runningProcesses.set(runId, { child, graceSec: 5, processGroupId: null });
+    try {
+      const result = await heartbeatService(db).drainRunningRunsForShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+      expect(result.interruptedRunIds).toEqual([runId]);
+      await waitForPidExit(child.pid!);
+
+      const [run] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      // Without a process group the stop proves nothing about descendants, so
+      // the run must not claim providerStopped: the hold stays and no turn is
+      // replayed next to possibly surviving work.
+      expect(
+        (run.resultJson as Record<string, unknown> | null | undefined)
+          ?.executionRecovery,
+      ).toBeUndefined();
+      expect(result.retryRunIds).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+      ).toEqual([
+        expect.objectContaining({
+          cause: "legacy_execution_requires_reconciliation",
+          ownerType: "board",
+        }),
+      ]);
+    } finally {
+      runningProcesses.delete(runId);
+    }
   });
 
   it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
