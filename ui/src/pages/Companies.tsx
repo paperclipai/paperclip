@@ -99,6 +99,13 @@ export function Companies() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
     },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Could not unarchive organization",
+        body: error instanceof Error ? error.message : "Please try again.",
+      });
+    },
   });
 
   useEffect(() => {
