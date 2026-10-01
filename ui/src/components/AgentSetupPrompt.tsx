@@ -84,14 +84,21 @@ export function AgentSetupPrompt({
   const flyingLogos = useRef<HTMLSpanElement>(null);
   const activationOrigins = useRef<ReturnType<typeof readLogoPositions> | null>(null);
   const copyAttempt = useRef(0);
+  const hasUserCopyAttempt = useRef(false);
   const copying = useRef(false);
   const copyButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    setStatus(initialCopyStatus);
+    setStatus("idle");
     copying.current = false;
+    hasUserCopyAttempt.current = false;
     // A pending clipboard result must not label a changed prompt as copied.
     return () => { copyAttempt.current += 1; };
+  }, [prompt]);
+
+  useEffect(() => {
+    // A delayed generation-time copy must not replace the user's newer result.
+    if (!hasUserCopyAttempt.current) setStatus(initialCopyStatus);
   }, [prompt, initialCopyStatus]);
 
   useEffect(() => {
@@ -151,6 +158,7 @@ export function AgentSetupPrompt({
 
   async function copyPrompt() {
     if (copying.current || !prompt.trim()) return;
+    hasUserCopyAttempt.current = true;
     copying.current = true;
     const attempt = ++copyAttempt.current;
     setStatus("copying");
@@ -176,8 +184,11 @@ export function AgentSetupPrompt({
             variant={variant}
             aria-label={label}
             data-copied={status === "copied"}
-            onClick={() => {
-              activationOrigins.current = readLogoPositions(flyingLogos.current ?? (open ? previewLogos.current : triggerLogos.current));
+            onClick={(event) => {
+              // The trigger remains a copy action while open. Dismiss with
+              // Close, Escape, or outside interaction without writing again.
+              if (open) event.preventDefault();
+              else activationOrigins.current = readLogoPositions(flyingLogos.current ?? triggerLogos.current);
               void copyPrompt();
             }}
             className={cn("agent-setup-trigger h-auto min-h-10 max-w-full gap-3 whitespace-normal text-left", variant === "ghost" && "w-full justify-start", className)}

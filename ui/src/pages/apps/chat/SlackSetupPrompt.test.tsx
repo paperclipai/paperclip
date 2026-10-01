@@ -100,6 +100,17 @@ describe("Slack setup prompt", () => {
     expect(copyTextToClipboard).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the preview open when copying again from the trigger and does not copy on dismissal", async () => {
+    vi.mocked(copyTextToClipboard).mockResolvedValue(undefined);
+    const dialog = await openPrompt();
+    await act(async () => container.querySelector("button")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(copyTextToClipboard).toHaveBeenCalledTimes(2);
+    await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close agent setup"]')!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(copyTextToClipboard).toHaveBeenCalledTimes(2);
+  });
+
   it("includes only the instance origin, without URL credentials or callback state", () => {
     const prompt = buildSlackSetupPrompt("https://user:private-password@my-company.paperclip.app/GIT/apps/chat/connect?code=private-code#private-state");
     expect(prompt).toContain("Paperclip instance URL: https://my-company.paperclip.app\n");

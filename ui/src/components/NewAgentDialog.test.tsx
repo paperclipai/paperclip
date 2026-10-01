@@ -227,3 +227,22 @@ it("shows the generated invitation while automatic clipboard access is pending",
   await act(async () => finishCopy());
   expect(document.querySelector('[aria-label="Copy onboarding prompt"]')?.getAttribute("data-copied")).toBe("true");
 });
+
+it("keeps a newer user copy result when the automatic invitation copy fails", async () => {
+  let failAutomaticCopy!: (error: Error) => void;
+  let finishUserCopy!: () => void;
+  invites.copy
+    .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failAutomaticCopy = reject; }))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishUserCopy = resolve; }));
+  await click("Invite an external agent");
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  await click("Copy onboarding prompt");
+  await act(async () => failAutomaticCopy(new Error("Automatic copy failed")));
+  expect(document.querySelector(".agent-setup-copy")?.textContent).toBe("Copying…");
+  await act(async () => finishUserCopy());
+  expect(document.querySelector(".agent-setup-copy")?.textContent).toBe("Copied to clipboard");
+  expect(document.body.textContent).not.toContain("Clipboard unavailable");
+  expect(invites.copy).toHaveBeenCalledTimes(2);
+  expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
+});

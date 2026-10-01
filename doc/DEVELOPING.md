@@ -103,6 +103,7 @@ These run the `@paperclipai/ui` Storybook on port `6006` and build the static ou
 Use **Components → Agent setup prompt** to review the shared setup handoff:
 hover/focus logo motion, one-click copying with a prompt preview, animated
 confirmation, and manual-copy recovery. Opening the preview copies immediately;
+clicking its trigger again copies without closing. Close and Escape only dismiss;
 the inner copy button remains available for retries and later copies. Stories include Slack and API copy, a compact quick-access placement,
 light and mobile views, and a clipboard paste check. `AgentSetupPrompt` accepts
 the complete `prompt`, `title`, `description`, trigger `label`, and popover

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
 import { BookOpen, KeyRound } from "lucide-react";
 import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { Button } from "@/components/ui/button";
@@ -163,10 +164,31 @@ export const InsideMcpHelp: Story = {
   render: () => <div className="p-6"><McpConfigHelpDialog /></div>,
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body);
-    await userEvent.click(within(canvasElement).getByRole("button", { name: "Get help creating an MCP config" }));
-    await waitFor(async () => {
-      await expect(body.getByRole("dialog", { name: "Ask an agent for an MCP config" })).toBeVisible();
-      await expect(body.getByRole("button", { name: "Get a config with an agent" })).toBeVisible();
-    });
+    // Synthetic play events lack clipboard user activation in some browsers.
+    // Restore the real clipboard after the assertions for manual exploration.
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      await userEvent.click(within(canvasElement).getByRole("button", { name: "Get help creating an MCP config" }));
+      const trigger = await body.findByRole("button", { name: "Get a config with an agent" });
+      await userEvent.click(trigger);
+      await waitFor(async () => {
+        await expect(body.getByRole("dialog", { name: "MCP configuration" })).toBeVisible();
+        await expect(body.getByRole("button", { name: "Copied to clipboard" })).toHaveFocus();
+        await expect(writeText).toHaveBeenCalledTimes(1);
+        await expect(writeText).toHaveBeenCalledWith(MCP_CONFIG_HELP_PROMPT);
+      });
+      await userEvent.keyboard("{Escape}");
+      await waitFor(async () => {
+        await expect(body.queryByRole("dialog", { name: "MCP configuration" })).not.toBeInTheDocument();
+        await expect(body.getByRole("dialog", { name: "Ask an agent for an MCP config" })).toBeVisible();
+        await expect(trigger).toHaveFocus();
+        await expect(writeText).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   },
 };
