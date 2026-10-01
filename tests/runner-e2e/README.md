@@ -1313,6 +1313,10 @@ required. Earlier failed attempts retain their original grade.
 See [Copilot native protection](./FIXTURES.md#copilot-native-protection) for the
 expected cancelled negative test, finite attached-process oracle, evidence limits,
 and required rebuilt runtime. Registration is not a qualification claim.
+Copilot protection suite definition v6 clarifies the async marker as a private
+diagnostic sentinel. Separate negated bootstrap sentences avoid an unintended
+file-delivery objective; immediate completion stress and strict one-command and
+settlement checks remain unchanged. Historical v5 failures are not regraded.
 
 Local human-denial cases for Copilot, Cursor and Pi create a fresh fixture-owned
 `pc-denied-*` directory before dispatch and watch its parent identity throughout

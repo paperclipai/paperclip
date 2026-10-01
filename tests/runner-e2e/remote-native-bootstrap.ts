@@ -77,7 +77,8 @@ export function createRemoteNativeBootstrap(input: {
       return [
         `Your task instructions will be published by the operator in the workspace file ${path}.`,
         "Use your native file-read tool to read that exact relative file in the current execution workspace. If it is not present yet, retry the read for up to 20 seconds, then report the setup failure.",
-        "Before reading those instructions, do not infer the task, run shell commands, create or modify any file, ask replacement questions, or mark work complete. Do not create the missing instruction file.",
+        "Before reading those instructions: do not infer the task. Do not run shell commands. Do not create or modify any file.",
+        "Do not ask replacement questions. Do not mark work complete. Do not create the missing instruction file.",
         "After reading the complete file, perform precisely the supplied task. Treat it as the operator's continuation of this task.",
       ].join("\n");
     },

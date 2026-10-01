@@ -1,3 +1,5 @@
+import { explicitlyRequestsFileOutput } from "../../server/src/services/native-runtime/native-deliverable-feedback.js";
+import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
 import { afterEach, expect, it, vi } from "vitest";
 import { classifyFailure } from "./failure-classifier.js";
@@ -31,6 +33,33 @@ function harness(timeoutMs = REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 18_000) {
   } };
   return { bootstrap, input, bind, api, issue, run, leases, fixture, request, order };
 }
+
+it("keeps negated bootstrap instructions out of the production file-delivery contract", () => {
+  const prompt = harness().bootstrap.prompt("nonce");
+  // Retained failed attempt: comma splitting detached this clause from “do not”.
+  const original = "Before reading those instructions, do not infer the task, run shell commands, create or modify any file, ask replacement questions, or mark work complete. Do not create the missing instruction file.";
+  expect(explicitlyRequestsFileOutput(original)).toBe(true);
+  expect(explicitlyRequestsFileOutput(prompt)).toBe(false);
+  expect(prompt).toContain("Do not create or modify any file.");
+  expect(prompt).toContain("Do not run shell commands.");
+  expect(prompt).toContain("Do not ask replacement questions.");
+  expect(prompt).toContain("Do not mark work complete.");
+  expect(prompt).toContain("Do not create the missing instruction file.");
+  // A real requested output still requires delivery; no production gate changes.
+  expect(explicitlyRequestsFileOutput(`${prompt}\nCreate a downloadable report.txt file.`)).toBe(true);
+});
+
+it("keeps async completion immediate with a private sentinel and no delivery wait", () => {
+  const task = copilotProtectionTasks.find(task => task.id === "attached-async-settlement")!;
+  const action = task.buildPrompt("nonce");
+  expect(explicitlyRequestsFileOutput(action)).toBe(false);
+  expect(explicitlyRequestsFileOutput(`${harness().bootstrap.prompt("nonce")}\n${action}`)).toBe(false);
+  expect(action).toContain("attempt to finish immediately without calling read_bash or another waiting tool");
+  expect(action).toContain("Do not modify fixture code, manufacture its result, or start another command.");
+  expect(action).toContain("private diagnostic sentinel, not a requested file deliverable");
+  expect(action).toContain("evidence [], verification []");
+  expect(action).not.toContain("register_deliverable");
+});
 
 it("keeps the complete readiness/install reserve when a lease arrives at the admission boundary", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);

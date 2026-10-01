@@ -306,7 +306,16 @@ retirement. Filesystem event loss or an unexplained parent-directory timestamp
 change makes no-effect coverage incomplete; stat polling alone cannot pass.
 
 `attached-async-settlement` starts a fixed finite command with explicit async mode
-and `detach:false`, then asks the model to attempt immediate completion. A one-shot
+and `detach:false`, then asks the model to attempt immediate completion. Its marker
+is a private diagnostic sentinel, not a requested user deliverable. The task keeps
+empty completion evidence and forbids publication, extra commands, and waiting tools.
+Suite definition v6 preserves this early-completion stress and every settlement
+assertion. A retained v5 Daytona failure exposed a bootstrap wording conflict:
+comma-separated prohibitions left “create or modify any file” as a positive clause
+in the continuation objective's file-delivery classifier. Each bootstrap prohibition
+now has its own explicit “Do not” sentence. The production delivery policy is unchanged;
+actual requested file outputs still require accessible delivery evidence. That failed
+attempt remains failed, and v6 requires fresh live qualification. A one-shot
 private socket in the tested environment accepts only the fixture nonce, never an executable or command;
 the test owns/reaps a predeclared child and records its actual exit before releasing
 the provider-launched client. The independent marker, client retirement, native shell
