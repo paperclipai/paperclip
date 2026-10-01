@@ -1,10 +1,11 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Mail, Paperclip } from "lucide-react";
-import type {
-  EmailMessage,
-  EmailPublicationSummary,
-  EmailThreadSummary,
+import {
+  isUuidLike,
+  type EmailMessage,
+  type EmailPublicationSummary,
+  type EmailThreadSummary,
 } from "@paperclipai/shared";
 import { emailApi } from "@/api/email";
 import { issuesApi } from "@/api/issues";
@@ -20,14 +21,19 @@ export function EmailThreadProvider({
   children: ReactNode;
 }) {
   const { enabled } = useChatConnectorsEnabled();
+  const queryEnabled =
+    enabled &&
+    Boolean(companyId && issueId) &&
+    !issueId.startsWith("chat:") &&
+    isUuidLike(issueId);
   const thread = useQuery({
     queryKey: ["email-thread", companyId, issueId],
     queryFn: () => emailApi.thread(companyId, issueId),
-    enabled,
-    refetchInterval: enabled ? 3000 : false,
+    enabled: queryEnabled,
+    refetchInterval: queryEnabled ? 3000 : false,
   });
   return (
-    <EmailContext.Provider value={thread.data ?? null}>
+    <EmailContext.Provider value={queryEnabled ? (thread.data ?? null) : null}>
       {children}
     </EmailContext.Provider>
   );
