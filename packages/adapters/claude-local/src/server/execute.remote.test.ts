@@ -95,16 +95,25 @@ describe("claude remote execution", () => {
     }
   });
 
-  it("preserves the streamed session when CLI execution times out before a result", async () => {
+  it.each([false, true])("preserves and resumes a streamed session after CLI timeout (retry=%s)", async (retry) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-timeout-"));
     cleanupDirs.push(rootDir);
+    const previousSessionId = "87654321-4321-4abc-9def-210987654321";
+    const attemptArgs: string[][] = [];
+    if (retry) {
+      runChildProcess.mockResolvedValueOnce({
+        exitCode: 1, signal: null, timedOut: false,
+        stdout: JSON.stringify({ type: "result", is_error: true, result: `No conversation found with session id ${previousSessionId}` }),
+        stderr: "", pid: 123, startedAt: new Date().toISOString(),
+      });
+    }
     runChildProcess.mockResolvedValueOnce({
       exitCode: null,
       signal: "SIGTERM",
       timedOut: true,
       stdout: [
-        JSON.stringify({ type: "system", subtype: "init", session_id: "timeout-session" }),
-        JSON.stringify({ type: "assistant", session_id: "timeout-session", message: { content: [{ type: "text", text: "Working" }] } }),
+        JSON.stringify({ type: "system", subtype: "init", session_id: "12345678-1234-4abc-9def-123456789012" }),
+        JSON.stringify({ type: "assistant", session_id: "12345678-1234-4abc-9def-123456789012", message: { content: [{ type: "text", text: "Working" }] } }),
       ].join("\n"),
       stderr: "",
       pid: 123,
@@ -114,28 +123,48 @@ describe("claude remote execution", () => {
     const result = await execute({
       runId: "run-timeout",
       agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      runtime: { sessionId: retry ? previousSessionId : null, sessionParams: retry ? { sessionId: previousSessionId, cwd: rootDir } : null, sessionDisplayId: null, taskKey: null },
       config: {
         engine: "cli", command: "test-runtime", cwd: rootDir, timeoutSec: 10,
         env: { HOME: rootDir, CLAUDE_CONFIG_DIR: path.join(rootDir, "claude-config") },
       },
       context: {},
       onLog: async () => {},
+      onMeta: async (meta) => { attemptArgs.push(meta.commandArgs ?? []); },
     });
 
+    expect(attemptArgs).toHaveLength(retry ? 2 : 1);
+    if (retry) expect(attemptArgs[0]).toEqual(expect.arrayContaining(["--resume", previousSessionId]));
+    expect(attemptArgs.at(-1)).not.toContain("--resume");
     expect(result).toMatchObject({
       exitCode: null,
       signal: "SIGTERM",
       timedOut: true,
       errorCode: "timeout",
       errorMessage: "Timed out after 10s",
-      sessionId: "timeout-session",
-      sessionDisplayId: "timeout-session",
-      sessionParams: { sessionId: "timeout-session", cwd: rootDir },
+      sessionId: "12345678-1234-4abc-9def-123456789012",
+      sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
+      sessionParams: { sessionId: "12345678-1234-4abc-9def-123456789012", cwd: rootDir },
       clearSession: false,
     });
     expect(result.sessionParams?.promptBundleKey).toEqual(expect.any(String));
     expect(result.sessionParams?.mcpServerIdentity).toEqual(expect.any(String));
+    const resumedArgs: string[][] = [];
+    const resumed = await execute({
+      runId: "run-after-timeout",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: result.sessionId ?? null, sessionParams: result.sessionParams ?? null, sessionDisplayId: result.sessionDisplayId ?? null, taskKey: null },
+      config: {
+        engine: "cli", command: "test-runtime", cwd: rootDir,
+        env: { HOME: rootDir, CLAUDE_CONFIG_DIR: path.join(rootDir, "claude-config") },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async (meta) => { resumedArgs.push(meta.commandArgs ?? []); },
+    });
+    expect(resumed.exitCode).toBe(0);
+    expect(resumedArgs).toHaveLength(1);
+    expect(resumedArgs[0]).toEqual(expect.arrayContaining(["--resume", "12345678-1234-4abc-9def-123456789012"]));
   });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {

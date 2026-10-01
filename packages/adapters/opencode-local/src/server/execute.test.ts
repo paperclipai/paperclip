@@ -47,10 +47,16 @@ describe("OpenCode local skill injection", () => {
     await fs.rm(configHome, { recursive: true, force: true });
   });
 
-  it("preserves the streamed session when execution times out", async () => {
+  it.each([false, true])("preserves a streamed session after execution timeout (retry=%s)", async (retry) => {
     const commandPath = path.join(configHome, "fake-opencode-timeout");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     runProcessMock.mockReset();
+    const attemptArgs: string[][] = [];
+    if (retry) {
+      runProcessMock.mockResolvedValueOnce(probeResult({
+        exitCode: 1, stdout: JSON.stringify({ type: "error", error: "unknown session" }),
+      }));
+    }
     runProcessMock.mockResolvedValueOnce(probeResult({
       exitCode: null,
       signal: "SIGTERM",
@@ -61,15 +67,19 @@ describe("OpenCode local skill injection", () => {
     const result = await execute({
       runId: "run-timeout",
       agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      runtime: { sessionId: retry ? "previous-session" : null, sessionParams: null, sessionDisplayId: null, taskKey: null },
       config: {
         command: commandPath, cwd: configHome, model: "openai/gpt-5", timeoutSec: 10,
         env: { HOME: configHome, OPENCODE_ALLOW_ALL_MODELS: "1" },
       },
       context: {},
       onLog: async () => {},
+      onMeta: async (meta) => { attemptArgs.push(meta.commandArgs ?? []); },
     });
 
+    expect(attemptArgs).toHaveLength(retry ? 2 : 1);
+    if (retry) expect(attemptArgs[0]).toEqual(expect.arrayContaining(["--session", "previous-session"]));
+    expect(attemptArgs.at(-1)).not.toContain("--session");
     expect(result).toMatchObject({
       exitCode: null,
       signal: "SIGTERM",
