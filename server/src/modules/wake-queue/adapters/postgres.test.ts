@@ -475,7 +475,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(promoted.runId).toBe(successor.id);
     });
 
-    it("keeps the comment queued for recovery when the live run fails", async () => {
+    it("keeps the comment queued through a failed run and promotes it once after the recovery run", async () => {
       const f = await seedLiveAssigneeWithQueuedComment("issue_children_completed");
       await f.release({ companyId: f.companyId, runId: f.mentionRunId, now: new Date() });
       await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.assigneeRunId));
@@ -487,6 +487,20 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(await assigneeRuns(f.companyId, f.assigneeId)).toHaveLength(1);
       const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
       expect(held).toMatchObject({ status: "deferred_issue_execution", runId: null });
+
+      // Reconciliation restarts the assignee with a fresh turn. When that turn
+      // finishes, its own release promotes the held comment exactly once.
+      const recoveryRunId = await seedRun({ companyId: f.companyId, agentId: f.assigneeId, status: "succeeded",
+        contextSnapshot: { issueId: f.issueId, wakeReason: "issue_recovery_action_restored" } });
+      await f.release({ companyId: f.companyId, runId: recoveryRunId, now: new Date() });
+      await f.release({ companyId: f.companyId, runId: recoveryRunId, now: new Date() });
+
+      const successors = (await assigneeRuns(f.companyId, f.assigneeId))
+        .filter((run) => run.id !== f.assigneeRunId && run.id !== recoveryRunId);
+      expect(successors).toHaveLength(1);
+      expect(successors[0].status).toBe("queued");
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(promoted.runId).toBe(successors[0].id);
     });
 
     it("promotes the comment exactly once when both runs release at the same time", async () => {
