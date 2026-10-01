@@ -184,7 +184,7 @@ export interface WakeQueueTransaction {
    * issue's execution lock. Call only after that claim returns `true`.
    */
   finalizePromotedWake(input: PromoteDeferredWakeInput): Promise<RunSummary>;
-  /** An open run already on this issue (optionally scoped to one agent) that would race a new recovery run. */
+  /** An open run already on this issue (optionally scoped to one agent) that would race a new recovery or promoted run. */
   hasExistingExecutionPath(input: {
     companyId: string;
     issueId: string;

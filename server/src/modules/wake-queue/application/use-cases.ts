@@ -218,6 +218,17 @@ async function runReleaseDrain(
       continue;
     }
 
+    // An issue update can clear `executionRunId` while the wake's agent is
+    // still running here, so another agent's release reaches this queue.
+    // Hold the wake for that agent's own release instead of starting a second
+    // concurrent run on the same task session.
+    if (await ports.transaction.hasExistingExecutionPath({
+      companyId: run.companyId, issueId: issue.id, excludeRunId: run.id, agentId: candidate.agentId,
+    })) {
+      handoffWakeIds.push(candidate.id);
+      continue;
+    }
+
     let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
     if (
       !candidate.authorizedFailedChatRetry &&

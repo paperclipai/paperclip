@@ -1,6 +1,6 @@
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
@@ -414,6 +414,106 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(drained).toBe(false);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
     expect(wake.status).toBe("deferred_issue_execution");
+  });
+
+  // An issue update can clear `executionRunId` while the assignee's run is
+  // still writing. Another agent's mention run on the same issue must not then
+  // promote the assignee's queued comment into a second concurrent writer.
+  describe("when the deferred wake's agent still has a live run on the issue", () => {
+    const recovery = { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} };
+
+    async function seedLiveAssigneeWithQueuedComment(firstWakeReason: string) {
+      const companyId = await seedCompany();
+      const assigneeId = await seedAgent({ companyId, name: "SeniorGame" });
+      const leadId = await seedAgent({ companyId, name: "GameLead" });
+      const reviewerId = await seedAgent({ companyId, name: "Reviewer" });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: assigneeId, status: "todo" });
+      const assigneeRunId = await seedRun({ companyId, agentId: assigneeId, status: "running",
+        contextSnapshot: { issueId, wakeReason: firstWakeReason } });
+      const mentionRunId = await seedRun({ companyId, agentId: leadId, status: "succeeded",
+        contextSnapshot: { issueId, wakeReason: "issue_comment_mentioned" } });
+      const [comment] = await db.insert(issueComments).values({
+        companyId, issueId, authorAgentId: leadId, createdByRunId: mentionRunId, body: "Acceptance ruling",
+      }).returning();
+      const queuedCommentWakeId = await seedDeferredWake({ companyId, agentId: assigneeId, issueId,
+        requestedByActorType: "agent", requestedByActorId: leadId,
+        payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
+      });
+      const otherAgentWakeId = await seedDeferredWake({ companyId, agentId: reviewerId, issueId,
+        payload: { _paperclipWakeContext: { issueId, wakeReason: "issue_blockers_resolved" } } });
+      const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps), recovery });
+      return { companyId, assigneeId, reviewerId, issueId, assigneeRunId, mentionRunId, queuedCommentWakeId, otherAgentWakeId, release };
+    }
+
+    async function assigneeRuns(companyId: string, assigneeId: string) {
+      return db.select().from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, assigneeId)));
+    }
+
+    it.each(["issue_commented", "issue_children_completed"])("holds the comment behind a live %s run and promotes it once after that run succeeds", async (firstWakeReason) => {
+      const f = await seedLiveAssigneeWithQueuedComment(firstWakeReason);
+
+      await f.release({ companyId: f.companyId, runId: f.mentionRunId, now: new Date() });
+
+      // At most one writer: the assignee still has only its live run.
+      expect(await assigneeRuns(f.companyId, f.assigneeId)).toHaveLength(1);
+      const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(held).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      // Another agent's queued wake on the issue is not starved by the hold.
+      const [other] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.otherAgentWakeId));
+      expect(other.runId).not.toBeNull();
+
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.assigneeRunId));
+      await f.release({ companyId: f.companyId, runId: f.assigneeRunId, now: new Date() });
+      await f.release({ companyId: f.companyId, runId: f.assigneeRunId, now: new Date() });
+
+      const runs = await assigneeRuns(f.companyId, f.assigneeId);
+      expect(runs).toHaveLength(2);
+      const successor = runs.find((run) => run.id !== f.assigneeRunId)!;
+      expect(successor.status).toBe("queued");
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(promoted.runId).toBe(successor.id);
+    });
+
+    it("keeps the comment queued for recovery when the live run fails", async () => {
+      const f = await seedLiveAssigneeWithQueuedComment("issue_children_completed");
+      await f.release({ companyId: f.companyId, runId: f.mentionRunId, now: new Date() });
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.assigneeRunId));
+
+      await f.release({ companyId: f.companyId, runId: f.assigneeRunId, now: new Date() });
+
+      // A failed legacy turn goes through execution reconciliation before any
+      // replay; the comment stays durable for that path and never runs twice.
+      expect(await assigneeRuns(f.companyId, f.assigneeId)).toHaveLength(1);
+      const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(held).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    });
+
+    it("promotes the comment exactly once when both runs release at the same time", async () => {
+      const f = await seedLiveAssigneeWithQueuedComment("issue_children_completed");
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.assigneeRunId));
+
+      await Promise.all([
+        f.release({ companyId: f.companyId, runId: f.mentionRunId, now: new Date() }),
+        f.release({ companyId: f.companyId, runId: f.assigneeRunId, now: new Date() }),
+      ]);
+
+      const successors = (await assigneeRuns(f.companyId, f.assigneeId)).filter((run) => run.id !== f.assigneeRunId);
+      expect(successors).toHaveLength(1);
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(promoted.runId).toBe(successors[0].id);
+    });
+
+    it("still promotes when the agent's live run belongs to a different issue", async () => {
+      const f = await seedLiveAssigneeWithQueuedComment("issue_commented");
+      const otherIssueId = await seedIssue({ companyId: f.companyId, assigneeAgentId: f.assigneeId });
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: otherIssueId } }).where(eq(heartbeatRuns.id, f.assigneeRunId));
+
+      await f.release({ companyId: f.companyId, runId: f.mentionRunId, now: new Date() });
+
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.queuedCommentWakeId));
+      expect(promoted.runId).not.toBeNull();
+    });
   });
 
   it("leaves deferred work untouched until the effective execution hold clears", async () => {
