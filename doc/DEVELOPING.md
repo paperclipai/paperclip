@@ -6,6 +6,9 @@ This project can run fully in local dev without setting up PostgreSQL manually.
 
 For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.
 
+For sandbox file synchronization, lock ownership, and the required upgrade
+procedure from directory locks, see [Workspace restore locks](workspace-restore-locks.md).
+
 Current implementation status:
 
 - canonical model: `local_trusted` and `authenticated` (with `private/public` exposure)
