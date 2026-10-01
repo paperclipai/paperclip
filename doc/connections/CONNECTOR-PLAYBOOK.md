@@ -662,8 +662,16 @@ internal discussion; a task comment or agent progress update must not imply
 that an external action occurred. Reuse existing task-feed components and
 preserve one visible record per external event.
 
+**Keep setup to one screen.** The connect screen collects only what proves who
+the user is: a provider sign-in, a key, or an endpoint. It states the default
+access in one line, with **Change** for other choices, and does not add an
+access step. Pick the ranked default method instead of asking. Put scope,
+capability, and per-action choices on the Permissions tab after the connection.
+`connectionSetupStateForMethod` in `packages/shared` classifies each method as
+`instant`, `authorize`, `paste`, or `register`; the gallery verb comes from it.
+
 **Make interactive Storybooks for setup and actual use.** Include the catalog
-card, access and credential steps, any agent-resource wizard, and the task
+card, the connect screen and its credential states, any agent-resource wizard, and the task
 journeys after setup. Provide a clickable walkthrough plus focused stories for
 important steps, loading, errors, and recovery. Use realistic fixtures and
 clearly label simulated actions. Reuse production components as implementation

@@ -52,6 +52,7 @@ import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs
 import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
+import { actionPermissionMutation } from "./app-detail/action-permissions";
 import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import {
@@ -691,7 +692,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                 }
                 onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" || managesRemoteMcpAccess ? next : accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
-                onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
+                onSetActionPermission={(ids, next) => apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}
               />
               {managesRemoteMcpAccess && isRemoteMcpConnectorId(connection.config?.sourceTemplateKey) && <RemoteMcpManagement
@@ -957,21 +958,3 @@ function galleryEntryFor(
     null;
 }
 
-function actionPermissionMutation(
-  id: string,
-  next: "off" | "allowed" | "ask",
-  enabledIds: Set<string>,
-  askFirstIds: Set<string>,
-) {
-  const enabled = new Set(enabledIds);
-  const askFirst = new Set(askFirstIds);
-  if (next === "off") {
-    enabled.delete(id);
-    askFirst.delete(id);
-  } else {
-    enabled.add(id);
-    if (next === "ask") askFirst.add(id);
-    else askFirst.delete(id);
-  }
-  return { enabled, askFirst };
-}

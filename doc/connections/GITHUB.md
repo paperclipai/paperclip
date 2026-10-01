@@ -19,12 +19,12 @@ repository and MCP URLs still resolve to the ordinary GitHub tool connection.
 
 ## Self-hosted setup
 
-The Access step uses **Continue** to open the local setup screen.
-**Continue to GitHub** on that screen starts the provider handoff. The first
-button does not imply that the browser is leaving Paperclip yet.
+The setup screen states the default access in one line, with **Change** for
+other choices. **Continue to GitHub** on that screen starts the provider
+handoff.
 
 A self-hosted instance needs one Paperclip Cloud approval before its first
-managed connection. After approval, setup returns to step 2 and continues to
+managed connection. After approval, setup returns to the connect screen and continues to
 GitHub without another instance approval or a service restart.
 
 If an unapproved enrollment link expires, return to setup and select

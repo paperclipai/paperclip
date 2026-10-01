@@ -361,8 +361,26 @@ describe("Connectors landing page", () => {
     }
     expect(container.textContent).not.toContain("Private bot");
     expect(container.textContent).not.toContain("Chat with agents");
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+  });
+
+  it("names what the card will actually ask for", async () => {
+    // PAP-659 C4. The verb is derived from the connector's resolved default
+    // method, so it changes with what this instance can do rather than being a
+    // fixed string: Notion signs in, GitHub-without-the-cloud-connector wants a
+    // token, and GitHub with it signs in too.
+    const github = getAppStoreDefinition("github")!;
+    listGalleryMock.mockResolvedValue({
+      apps: [
+        getAppStoreDefinition("notion"),
+        { ...github, ownershipAvailability: { ...github.ownershipAvailability, platform_shared: true } },
+      ],
+    });
+    await renderBrowse();
+    expect(container.querySelector('button[aria-label="Connect Notion"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Connect GitHub"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Add key GitHub"]')).toBeNull();
   });
 
   it("separates tools and saved bots and hides only bots when chat connectors are disabled", async () => {
@@ -407,7 +425,7 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Code Review Bot"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat");

@@ -9744,6 +9744,13 @@ export function toolAccessService(
    * connection may register once — and only once — protected-resource and
    * authorization-server discovery actually produced a metadata document; an
    * endpoint that merely returned a 401 does not earn a registration.
+   *
+   * A curated method pinned to customer-owned clients still earns a registration
+   * when the provider's own metadata advertises one. `ownershipModes` is a
+   * point-in-time research snapshot, and providers add dynamic registration
+   * without telling us; live discovery is the better evidence of the two, so a
+   * stale catalog entry costs the operator a console detour rather than silently
+   * outranking what the server just said about itself.
    */
   function canRegisterOAuthClientDynamically(
     connection: typeof toolConnections.$inferSelect,
@@ -9751,10 +9758,9 @@ export function toolAccessService(
     galleryEntry: AppDefinition | null,
   ): boolean {
     if (galleryEntry) {
-      return connectionMethodForConnection(
-        galleryEntry,
-        connection,
-      ).ownershipModes.includes("dcr");
+      const method = connectionMethodForConnection(galleryEntry, connection);
+      if (method.ownershipModes.includes("dcr")) return true;
+      return method.auth === "oauth" && Boolean(endpoints.registrationUrl);
     }
     return (
       connection.transport === "mcp_remote" && Boolean(endpoints.metadataUrl)
