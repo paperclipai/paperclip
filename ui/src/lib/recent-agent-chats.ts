@@ -49,13 +49,15 @@ export function recordAgentChatVisit(
   }
   if (issueId !== undefined) {
     const storageIssueKey = issueKey(company, user, agentId);
-    if (issueId) rememberedIssues.set(storageIssueKey, issueId);
-    else rememberedIssues.delete(storageIssueKey);
     try {
       if (issueId) window.localStorage.setItem(storageIssueKey, issueId);
       else window.localStorage.removeItem(storageIssueKey);
+      // Storage is authoritative when available, including when another tab
+      // removes this key. Only retain a fallback after a failed write.
+      rememberedIssues.delete(storageIssueKey);
     } catch {
-      /* Keep the issue identity for this tab when storage is unavailable. */
+      if (issueId) rememberedIssues.set(storageIssueKey, issueId);
+      else rememberedIssues.delete(storageIssueKey);
     }
   }
   window.dispatchEvent(new Event(eventName));
