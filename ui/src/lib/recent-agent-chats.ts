@@ -4,6 +4,9 @@ const eventName = "paperclip:recent-agent-chats";
 const key = (company: string, user?: string | null) =>
   `paperclip.recentAgentChats:${company}:${user ?? "__local_board__"}`;
 const memory = new Map<string, string>();
+const issueKey = (company: string, user: string | null | undefined, agentId: string) =>
+  `paperclip.recentAgentChatIssue:${company}:${user ?? "__local_board__"}:${agentId}`;
+const rememberedIssues = new Map<string, string>();
 function read(storageKey: string): string {
   try {
     return (
@@ -29,6 +32,7 @@ export function recordAgentChatVisit(
   company: string,
   user: string | null | undefined,
   agentId: string,
+  issueId?: string | null,
 ) {
   const storageKey = key(company, user);
   const value = JSON.stringify(
@@ -43,7 +47,26 @@ export function recordAgentChatVisit(
   } catch {
     /* In-tab navigation still works without storage. */
   }
+  if (issueId !== undefined) {
+    const storageIssueKey = issueKey(company, user, agentId);
+    if (issueId) rememberedIssues.set(storageIssueKey, issueId);
+    else rememberedIssues.delete(storageIssueKey);
+    try {
+      if (issueId) window.localStorage.setItem(storageIssueKey, issueId);
+      else window.localStorage.removeItem(storageIssueKey);
+    } catch {
+      /* Keep the issue identity for this tab when storage is unavailable. */
+    }
+  }
   window.dispatchEvent(new Event(eventName));
+}
+export function recordedAgentChatIssueId(company: string, user: string | null | undefined, agentId: string): string | null {
+  const storageIssueKey = issueKey(company, user, agentId);
+  try {
+    return window.localStorage.getItem(storageIssueKey) ?? rememberedIssues.get(storageIssueKey) ?? null;
+  } catch {
+    return rememberedIssues.get(storageIssueKey) ?? null;
+  }
 }
 function subscribe(callback: () => void) {
   window.addEventListener(eventName, callback);

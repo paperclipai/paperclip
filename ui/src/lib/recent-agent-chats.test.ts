@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   orderChatAgents,
   parseRecentAgentChats,
+  recordedAgentChatIssueId,
   recordAgentChatVisit,
 } from "./recent-agent-chats";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
@@ -56,6 +57,13 @@ describe("agent chat navigation and session markers", () => {
     expect(
       JSON.parse(localStorage.getItem("paperclip.recentAgentChats:a:user2")!),
     ).toEqual(["agent4"]);
+  });
+  it("remembers an existing conversation and clears its identity for a new empty chat", () => {
+    recordAgentChatVisit("company-c", "user1", "agent1", "issue-1");
+    expect(recordedAgentChatIssueId("company-c", "user1", "agent1")).toBe("issue-1");
+    expect(recordedAgentChatIssueId("company-c", "user2", "agent1")).toBeNull();
+    recordAgentChatVisit("company-c", "user1", "agent1", null);
+    expect(recordedAgentChatIssueId("company-c", "user1", "agent1")).toBeNull();
   });
   it("removes legacy plaintext retry records", () => {
     const scope = "company:user:agent";

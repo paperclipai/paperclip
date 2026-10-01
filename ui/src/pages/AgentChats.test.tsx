@@ -10,8 +10,9 @@ const state = vi.hoisted(() => ({
   companyId: "company-a",
   userId: "user-a",
   agents: [] as Agent[],
-  chats: [] as { conversationAgentId: string }[],
+  chats: [] as { id: string; conversationAgentId: string }[],
   chatsFetched: true,
+  chatsError: null as Error | null,
   sessionError: null as Error | null,
   navigate: vi.fn(),
 }));
@@ -24,7 +25,7 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({
     enabled: true,
     loaded: true,
     agents: { data: state.agents, isFetched: true, isPending: false, error: null },
-    chats: { data: state.chats, isFetched: state.chatsFetched, error: null },
+    chats: { data: state.chats, isFetched: state.chatsFetched, isSuccess: state.chatsFetched && !state.chatsError, error: state.chatsError },
     session: { isFetched: !state.sessionError, isPending: false, error: state.sessionError },
   }),
   useOpenAgentChat: () => vi.fn(),
@@ -52,8 +53,11 @@ beforeEach(() => {
   state.agents = [agent("alice"), agent("bob")];
   state.chats = [];
   state.chatsFetched = true;
+  state.chatsError = null;
   state.sessionError = null;
   state.navigate.mockReset();
+  for (const id of ["alice", "bob", "removed", "retired-id"])
+    recordAgentChatVisit("company-a", "user-a", id, null);
   localStorage.setItem("paperclip.recentAgentChats:company-a:user-a", "[]");
   localStorage.setItem("paperclip.recentAgentChats:company-b:user-a", "[]");
   localStorage.setItem("paperclip.recentAgentChats:company-a:user-b", "[]");
@@ -88,7 +92,7 @@ describe("Chat landing", () => {
 
   it("reopens historical chats for agents missing from the active roster", async () => {
     recordAgentChatVisit("company-a", "user-a", "retired-id");
-    state.chats = [{ conversationAgentId: "retired-id" }];
+    state.chats = [{ id: "chat-retired", conversationAgentId: "retired-id" }];
     await render();
     expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id", { replace: true });
   });
@@ -100,7 +104,7 @@ describe("Chat landing", () => {
     await render();
     expect(state.navigate).not.toHaveBeenCalled();
     state.chatsFetched = true;
-    state.chats = [{ conversationAgentId: "retired-id" }];
+    state.chats = [{ id: "chat-retired", conversationAgentId: "retired-id" }];
     await render();
     expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id", { replace: true });
   });
@@ -110,6 +114,29 @@ describe("Chat landing", () => {
     await render();
     expect(state.navigate).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Who would you like to talk to?");
+  });
+
+  it("skips a saved conversation that is no longer accessible even when its agent remains available", async () => {
+    recordAgentChatVisit("company-a", "user-a", "alice");
+    recordAgentChatVisit("company-a", "user-a", "bob", "deleted-chat");
+    state.chats = [{ id: "chat-alice", conversationAgentId: "alice" }];
+    await render();
+    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug", { replace: true });
+  });
+
+  it("reopens an active agent when history fails", async () => {
+    recordAgentChatVisit("company-a", "user-a", "alice", "chat-alice");
+    state.chatsFetched = false;
+    state.chatsError = new Error("History unavailable");
+    await render();
+    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug", { replace: true });
+  });
+
+  it("reopens a visited empty chat without waiting for history", async () => {
+    recordAgentChatVisit("company-a", "user-a", "alice", null);
+    state.chatsFetched = false;
+    await render();
+    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug", { replace: true });
   });
 
   it("shows a retry state when identity fails instead of waiting for disabled history", async () => {
