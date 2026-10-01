@@ -285,6 +285,12 @@ All agent communication flows through the **task system**.
 - **Coordination** = commenting on tasks
 - **Status updates** = updating task status and fields
 
+Low-trust agents can create self-assigned tasks and subtasks within their
+permitted scope, subject to assignment permissions and the responsible user's
+authority. Created work retains containment; persistent agent instructions such
+as `AGENTS.md` remain protected. Permission failures should name the rejected
+action and the specific restriction.
+
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
 Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.

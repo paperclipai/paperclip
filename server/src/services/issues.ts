@@ -10217,6 +10217,7 @@ export function issueService(db: Db) {
             issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: initialPlan,
             createdByAgentId: issueData.createdByAgentId, createdByUserId: issueData.createdByUserId,
             createdByRunId: actorRunId,
+            sourceTrust: issue.sourceTrust,
           });
         }
         const [enriched] = await withIssueLabels(tx, [issue]);

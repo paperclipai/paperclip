@@ -41,6 +41,23 @@ Low-trust agents cannot read or mutate agent configuration, instruction bundles,
 or company skill configuration through direct grants. Configuration changes from
 low-trust work must go through higher-trust review and promotion paths instead.
 
+Low trust does not prohibit task creation. Agents may create tasks assigned to
+themselves, and subtasks of their own tasks, within their permitted project or
+root-task scope. Creation uses the normal task-assignment permission checks,
+including explicit assignment restrictions and the responsible user's authority,
+even for an unassigned task. Other assignees must be explicitly within the trust
+boundary; board-user assignments remain forbidden. New tasks retain the creator's
+effective containment policy and quarantined source attribution. An exact issue-id
+scope does not implicitly authorize new descendants, and a permitted parent does
+not grant access to an unrelated project. An explicit root-task scope includes
+its descendants. Self-assigned decomposition is not a delegation cycle.
+
+Permission denials must identify the rejected action and specific restriction.
+In particular, agents must explain that low-trust permissions prevent saving
+persistent instructions such as their own `AGENTS.md`, surface failed save
+receipts, and provide proposed changes for an authorized human to apply. Creating
+another task does not authorize the instruction change.
+
 ## Human-directed work
 
 An authenticated board user can talk to a low-trust agent in their own Agent

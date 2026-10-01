@@ -238,7 +238,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       const code = detail.details?.code ?? "INSTRUCTION_SAVE_FAILED";
       const retryable = !detail.status || detail.status >= 500;
       const message = detail.status === 403
-        ? "Current permissions do not allow this instruction save. The candidate was preserved."
+        ? `${detail.message ?? "Current permissions do not allow this instruction save."} The candidate was preserved.`
         : detail.status === 409
           ? "Instructions changed after this run started. Review the preserved candidate against the current revision."
           : "Instruction edits were preserved but not saved. Review the candidate before retrying.";

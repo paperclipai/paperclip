@@ -1671,20 +1671,20 @@ describeEmbeddedPostgres(
             ),
         },
         {
-          id: "LT-26 child",
+          id: "LT-26 child with unauthorized assignee",
           req: () =>
             request(app)
               .post(`/api/issues/${fixture.issues.assignedReview.id}/children`)
-              .send({ title: `child ${fixture.canaries.issueSibling}` }),
+              .send({ title: `child ${fixture.canaries.issueSibling}`, assigneeAgentId: fixture.agents.cto.id }),
         },
         {
-          id: "LT-26 company issue",
+          id: "LT-26 company issue outside boundary",
           req: () =>
             request(app)
               .post(`/api/companies/${fixture.company.id}/issues`)
               .send({
                 title: `child ${fixture.canaries.issueSibling}`,
-                parentId: fixture.issues.assignedReview.id,
+                projectId: fixture.projects.outOfScope.id,
               }),
         },
         {

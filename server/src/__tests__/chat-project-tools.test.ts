@@ -3,7 +3,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { issues, heartbeatRuns } from "@paperclipai/db";
+import { agents, issues, heartbeatRuns, projects, companyMemberships } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
@@ -70,6 +70,119 @@ const support = await getEmbeddedPostgresTestSupport();
       companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true });
     expect(result).toMatchObject({ parentId: null, projectId: f.projectId, assigneeAgentId: f.agentId });
     expect((await documentService(server.db).getIssueDocumentByKey(result.id, "plan"))?.body).toContain("Implement in the execution task");
+  });
+
+  it("allows low-trust chat handoffs and self-assigned subtasks through both creation endpoints", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: [f.projectId] } } };
+    await server.db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const task = await callProjectTool({ name: "create_task", arguments: { title: "Contained MCP handoff", projectId: f.projectId, initialPlan: "Do the requested work", idempotencyKey: "contained-mcp" },
+      apiUrl: server.apiUrl, token, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true });
+    expect(task).toMatchObject({ parentId: null, projectId: f.projectId, assigneeAgentId: f.agentId, sourceTrust: { disposition: "quarantined" } });
+    expect(task.executionPolicy.authorizationPolicy).toMatchObject({ trustPreset: "low_trust_review", ...policy.authorizationPolicy });
+    expect((await documentService(server.db).getIssueDocumentByKey(task.id, "plan"))?.sourceTrust).toMatchObject({ disposition: "quarantined" });
+    const native = await call(f, "create_task", { title: "Contained native handoff", projectId: f.projectId, idempotencyKey: "contained-native" }) as any;
+    expect(native.task).toMatchObject({ parentId: null, projectId: f.projectId, assigneeActorId: f.agentId });
+    const [nativeTask] = await server.db.select().from(issues).where(eq(issues.id, native.task.id));
+    expect(nativeTask.executionPolicy).toMatchObject({ authorizationPolicy: { trustPreset: "low_trust_review", ...policy.authorizationPolicy } });
+    expect(nativeTask.sourceTrust).toMatchObject({ disposition: "quarantined" });
+
+    for (const path of [`/api/issues/${task.id}/children`, `/api/companies/${f.companyId}/issues`]) {
+      const response = await fetch(`${server.apiUrl}${path}`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Self decomposition ${path}`, parentId: task.id, assigneeAgentId: f.agentId, status: "backlog" }),
+      });
+      const child = await response.json();
+      expect(response.status, JSON.stringify(child)).toBe(201);
+      expect(child).toMatchObject({ parentId: task.id, projectId: f.projectId, assigneeAgentId: f.agentId, sourceTrust: { disposition: "quarantined" } });
+      expect(child.executionPolicy.authorizationPolicy).toMatchObject({ trustPreset: "low_trust_review", ...policy.authorizationPolicy });
+    }
+  });
+
+  it("retains a run-only low-trust boundary on a new task even when standard policy is requested", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const executionPolicy = { authorizationPolicy: { trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: [f.projectId] } } };
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await server.db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, executionPolicy } }).where(eq(heartbeatRuns.id, f.runId));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/issues`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Retain containment", projectId: f.projectId, assigneeAgentId: f.agentId, executionPolicy: { authorizationPolicy: { trustPreset: "standard" } }, status: "backlog" }),
+    });
+    const task = await response.json();
+    expect(response.status, JSON.stringify(task)).toBe(201);
+    expect(task.executionPolicy).toMatchObject(executionPolicy);
+  });
+
+  it("enforces the proposed task scope and assignee before creating any low-trust work", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: [f.projectId] } } };
+    await server.db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
+    const [outside] = await server.db.insert(projects).values({ companyId: f.companyId, name: "Outside boundary" }).returning();
+    const [otherAgent] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Unauthorized assignee", status: "active" }).returning();
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const create = async (path: string, fields: Record<string, unknown>) => {
+      const response = await fetch(`${server.apiUrl}${path}`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Boundary test ${randomUUID()}`, status: "backlog", assigneeAgentId: f.agentId, ...fields }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const before = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
+    for (const path of [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`]) {
+      for (const fields of [
+        { projectId: outside.id },
+        { projectId: outside.id, assigneeAgentId: null },
+        { projectId: f.foreignProjectId },
+        { projectId: f.projectId, assigneeAgentId: otherAgent.id },
+        { projectId: f.projectId, assigneeAgentId: null, assigneeUserId: "board-user" },
+      ]) {
+        const result = await create(path, fields);
+        expect(result.status, JSON.stringify(result.body)).toBe(403);
+        expect(result.body.error).toMatch(/outside.*boundary|cannot assign work to board users|different company/i);
+      }
+    }
+    const after = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
+    expect(after).toEqual(before);
+    for (const fields of [{ projectId: outside.id }, { projectId: f.projectId, assigneeActorId: otherAgent.id }]) {
+      await expect(call(f, "create_task", { title: "Native scope denial", idempotencyKey: randomUUID(), ...fields })).rejects.toThrow(/outside.*boundary/);
+    }
+
+    await server.db.update(agents).set({ permissions: { ...policy, authorizationPolicy: {
+      ...policy.authorizationPolicy, assignmentPolicy: { mode: "protected" }, protectedAgent: { blockAssignment: true },
+    } } }).where(eq(agents.id, f.agentId));
+    const protectedResult = await create(`/api/companies/${f.companyId}/issues`, { projectId: f.projectId });
+    expect(protectedResult.status, JSON.stringify(protectedResult.body)).toBe(403);
+    expect(protectedResult.body.error).toContain("protected-agent policy");
+  });
+
+  it("allows low-trust root-scoped subtasks without granting descendants of an exact issue scope", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const boundary = { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId };
+    await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: boundary } } }).where(eq(agents.id, f.agentId));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    for (const path of [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`]) {
+      const response = await fetch(`${server.apiUrl}${path}`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Root subtask ${randomUUID()}`, parentId: f.issueId, assigneeAgentId: f.agentId, status: "backlog" }),
+      });
+      const child = await response.json();
+      expect(response.status, JSON.stringify(child)).toBe(201);
+      expect(child.executionPolicy.authorizationPolicy.trustBoundary).toMatchObject(boundary);
+    }
+    await expect(call(f, "create_task", { title: "Native root subtask", idempotencyKey: "root-child", status: "backlog" })).resolves.toMatchObject({ task: { parentId: f.issueId, assigneeActorId: f.agentId } });
+
+    await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", issueIds: [f.issueId] } } } }).where(eq(agents.id, f.agentId));
+    await expect(call(f, "create_task", { title: "Exact scope is not a subtree", idempotencyKey: "exact-child" })).rejects.toThrow(/outside.*boundary/);
+  });
+
+  it("keeps the responsible user's assignment restrictions on low-trust self-assignment", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", projectIds: [f.projectId] } } } }).where(eq(agents.id, f.agentId));
+    await server.db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, f.responsibleUserId!));
+    await expect(call(f, "create_task", { title: "Viewer cannot assign", projectId: f.projectId, idempotencyKey: "viewer-denied" })).rejects.toThrow();
+    expect(await server.db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(2);
   });
 
   it("retains ordinary child delegation and projectless task creation", async () => {

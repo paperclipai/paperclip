@@ -3938,6 +3938,33 @@ export function issueRoutes(
     return resolution?.kind === "low_trust_review";
   }
 
+  async function resolveCreatedIssueExecutionPolicy(
+    req: Request,
+    companyId: string,
+    projectId: string | null,
+    requestedPolicy: unknown,
+  ) {
+    const policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    if (req.actor.type !== "agent") return policy;
+    const trust = await resolveAgentTrustForIssue(
+      { agentId: req.actor.agentId, runId: req.actor.runId },
+      companyId,
+      { companyId, projectId, executionPolicy: policy },
+    );
+    if (trust?.kind === "denied") throw forbidden(trust.detail);
+    if (trust?.kind !== "low_trust_review") return policy;
+    // A new task must retain the creator's effective containment, including
+    // run-only restrictions. Client policy can narrow it, never reset it.
+    return normalizeIssueExecutionPolicy({
+      ...policy,
+      authorizationPolicy: {
+        ...policy?.authorizationPolicy,
+        trustPreset: trust.preset,
+        trustBoundary: trust.boundary,
+      },
+    });
+  }
+
   async function directParentReportDisabledForIssue(issue: {
     companyId: string;
     projectId?: string | null;
@@ -7139,13 +7166,16 @@ export function issueRoutes(
    * something the other assumed it had, the chain of blocked issues grows,
    * and no one tells the human. Humans are unaffected, and closed ancestors
    * do not count — re-engaging the creator of finished work is normal.
+   * Self-assigned decomposition is not delegation back to another agent.
    */
   async function assertNoAgentDelegationCycle(input: {
     actorType: string;
+    actorAgentId: string | null | undefined;
     parentIssueId: string | null | undefined;
     assigneeAgentId: string | null | undefined;
   }) {
     if (input.actorType !== "agent") return;
+    if (input.assigneeAgentId === input.actorAgentId) return;
     if (!input.parentIssueId || !input.assigneeAgentId) return;
     const ancestor = await svc.findOpenAncestorCreatedByAgent(
       input.parentIssueId,
@@ -11536,8 +11566,6 @@ export function issueRoutes(
         });
         return;
       }
-      if (await assertLowTrustControlPlaneDenied(req, res, companyId, null))
-        return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -11595,25 +11623,6 @@ export function issueRoutes(
         ? null
         : rawCreateBody.parentId;
       let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-      if (
-        req.actor.type === "agent" &&
-        !effectiveParentId &&
-        !watchdogProductBugFollowUp &&
-        !isTaskBridgeKeyActor(req)
-      ) {
-        const companyScopeDecision = await access.decide({
-          actor: req.actor,
-          action: "company_scope:read",
-          resource: { type: "company", companyId },
-        });
-        if (!companyScopeDecision.allowed) {
-          res.status(403).json({
-            error:
-              "Low-trust agents must create child issues inside their assigned boundary",
-          });
-          return;
-        }
-      }
       if (req.actor.type === "agent" && effectiveParentId) {
         createParent = await svc.getById(effectiveParentId);
         if (!createParent || createParent.companyId !== companyId) {
@@ -11644,6 +11653,7 @@ export function issueRoutes(
         );
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
+        actorAgentId: req.actor.agentId,
         parentIssueId:
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
@@ -11727,7 +11737,7 @@ export function issueRoutes(
       const createAssignmentScope = {
         projectId: await resolveAssignmentProjectId({
           companyId,
-          projectId: createBody.projectId,
+          projectId: createBody.projectId ?? undefined,
           parentIssueId: createBody.parentId,
         }),
         parentIssueId: createBody.parentId ?? null,
@@ -11739,7 +11749,11 @@ export function issueRoutes(
         companyId,
         createAssignmentScope,
       );
-      if (rawCreateBody.assigneeAgentId || rawCreateBody.assigneeUserId) {
+      if (
+        req.actor.type === "agent" ||
+        rawCreateBody.assigneeAgentId ||
+        rawCreateBody.assigneeUserId
+      ) {
         await assertCanAssignTasks(req, companyId, createAssignmentScope);
       }
       await assertIssueEnvironmentSelection(
@@ -11748,7 +11762,12 @@ export function issueRoutes(
       );
 
       const executionPolicy = applyActorMonitorScheduledBy(
-        normalizeIssueExecutionPolicy(createBody.executionPolicy),
+        await resolveCreatedIssueExecutionPolicy(
+          req,
+          companyId,
+          createAssignmentScope.projectId,
+          createBody.executionPolicy,
+        ),
         actor.actorType,
       );
       await assertCanManageIssueMonitor(
@@ -11763,7 +11782,7 @@ export function issueRoutes(
         {
           id: issueId,
           companyId,
-          projectId: createBody.projectId ?? null,
+          projectId: createAssignmentScope.projectId,
           executionPolicy,
         },
         actor,
@@ -12028,15 +12047,6 @@ export function issueRoutes(
         ))
       )
         return;
-      if (
-        await assertLowTrustControlPlaneDenied(
-          req,
-          res,
-          parent.companyId,
-          parent,
-        )
-      )
-        return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -12061,6 +12071,7 @@ export function issueRoutes(
         );
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
+        actorAgentId: req.actor.agentId,
         parentIssueId: parent.id,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
@@ -12081,7 +12092,11 @@ export function issueRoutes(
         parent.companyId,
         childAssignmentScope,
       );
-      if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
+      if (
+        req.actor.type === "agent" ||
+        sanitizedBody.assigneeAgentId ||
+        sanitizedBody.assigneeUserId
+      ) {
         await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
       }
       await assertIssueEnvironmentSelection(
@@ -12096,7 +12111,12 @@ export function issueRoutes(
         ? await findCurrentSerializedWatchdogChild(parent)
         : null;
       const executionPolicy = applyActorMonitorScheduledBy(
-        normalizeIssueExecutionPolicy(createBody.executionPolicy),
+        await resolveCreatedIssueExecutionPolicy(
+          req,
+          parent.companyId,
+          childAssignmentScope.projectId,
+          createBody.executionPolicy,
+        ),
         actor.actorType,
       );
       await assertCanManageIssueMonitor(
