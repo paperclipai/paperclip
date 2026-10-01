@@ -1039,6 +1039,47 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(primary?.disabled).toBe(false);
   });
 
+  it("offers Asana's own-OAuth-app fields as the recovery when registration is refused", async () => {
+    // Asana advertises registration but refuses hosted callbacks, so a failed
+    // sign-in must still leave the customer-owned client path within reach.
+    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+    mockParams.appKey = "asana";
+    connectAppMock.mockRejectedValueOnce(new Error("Asana refused the redirect URI."));
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-asana",
+      application: { id: "app-asana", name: "Asana" },
+      connection: { id: "conn-asana" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://app.asana.com/-/oauth_authorize?state=opaque" },
+    });
+    await render();
+    await flushReact();
+    expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
+
+    await act(async () => {
+      buttonByText("Continue to Asana")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id");
+    expect(clientId).toBeTruthy();
+    await act(async () => setInputValue(clientId!, "asana-own-client"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+      galleryKey: "asana",
+      oauthClient: expect.objectContaining({ clientId: "asana-own-client" }),
+    }));
+  });
+
   it("submits the Postman access mode selected on the setup screen", async () => {
     listGalleryMock.mockResolvedValue({ apps: [POSTMAN] });
     mockParams.appKey = "postman";
