@@ -53,6 +53,10 @@ const GITHUB_MANAGED = {
 };
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
+const ASANA_MANAGED = {
+  ...ASANA,
+  ownershipAvailability: { ...ASANA.ownershipAvailability, platform_shared: true },
+};
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
@@ -1062,28 +1066,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
-  it("gives Asana the one-click path now that its server advertises registration", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+  it("connects Asana through the shared app without client credentials", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
     mockParams.appKey = "asana";
     await render();
     await flushReact();
 
-    // No console detour: the connect screen is the handoff, not a form.
     expect(container.textContent).not.toContain("needs its own OAuth app");
     expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
-    const primary = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.trim().startsWith("Continue to"),
-    );
+    const primary = buttonByText("Continue to sign in");
     expect(primary).toBeTruthy();
     expect(primary?.disabled).toBe(false);
+    await act(async () => { primary!.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "asana", connectionMethodKey: "managed", grantKind: "user",
+    }));
   });
 
-  it("offers Asana's own-OAuth-app fields as the recovery when registration is refused", async () => {
-    // Asana advertises registration but refuses hosted callbacks, so a failed
-    // sign-in must still leave the customer-owned client path within reach.
-    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+  it("allows a custom Asana app from the shared sign-in setup", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
     mockParams.appKey = "asana";
-    connectAppMock.mockRejectedValueOnce(new Error("Asana refused the redirect URI."));
     connectAppMock.mockResolvedValueOnce({
       connectionId: "conn-asana",
       application: { id: "app-asana", name: "Asana" },
@@ -1097,25 +1100,28 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
 
-    await act(async () => {
-      buttonByText("Continue to Asana")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    await openAccessAdvanced();
     await flushReact();
+    const customApp = buttonByText("Use your own Asana OAuth app");
+    expect(customApp).toBeTruthy();
+    await act(async () => { customApp!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flushReact();
 
     const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id");
+    const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret");
     expect(clientId).toBeTruthy();
-    await act(async () => setInputValue(clientId!, "asana-own-client"));
-    await flushReact();
+    expect(clientSecret).toBeTruthy();
     await act(async () => {
-      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      setInputValue(clientId!, "asana-own-client");
+      setInputValue(clientSecret!, "asana-own-secret");
     });
     await flushReact();
+    await act(async () => { buttonByText("Continue to sign in")!.click(); });
     await flushReact();
 
     expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
-      galleryKey: "asana",
-      oauthClient: expect.objectContaining({ clientId: "asana-own-client" }),
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "asana-own-client", clientSecret: "asana-own-secret" },
     }));
   });
 

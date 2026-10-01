@@ -3641,7 +3641,7 @@ function KeyStep({
     || hasAlternateMethods;
   // Keep the disclosure open when what is inside it is load-bearing right now:
   // a non-default method in use, or a selection the connector still needs.
-  const forceAdvancedOpen = usingCustomGoogleOAuth || !hasMethodSelection;
+  const forceAdvancedOpen = usingCustomOAuth || !hasMethodSelection;
   const advancedSettings = hasAdvancedSettings ? (
     <div className="space-y-6">
       {capabilitySelection}
@@ -3923,7 +3923,7 @@ function OAuthClientFields({
     <div className="space-y-4 rounded-lg border border-border p-4">
       <div>
         <div className="text-sm font-medium text-foreground">
-          {required ? `${entry.name} needs its own OAuth app` : "Use your own OAuth app"}
+          {required ? method.oauthClientSecretRequired ? "Your OAuth app" : `${entry.name} needs its own OAuth app` : "Use your own OAuth app"}
         </div>
         {/*
           When these fields are required it is a provider limitation, not a step
