@@ -513,6 +513,9 @@ connection work or enforce a real tenant boundary. Follow these rules:
   controls and per-action Test dialog. Do not build a parallel permissions list or
   provider-specific testing page. Discovery errors stay inline on Connect; an empty
   returned catalog belongs to the ordinary saved-connection state.
+- The per-action Test dialog shows structured MCP results as readable fields,
+  tables, or cards when possible. It keeps the full raw response available for
+  diagnosis and opens it by default when the result cannot be rendered safely.
 - Enable every discovered tool automatically. Put later Allowed / Ask first / Off
   controls in management, separate from connection access. Reconnect and refresh
   retain existing restrictions; new tools are Allowed under the existing access rules.
