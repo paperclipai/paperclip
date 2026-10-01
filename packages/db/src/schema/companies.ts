@@ -19,6 +19,13 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
+    // docs/ops/goal-attachment-policy.md (TES-2386): server-side enforcement of
+    // that company's own goal-attachment rule. Default false so it never
+    // changes behaviour for a company that has not opted into the G1-G6 goal
+    // system this rule assumes.
+    requireGoalAttachment: boolean("require_goal_attachment")
+      .notNull()
+      .default(false),
     interactionResolverGovernance: jsonb("interaction_resolver_governance")
       .$type<InteractionResolverGovernance>()
       .notNull()

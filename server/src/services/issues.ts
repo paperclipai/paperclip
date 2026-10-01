@@ -212,6 +212,9 @@ const ALL_ISSUE_STATUSES = [
   "done",
   "cancelled",
 ];
+// docs/ops/goal-attachment-policy.md — the escape-hatch label name for a
+// non-backlog issue that genuinely serves no goal.
+const NO_GOAL_LABEL_NAME = "no-goal";
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const MAX_CHAT_PRESENTATION_ATTACHMENTS = 20;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
@@ -7344,6 +7347,55 @@ export function issueService(db: Db) {
     );
   }
 
+  // Escape hatch for docs/ops/goal-attachment-policy.md: a company-scoped
+  // "no-goal" label marks work that genuinely serves no goal (delete-boundary
+  // probes, duplicates, platform artifacts) so the create/transition guard
+  // below has somewhere to send a legitimately goal-less non-backlog issue.
+  async function hasNoGoalLabel(
+    companyId: string,
+    labelIds: string[] | undefined,
+    dbOrTx: any = db,
+  ): Promise<boolean> {
+    if (!labelIds || labelIds.length === 0) return false;
+    const [noGoalLabel] = await dbOrTx
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), eq(labels.name, NO_GOAL_LABEL_NAME)));
+    return noGoalLabel ? labelIds.includes(noGoalLabel.id) : false;
+  }
+
+  function assertGoalAttached(input: {
+    status: string;
+    goalId: string | null | undefined;
+    hasNoGoalLabel: boolean;
+  }) {
+    if (input.status === "backlog") return;
+    if (input.goalId) return;
+    if (input.hasNoGoalLabel) return;
+    throw unprocessable(
+      `Non-backlog issues require a goalId, or the "${NO_GOAL_LABEL_NAME}" label. ` +
+        "See docs/ops/goal-attachment-policy.md.",
+      { code: "goal_required", docsPath: "docs/ops/goal-attachment-policy.md" },
+    );
+  }
+
+  // This is one company's board policy (docs/ops/goal-attachment-policy.md),
+  // not a platform default: most companies on this instance have no G1-G6
+  // goal system for the rule to attach to, and defaulting it on would reject
+  // issue creation for all of them. `companies.requireGoalAttachment`
+  // (default false) is the opt-in; only flip it for a company that has
+  // actually decided to require this.
+  async function companyRequiresGoalAttachment(
+    companyId: string,
+    dbOrTx: any = db,
+  ): Promise<boolean> {
+    const [company] = await dbOrTx
+      .select({ requireGoalAttachment: companies.requireGoalAttachment })
+      .from(companies)
+      .where(eq(companies.id, companyId));
+    return company?.requireGoalAttachment === true;
+  }
+
   async function getIssueRelationSummaryMap(
     companyId: string,
     issueIds: string[],
@@ -10390,6 +10442,21 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        // docs/ops/goal-attachment-policy.md is scoped to issues an agent or
+        // human files ("manual"), not the platform's own bookkeeping —
+        // watchdog issues, pipeline automation, chat-channel threads, and
+        // similar system-originated rows have no board triage step to attach
+        // a goal at, and their originKind is never "manual".
+        if (
+          values.originKind === "manual" &&
+          (await companyRequiresGoalAttachment(companyId, tx))
+        ) {
+          assertGoalAttached({
+            status: values.status ?? "backlog",
+            goalId: values.goalId,
+            hasNoGoalLabel: await hasNoGoalLabel(companyId, inputLabelIds, tx),
+          });
+        }
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -11239,6 +11306,26 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        // docs/ops/goal-attachment-policy.md: only re-check the invariant when
+        // this request actually touches status or goalId. Otherwise an
+        // unrelated PATCH (reassignment, a comment-adjacent field) on an issue
+        // that already violates the policy — grandfathered from before this
+        // guard existed — would be blocked by a field it never asked to change.
+        if (
+          existing.originKind === "manual" &&
+          (issueData.status !== undefined || issueData.goalId !== undefined) &&
+          (await companyRequiresGoalAttachment(existing.companyId, tx))
+        ) {
+          const effectiveStatus = patch.status ?? existing.status;
+          const labelIdsForGoalCheck = nextLabelIds !== undefined
+            ? nextLabelIds
+            : (await labelMapForIssues(tx, [id])).get(id)?.map((label: IssueLabelRow) => label.id) ?? [];
+          assertGoalAttached({
+            status: effectiveStatus,
+            goalId: patch.goalId,
+            hasNoGoalLabel: await hasNoGoalLabel(existing.companyId, labelIdsForGoalCheck, tx),
+          });
+        }
         // Ownership changes invalidate observed handoff versions even if status
         // stays the same, including an A -> B -> A assignment race.
         if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== receiptExisting.assigneeAgentId)
