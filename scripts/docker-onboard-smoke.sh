@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE_NAME="${IMAGE_NAME:-paperclip-onboard-smoke}"
+HOST_PORT="${HOST_PORT:-3131}"
+PAPERCLIPAI_VERSION="${PAPERCLIPAI_VERSION:-latest}"
+DATA_DIR="${DATA_DIR:-$REPO_ROOT/data/docker-onboard-smoke}"
+HOST_UID="${HOST_UID:-$(id -u)}"
+SMOKE_DETACH="${SMOKE_DETACH:-false}"
+SMOKE_METADATA_FILE="${SMOKE_METADATA_FILE:-}"
+PAPERCLIP_DEPLOYMENT_MODE="${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
+PAPERCLIP_DEPLOYMENT_EXPOSURE="${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+# Serve api.anthropic.com from a mock inside the harness. Connecting a model
+# is live-verified against provider endpoints that are deliberately hardcoded
+# in the product (see validateAiApiKey), so a smoke that finishes onboarding
+# needs the provider to say yes — and a release gate must not depend on a real
+# paid credential or a provider's uptime. The product is not touched: the
+# container's DNS for that one hostname points at the mock, and the mock's
+# self-signed certificate is trusted via NODE_EXTRA_CA_CERTS. What the gate
+# proves is that the artifact can finish onboarding when the provider accepts
+# the credential — the provider's actual verdict is not this artifact's code.
+SMOKE_PROVIDER_MOCK="${SMOKE_PROVIDER_MOCK:-true}"
+PAPERCLIP_PUBLIC_URL="${PAPERCLIP_PUBLIC_URL:-http://localhost:${HOST_PORT}}"
+SMOKE_AUTO_BOOTSTRAP="${SMOKE_AUTO_BOOTSTRAP:-true}"
+# Seconds to wait for /api/health after the container starts. The container
+# cold-installs paperclipai from npm and initializes embedded postgres before
+# it can serve health, so CI callers with no warm caches need far more than
+# the local default.
+SMOKE_READY_TIMEOUT_SECONDS="${SMOKE_READY_TIMEOUT_SECONDS:-90}"
+SMOKE_ADMIN_NAME="${SMOKE_ADMIN_NAME:-Smoke Admin}"
+SMOKE_ADMIN_EMAIL="${SMOKE_ADMIN_EMAIL:-smoke-admin@paperclip.local}"
+SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
+# Overridable so a caller can fix the name before this script runs. CI needs
+# that: a name it only learns from this script's output is a name it does not
+# have when this script fails, which is precisely when its diagnostics steps
+# need one.
+CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-$IMAGE_NAME}"
+CONTAINER_NAME="${CONTAINER_NAME//[^a-zA-Z0-9_.-]/-}"
+PROVIDER_MOCK_CONTAINER_NAME="$CONTAINER_NAME-provider-mock"
+PROVIDER_MOCK_DIR="$DATA_DIR-provider-mock"
+# Where the container's logs are written before it is torn down. See
+# `dump_container_logs`.
+SMOKE_LOG_FILE="${SMOKE_LOG_FILE:-${TMPDIR:-/tmp}/${CONTAINER_NAME}.log}"
+LOG_PID=""
+COOKIE_JAR=""
+TMP_DIR=""
+PRESERVE_CONTAINER_ON_EXIT="false"
+
+mkdir -p "$DATA_DIR"
+
+# Start from an empty dump. `dump_container_logs` only writes when there is a
+# container to read, so a run that fails before one exists — a failed build, a
+# port already bound — would otherwise leave the previous run's file in place,
+# and that file would be read as this run's diagnostics. Truncated rather than
+# removed, so the path is present and writable from here on.
+if [[ -n "$SMOKE_LOG_FILE" ]]; then
+  mkdir -p "$(dirname "$SMOKE_LOG_FILE")" >/dev/null 2>&1 || true
+  : >"$SMOKE_LOG_FILE" 2>/dev/null || true
+fi
+
+# Copy the container's logs out while there is still a container to read them
+# from.
+#
+# This runs on every failure path — the image failing to serve, health never
+# coming up, bootstrap rejecting the admin — which is exactly when the logs are
+# the only account of what went wrong, and exactly when they used to be
+# destroyed unread: `docker run` passed `--rm`, so the container and its logs
+# went away with the stop below (and, for a container that crashed on its own,
+# the moment its process exited). `--rm` is gone for that reason; removal is
+# this script's job now, and it happens after the dump.
+dump_container_logs() {
+  if [[ -z "$SMOKE_LOG_FILE" ]]; then
+    return 0
+  fi
+  if ! docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$SMOKE_LOG_FILE")" >/dev/null 2>&1 || return 0
+  docker logs "$CONTAINER_NAME" >"$SMOKE_LOG_FILE" 2>&1 || true
+}
+
+cleanup() {
+  if [[ -n "$LOG_PID" ]]; then
+    kill "$LOG_PID" >/dev/null 2>&1 || true
+  fi
+  # Before the teardown below, never after it.
+  dump_container_logs
+  if [[ "$PRESERVE_CONTAINER_ON_EXIT" != "true" ]]; then
+    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$PROVIDER_MOCK_CONTAINER_NAME" >/dev/null 2>&1 || true
+    rm -rf "$PROVIDER_MOCK_DIR" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+container_is_running() {
+  local running
+  running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  [[ "$running" == "true" ]]
+}
+
+wait_for_http() {
+  local url="$1"
+  local attempts="${2:-60}"
+  local sleep_seconds="${3:-1}"
+  local i
+  for ((i = 1; i <= attempts; i += 1)); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! container_is_running; then
+      echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before $url became ready" >&2
+      docker logs "$CONTAINER_NAME" >&2 || true
+      return 1
+    fi
+    sleep "$sleep_seconds"
+  done
+  if ! container_is_running; then
+    echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before readiness check completed" >&2
+    docker logs "$CONTAINER_NAME" >&2 || true
+  else
+    echo "Smoke bootstrap failed: $url not ready after ${attempts} attempts; container is still running. Last container logs:" >&2
+    docker logs --tail 150 "$CONTAINER_NAME" >&2 || true
+  fi
+  return 1
+}
+
+write_metadata_file() {
+  if [[ -z "$SMOKE_METADATA_FILE" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$SMOKE_METADATA_FILE")"
+  {
+    printf 'SMOKE_BASE_URL=%q\n' "$PAPERCLIP_PUBLIC_URL"
+    printf 'SMOKE_ADMIN_EMAIL=%q\n' "$SMOKE_ADMIN_EMAIL"
+    printf 'SMOKE_ADMIN_PASSWORD=%q\n' "$SMOKE_ADMIN_PASSWORD"
+    printf 'SMOKE_CONTAINER_NAME=%q\n' "$CONTAINER_NAME"
+    printf 'SMOKE_LOG_FILE=%q\n' "$SMOKE_LOG_FILE"
+    printf 'SMOKE_DATA_DIR=%q\n' "$DATA_DIR"
+    printf 'SMOKE_IMAGE_NAME=%q\n' "$IMAGE_NAME"
+    printf 'SMOKE_PAPERCLIPAI_VERSION=%q\n' "$PAPERCLIPAI_VERSION"
+  } >"$SMOKE_METADATA_FILE"
+}
+
+generate_bootstrap_invite_url() {
+  local bootstrap_output
+  local bootstrap_status
+  if bootstrap_output="$(
+    docker exec \
+      -e PAPERCLIP_DEPLOYMENT_MODE="$PAPERCLIP_DEPLOYMENT_MODE" \
+      -e PAPERCLIP_DEPLOYMENT_EXPOSURE="$PAPERCLIP_DEPLOYMENT_EXPOSURE" \
+      -e PAPERCLIP_PUBLIC_URL="$PAPERCLIP_PUBLIC_URL" \
+      -e PAPERCLIP_HOME="/paperclip" \
+      "$CONTAINER_NAME" bash -lc \
+      'timeout 20s npx --yes "paperclipai@${PAPERCLIPAI_VERSION}" auth bootstrap-ceo --data-dir "$PAPERCLIP_HOME" --base-url "$PAPERCLIP_PUBLIC_URL"' \
+      2>&1
+  )"; then
+    bootstrap_status=0
+  else
+    bootstrap_status=$?
+  fi
+
+  if [[ $bootstrap_status -ne 0 && $bootstrap_status -ne 124 ]]; then
+    echo "Smoke bootstrap failed: could not run bootstrap-ceo inside container" >&2
+    printf '%s\n' "$bootstrap_output" >&2
+    return 1
+  fi
+
+  local invite_url
+  invite_url="$(
+    printf '%s\n' "$bootstrap_output" \
+      | grep -o 'https\?://[^[:space:]]*/invite/pcp_bootstrap_[[:alnum:]]*' \
+      | tail -n 1
+  )"
+
+  if [[ -z "$invite_url" ]]; then
+    echo "Smoke bootstrap failed: bootstrap-ceo did not print an invite URL" >&2
+    printf '%s\n' "$bootstrap_output" >&2
+    return 1
+  fi
+
+  if [[ $bootstrap_status -eq 124 ]]; then
+    echo "    Smoke bootstrap: bootstrap-ceo timed out after printing invite URL; continuing" >&2
+  fi
+
+  printf '%s\n' "$invite_url"
+}
+
+post_json_with_cookies() {
+  local url="$1"
+  local body="$2"
+  local output_file="$3"
+  curl -sS \
+    -o "$output_file" \
+    -w "%{http_code}" \
+    -c "$COOKIE_JAR" \
+    -b "$COOKIE_JAR" \
+    -H "Content-Type: application/json" \
+    -H "Origin: $PAPERCLIP_PUBLIC_URL" \
+    -X POST \
+    "$url" \
+    --data "$body"
+}
+
+get_with_cookies() {
+  local url="$1"
+  curl -fsS \
+    -c "$COOKIE_JAR" \
+    -b "$COOKIE_JAR" \
+    -H "Accept: application/json" \
+    "$url"
+}
+
+sign_up_or_sign_in() {
+  local signup_response="$TMP_DIR/signup.json"
+  local signup_status
+  signup_status="$(post_json_with_cookies \
+    "$PAPERCLIP_PUBLIC_URL/api/auth/sign-up/email" \
+    "{\"name\":\"$SMOKE_ADMIN_NAME\",\"email\":\"$SMOKE_ADMIN_EMAIL\",\"password\":\"$SMOKE_ADMIN_PASSWORD\"}" \
+    "$signup_response")"
+  if [[ "$signup_status" =~ ^2 ]]; then
+    echo "    Smoke bootstrap: created admin user $SMOKE_ADMIN_EMAIL"
+    return 0
+  fi
+
+  local signin_response="$TMP_DIR/signin.json"
+  local signin_status
+  signin_status="$(post_json_with_cookies \
+    "$PAPERCLIP_PUBLIC_URL/api/auth/sign-in/email" \
+    "{\"email\":\"$SMOKE_ADMIN_EMAIL\",\"password\":\"$SMOKE_ADMIN_PASSWORD\"}" \
+    "$signin_response")"
+  if [[ "$signin_status" =~ ^2 ]]; then
+    echo "    Smoke bootstrap: signed in existing admin user $SMOKE_ADMIN_EMAIL"
+    return 0
+  fi
+
+  echo "Smoke bootstrap failed: could not sign up or sign in admin user" >&2
+  echo "Sign-up response:" >&2
+  cat "$signup_response" >&2 || true
+  echo >&2
+  echo "Sign-in response:" >&2
+  cat "$signin_response" >&2 || true
+  echo >&2
+  return 1
+}
+
+auto_bootstrap_authenticated_smoke() {
+  local health_url="$PAPERCLIP_PUBLIC_URL/api/health"
+  local health_json
+  health_json="$(curl -fsS "$health_url")"
+  if [[ "$health_json" != *'"deploymentMode":"authenticated"'* ]]; then
+    return 0
+  fi
+
+  sign_up_or_sign_in
+
+  if [[ "$health_json" == *'"bootstrapStatus":"ready"'* ]]; then
+    echo "    Smoke bootstrap: instance already ready"
+  else
+    local invite_url
+    invite_url="$(generate_bootstrap_invite_url)"
+    echo "    Smoke bootstrap: generated bootstrap invite via auth bootstrap-ceo"
+
+    local invite_token="${invite_url##*/}"
+    local accept_response="$TMP_DIR/accept.json"
+    local accept_status
+    accept_status="$(post_json_with_cookies \
+      "$PAPERCLIP_PUBLIC_URL/api/invites/$invite_token/accept" \
+      '{"requestType":"human"}' \
+      "$accept_response")"
+    if [[ ! "$accept_status" =~ ^2 ]]; then
+      echo "Smoke bootstrap failed: bootstrap invite acceptance returned HTTP $accept_status" >&2
+      cat "$accept_response" >&2 || true
+      echo >&2
+      return 1
+    fi
+    echo "    Smoke bootstrap: accepted bootstrap invite"
+  fi
+
+  local session_json
+  session_json="$(get_with_cookies "$PAPERCLIP_PUBLIC_URL/api/auth/get-session")"
+  if [[ "$session_json" != *'"userId"'* ]]; then
+    echo "Smoke bootstrap failed: no authenticated session after bootstrap" >&2
+    echo "$session_json" >&2
+    return 1
+  fi
+
+  local companies_json
+  companies_json="$(get_with_cookies "$PAPERCLIP_PUBLIC_URL/api/companies")"
+  if [[ "${companies_json:0:1}" != "[" ]]; then
+    echo "Smoke bootstrap failed: board companies endpoint did not return JSON array" >&2
+    echo "$companies_json" >&2
+    return 1
+  fi
+
+  echo "    Smoke bootstrap: board session verified"
+  echo "    Smoke admin credentials: $SMOKE_ADMIN_EMAIL / $SMOKE_ADMIN_PASSWORD"
+}
+
+echo "==> Building onboard smoke image"
+docker build \
+  --build-arg PAPERCLIPAI_VERSION="$PAPERCLIPAI_VERSION" \
+  --build-arg HOST_UID="$HOST_UID" \
+  -f "$REPO_ROOT/docker/Dockerfile.onboard-smoke" \
+  -t "$IMAGE_NAME" \
+  "$REPO_ROOT"
+
+# Extra `docker run` arguments for the app container when the provider mock is
+# on: the DNS override, the mock's CA, and the mount that carries it.
+PROVIDER_MOCK_RUN_ARGS=()
+
+start_provider_mock() {
+  rm -rf "$PROVIDER_MOCK_DIR"
+  mkdir -p "$PROVIDER_MOCK_DIR"
+  chmod 755 "$PROVIDER_MOCK_DIR"
+
+  # A self-signed leaf is its own trust anchor: presented by the mock and
+  # listed in NODE_EXTRA_CA_CERTS, the one-certificate chain verifies and the
+  # SAN satisfies hostname verification for api.anthropic.com.
+  openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 7 \
+    -keyout "$PROVIDER_MOCK_DIR/key.pem" \
+    -out "$PROVIDER_MOCK_DIR/ca.pem" \
+    -subj "/CN=api.anthropic.com" \
+    -addext "subjectAltName=DNS:api.anthropic.com" >/dev/null 2>&1
+  # Only the certificate is public. The key stays 600 — the mock container
+  # runs as root and reads it through that — and is never mounted into the
+  # app container, which gets the lone certificate file below.
+  chmod 644 "$PROVIDER_MOCK_DIR/ca.pem"
+  chmod 600 "$PROVIDER_MOCK_DIR/key.pem"
+
+  # Only the one endpoint credential validation calls. Everything else 404s,
+  # so an unexpected provider call fails the flow loudly instead of being
+  # silently blessed by the mock.
+  cat >"$PROVIDER_MOCK_DIR/server.mjs" <<'MOCK_EOF'
+import { createServer } from "node:https";
+import { readFileSync } from "node:fs";
+
+const server = createServer(
+  {
+    cert: readFileSync("/provider-mock/ca.pem"),
+    key: readFileSync("/provider-mock/key.pem"),
+  },
+  (req, res) => {
+    const path = new URL(req.url, "https://api.anthropic.com").pathname;
+    console.log(`[provider-mock] ${req.method} ${req.url}`);
+    if (req.method === "GET" && path === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "claude-sonnet-5", type: "model" }], has_more: false }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "not_found_error", message: "provider mock: unexpected endpoint" } }));
+  },
+);
+server.listen(443, () => console.log("[provider-mock] listening on 443"));
+MOCK_EOF
+
+  docker rm -f "$PROVIDER_MOCK_CONTAINER_NAME" >/dev/null 2>&1 || true
+  # The smoke image doubles as the mock's runtime: it already has node and is
+  # already built, so the mock costs no extra pull. Root, because binding 443
+  # inside the container needs it, and 443 is not negotiable — the product's
+  # provider endpoints are hardcoded https URLs.
+  docker run -d \
+    --name "$PROVIDER_MOCK_CONTAINER_NAME" \
+    --user 0 \
+    -v "$PROVIDER_MOCK_DIR:/provider-mock:ro" \
+    "$IMAGE_NAME" node /provider-mock/server.mjs >/dev/null
+
+  local mock_ip
+  mock_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PROVIDER_MOCK_CONTAINER_NAME")"
+  if [[ -z "$mock_ip" ]]; then
+    echo "Smoke bootstrap failed: provider mock container has no IP address" >&2
+    docker logs "$PROVIDER_MOCK_CONTAINER_NAME" >&2 || true
+    return 1
+  fi
+  PROVIDER_MOCK_RUN_ARGS=(
+    --add-host "api.anthropic.com:$mock_ip"
+    -v "$PROVIDER_MOCK_DIR/ca.pem:/provider-mock/ca.pem:ro"
+    -e NODE_EXTRA_CA_CERTS=/provider-mock/ca.pem
+  )
+  echo "    Provider mock: api.anthropic.com -> $mock_ip (container $PROVIDER_MOCK_CONTAINER_NAME)"
+}
+
+if [[ "$SMOKE_PROVIDER_MOCK" == "true" ]]; then
+  echo "==> Starting provider mock"
+  start_provider_mock
+fi
+
+echo "==> Running onboard smoke container"
+echo "    UI should be reachable at: http://localhost:$HOST_PORT"
+echo "    Public URL: $PAPERCLIP_PUBLIC_URL"
+echo "    Smoke auto-bootstrap: $SMOKE_AUTO_BOOTSTRAP"
+echo "    Detached mode: $SMOKE_DETACH"
+echo "    Data dir: $DATA_DIR"
+echo "    Container name: $CONTAINER_NAME"
+echo "    Container log dump: $SMOKE_LOG_FILE"
+echo "    Deployment: $PAPERCLIP_DEPLOYMENT_MODE/$PAPERCLIP_DEPLOYMENT_EXPOSURE"
+if [[ "$SMOKE_DETACH" != "true" ]]; then
+  echo "    Live output: onboard banner and server logs stream in this terminal (Ctrl+C to stop)"
+fi
+
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+# No `--rm`. A container that removes itself takes its logs with it the instant
+# it exits, which is the one moment they are worth reading; the cleanup above
+# removes it instead, after dumping them. The `docker rm -f` just above covers
+# a container left behind by a previous run.
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  -p "$HOST_PORT:3100" \
+  -e HOST=0.0.0.0 \
+  -e PORT=3100 \
+  -e PAPERCLIP_DEPLOYMENT_MODE="$PAPERCLIP_DEPLOYMENT_MODE" \
+  -e PAPERCLIP_DEPLOYMENT_EXPOSURE="$PAPERCLIP_DEPLOYMENT_EXPOSURE" \
+  -e PAPERCLIP_PUBLIC_URL="$PAPERCLIP_PUBLIC_URL" \
+  -v "$DATA_DIR:/paperclip" \
+  ${PROVIDER_MOCK_RUN_ARGS[@]+"${PROVIDER_MOCK_RUN_ARGS[@]}"} \
+  "$IMAGE_NAME" >/dev/null
+
+if [[ "$SMOKE_DETACH" != "true" ]]; then
+  docker logs -f "$CONTAINER_NAME" &
+  LOG_PID=$!
+fi
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-onboard-smoke.XXXXXX")"
+COOKIE_JAR="$TMP_DIR/cookies.txt"
+
+if ! wait_for_http "$PAPERCLIP_PUBLIC_URL/api/health" "$SMOKE_READY_TIMEOUT_SECONDS" 1; then
+  echo "Smoke bootstrap failed: server did not become ready at $PAPERCLIP_PUBLIC_URL/api/health" >&2
+  exit 1
+fi
+
+if [[ "$SMOKE_AUTO_BOOTSTRAP" == "true" && "$PAPERCLIP_DEPLOYMENT_MODE" == "authenticated" ]]; then
+  auto_bootstrap_authenticated_smoke
+fi
+
+write_metadata_file
+
+if [[ "$SMOKE_DETACH" == "true" ]]; then
+  PRESERVE_CONTAINER_ON_EXIT="true"
+  echo "==> Smoke container ready for automation"
+  echo "    Smoke base URL: $PAPERCLIP_PUBLIC_URL"
+  echo "    Smoke admin credentials: $SMOKE_ADMIN_EMAIL / $SMOKE_ADMIN_PASSWORD"
+  if [[ -n "$SMOKE_METADATA_FILE" ]]; then
+    echo "    Smoke metadata file: $SMOKE_METADATA_FILE"
+  fi
+  exit 0
+fi
+
+wait "$LOG_PID"

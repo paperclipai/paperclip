@@ -1,0 +1,296 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  BookOpen,
+  Flag,
+  LogOut,
+  Settings,
+  type LucideIcon,
+  UserPlus,
+} from "lucide-react";
+import { hidesCompanyPage, type DeploymentMode } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
+import { authApi } from "@/api/auth";
+import { queryKeys } from "@/lib/queryKeys";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useCanInviteCompanyMembers } from "@/hooks/useCompanyInviteAccess";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { useSignOut } from "@/hooks/useSignOut";
+import { useStagingCommit } from "@/hooks/useStagingCommit";
+import { userProfilePath } from "@/lib/userProfileLinks";
+import { useSidebar } from "../context/SidebarContext";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { ThemeToggle } from "./ThemeToggle";
+import { SidebarServerInfo } from "./SidebarServerInfo";
+
+const INVITES_PATH = "/company/settings/members?tab=invites";
+const DOCS_URL = "https://docs.paperclip.ing/";
+const FEEDBACK_URL = "https://paperclip.ing/feedback";
+
+interface SidebarAccountMenuProps {
+  deploymentMode?: DeploymentMode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Contextual navigation occupies a full sidebar even if the saved global nav mode is collapsed. */
+  forceExpanded?: boolean;
+}
+
+interface MenuActionProps {
+  label: string;
+  icon: LucideIcon;
+  onClick?: () => void;
+  href?: string;
+  /** Opens `href` in a new tab (docs and other off-product links). */
+  external?: boolean;
+  /**
+   * Leaves the app in the current tab with a full navigation. Cloud links
+   * must use this: the cloud harness shadows those paths on tenant hosts, so
+   * the in-app router can never reach them.
+   */
+  topLevel?: boolean;
+}
+
+function deriveInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]?.[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}`.toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+function MenuAction({
+  label,
+  icon: Icon,
+  onClick,
+  href,
+  external = false,
+  topLevel = false,
+}: MenuActionProps) {
+  const className =
+    "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-accent";
+
+  const content = (
+    <>
+      <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </>
+  );
+
+  if (href) {
+    if (external) {
+      return (
+        <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    if (topLevel) {
+      return (
+        <a href={href} className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    return (
+      <Link to={href} className={className} onClick={onClick}>
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <button type="button" className={className} onClick={onClick}>
+      {content}
+    </button>
+  );
+}
+
+export function SidebarAccountMenu({
+  deploymentMode,
+  open: controlledOpen,
+  onOpenChange,
+  forceExpanded = false,
+}: SidebarAccountMenuProps) {
+  const cloud = useCloudInstance();
+  const isCloud = Boolean(cloud);
+  // Invites live on the Members page (or in Cloud's People settings). Hide the
+  // shortcut when the hosting operator hides either surface, and until the
+  // health response resolves so a hidden surface never flashes.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  // On Cloud the shortcut exists only for the current stack's owner/admin and
+  // only once the stack metadata is known; the in-app Invites tab is never a
+  // fallback there because it drives a different invitation flow.
+  const cloudInviteUrl = useCloudInviteUrl();
+  // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
+  // to boards that hold it (company owner/admin, instance admins, local
+  // boards) so a plain member is never sent to a permission error.
+  const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
+  const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
+  const showInvite =
+    hiddenSettingsLoaded &&
+    inviteHref !== null &&
+    !hidesCompanyPage(hiddenSettings, "company.members") &&
+    !hidesCompanyPage(hiddenSettings, "company.invites");
+  const [internalOpen, setInternalOpen] = useState(false);
+  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+  const rail = collapsed && !peeking && !forceExpanded;
+  const open = controlledOpen ?? internalOpen;
+  const stagingCommit = useStagingCommit(open);
+  const setOpen = onOpenChange ?? setInternalOpen;
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
+
+  const displayName = session?.user.name?.trim() || "Board";
+  const secondaryLabel =
+    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
+  const initials = deriveInitials(displayName);
+  const profileHref = userProfilePath(session?.user);
+
+  function closeNavigationChrome() {
+    setOpen(false);
+    if (isMobile) setSidebarOpen(false);
+  }
+
+  function handleSignOut() {
+    signOutMutation.mutate();
+  }
+
+  return (
+    <div className="bg-border/50 px-3 py-2 dark:bg-muted">
+      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+              )}
+              aria-label="Open account menu"
+            >
+              <Avatar size="sm">
+                {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+                <AvatarFallback>{initials}</AvatarFallback>
+              </Avatar>
+              <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="start"
+            sideOffset={10}
+            className="min-h-(--profile-popover-min-height) w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+          >
+            {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
+            <div className="relative flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
+              <Link
+                to={profileHref}
+                aria-label="View profile"
+                onClick={closeNavigationChrome}
+                className="absolute inset-0 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              />
+              <Avatar className="pointer-events-none relative size-9">
+                {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+                <AvatarFallback className="text-xs text-foreground">{initials}</AvatarFallback>
+              </Avatar>
+              <div className="pointer-events-none relative min-w-0 flex-1">
+                <h2 className="truncate text-sm font-semibold leading-(--profile-popover-label-line-height) text-foreground">
+                  {displayName}
+                </h2>
+                <p className="truncate text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground">
+                  {secondaryLabel}
+                </p>
+                {stagingCommit ? (
+                  <a
+                    className="pointer-events-auto block truncate font-mono text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground hover:underline focus-visible:underline"
+                    href={`https://github.com/paperclipai/paperclip/commit/${stagingCommit}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`View commit ${stagingCommit} on GitHub`}
+                    title={stagingCommit}
+                  >
+                    SHA {stagingCommit.slice(0, 7)}
+                  </a>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+              <MenuAction
+                label="Settings"
+                icon={Settings}
+                href="/company/settings"
+                onClick={closeNavigationChrome}
+              />
+              {showInvite && inviteHref ? (
+                <MenuAction
+                  label="Invite"
+                  icon={UserPlus}
+                  href={inviteHref}
+                  topLevel={isCloud}
+                  onClick={closeNavigationChrome}
+                />
+              ) : null}
+              <MenuAction
+                label="Documentation"
+                icon={BookOpen}
+                href={DOCS_URL}
+                external
+                onClick={() => setOpen(false)}
+              />
+              <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
+              {deploymentMode === "authenticated" ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-destructive/10",
+                    signOutMutation.isPending && "cursor-not-allowed opacity-60",
+                  )}
+                  onClick={handleSignOut}
+                  disabled={signOutMutation.isPending}
+                >
+                  <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                    <LogOut className="size-4" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                  </span>
+                </button>
+              ) : null}
+              <SidebarServerInfo />
+            </div>
+          </PopoverContent>
+        </Popover>
+        {!rail && !isCloud ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={FEEDBACK_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Share feedback"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Flag className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="top">Share feedback</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+    </div>
+  );
+}

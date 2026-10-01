@@ -1,0 +1,30 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -23,7 +23,7 @@
+  * for a particular string, we need to force that string into the right locale.
+  * @see https://github.com/leinelissen/embedded-postgres/issues/15
+  */
+-const LC_MESSAGES_LOCALE = 'en_US.UTF-8';
++const LC_MESSAGES_LOCALE = 'C';
+ // The default configuration options for the class
+ const defaults = {
+     databaseDir: path.join(process.cwd(), 'data', 'db'),
+@@ -133,7 +133,7 @@
+                     `--pwfile=${passwordFile}`,
+                     `--lc-messages=${LC_MESSAGES_LOCALE}`,
+                     ...this.options.initdbFlags,
+-                ], Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
++                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
+                 // Connect to stderr, as that is where the messages get sent
+                 (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+                     // Parse the data as a string and log it
+@@ -177,7 +177,7 @@
+                     '-p',
+                     this.options.port.toString(),
+                     ...this.options.postgresFlags,
+-                ], Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
++                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
+                 // Connect to stderr, as that is where the messages get sent
+                 (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+                     // Parse the data as a string and log it

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "slug": "asana",
+  "name": "Asana",
+  "description": "Connect Asana's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/asana.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.asana.com/*"
+  ],
+  "docsUrl": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-own-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr",
+        "customer"
+      ],
+      "whenToUse": "Sign in with Asana. Paperclip registers its own OAuth client automatically.",
+      "defaults": {
+        "serverUrl": "https://mcp.asana.com/v2/mcp",
+        "scopesHint": [
+          "default"
+        ]
+      },
+      "guidanceMd": "Connect Asana in the browser. Paperclip registers its own OAuth client with Asana's MCP server, so a local Paperclip needs no developer-console setup. Asana only accepts localhost callbacks, so a hosted deployment falls back to entering your own OAuth app.",
+      "riskTier": "S3",
+      "label": "Sign in with Asana",
+      "consoleLinks": {
+        "register": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+        "docs": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server"
+      }
+    }
+  ]
+}

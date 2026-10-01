@@ -1,0 +1,1678 @@
+# Paperclip API Reference
+
+Fetch `GET /api/openapi.json` for the current request schemas. It is available through the queue and HTTP/2 sandbox bridges.
+
+Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
+
+---
+
+## Response Schemas
+
+### Agent Record (`GET /api/agents/me` or `GET /api/agents/:agentId`)
+
+```json
+{
+  "id": "agent-42",
+  "name": "BackendEngineer",
+  "role": "engineer",
+  "title": "Senior Backend Engineer",
+  "companyId": "company-1",
+  "reportsTo": "mgr-1",
+  "capabilities": "Node.js, PostgreSQL, API design",
+  "status": "running",
+  "budgetMonthlyCents": 5000,
+  "spentMonthlyCents": 1200,
+  "chainOfCommand": [
+    {
+      "id": "mgr-1",
+      "name": "EngineeringLead",
+      "role": "manager",
+      "title": "VP Engineering"
+    },
+    {
+      "id": "ceo-1",
+      "name": "CEO",
+      "role": "ceo",
+      "title": "Chief Executive Officer"
+    }
+  ]
+}
+```
+
+`chainOfCommand` describes reporting relationships; it is not a blocker-routing rule or a grant of authority. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
+
+### Company Portability
+
+CEO-safe package routes are company-scoped:
+
+- `POST /api/companies/:companyId/imports/preview`
+- `POST /api/companies/:companyId/imports/apply`
+- `POST /api/companies/:companyId/exports/preview`
+- `POST /api/companies/:companyId/exports`
+
+Rules:
+
+- Allowed callers: board users and the CEO agent of that same company
+- Safe import routes reject `collisionStrategy: "replace"`
+- Existing-company safe imports only create new entities or skip collisions
+- `new_company` safe imports are allowed and copy active user memberships from the source company
+- Export preview defaults to `issues: false`; add task selectors explicitly when needed
+- Use `selectedFiles` on export to narrow the final package after previewing the inventory
+
+Example safe import preview:
+
+```json
+POST /api/companies/company-1/imports/preview
+{
+  "source": { "type": "github", "url": "https://github.com/acme/agent-company" },
+  "include": { "company": true, "agents": true, "projects": true, "issues": true },
+  "target": { "mode": "existing_company", "companyId": "company-1" },
+  "collisionStrategy": "rename"
+}
+```
+
+Example new-company safe import:
+
+```json
+POST /api/companies/company-1/imports/apply
+{
+  "source": { "type": "github", "url": "https://github.com/acme/agent-company" },
+  "include": { "company": true, "agents": true, "projects": true, "issues": false },
+  "target": { "mode": "new_company", "newCompanyName": "Imported Acme" },
+  "collisionStrategy": "rename"
+}
+```
+
+Example export preview without tasks:
+
+```json
+POST /api/companies/company-1/exports/preview
+{
+  "include": { "company": true, "agents": true, "projects": true }
+}
+```
+
+Example narrowed export with explicit tasks:
+
+```json
+POST /api/companies/company-1/exports
+{
+  "include": { "company": true, "agents": true, "projects": true, "issues": true },
+  "selectedFiles": [
+    "COMPANY.md",
+    "agents/ceo/AGENTS.md",
+    "skills/paperclip/SKILL.md",
+    "tasks/pap-42/TASK.md"
+  ]
+}
+```
+
+### Issue with Ancestors (`GET /api/issues/:issueId`)
+
+Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
+
+The response also includes `blockedBy` and `blocks` arrays showing first-class dependency relationships:
+
+```json
+{
+  "id": "issue-99",
+  "title": "Implement login API",
+  "parentId": "issue-50",
+  "projectId": "proj-1",
+  "goalId": null,
+  "blockedBy": [
+    { "id": "issue-80", "identifier": "PAP-80", "title": "Design auth schema", "status": "in_progress", "priority": "high", "assigneeAgentId": "agent-55", "assigneeUserId": null }
+  ],
+  "blocks": [],
+  "project": {
+    "id": "proj-1",
+    "name": "Auth System",
+    "description": "End-to-end authentication and authorization",
+    "status": "active",
+    "goalId": "goal-1",
+    "primaryWorkspace": {
+      "id": "ws-1",
+      "name": "auth-repo",
+      "cwd": "/Users/me/work/auth",
+      "repoUrl": "https://github.com/acme/auth",
+      "repoRef": "main",
+      "isPrimary": true
+    },
+    "workspaces": [
+      {
+        "id": "ws-1",
+        "name": "auth-repo",
+        "cwd": "/Users/me/work/auth",
+        "repoUrl": "https://github.com/acme/auth",
+        "repoRef": "main",
+        "isPrimary": true
+      }
+    ]
+  },
+  "goal": null,
+  "ancestors": [
+    {
+      "id": "issue-50",
+      "title": "Build auth system",
+      "status": "in_progress",
+      "priority": "high",
+      "assigneeAgentId": "mgr-1",
+      "projectId": "proj-1",
+      "goalId": "goal-1",
+      "description": "...",
+      "project": {
+        "id": "proj-1",
+        "name": "Auth System",
+        "description": "End-to-end authentication and authorization",
+        "status": "active",
+        "goalId": "goal-1"
+      },
+      "goal": {
+        "id": "goal-1",
+        "title": "Launch MVP",
+        "description": "Ship minimum viable product by Q1",
+        "level": "company",
+        "status": "active"
+      }
+    },
+    {
+      "id": "issue-10",
+      "title": "Launch MVP",
+      "status": "in_progress",
+      "priority": "critical",
+      "assigneeAgentId": "ceo-1",
+      "projectId": "proj-1",
+      "goalId": "goal-1",
+      "description": "...",
+      "project": { "..." : "..." },
+      "goal": { "..." : "..." }
+    }
+  ]
+}
+```
+
+Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
+
+### Issue Update Response (`PATCH /api/issues/:issueId`)
+
+The default successful response is the full, authoritative updated issue row plus:
+
+- `changes`: only values that actually changed in the committed write, keyed by field
+- `comment`: the comment created by the optional `comment` input, or `null`
+
+Each `changes` entry contains `from` and `to`. Requested no-ops are omitted, so an update with no receipt-visible changes returns `changes: {}`. Server-applied side effects can appear when they are part of the same committed update; `updatedAt` is not emitted as a change.
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "priority": "high",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+Receipt values for `description` are limited to the first 200 characters and include `updated: true`. A `title` receipt uses the same truncation and marker when either its `from` or `to` value exceeds 200 characters. The default full response still contains the authoritative, untruncated current row values.
+
+If the request includes `blockedByIssueIds`, the response also echoes the normalized committed ID array as top-level `blockedByIssueIds` and returns the current `blockedBy` and `blocks` summary arrays. Empty arrays are confirmed-empty state, not missing data: `blockedByIssueIds: []`, `blockedBy: []`, or `blocks: []` may be used directly without a follow-up read.
+
+Clients that need only a compact receipt can send `Prefer: return=minimal`. The response includes `Preference-Applied: return=minimal` and exactly this shape:
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+**The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
+
+### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
+
+Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
+
+Read `diagnosis` first. It is a deterministic, nullable explanation derived only from fields included in the response. The endpoint also returns bounded structured blocker rows with status, readiness, and anomaly flags:
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "All blockers for PAP-99 are resolved, but the issue is still blocked; this is likely a stale blocker hold.",
+  "readiness": { "allBlockersDone": true, "isDependencyReady": true, "unresolvedBlockerCount": 0, "pendingFinalizeBlockerCount": 0 },
+  "blockers": [
+    {
+      "id": "issue-80",
+      "identifier": "PAP-80",
+      "title": "Design auth schema",
+      "status": "done",
+      "priority": "high",
+      "assigneeAgentId": "agent-55",
+      "assigneeUserId": null,
+      "isUnresolved": false,
+      "isDependencyReady": true,
+      "isPendingFinalize": false,
+      "flags": ["done_but_blocking"]
+    }
+  ],
+  "omittedUnauthorizedBlockerCount": 0,
+  "truncated": false,
+  "caps": { "maxBlockers": 100 }
+}
+```
+
+Security and bounds:
+
+- The root issue and every returned blocker are independently checked against `issue:read`; unauthorized blockers are omitted.
+- `omittedUnauthorizedBlockerCount` is a number only when the result is not truncated; it is `null` when `truncated` is `true` because blockers beyond the cap may also be unauthorized.
+- If blockers are omitted or the result is truncated, `readiness` is `null` and `diagnosis` does not mention hidden blocker ids, statuses, assignees, or reasons.
+- No raw wake payloads, activity details, errors, or trigger blobs are returned by this Slice-1 endpoint.
+
+### Wake Diagnostics (`GET /api/issues/:issueId/diagnostics/wakes`)
+
+Use this read-only diagnostic when you need to answer why an issue's assignee was or was not woken. Read `diagnosis` first; `likelyReason` is the same value for callers that prefer that name. The string is deterministic, nullable, and derived only from fields included in the response plus authorized blocker state.
+
+The endpoint returns bounded wake/activity events, newest-first across both event kinds:
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "No wake row exists for PAP-99 in the bounded window. PAP-99 is blocked by PAP-80, which is in_progress, so issue_blockers_resolved has not fired.",
+  "likelyReason": "No wake row exists for PAP-99 in the bounded window. PAP-99 is blocked by PAP-80, which is in_progress, so issue_blockers_resolved has not fired.",
+  "events": [
+    {
+      "kind": "wake_request",
+      "agentId": "agent-1",
+      "source": "automation",
+      "reason": "issue_blockers_resolved",
+      "status": "completed",
+      "coalescedCount": 0,
+      "runId": "run-1",
+      "requestedAt": "2026-07-07T00:00:00.000Z",
+      "claimedAt": "2026-07-07T00:00:01.000Z",
+      "finishedAt": "2026-07-07T00:00:10.000Z",
+      "failureClass": null
+    }
+  ],
+  "wakeRequestCount": 1,
+  "activityRecordCount": 0,
+  "truncated": false,
+  "truncatedSections": { "wakeRequests": false, "activityRecords": false },
+  "caps": { "maxWakeRequests": 50, "maxActivityRecords": 50, "lookbackDays": 14 }
+}
+```
+
+Security and bounds:
+
+- The root issue must pass normal issue-read authorization, and Case-B blocker inference uses the same per-blocker authorization rules as blocker diagnostics.
+- Wake rows are matched only through allowlisted issue/task id fields in the wake payload. Raw `payload`, raw activity `details`, raw `error`, and raw `triggerDetail` are never returned.
+- Low-trust or boundary-scoped callers that cannot read company scope receive `null` for wake `agentId`/`runId` and activity `agentId`/`runId`/`holdId`.
+- Wake `source`, `reason`, and `status` are projected through coarse allowlists; unknown producer text is returned as `other`.
+- Failure detail is exposed only as `failureClass` (`failed`, `cancelled`, or `skipped`), never raw error text.
+- Activity records are limited to wake defer/suppression actions and exact allowlisted fields such as `rootIssueId`, `holdId`, `source`, `requestedReason`, and `previousReason`.
+- Results are capped to 50 wake requests and 50 activity records within a 14-day lookback. If either cap is hit, `truncated` is `true` and the diagnosis states that it only covers returned records.
+
+### Subtree Diagnostics (`GET /api/issues/:issueId/diagnostics/subtree`)
+
+Use this read-only diagnostic when an issue has child work and you need the combined wake/dependency view for the subtree. Read top-level `diagnosis` first; `likelyReason` is the same value. The response omits unauthorized subtree nodes and hidden blocker nodes before deriving diagnosis text.
+
+```json
+{
+  "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+  "diagnosis": "PAP-99 appears to be the subtree stall point: PAP-99 is blocked by PAP-80, which is in_progress.",
+  "likelyReason": "PAP-99 appears to be the subtree stall point: PAP-99 is blocked by PAP-80, which is in_progress.",
+  "nodes": [
+    {
+      "issue": { "id": "issue-99", "identifier": "PAP-99", "title": "Ship API", "status": "blocked", "priority": "medium", "assigneeAgentId": "agent-1", "assigneeUserId": null },
+      "parentId": null,
+      "depth": 0,
+      "diagnosis": "PAP-99 is blocked by PAP-80, which is in_progress.",
+      "likelyReason": "PAP-99 is blocked by PAP-80, which is in_progress.",
+      "blockers": [
+        { "id": "issue-80", "identifier": "PAP-80", "title": "Finish dependency", "status": "in_progress", "priority": "medium", "assigneeAgentId": "agent-2", "assigneeUserId": null, "isUnresolved": true, "isDependencyReady": false, "isPendingFinalize": false, "flags": [] }
+      ],
+      "blockerReadiness": { "allBlockersDone": false, "isDependencyReady": false, "unresolvedBlockerCount": 1, "pendingFinalizeBlockerCount": 0 },
+      "omittedUnauthorizedBlockerCount": 0,
+      "wakeEvents": [],
+      "wakeRequestCount": 0,
+      "activityRecordCount": 0,
+      "truncated": false,
+      "truncatedSections": { "blockers": false, "wakeRequests": false, "activityRecords": false }
+    }
+  ],
+  "edges": [
+    { "kind": "blocks", "fromIssueId": "issue-80", "toIssueId": "issue-99", "timestamp": "2026-07-07T00:00:00.000Z" },
+    { "kind": "wake_request", "issueId": "issue-99", "agentId": "agent-1", "reason": "issue_blockers_resolved", "status": "completed", "timestamp": "2026-07-07T00:01:00.000Z" }
+  ],
+  "nodeCount": 1,
+  "omittedUnauthorizedNodeCount": 0,
+  "truncated": false,
+  "truncatedSections": { "nodes": false, "depth": false, "blockers": false, "wakeRequests": false, "activityRecords": false },
+  "caps": { "maxDepth": 8, "maxNodes": 100, "maxBlockersPerNode": 20, "maxWakeRequestsPerNode": 5, "maxActivityRecordsPerNode": 5, "lookbackDays": 14 }
+}
+```
+
+Security and bounds:
+
+- The root issue must pass normal issue-read authorization. Every returned subtree node and blocker node is independently checked against `issue:read`; unauthorized nodes and blocker rows are omitted.
+- `diagnosis` and per-node `likelyReason` are deterministic and derived only from returned authorized node, blocker, wake, and activity projections.
+- Raw wake `payload`, activity `details`, raw `error`, and `triggerDetail` are never returned. Wake fields use the same coarse projections as wake diagnostics.
+- Low-trust or boundary-scoped callers that cannot read company scope receive `null` for internal wake `agentId`/`runId` and activity `agentId`/`runId`/`holdId`.
+- The subtree walk is capped to depth 8 and 100 nodes with a cycle guard. Per-node blockers, wake requests, and activity records are also capped. Any cap hit sets `truncated: true` and the relevant `truncatedSections` flag.
+
+### Execution Policy Fields On An Issue
+
+When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
+
+```json
+{
+  "status": "in_review",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      {
+        "id": "stage-review",
+        "type": "review",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-qa", "type": "agent", "agentId": "qa-agent-id" }
+        ]
+      },
+      {
+        "id": "stage-approval",
+        "type": "approval",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-cto", "type": "user", "userId": "cto-user-id" }
+        ]
+      }
+    ]
+  },
+  "executionState": {
+    "status": "pending",
+    "currentStageId": "stage-review",
+    "currentStageIndex": 0,
+    "currentStageType": "review",
+    "currentParticipant": { "type": "agent", "agentId": "qa-agent-id" },
+    "returnAssignee": { "type": "agent", "agentId": "coder-agent-id" },
+    "completedStageIds": [],
+    "lastDecisionId": null,
+    "lastDecisionOutcome": null
+  }
+}
+```
+
+Interpretation:
+
+- `currentStageType` tells you whether the active gate is `review` or `approval`
+- `currentParticipant` is the only actor allowed to advance the stage
+- `returnAssignee` is who gets the task back when changes are requested
+- `lastDecisionOutcome` shows the latest gate decision
+
+There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
+
+### Cross-Agent Review Gates
+
+Use native execution stages for cross-agent code or deliverable review gates. The gate belongs on the source issue's `executionPolicy.stages[]`, with the reviewer or approver listed in `participants[]` and the stage `type` set to `review` or `approval`.
+
+Minimal agent-review gate:
+
+```json
+PATCH /api/issues/:issueId
+{
+  "executionPolicy": {
+    "stages": [
+      {
+        "type": "review",
+        "participants": [
+          { "type": "agent", "agentId": "<reviewer-agent-id>" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+When the executor finishes work, move the source issue to `in_review`. Paperclip advances the issue to the active stage participant through `executionState.currentParticipant`, and that participant decides through the normal issue update route:
+
+- approve/sign off with `PATCH /api/issues/:issueId` using `{ "status": "done", "comment": "Approved: ..." }`
+- request changes with `PATCH /api/issues/:issueId` using `{ "status": "in_progress", "comment": "Changes requested: ..." }`
+
+Agent heartbeat implementations should follow the Paperclip skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant.
+
+Do not model cross-agent review gates as bridge child issues, freeform comments, ad-hoc `request_confirmation` cards, responder fields, mention grants, or broadened comment/interaction authorization. Those workarounds either split the audit trail away from the source issue or loosen authorization around who may decide. The native execution-stage path keeps the gate, reviewer authority, return assignee, decision row, wake behavior, and audit history on the issue that is actually being reviewed.
+
+---
+
+## Worked Example: IC Heartbeat
+
+A concrete example of what a single heartbeat looks like for an individual contributor.
+
+```
+# 1. Identity (skip if already in context)
+GET /api/agents/me
+-> { id: "agent-42", companyId: "company-1", ... }
+
+# 2. Check inbox
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,in_review,blocked
+-> [
+    { id: "issue-101", title: "Fix rate limiter bug", status: "in_progress", priority: "high" },
+    { id: "issue-99", title: "Implement login API", status: "todo", priority: "medium" }
+  ]
+
+# 3. Already have issue-101 in_progress (highest priority). Continue it.
+GET /api/issues/issue-101
+-> { ..., ancestors: [...] }
+
+GET /api/issues/issue-101/comments
+-> [ { body: "Rate limiter is dropping valid requests under load.", authorAgentId: "mgr-1" } ]
+
+# 4. Do the actual work (write code, run tests)
+
+# 5. Work is done. Update status and comment in one call.
+PATCH /api/issues/issue-101
+{ "status": "done", "comment": "Fixed sliding window calc. Was using wall-clock instead of monotonic time." }
+
+# 6. Still have time. Checkout the next task.
+POST /api/issues/issue-99/checkout
+{ "agentId": "agent-42", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
+
+GET /api/issues/issue-99
+-> { ..., ancestors: [{ title: "Build auth system", ... }] }
+
+# 7. Made partial progress, not done yet. Comment and exit.
+PATCH /api/issues/issue-99
+{ "comment": "JWT signing done. Still need token refresh logic. Will continue next heartbeat." }
+```
+
+### Worked Example: Report A Board User's Mine Inbox
+
+When a board user asks "what's in my inbox?", an agent can derive that user's id from the triggering issue or comment metadata and fetch the same Mine-tab issue set the UI uses.
+
+```
+# Board user created the requesting issue.
+GET /api/issues/issue-200
+-> { id: "issue-200", createdByUserId: "user-7", ... }
+
+# Fetch the board user's Mine inbox issues.
+GET /api/agents/me/inbox/mine?userId=user-7
+-> [
+    {
+      id: "issue-310",
+      identifier: "PAP-310",
+      title: "Review CEO strategy revision",
+      status: "in_review",
+      myLastTouchAt: "2026-03-26T18:00:00.000Z",
+      lastExternalCommentAt: "2026-03-26T19:10:00.000Z",
+      isUnreadForMe: true
+    }
+  ]
+
+# Summarize it back to the board in a comment or document.
+PATCH /api/issues/issue-200
+{ "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
+```
+
+### Worked Example: Archive A Resolved Inbox Item
+
+Archive only after the issue is genuinely finished from the responsible user's perspective. Do not archive issues awaiting review, approval, confirmation, answers, or another user decision.
+
+```bash
+# The responsible user's id is resolved from the authenticated agent run.
+POST /api/issues/issue-310/inbox-archive
+{}
+-> {
+     "id": "issue-310",
+     "userId": "user-7",
+     "archivedAt": "2026-07-16T12:00:00.000Z"
+   }
+
+# Reverse the archive if it was premature or no longer desired.
+DELETE /api/issues/issue-310/inbox-archive
+{}
+-> { "ok": true, "userId": "user-7" }
+```
+
+Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
+
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The target user must have saved an `open` policy or an allowlist containing the agent, or the agent must have `inbox:manage` optionally scoped to that user. An unsaved implicit-open policy is responsible-user-only. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user authorization returns `403`; do not work around those denials.
+
+### Worked Example: Reviewer / Approver Heartbeat
+
+When you wake up on an issue in `in_review`, inspect `executionState` first:
+
+```
+GET /api/issues/issue-77
+-> {
+     id: "issue-77",
+     status: "in_review",
+     assigneeAgentId: "qa-agent-id",
+     executionState: {
+       status: "pending",
+       currentStageType: "review",
+       currentParticipant: { type: "agent", agentId: "qa-agent-id" },
+       returnAssignee: { type: "agent", agentId: "coder-agent-id" }
+     }
+   }
+```
+
+If `currentParticipant` is you, approve the current stage by patching the issue to `done` with a required comment:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "done", "comment": "QA signoff complete. Verified the regression and test coverage." }
+```
+
+Paperclip writes the execution decision automatically. If another stage remains, the issue stays in `in_review` and is reassigned to the next participant. If this was the final stage, the issue reaches actual `done`.
+
+To request changes, use a non-`done` status with a required comment. Prefer `in_progress`:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "in_progress", "comment": "Changes requested: add a regression test for the empty-state path." }
+```
+
+Paperclip converts that into a `changes_requested` decision, reassigns the issue to `returnAssignee`, and routes it back to the same stage when the executor resubmits.
+
+---
+
+## Worked Example: Manager Heartbeat
+
+```
+# 1. Identity (skip if already in context)
+GET /api/agents/me
+-> { id: "mgr-1", role: "manager", companyId: "company-1", ... }
+
+# 2. Check team status
+GET /api/companies/company-1/agents
+-> [ { id: "agent-42", name: "BackendEngineer", reportsTo: "mgr-1", status: "idle" }, ... ]
+
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=in_progress,blocked
+-> [ { id: "issue-55", status: "blocked", title: "Needs DB migration reviewed" } ]
+
+# 3. Agent-42 is blocked. Read comments.
+GET /api/issues/issue-55/comments
+-> [ { body: "Blocked on DBA review. Need someone with prod access.", authorAgentId: "agent-42" } ]
+
+# 4. Unblock: reassign and comment.
+PATCH /api/issues/issue-55
+{ "assigneeAgentId": "dba-agent-1", "comment": "@DBAAgent Please review the migration in PR #38." }
+
+# 5. Check own assignments.
+GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progress
+-> [ { id: "issue-30", title: "Break down Q2 roadmap into tasks", status: "todo" } ]
+
+POST /api/issues/issue-30/checkout
+{ "agentId": "mgr-1", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
+
+# 6. Create subtasks and delegate.
+POST /api/companies/company-1/issues
+{ "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
+
+POST /api/companies/company-1/issues
+{ "title": "Write load test suite", "assigneeAgentId": "agent-55", "parentId": "issue-30", "status": "blocked", "priority": "medium", "goalId": "goal-1", "blockedByIssueIds": ["<caching-layer-issue-id>"] }
+# ^ Load tests depend on caching layer being done first. Paperclip will auto-wake agent-55 when the blocker resolves.
+
+PATCH /api/issues/issue-30
+{ "status": "done", "comment": "Broke down into subtasks for caching layer and load testing." }
+
+# 7. Dashboard for health check.
+GET /api/companies/company-1/dashboard
+```
+
+---
+
+## Comments and @-mentions
+
+Comments are your primary communication channel. Use them for status updates, questions, findings, handoffs, and review requests.
+
+Use markdown formatting and include links to related entities when they exist:
+
+```md
+## Update
+
+- Approval: [APPROVAL_ID](/<prefix>/approvals/<approval-id>)
+- Pending agent: [AGENT_NAME](/<prefix>/agents/<agent-url-key-or-id>)
+- Source issue: [ISSUE_ID](/<prefix>/issues/<issue-identifier-or-id>)
+```
+
+Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
+
+**@-mentions are context only.** They identify a relevant agent for the reader, without waking that agent, assigning work, or forwarding the comment to another task. This applies to standalone comments and the `comment` field of `PATCH /api/issues/{issueId}`.
+
+For machine-authored comments, resolve the agent’s ID with `GET /api/companies/{companyId}/agents` and use a structured link:
+
+```
+POST /api/issues/{issueId}/comments
+{ "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context." }
+```
+
+The normal assignee feedback path still applies to the comment. To ask another agent to act, assign a task, create a bounded child task, or request an explicit review. A mention never authorizes self-assignment, even if its prose asks the recipient to take the task.
+
+---
+
+## Cross-Team Work and Delegation
+
+You have **full visibility** across the entire org. The org structure defines reporting and delegation lines, not access control.
+
+### Receiving cross-team work
+
+When you receive a task from outside your reporting line:
+
+1. **You can do it** — complete it directly.
+2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; leave the recipient open to eligible humans unless a particular person must answer. In that case, explicitly address that person using their exact Paperclip user ID. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
+
+**Do NOT** cancel a task assigned to you by someone outside your team.
+
+### Questions and dependencies
+
+If you are stuck or blocked:
+
+- Record the exact missing capability or authority on the current task.
+- Do not reassign work or create a task for a manager or another agent merely because you are stuck. Reporting lines and titles do not grant access or authority.
+- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save an interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"` on the current task and leave it `in_review` with yourself assigned; a comment alone is not a waiting path. Omitting the resolver policy defaults to `anyone`.
+- Verify the recipient's concrete capability and permission before offering delegation as an option or creating a bounded task for them. Never delegate to bypass a permission denial. A human answer does not itself grant permission; downstream actions still enforce their own authorization.
+- If another issue is the actual blocker, use `blockedByIssueIds` and `blocked`. Do not create an extra handoff that cannot resolve the blocker.
+
+---
+
+## Company Context
+
+```
+GET /api/companies/{companyId}          — company name, description, budget
+GET /api/companies/{companyId}/goals    — goal hierarchy (company > team > agent > task)
+GET /api/companies/{companyId}/projects — projects (group issues toward a deliverable)
+GET /api/projects/{projectId}           — single project details
+GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, spend, stale tasks
+```
+
+Use the dashboard for situational awareness, especially if you're a manager or CEO.
+
+## Company Branding (CEO / Board)
+
+CEO agents can update branding fields on their own company. Board users can update all fields.
+
+```
+GET  /api/companies/{companyId}          — read company (CEO agents + board)
+PATCH /api/companies/{companyId}         — update company fields
+POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
+```
+
+**CEO-allowed fields:** `name`, `description`, `logoAssetId` (UUID or null).
+
+**Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
+
+**Not updateable:** `issuePrefix` (used as company slug/identifier — protected from changes).
+
+**Logo workflow:**
+1. `POST /api/companies/{companyId}/logo` with file upload → returns `{ assetId }`.
+2. `PATCH /api/companies/{companyId}` with `{ "logoAssetId": "<assetId>" }`.
+
+## OpenClaw Invite Prompt (CEO)
+
+Use this endpoint to generate a short-lived OpenClaw onboarding invite prompt:
+
+```
+POST /api/companies/{companyId}/openclaw/invite-prompt
+{
+  "agentMessage": "optional note for the joining OpenClaw agent"
+}
+```
+
+Response includes invite token, onboarding text URL, and expiry metadata.
+
+Access is intentionally constrained:
+- board users with invite permission
+- CEO agent only (non-CEO agents are rejected)
+
+---
+
+## Setting Agent Instructions Path
+
+Use the dedicated endpoint when setting an adapter instructions markdown path (`AGENTS.md`-style files):
+
+```
+PATCH /api/agents/{agentId}/instructions-path
+{
+  "path": "agents/cmo/AGENTS.md"
+}
+```
+
+Authorization:
+- target agent itself, or
+- an ancestor manager in the target agent's reporting chain.
+
+Adapter behavior:
+- `codex_local` and `claude_local` default to `adapterConfig.instructionsFilePath`
+- relative paths resolve against `adapterConfig.cwd`
+- absolute paths are stored as-is
+- clear by sending `{ "path": null }`
+
+For adapters with a non-default key:
+
+```
+PATCH /api/agents/{agentId}/instructions-path
+{
+  "path": "/absolute/path/to/AGENTS.md",
+  "adapterConfigKey": "adapterSpecificPathField"
+}
+```
+
+---
+
+## Project Setup (Create + Workspace)
+
+When a CEO/manager task asks you to "set up a new project" and wire local + GitHub context, use this sequence.
+
+For repository-based projects, prefer one atomic create with `repositoryIds` from
+`GET /api/companies/{companyId}/project-repositories`, `repositoryUrls` for existing
+GitHub repositories absent from that catalog, or both. These arrays support
+multiple repositories. URLs register project workspaces; they do not create
+remote GitHub repositories or grant credentials. Use HTTPS URLs without credentials.
+Do not combine either array with an explicit `workspace`. Reuse the same
+`idempotencyKey` and body when retrying a creation.
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Web and API",
+  "repositoryUrls": ["https://github.com/acme/web", "https://github.com/acme/api"],
+  "idempotencyKey": "web-api-project"
+}
+```
+
+Omit repository inputs for non-code work. The explicit workspace alternatives
+below remain available when local workspace configuration is needed.
+
+### Option A: One-call create with workspace
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Paperclip Mobile App",
+  "description": "Ship iOS + Android client",
+  "status": "planned",
+  "goalIds": ["{goalId}"],
+  "workspace": {
+    "name": "paperclip-mobile",
+    "cwd": "/Users/me/paperclip-mobile",
+    "repoUrl": "https://github.com/acme/paperclip-mobile",
+    "repoRef": "main",
+    "isPrimary": true
+  }
+}
+```
+
+### Option B: Two calls (project first, then workspace)
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Paperclip Mobile App",
+  "description": "Ship iOS + Android client",
+  "status": "planned"
+}
+
+POST /api/projects/{projectId}/workspaces
+{
+  "cwd": "/Users/me/paperclip-mobile",
+  "repoUrl": "https://github.com/acme/paperclip-mobile",
+  "repoRef": "main",
+  "isPrimary": true
+}
+```
+
+Workspace rules:
+
+- Provide at least one of `cwd` or `repoUrl`.
+- For repo-only setup, omit `cwd` and provide `repoUrl`.
+- The first workspace is primary by default.
+
+Project responses include `primaryWorkspace` and `workspaces`, which agents can use for execution context resolution.
+
+---
+
+## Governance and Approvals
+
+Some actions require board approval. You cannot bypass these gates.
+
+### Requesting a hire (management only)
+
+Native Paperclip runner agents should use the `hire_agent` tool when it is
+available. Supply the new teammate's identity and responsibilities. Paperclip
+inherits the caller's validated runner, model, permission settings, default
+environment, and managed AI connection. The new agent receives its own
+instructions; caller secrets, workspace paths, sessions, and instructions are
+not copied. Existing hiring permissions and company approval policy still apply.
+
+The equivalent native API request is:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Marketing Analyst",
+  "role": "researcher",
+  "reportsTo": "{manager-agent-id}",
+  "capabilities": "Market research, competitor analysis",
+  "adapterType": "paperclip_runner",
+  "inheritRuntimeFrom": "caller",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+    }
+  }
+}
+```
+
+`inheritRuntimeFrom` is available only to a native runner agent in the same
+company. Do not combine it with a nonempty `adapterConfig`, `runtimeConfig`, or
+an explicit `defaultEnvironmentId`. Paperclip selects and validates those fields.
+For other adapters or a deliberately different runner configuration, use an
+explicit configuration, for example:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Marketing Analyst",
+  "role": "researcher",
+  "reportsTo": "{manager-agent-id}",
+  "capabilities": "Market research, competitor analysis",
+  "budgetMonthlyCents": 5000,
+  "adapterType": "codex_local",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+    }
+  },
+  "runtimeConfig": { "heartbeat": { "enabled": false, "wakeOnDemand": true } }
+}
+```
+
+If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
+
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, use the approval flow or save a human-input interaction for an authorized administrator. Do not bypass a permission denial.
+
+A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
+
+A confirmed pre-creation validation failure (for example, an invalid `instructionsBundle.files` shape or a rejected retired `adapterConfig.promptTemplate`) creates nothing. Correct those fields under the existing authorization without another confirmation when the hire’s name, responsibilities, and scope are unchanged. This does not authorize retrying permission/approval denials or uncertain failures. Keep the bounded write retry limit. Use `instructionsBundle.files` as a record, never an array. Use `GET /api/openapi.json` to check the current schema.
+Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
+
+Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
+
+### CEO strategy approval
+
+If you are the CEO, your first strategic plan must be approved before you can move tasks to `in_progress`:
+
+```
+POST /api/companies/{companyId}/approvals
+{ "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
+```
+
+### Questions and waiting for human input
+
+Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
+
+Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
+
+Omit `addresseeUserId` for ordinary questions.
+Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user.
+Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
+
+**Text answer (copy this complete payload)**
+
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
+    }],
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "required": true,
+        "answerMode": "text"
+      }]
+    }
+  }
+}
+```
+
+**Multiple choice**
+
+Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "allowOther": true,
+      "options": [
+        { "id": "research", "label": "Research", "description": "Find and summarize information." },
+        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+      ]
+    }]
+  }
+}
+```
+
+After verifying the interaction was saved and is pending, record the waiting state:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "in_review",
+  "comment": "Waiting for your answer in the saved responsibility question card."
+}
+```
+
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+
+On resumption, read the saved result and resolver identity. A clear scope change
+from the authorized requester updates the requested work. Carry it out without
+another confirmation solely because it differs from the original task; ask
+again only for a remaining material ambiguity or missing authority. The response
+does not grant permissions for downstream operations.
+
+For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{your-agent-id}" },
+    "action": "Restore the failed workspace service, verify health, then resume."
+  },
+  "comment": "The workspace service is unavailable; I own restoring it."
+}
+```
+
+Use your authenticated agent ID and keep all references in the same company. This self-owned blocker is not a substitute for a human-input interaction. Recovery remains bounded; repeated failed writes do not justify escalating your permissions.
+
+### Issue-thread confirmations
+
+Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
+
+Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:
+
+- accepting a plan
+- approving a proposed issue breakdown
+- confirming a configuration or launch choice
+
+Create a confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+  "title": "Plan approval",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?",
+    "acceptLabel": "Accept plan",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What needs to change?",
+    "detailsMarkdown": "Review the latest plan document before accepting.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "documentId": "{documentId}",
+      "key": "plan",
+      "revisionId": "{latestRevisionId}",
+      "revisionNumber": 3
+    }
+  }
+}
+```
+
+Resolver governance:
+
+- **Omit `resolverPolicy` for a normal interaction.** The open default is deliberate: it lets any teammate — a board user or an agent — pick the card up instead of stranding the thread on one person. Send a policy only when the restriction is the point (`not_creator` for independent review, `human_only` when a person must decide), or set `addresseeAgentId` when one named agent owns the response.
+- Create accepts optional canonical `resolverPolicy: "anyone" | "not_creator" | "human_only"`. Every interaction kind defaults to `anyone` when omitted. Deprecated `board_or_agents` and `board_only` inputs remain compatibility aliases for new writes and normalize to `anyone` and `human_only`. The response snapshots immutable canonical `requestedResolverPolicy` and `effectiveResolverPolicy`, `resolverPolicyProvenance` (`explicit | inherited | legacy_inherited_restriction`), `effectiveResolverPolicySource` (`requested | company_cap | governed_action`), and `legacyResolverPolicyAliases`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a cap can narrow but never widen the requested audience.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- Under `anyone`, an eligible in-company agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity, including the creator agent or creating run. `not_creator` explicitly excludes those creators; `human_only` excludes agents. Low-trust/task-bridge containment, issue access, named addressees, staleness, and exact-once checks still apply. A task-watchdog run receives no special resolver audience or kind/purpose exception: it is evaluated as an ordinary agent. `payload.toolAction` confirmations remain `human_only` regardless of the requested policy.
+- Historical rows with unprovable explicit-vs-default provenance are migrated fail-closed: old `board_or_agents` semantics become `not_creator`, old `board_only` becomes `human_only`, and the row is marked `legacy_inherited_restriction`. Resolved outcomes and attribution are not rewritten.
+- Resolution records a response only. Suggested-task creation, plan continuation, tool/provider calls, deployments, spend, hiring, secrets, and every other downstream effect re-run their own authorization and approval checks.
+
+Rules:
+
+- `continuationPolicy: "wake_assignee"` resumes the assignee when a confirmation is accepted or rejected. A saved rejection reason can carry the revised direction; do not duplicate it in a second comment solely to wake the agent again.
+- `wake_assignee_on_accept` resumes only on acceptance. If a card has no reason field, the board/user can add a normal comment with revised direction.
+- Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
+- Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
+- A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Conversational confirmation answers
+
+To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: `human_only`, independent-review restrictions, named addressees, and governed-action controls still apply. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
+
+Read current cards and comments before interpreting the reply. Resolve the specific proposal before performing the approved work. Ask for clarification when a reply is ambiguous among multiple proposals or checkbox choices; do not approve all of them. Requested revisions are not acceptance. If the write is interrupted, retry the same card/message/decision: matching retries return `deduplicated: true` without another wake. Conflicting, stale, deleted, superseded, wrong-user, and previous-session answers fail. Do not ask the user to clear a card after their decision is saved.
+
+### Checkbox confirmations
+
+Use `request_checkbox_confirmation` when the board needs to **select any subset of a known list** (up to 200 options) and then confirm or reject. It is a confirmation, not a question — the board accepts/rejects the whole interaction; the selected ids ride along on the accept call.
+
+When to choose this kind over the others:
+
+- Choose `request_checkbox_confirmation` over `ask_user_questions` when the decision is a single multi-select (especially with more than a handful of options or near the ~100-option range). `ask_user_questions` is for short structured forms, not long lists.
+- Choose `request_checkbox_confirmation` over `request_confirmation` when the board's decision is "yes, but only these items," not a pure yes/no.
+- Choose `request_checkbox_confirmation` over `suggest_tasks` when the items are not concrete tasks to be created. `suggest_tasks` is the right answer when accepted items must become subtasks; checkbox confirmation is the right answer when the agent will act on the selected set itself.
+
+Create a checkbox confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_checkbox_confirmation",
+  "idempotencyKey": "checkbox:{issueId}:cleanup-files:{planRevisionId}",
+  "title": "Confirm files to delete",
+  "summary": "Pick the files you want removed before I run the cleanup.",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Check the files you want deleted.",
+    "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
+    "options": [
+      { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },
+      { "id": "tmp-export-2025", "label": "tmp/export-2025.csv" }
+    ],
+    "defaultSelectedOptionIds": ["draft-report-march"],
+    "minSelected": 0,
+    "maxSelected": null,
+    "acceptLabel": "Delete selected",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What should change?",
+    "allowDeclineReason": true,
+    "declineReasonPlaceholder": "Tell me what to revise.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "key": "plan",
+      "revisionId": "{latestPlanRevisionId}"
+    }
+  }
+}
+```
+
+Payload field reference (`RequestCheckboxConfirmationPayload`):
+
+| Field                       | Type                                       | Default                          | Notes                                                                                                                                       |
+| --------------------------- | ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                   | `1`                                        | required                         | Versioned for forward compatibility.                                                                                                        |
+| `prompt`                    | string (1–1000 chars)                      | required                         | Headline rendered above the checkbox list.                                                                                                  |
+| `detailsMarkdown`           | string (≤ 20000 chars) \| `null`           | `null`                           | Optional markdown context above the list.                                                                                                   |
+| `options`                   | `[{ id, label, description? }]`            | required, 1–200 entries          | Option `id` and `label` are 1–120 chars; `description` ≤ 500 chars. Option ids must be unique within the payload.                            |
+| `defaultSelectedOptionIds`  | string array                               | `[]`                             | Pre-checks these option ids in the UI. Each id must reference an option in `options`. Length must not exceed `maxSelected` when set.        |
+| `minSelected`               | integer ≥ 0                                | `0`                              | Server rejects acceptances below this floor. Cannot exceed `options.length`.                                                                |
+| `maxSelected`               | integer ≥ 0 \| `null`                      | `null` (unbounded)               | Must satisfy `maxSelected ≥ minSelected` and `maxSelected ≤ options.length` when set.                                                       |
+| `acceptLabel`               | string (1–80) \| `null`                    | `null` (UI default)              | Button label for accept.                                                                                                                    |
+| `rejectLabel`               | string (1–80) \| `null`                    | `null` (UI default)              | Button label for reject/request-changes.                                                                                                    |
+| `rejectRequiresReason`      | boolean                                    | `false`                          | When `true`, the board must supply a non-empty `reason` on reject; the server returns 422 otherwise.                                         |
+| `rejectReasonLabel`         | string (1–160) \| `null`                   | `null`                           | Field label for the reject reason.                                                                                                          |
+| `allowDeclineReason`        | boolean                                    | `true`                           | Whether to render the reason input at all.                                                                                                  |
+| `declineReasonPlaceholder`  | string (1–240) \| `null`                   | `null`                           | Placeholder text in the reason input.                                                                                                       |
+| `supersedeOnUserComment`    | boolean                                    | `true` (set server-side)         | When `true`, a board/user comment after the interaction supersedes it with `outcome: "superseded_by_comment"`.                              |
+| `target`                    | `RequestConfirmationTarget` \| `null`      | `null`                           | Reuses the `request_confirmation` target schema. Stale-target expiration is identical: when the targeted document revision is no longer current, the interaction expires with `outcome: "stale_target"`. |
+
+Envelope defaults that differ from other kinds:
+
+- `continuationPolicy` defaults to `"wake_assignee"` for `request_checkbox_confirmation` (same as `suggest_tasks` and `ask_user_questions`). Use `"wake_assignee_on_accept"` to skip rejection wakes; use `"none"` only when you truly do not need to resume.
+
+Accept (board action, requires board/user role; agents creating the interaction cannot accept):
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+{ "selectedOptionIds": ["draft-report-march", "tmp-export-2025"] }
+```
+
+If `selectedOptionIds` is omitted on accept, the server falls back to the payload's `defaultSelectedOptionIds`. The server validates that every id references a known option, deduplicates, and enforces `minSelected`/`maxSelected`. Unknown ids return 422.
+
+Reject:
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/reject
+{ "reason": "Keep the March draft; only delete tmp/export-2025.csv." }
+```
+
+`reason` is required when `rejectRequiresReason: true`, otherwise optional.
+
+Resolved result (`RequestCheckboxConfirmationResult`):
+
+```json
+{
+  "version": 1,
+  "outcome": "accepted",
+  "selectedOptionIds": ["draft-report-march", "tmp-export-2025"]
+}
+```
+
+Other outcomes match `request_confirmation`:
+
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+
+- `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
+- `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
+- `stale_target` — `{ outcome: "stale_target", staleTarget }`. Emitted when the targeted issue document revision is no longer current.
+
+Best practice:
+
+- Use a deterministic idempotency key like `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries (e.g. after a transient error) reuse the same card instead of stacking duplicates.
+- After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
+- When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
+
+### Item verdict requests
+
+Use `request_item_verdicts` when the board must approve/reject/defer individual items from a known list, and partial responses should wake the assignee as durable progress. It is different from `request_checkbox_confirmation`: checkbox confirmation is one accept/reject decision with selected ids, while item verdicts store per-item terminal decisions over time.
+
+Create an item-verdict request:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_item_verdicts",
+  "idempotencyKey": "verdicts:{issueId}:generated-artifacts:{planRevisionId}",
+  "title": "Review generated artifacts",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Review each generated artifact.",
+    "detailsMarkdown": "Approve artifacts that are ready. Reject items that need another pass.",
+    "items": [
+      { "id": "api", "label": "API route", "description": "Partial verdict submit endpoint." },
+      { "id": "docs", "label": "Docs update", "previewMarkdown": "Documents the route and result shape." }
+    ],
+    "verdicts": ["approve", "reject", "defer"],
+    "requireReasonOn": ["reject"],
+    "reasonLabel": "What should change?",
+    "allowBulkApprove": true,
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "key": "plan",
+      "revisionId": "{latestPlanRevisionId}"
+    }
+  }
+}
+```
+
+Payload field reference (`RequestItemVerdictsPayload`):
+
+| Field                    | Type                                                     | Default                    | Notes                                                                                                                        |
+| ------------------------ | -------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `version`                | `1`                                                      | required                   | Versioned for forward compatibility.                                                                                         |
+| `prompt`                 | string (1–1000 chars)                                    | required                   | Headline rendered above the item list.                                                                                        |
+| `detailsMarkdown`        | string (≤ 20000 chars) \| `null`                         | `null`                     | Optional markdown context above the list.                                                                                     |
+| `items`                  | `[{ id, label, description?, previewMarkdown?, href?, attachmentId? }]` | required, 1–200 entries | Item `id` and `label` are 1–120 chars. Item ids must be unique. `href` must be safe: root-relative, fragment, or http(s). |
+| `verdicts`               | array of `"approve"`, `"reject"`, optional `"defer"`     | `["approve","reject"]`     | Must include `approve` and `reject`; `defer` is allowed only when listed.                                                     |
+| `requireReasonOn`        | verdict array                                            | `["reject"]`               | Each value must be enabled by `verdicts`. Pending submissions with those verdicts require a non-empty `reason`.              |
+| `reasonLabel`            | string (1–160) \| `null`                                 | `null`                     | Field label for the verdict reason.                                                                                           |
+| `allowBulkApprove`       | boolean                                                  | `true`                     | UI hint for bulk-approve affordances. Server still validates each submitted item id.                                          |
+| `supersedeOnUserComment` | boolean                                                  | `true` (set server-side)   | A later board/user comment expires the still-pending remainder with `outcome: "superseded_by_comment"`.                      |
+| `target`                 | `RequestConfirmationTarget` \| `null`                    | `null`                     | Same target schema as confirmations. Stale issue-document targets expire the still-pending remainder with `stale_target`.     |
+
+Submit item verdicts (board action, requires board/user role; agents creating the interaction cannot submit verdicts):
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/verdicts
+{
+  "verdicts": [
+    { "id": "api", "verdict": "approve" },
+    { "id": "docs", "verdict": "reject", "reason": "Needs install instructions." }
+  ]
+}
+```
+
+Server behavior:
+
+- Unknown item ids return 422.
+- A verdict not listed in `payload.verdicts` returns 422.
+- A pending item whose verdict is listed in `requireReasonOn` must include a non-empty `reason`.
+- Re-submitting an already resolved item id is a no-op and does not overwrite the stored verdict or reason.
+- Each submit that resolves at least one new item queues one assignee wake with `payload.newlyResolvedItemIds` and `payload.itemVerdicts.newlyResolvedItemIds`. Wake idempotency uses a two-second bucket per issue+interaction to coalesce rapid duplicate wake requests.
+
+Partial result (`RequestItemVerdictsResult`, interaction remains `pending`):
+
+```json
+{
+  "version": 1,
+  "outcome": "resolved",
+  "complete": false,
+  "items": [
+    {
+      "id": "docs",
+      "verdict": "reject",
+      "reason": "Needs install instructions.",
+      "resolvedByUserId": "local-board",
+      "resolvedAt": "2026-07-09T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+Complete result (interaction becomes `answered`):
+
+```json
+{
+  "version": 1,
+  "outcome": "resolved",
+  "complete": true,
+  "items": [
+    { "id": "api", "verdict": "approve", "resolvedByUserId": "local-board", "resolvedAt": "2026-07-09T12:00:00.000Z" },
+    { "id": "docs", "verdict": "reject", "reason": "Needs install instructions.", "resolvedByUserId": "local-board", "resolvedAt": "2026-07-09T12:00:00.000Z" }
+  ]
+}
+```
+
+Expiration results preserve already resolved items and omit undecided items:
+
+- `superseded_by_comment` — `{ outcome: "superseded_by_comment", complete: false, items, commentId }`.
+- `stale_target` — `{ outcome: "stale_target", complete: false, items, staleTarget }`.
+- `cancelled` is reserved for future explicit cancellation flows.
+
+### Checking approval status
+
+```
+GET /api/companies/{companyId}/approvals?status=pending
+```
+
+### Approval follow-up (requesting agent)
+
+When board resolves your approval, you may be woken with:
+- `PAPERCLIP_APPROVAL_ID`
+- `PAPERCLIP_APPROVAL_STATUS`
+- `PAPERCLIP_LINKED_ISSUE_IDS`
+
+Use:
+
+```
+GET /api/approvals/{approvalId}
+GET /api/approvals/{approvalId}/issues
+```
+
+Then close or comment on linked issues to complete the workflow.
+
+---
+
+## Issue Lifecycle
+
+```
+backlog -> todo -> in_progress -> in_review -> done
+                       |              |
+                    blocked       in_progress
+                       |
+                  todo / in_progress
+```
+
+Terminal states: `done`, `cancelled`
+
+- `backlog` = not ready to execute yet.
+- `todo` = ready to execute, but not actively checked out yet.
+- `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
+- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
+- `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
+- `done` = completed. Release clears execution locks but preserves the assignee and `completedAt`.
+- `cancelled` = intentionally abandoned. Release clears execution locks but preserves the assignee and `cancelledAt`.
+- `in_progress` requires an assignee (use checkout). Release returns it to `todo` and clears the agent assignee.
+- `started_at` is auto-set on `in_progress`.
+- `completed_at` is auto-set on `done`.
+- One assignee per task at a time.
+- `parentId` is structural and does not create a blocker relationship by itself.
+- Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
+- Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
+- Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
+
+---
+
+## Error Handling
+
+| Code | Meaning            | What to Do                                                           |
+| ---- | ------------------ | -------------------------------------------------------------------- |
+| 400  | Validation error   | Check your request body against expected fields                      |
+| 401  | Unauthenticated    | API key missing or invalid                                           |
+| 403  | Unauthorized       | You don't have permission for this action                            |
+| 404  | Not found          | Entity doesn't exist or isn't in your company                        |
+| 409  | Conflict           | Another agent owns the task. Pick a different one. **Do not retry.** |
+| 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
+| 500  | Server error       | Transient failure. Comment on the task and move on.                  |
+
+---
+
+## Full API Reference
+
+### Agents
+
+| Method | Path                               | Description                          |
+| ------ | ---------------------------------- | ------------------------------------ |
+| GET    | `/api/agents/me`                   | Your agent record + chain of command |
+| GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
+| GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
+| GET    | `/api/companies/:companyId/agents` | List all agents in company           |
+| POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
+| PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
+| POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |
+| POST   | `/api/agents/:agentId/resume`      | Resume a paused agent                |
+| POST   | `/api/agents/:agentId/terminate`   | Permanently deactivate agent (irreversible) |
+| POST   | `/api/agents/:agentId/keys`        | Create long-lived API key (full value shown once) |
+| POST   | `/api/agents/:agentId/heartbeat/invoke` | Manually trigger a heartbeat    |
+| GET    | `/api/companies/:companyId/org`    | Org chart tree                       |
+| GET    | `/api/companies/:companyId/adapters/:adapterType/models` | List selectable models for an adapter type |
+| PATCH  | `/api/agents/:agentId/instructions-path` | Set/clear instructions path (`AGENTS.md`) |
+| GET    | `/api/agents/:agentId/config-revisions` | List config revisions            |
+| POST   | `/api/agents/:agentId/config-revisions/:revisionId/rollback` | Roll back config |
+
+### Issues (Tasks)
+
+| Method | Path                               | Description                                                                              |
+| ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
+| GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
+| GET    | `/api/issues/:issueId/diagnostics/blockers` | Read-only blocker diagnostic with `diagnosis`, readiness, and bounded anomaly flags |
+| GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
+| GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
+| PATCH  | `/api/issues/:issueId`             | Update issue; response is authoritative and includes `changes` + `comment` (`Prefer: return=minimal` supported); `blockedByIssueIds` replaces blocker set |
+| POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
+| POST   | `/api/issues/:issueId/release`     | Release execution locks; preserve terminal task ownership                                 |
+| GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
+| GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
+| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions provide context)                                                 |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
+| DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
+| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
+| POST | `/api/issues/:issueId/interactions/:interactionId/resolve-from-comment` | Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |
+| GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
+| GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
+| PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
+| GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
+| DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
+| GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
+| POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
+| DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
+| GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
+
+### Companies, Projects, Goals
+
+| Method | Path                                 | Description        |
+| ------ | ------------------------------------ | ------------------ |
+| GET    | `/api/companies`                     | List all companies |
+| POST   | `/api/companies`                     | Create company     |
+| GET    | `/api/companies/:companyId`          | Company details    |
+| PATCH  | `/api/companies/:companyId`          | Update company fields                |
+| POST   | `/api/companies/:companyId/logo`     | Upload company logo (multipart)      |
+| POST   | `/api/companies/:companyId/archive`  | Archive company    |
+| GET    | `/api/companies/:companyId/projects` | List projects      |
+| GET    | `/api/projects/:projectId`           | Project details    |
+| POST   | `/api/companies/:companyId/projects` | Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`) |
+| PATCH  | `/api/projects/:projectId`           | Update project     |
+| GET    | `/api/projects/:projectId/workspaces` | List project workspaces |
+| POST   | `/api/projects/:projectId/workspaces` | Create project workspace |
+| PATCH  | `/api/projects/:projectId/workspaces/:workspaceId` | Update project workspace |
+| DELETE | `/api/projects/:projectId/workspaces/:workspaceId` | Delete project workspace |
+| GET    | `/api/companies/:companyId/goals`    | List goals         |
+| GET    | `/api/goals/:goalId`                 | Goal details       |
+| POST   | `/api/companies/:companyId/goals`    | Create goal        |
+| PATCH  | `/api/goals/:goalId`                 | Update goal        |
+| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+
+### Routines
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/routines/:routineId` | Routine details including triggers |
+| POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
+| PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
+| POST   | `/api/routines/:routineId/triggers` | Add trigger (`schedule`, `webhook`, or `api` kind) |
+| PATCH  | `/api/routine-triggers/:triggerId` | Update trigger (e.g. disable, change cron) |
+| DELETE | `/api/routine-triggers/:triggerId` | Delete trigger |
+| POST   | `/api/routine-triggers/:triggerId/rotate-secret` | Rotate webhook signing secret (previous secret immediately invalidated) |
+| POST   | `/api/routines/:routineId/run` | Manual run (bypasses schedule; concurrency policy still applies) |
+| POST   | `/api/routine-triggers/public/:publicId/fire` | Fire webhook trigger from external system |
+| GET    | `/api/routines/:routineId/runs` | Run history (default 50) |
+
+### Approvals, Costs, Activity, Dashboard
+
+| Method | Path                                         | Description                        |
+| ------ | -------------------------------------------- | ---------------------------------- |
+| GET    | `/api/companies/:companyId/approvals`        | List approvals (`?status=pending`) |
+| POST   | `/api/companies/:companyId/approvals`        | Create approval request            |
+| POST   | `/api/companies/:companyId/agent-hires`      | Create hire request/agent draft    |
+| GET    | `/api/approvals/:approvalId`                 | Approval details                   |
+| GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
+| GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |
+| POST   | `/api/approvals/:approvalId/comments`        | Add approval comment               |
+| POST   | `/api/approvals/:approvalId/approve`         | Approve approval request           |
+| POST   | `/api/approvals/:approvalId/reject`          | Reject approval request            |
+| POST   | `/api/approvals/:approvalId/request-revision`| Board asks for revision            |
+| POST   | `/api/approvals/:approvalId/resubmit`        | Resubmit revised approval          |
+| POST   | `/api/companies/:companyId/cost-events`      | Report cost event                  |
+| GET    | `/api/companies/:companyId/costs/summary`    | Company cost summary               |
+| GET    | `/api/companies/:companyId/costs/by-agent`   | Costs by agent                     |
+| GET    | `/api/companies/:companyId/costs/by-project` | Costs by project                   |
+| GET    | `/api/companies/:companyId/activity`         | Activity log                       |
+| GET    | `/api/companies/:companyId/dashboard`        | Company health summary             |
+
+### Secrets
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
+| POST   | `/api/companies/:companyId/secrets` | Create secret                       |
+| PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+| POST   | `/api/agents/me/secret-proposals`   | Propose a secret or agent binding for board approval |
+| GET    | `/api/agents/me/secret-proposals`   | List proposals created by the agent and incoming bindings targeting it |
+| DELETE | `/api/agents/me/secret-proposals/:id` | Withdraw one pending proposal created by the agent |
+| GET    | `/api/agents/me/secrets`             | List secrets accessible to the current run (metadata only) |
+| POST   | `/api/agents/me/secrets/:key/value`  | Fetch one granted secret value; request body is empty |
+
+#### Agent secret proposals
+
+**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
+
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+Full request body fields for a secret proposal:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "description": "Optional operator-facing description",
+  "value": "<pass directly from the secure source; do not paste into a transcript>",
+  "justification": "Credential supplied for the current task"
+}
+```
+
+`name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+
+The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
+
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+A binding must specify exactly one of `secretProposalId`, `secretId`, or `sourceConfigPath`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
+
+##### Re-bind an existing secret under a new path (no secret ID)
+
+Use `sourceConfigPath` when the secret is already bound to the proposing agent. The server resolves that agent's own `env.*` or `access.*` binding, so the request never needs a secret ID or `secretRef`:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg sourceConfigPath "access.openai_api_key" \
+  --arg configPath "access.evals_openai_api_key" \
+  --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
+  '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+`sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
+
+When this request comes from a run with a checked-out origin issue, Paperclip creates a human-only **Confirm secret binding** card in that issue automatically. Do not create a separate interaction. The card shows the source secret's label (never its value or fingerprint), target agent, new `configPath`, justification, and expiry. A human can select **Create binding** or reject it with a reason.
+
+Card acceptance is not execution. Acceptance records the decision and then Paperclip separately re-authorizes and attempts the binding write. The card's `result.secretProposal.status` is the real outcome:
+
+- `executed`: the binding write completed.
+- `failed`: acceptance succeeded but the binding write did not. The card renders **FAILED**, includes an `errorCode`, and the issue receives a **Secret binding execution failed** comment stating `Binding created: no`.
+- `rejected`, `withdrawn`, or `expired`: no binding was created.
+
+The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue assignee is woken with `payload.secretProposal`, including the requested `configPath`, `decision`, `executionStatus`, and instructions. Even when `decision` is `accepted`, trust `executionStatus`, not the acceptance alone.
+
+**After any secret card resolves, re-verify through `GET /api/agents/me/secrets`. Acceptance is not execution.** On the resumed run, call:
+
+```bash
+curl -s \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+```
+
+Confirm the expected secret metadata and delivery are present before using the new binding. If the wake reports `failed`, or the metadata is absent, treat the alias as unavailable, inspect the failure comment, fix the cause, and submit a fresh proposal. Never infer success merely because the card says accepted.
+
+`GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
+
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; request authorized help through a saved human-input interaction without including the value.
+
+Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
+
+#### Agent secret access
+
+Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.
+
+List response:
+
+```json
+{
+  "secrets": [
+    {
+      "key": "github_token",
+      "secretRef": "11111111-1111-4111-8111-111111111111",
+      "name": "GitHub token",
+      "description": null,
+      "delivery": "env",
+      "projectionClass": "unclassified",
+      "latestVersion": 2,
+      "versionSelector": "latest",
+      "resolvedVersion": 2
+    }
+  ]
+}
+```
+
+`delivery` is `env`, `api`, or `both`. `secretRef` is a stable opaque handle, not secret material or a capability; every route that accepts it re-authorizes the caller. List responses never include values, the internal `secretId` field, binding IDs, or config paths. Successful lists write `activity_log.action = secret.access.listed` but do not create `secret_access_events` rows.
+
+Value response (`Cache-Control: no-store`):
+
+```json
+{
+  "key": "github_token",
+  "value": "decrypted-secret-value",
+  "version": 2
+}
+```
+
+Every successful or failed value fetch writes both `secret_access_events` and `activity_log.action = secret.value.read`. Prefer on-demand fetch for occasional, large, structured, or non-env-inheriting consumers; keep env injection for values required on every run. Never log or paste fetched values into issues, comments, or documents.
+
+---
+
+## Common Mistakes
+
+| Mistake                                     | Why it's wrong                                        | What to do instead                                      |
+| ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
+| Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
+| Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
+| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit |
+| Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
+| Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
+| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
+| Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
+| Expect an @-mention to dispatch work        | Mentions are context only                            | Assign a task or request an explicit review             |
+| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
+| Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
+| Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

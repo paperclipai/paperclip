@@ -1,0 +1,427 @@
+import { describe, expect, it, vi } from "vitest";
+import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import {
+  applyExperimentalSettingsPatch,
+  normalizeExperimentalSettings,
+  resolveWorktreeRunExecutionActivationState,
+} from "../services/instance-settings.js";
+
+describe("instance settings service", () => {
+  it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
+    for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
+      expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableChatConnectors: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableChatConnectors).toBe(true);
+    const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
+    expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
+  });
+  it("ignores retired experimental flags without resetting current settings", () => {
+    expect(normalizeExperimentalSettings({
+      enableEnvironments: true,
+      enableNativeRunner: false,
+      enableManagedSandboxOnly: false,
+      enableIsolatedWorkspaces: true,
+      enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: true,
+      enableBuiltInAgents: true,
+      enableGoalsSidebarLink: true,
+      enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
+      autoRestartDevServerWhenIdle: true,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: false,
+      enableNewestFirstIssueThread: true,
+    })).toEqual({
+      enableEnvironments: true,
+      enableNativeRunner: false,
+      enableManagedSandboxOnly: false,
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
+      enableStreamlinedLeftNavigation: true,
+      enableStreamlinedUi: true,
+      enableApps: true,
+    enableMcpAggregators: true,
+      enableAgentChat: false,
+      enableChatConnectors: false,
+      enableMemoryConnectors: false,
+      enableConferenceRoomChat: false,
+      enableClassicTaskInterface: false,
+      enableExternalObjects: false,
+      enableSmokeLab: false,
+      enablePipelines: false,
+      enableCases: false,
+      enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: true,
+      enableBuiltInAgents: true,
+      enableBetaSkills: false,
+      enableSummaries: false,
+      enableStatusCards: false,
+      enableDecisions: false,
+      enableGoalsSidebarLink: true,
+      enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
+      enableSimplifiedEnglishInteractions: false,
+      enableFirstTaskPlanProposal: false,
+      autoRestartDevServerWhenIdle: true,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: false,
+      enableOwnerInstanceAdmin: false,
+      enableSandboxDuplexBridge: false,
+      enableRunnerPreviewIngress: false,
+      enableWorktreeRunExecution: false,
+      worktreeRunExecutionActivatedAt: null,
+      worktreeRunExecutionActivationInstanceId: null,
+    });
+  });
+
+  it("defaults streamlined UI on without inheriting the retired navigation preference", () => {
+    expect(normalizeExperimentalSettings(undefined).enableStreamlinedUi).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableStreamlinedUi).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: false }).enableStreamlinedUi,
+    ).toBe(true);
+    expect(normalizeExperimentalSettings({ enableStreamlinedUi: false }).enableStreamlinedUi).toBe(false);
+  });
+
+  it("keeps Apps on for empty, legacy, and explicitly disabled stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableApps: false }).enableApps).toBe(true);
+  });
+
+  it("retains the deprecated ingress key for stored-settings compatibility", () => {
+    expect(
+      normalizeExperimentalSettings({ enableRunnerPreviewIngress: true })
+        .enableRunnerPreviewIngress,
+    ).toBe(true);
+  });
+
+  it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableConferenceRoomChat).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableConferenceRoomChat).toBe(false);
+    // Rows persisted before the flag existed (PAP-137) must normalize to off.
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableConferenceRoomChat,
+    ).toBe(false);
+  });
+
+  it("defaults enableClassicTaskInterface to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableClassicTaskInterface).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableClassicTaskInterface).toBe(false);
+    // The retired enableTaskChatRedesign key must not bleed into the new flag:
+    // an install that had the chat redesign ON opted into chat-style, which is
+    // now the default — not into the classic view.
+    expect(
+      normalizeExperimentalSettings({ enableTaskChatRedesign: true }).enableClassicTaskInterface,
+    ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableClassicTaskInterface: true }).enableClassicTaskInterface,
+    ).toBe(true);
+  });
+
+  it("defaults enableSimplifiedEnglishInteractions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(true);
+  });
+
+  it("defaults enableSmokeLab to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSmokeLab).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSmokeLab).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExternalObjects: true }).enableSmokeLab,
+    ).toBe(false);
+  });
+
+  it("defaults enableServerInfoDebugView to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableServerInfoDebugView).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
+  it("defaults enablePaperclipDeveloperMode to false for empty and legacy settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enablePaperclipDeveloperMode).toBe(false);
+    expect(normalizeExperimentalSettings({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableServerInfoDebugView: true })
+        .enablePaperclipDeveloperMode,
+    ).toBe(false);
+  });
+
+  it("defaults enableGoalsSidebarLink to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableGoalsSidebarLink).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableGoalsSidebarLink).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableGoalsSidebarLink,
+    ).toBe(false);
+  });
+
+  it("defaults enableDecisions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableDecisions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableDecisions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableDecisions,
+    ).toBe(false);
+  });
+
+  it("defaults workspace branch repair settings to true for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true })
+        .enableWorkspaceBranchReconcileForward,
+    ).toBe(true);
+    expect(normalizeExperimentalSettings(undefined).enableWorkspaceDirtyQuarantineRepair).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableWorkspaceDirtyQuarantineRepair).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableWorkspaceBranchReconcileForward: false })
+        .enableWorkspaceDirtyQuarantineRepair,
+    ).toBe(true);
+  });
+
+  it("round-trips an enableConferenceRoomChat patch through the update merge", () => {
+    // updateExperimental merges `{ ...normalize(current), ...patch }` and
+    // re-normalizes; emulate that to prove the flag survives the roundtrip
+    // without disturbing other settings.
+    const current = normalizeExperimentalSettings({});
+    const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
+    expect(enabled.enableConferenceRoomChat).toBe(true);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
+
+    const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
+    expect(disabled).toEqual(current);
+  });
+
+  it("rejects non-boolean enableConferenceRoomChat values back to the default", () => {
+    expect(
+      normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
+    ).toBe(false);
+  });
+
+  it("defaults enableBuiltInAgents to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBuiltInAgents).toBe(false);
+    expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
+  });
+
+  it("preserves enableBetaSkills and defaults it off for legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
+  });
+
+  it("sets worktree run execution activation fields on a false to true transition", () => {
+    const activatedAt = new Date("2026-07-10T12:00:00.000Z");
+
+    const next = applyExperimentalSettingsPatch(
+      { enableWorktreeRunExecution: false },
+      { enableWorktreeRunExecution: true },
+      {
+        now: () => activatedAt,
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+
+    expect(next.enableWorktreeRunExecution).toBe(true);
+    expect(next.worktreeRunExecutionActivatedAt).toBe("2026-07-10T12:00:00.000Z");
+    expect(next.worktreeRunExecutionActivationInstanceId).toBe("worktree-instance");
+  });
+
+  it("clears worktree run execution activation fields on a true to false transition", () => {
+    const next = applyExperimentalSettingsPatch(
+      {
+        enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+        worktreeRunExecutionActivationInstanceId: "worktree-instance",
+      },
+      { enableWorktreeRunExecution: false },
+      {
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+
+    expect(next.enableWorktreeRunExecution).toBe(false);
+    expect(next.worktreeRunExecutionActivatedAt).toBeNull();
+    expect(next.worktreeRunExecutionActivationInstanceId).toBeNull();
+  });
+
+  it("refreshes the activation cutoff when worktree run execution is re-toggled", () => {
+    const firstActivation = applyExperimentalSettingsPatch(
+      { enableWorktreeRunExecution: false },
+      { enableWorktreeRunExecution: true },
+      {
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+    const disabled = applyExperimentalSettingsPatch(
+      firstActivation,
+      { enableWorktreeRunExecution: false },
+      {
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+
+    const secondActivation = applyExperimentalSettingsPatch(
+      disabled,
+      { enableWorktreeRunExecution: true },
+      {
+        now: () => new Date("2026-07-10T12:05:00.000Z"),
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+
+    expect(secondActivation.worktreeRunExecutionActivatedAt).toBe("2026-07-10T12:05:00.000Z");
+    expect(secondActivation.worktreeRunExecutionActivatedAt).not.toBe(
+      firstActivation.worktreeRunExecutionActivatedAt,
+    );
+  });
+
+  it("strips client-supplied activation fields before applying experimental patches", () => {
+    const next = applyExperimentalSettingsPatch(
+      { enableWorktreeRunExecution: false },
+      {
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+        worktreeRunExecutionActivationInstanceId: "copied-instance",
+      },
+      {
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      },
+    );
+
+    expect(next.worktreeRunExecutionActivatedAt).toBeNull();
+    expect(next.worktreeRunExecutionActivationInstanceId).toBeNull();
+  });
+
+  it("resolves worktree run execution as armed only when the cutoff matches the current instance", async () => {
+    const experimental = normalizeExperimentalSettings({
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+      worktreeRunExecutionActivationInstanceId: "worktree-instance",
+    });
+
+    await expect(
+      resolveWorktreeRunExecutionActivationState({
+        getExperimental: async () => experimental,
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      }),
+    ).resolves.toEqual({
+      armed: true,
+      cutoff: "2026-07-10T12:00:00.000Z",
+      activationInstanceId: "worktree-instance",
+      reason: null,
+    });
+  });
+
+  it("fails closed when worktree run execution is missing a cutoff", async () => {
+    const experimental = normalizeExperimentalSettings({
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivationInstanceId: "worktree-instance",
+    });
+
+    await expect(
+      resolveWorktreeRunExecutionActivationState({
+        getExperimental: async () => experimental,
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      }),
+    ).resolves.toMatchObject({
+      armed: false,
+      cutoff: null,
+      reason: "missing_cutoff",
+    });
+  });
+
+  it("fails closed when worktree run execution was activated by another instance", async () => {
+    const experimental = normalizeExperimentalSettings({
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+      worktreeRunExecutionActivationInstanceId: "source-instance",
+    });
+
+    await expect(
+      resolveWorktreeRunExecutionActivationState({
+        getExperimental: async () => experimental,
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "target-instance",
+        },
+      }),
+    ).resolves.toMatchObject({
+      armed: false,
+      cutoff: null,
+      activationInstanceId: "source-instance",
+      reason: "instance_id_mismatch",
+    });
+  });
+
+  it("fails closed on settings read errors and avoids reads outside worktree runtimes", async () => {
+    await expect(
+      resolveWorktreeRunExecutionActivationState({
+        getExperimental: async () => {
+          throw new Error("settings unavailable");
+        },
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "true",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      }),
+    ).resolves.toMatchObject({
+      armed: false,
+      cutoff: null,
+      reason: "settings_read_error",
+    });
+
+    const getExperimental = vi.fn<() => Promise<InstanceExperimentalSettings>>();
+    await expect(
+      resolveWorktreeRunExecutionActivationState({
+        getExperimental,
+        runtimeEnv: {
+          PAPERCLIP_IN_WORKTREE: "false",
+          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+        },
+      }),
+    ).resolves.toMatchObject({
+      armed: false,
+      cutoff: null,
+      reason: "not_worktree_runtime",
+    });
+    expect(getExperimental).not.toHaveBeenCalled();
+  });
+
+});

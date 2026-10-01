@@ -1,0 +1,1 @@
+ALTER TABLE "project_workspaces" ALTER COLUMN "cwd" DROP NOT NULL;

@@ -1,0 +1,380 @@
+// @vitest-environment jsdom
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Project } from "@paperclipai/shared";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectDetail } from "./ProjectDetail";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const mockProjectsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  list: vi.fn(),
+  update: vi.fn(),
+}));
+const mockIssuesApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  update: vi.fn(),
+}));
+const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockHeartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn() }));
+const mockBudgetsApi = vi.hoisted(() => ({ overview: vi.fn(), upsertPolicy: vi.fn() }));
+const mockExecutionWorkspacesApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
+const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
+const mockResourceMembershipsApi = vi.hoisted(() => ({
+  listMine: vi.fn(),
+  updateProject: vi.fn(),
+}));
+const mockNavigate = vi.hoisted(() => vi.fn());
+const mockParams = vi.hoisted(() => ({ projectId: "project-1" }));
+const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockIssuesList = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/projects/project-1/plugin-operations",
+  search: "",
+}));
+const mockCompanyContext = vi.hoisted(() => ({
+  companies: [{ id: "company-1", issuePrefix: "PAP" }] as Array<{ id: string; issuePrefix: string }>,
+  selectedCompanyId: "company-1" as string | null,
+}));
+const mockUsePluginSlots = vi.hoisted(() => vi.fn(() => ({ slots: [] as unknown[], isLoading: false })));
+const mockPluginSlotMount = vi.hoisted(() => vi.fn());
+
+vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
+vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("../api/heartbeats", () => ({ heartbeatsApi: mockHeartbeatsApi }));
+vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
+vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
+vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
+vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Navigate: ({ to }: { to: string }) => <div data-testid="navigate">{to}</div>,
+  useLocation: () => ({ pathname: mockLocation.pathname, search: mockLocation.search, hash: "", state: null }),
+  useNavigate: () => mockNavigate,
+  useParams: () => mockParams,
+}));
+
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => ({
+    companies: mockCompanyContext.companies,
+    selectedCompanyId: mockCompanyContext.selectedCompanyId,
+    setSelectedCompanyId: vi.fn(),
+  }),
+}));
+vi.mock("../context/PanelContext", () => ({ usePanel: () => ({ closePanel: vi.fn() }) }));
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
+vi.mock("../context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }) }));
+vi.mock("@/plugins/slots", () => ({
+  PluginSlotMount: (props: unknown) => {
+    mockPluginSlotMount(props);
+    return <div data-testid="plugin-slot-mount" />;
+  },
+  PluginSlotOutlet: () => null,
+  usePluginSlots: mockUsePluginSlots,
+}));
+vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
+vi.mock("../components/ProjectProperties", () => ({
+  ProjectProperties: () => <div data-testid="project-properties"><input aria-label="Unsaved project field" /></div>,
+}));
+vi.mock("../components/BudgetPolicyCard", () => ({
+  BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
+}));
+vi.mock("../components/InlineEditor", () => ({
+  InlineEditor: ({ value, placeholder }: { value?: string; placeholder?: string }) => (
+    <span>{value || placeholder || null}</span>
+  ),
+}));
+vi.mock("../components/ProjectWorkspacesContent", () => ({
+  ProjectWorkspacesContent: () => <div data-testid="project-workspaces" />,
+}));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card">Project summary card</div>;
+  },
+}));
+vi.mock("../components/PageTabBar", () => ({
+  PageTabBar: ({ items }: { items: Array<{ value: string; label: string }> }) => (
+    <div>{items.map((item) => <button key={item.value}>{item.label}</button>)}</div>
+  ),
+}));
+vi.mock("../components/IssuesList", () => ({
+  IssuesList: (props: unknown) => {
+    mockIssuesList(props);
+    return <div data-testid="issues-list" />;
+  },
+}));
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
+function project(overrides: Partial<Project> = {}): Project {
+  const now = new Date("2026-05-01T00:00:00Z");
+  return {
+    id: "project-1",
+    companyId: "company-1",
+    urlKey: "project-1",
+    goalId: null,
+    goalIds: [],
+    goals: [],
+    name: "Managed Project",
+    description: null,
+    status: "in_progress",
+    leadAgentId: null,
+    targetDate: null,
+    color: "#14b8a6",
+    icon: null,
+    env: null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: {
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      repoName: null,
+      localFolder: null,
+      managedFolder: "/tmp/project-1",
+      effectiveLocalFolder: "/tmp/project-1",
+      origin: "managed_checkout",
+    },
+    workspaces: [],
+    primaryWorkspace: null,
+    managedByPlugin: {
+      id: "managed-1",
+      pluginId: "plugin-1",
+      pluginKey: "paperclip.missions",
+      pluginDisplayName: "Missions",
+      resourceKind: "project",
+      resourceKey: "operations",
+      defaultsJson: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+    archivedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("ProjectDetail", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockLocation.pathname = "/projects/project-1/plugin-operations";
+    mockLocation.search = "";
+    mockParams.projectId = "project-1";
+    mockCompanyContext.companies = [{ id: "company-1", issuePrefix: "PAP" }];
+    mockCompanyContext.selectedCompanyId = "company-1";
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
+    mockProjectsApi.get.mockResolvedValue(project());
+    mockProjectsApi.list.mockResolvedValue([project()]);
+    mockIssuesApi.list.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    });
+    mockResourceMembershipsApi.updateProject.mockResolvedValue({
+      resourceType: "project",
+      resourceId: "project-1",
+      state: "left",
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    });
+  });
+
+  afterEach(async () => {
+    await act(() => root?.unmount());
+    root = null;
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it.each(["alias", "other project", "other company"])("preserves a draft only for a same-project route alias (%s)", async target => {
+    const loaded = project({ urlKey: "managed-project" });
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.get.mockResolvedValueOnce(loaded);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const render = () => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>);
+    root = createRoot(container);
+    await act(render);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const draft = container.querySelector<HTMLInputElement>('input[aria-label="Unsaved project field"]');
+    expect(draft).not.toBeNull();
+    draft!.value = "Unsaved repository removal";
+    mockProjectsApi.get.mockImplementation(() => new Promise(() => {}));
+    mockParams.projectId = target === "other project" ? "different-project" : "managed-project";
+    if (target === "other company") mockCompanyContext.selectedCompanyId = "company-2";
+    mockLocation.pathname = `/projects/${mockParams.projectId}/configuration`;
+    await act(render);
+    const after = container.querySelector<HTMLInputElement>('input[aria-label="Unsaved project field"]');
+    if (target === "alias") {
+      expect(after).toBe(draft);
+      expect(after!.value).toBe("Unsaved repository removal");
+    } else {
+      expect(after).toBeNull();
+    }
+    await act(() => queryClient.clear());
+  });
+
+  it("shows managed plugin affordances and filters the operations tab by plugin origin", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Managed by Missions");
+    expect(container.textContent).toContain("Project summary card");
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "project",
+      scopeId: "project-1",
+      title: "Project summary",
+    }));
+    const titleEditor = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Managed Project");
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(titleEditor && summaryCard ? Boolean(titleEditor.compareDocumentPosition(summaryCard) & Node.DOCUMENT_POSITION_FOLLOWING) : false).toBe(true);
+    expect(container.textContent).toContain("Plugin operations");
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      originKindPrefix: "plugin:paperclip.missions",
+    });
+  });
+
+  it("keeps Timeline out of the project task-list controls", async () => {
+    mockLocation.pathname = "/projects/project-1/issues";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const props = mockIssuesList.mock.calls.at(-1)?.[0];
+    expect(props).toEqual(expect.objectContaining({ projectId: "project-1" }));
+    expect(props).not.toHaveProperty("projectTimelineHref");
+  });
+
+  describe("plugin detail-tab deep links", () => {
+    const PLUGIN_TAB = "plugin:paperclipai.plugin-llm-wiki:project-knowledge";
+    const knowledgeSlot = {
+      id: "project-knowledge",
+      type: "detailTab",
+      displayName: "Knowledge",
+      entityTypes: ["project"],
+      pluginId: "plugin-llm-wiki",
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      pluginDisplayName: "LLM Wiki",
+      pluginVersion: "0.2.0",
+    };
+
+    async function renderDetail() {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <ProjectDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    it("keeps a cold deep link on the plugin tab while contributions are still loading", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: true });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+      expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
+    });
+
+    it("does not bounce to the issues tab before the company for the slots query resolves", async () => {
+      // Cold reload race: the slots query is disabled until a company is
+      // known, and a disabled query reports isLoading=false.
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockCompanyContext.companies = [];
+      mockCompanyContext.selectedCompanyId = null;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    });
+
+    it("renders the registered plugin tab for a direct deep link", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [knowledgeSlot], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+      expect(container.querySelector('[data-testid="plugin-slot-mount"]')).not.toBeNull();
+      expect(mockPluginSlotMount).toHaveBeenCalledWith(expect.objectContaining({
+        slot: expect.objectContaining({ id: "project-knowledge", pluginKey: "paperclipai.plugin-llm-wiki" }),
+      }));
+      expect(container.textContent).toContain("Knowledge");
+    });
+
+    it("falls back to the issues tab once contributions load without the requested tab", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')?.textContent)
+        .toBe("/projects/project-1/issues");
+    });
+  });
+});

@@ -1,0 +1,298 @@
+import { registerEmailCommands } from "./commands/client/email.js";
+import { Command } from "commander";
+import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
+import { onboard } from "./commands/onboard.js";
+import { doctor } from "./commands/doctor.js";
+import { envCommand } from "./commands/env.js";
+import { channelsCommand } from "./commands/channels.js";
+import { configure } from "./commands/configure.js";
+import { addAllowedHostname } from "./commands/allowed-hostname.js";
+import { heartbeatRun } from "./commands/heartbeat-run.js";
+import { runCommand } from "./commands/run.js";
+import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
+import { dbBackupCommand } from "./commands/db-backup.js";
+import { registerEnvLabCommands } from "./commands/env-lab.js";
+import { registerContextCommands } from "./commands/client/context.js";
+import { registerCompanyCommands } from "./commands/client/company.js";
+import { registerIssueCommands } from "./commands/client/issue.js";
+import { registerAgentCommands } from "./commands/client/agent.js";
+import { registerProjectCommands } from "./commands/client/project.js";
+import { registerGoalCommands } from "./commands/client/goal.js";
+import { registerApprovalCommands } from "./commands/client/approval.js";
+import { registerActivityCommands } from "./commands/client/activity.js";
+import { registerDashboardCommands } from "./commands/client/dashboard.js";
+import { registerRoutineCommands } from "./commands/routines.js";
+import { registerPipelineCommands } from "./commands/pipelines.js";
+import { registerFeedbackCommands } from "./commands/client/feedback.js";
+import { registerSecretCommands } from "./commands/client/secrets.js";
+import { registerSkillsCommands } from "./commands/client/skills.js";
+import { registerTeamCommands } from "./commands/client/teams.js";
+import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
+import { loadPaperclipEnvFile } from "./config/env.js";
+import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
+import { registerWorktreeCommands } from "./commands/worktree.js";
+import { registerPluginCommands } from "./commands/client/plugin.js";
+import { registerClientAuthCommands } from "./commands/client/auth.js";
+import { registerConnectCommand } from "./commands/client/connect.js";
+import { registerTokenCommands } from "./commands/client/token.js";
+import { registerPromptCommands } from "./commands/client/prompt.js";
+import { registerRunCommands } from "./commands/client/run.js";
+import { registerCostCommands } from "./commands/client/cost.js";
+import { registerWorkspaceCommands } from "./commands/client/workspace.js";
+import { registerAccessCommands } from "./commands/client/access.js";
+import { registerRoutineApiCommands } from "./commands/client/routine-api.js";
+import { registerAdapterCommands } from "./commands/client/adapter.js";
+import { registerManagedAgentCommands } from "./commands/managed-agent.js";
+import { registerAssetCommands } from "./commands/client/asset.js";
+import { registerSkillCommands } from "./commands/client/skill.js";
+import { cliVersion } from "./version.js";
+import { installCommand } from "./commands/install.js";
+import { uninstallCommand } from "./commands/uninstall.js";
+import { updateCommand } from "./commands/update.js";
+import { registerServiceCommands } from "./commands/service.js";
+import { registerConnectionIntentCommands } from "./commands/client/connections.js";
+import {
+  assertTestDriveDatabaseIsolation,
+  prepareTestDriveEnvironment,
+  redactTestDriveArgv,
+  registerTestDriveCommand,
+  type TestDriveOptions,
+} from "./commands/test-drive.js";
+
+const program = new Command();
+const DATA_DIR_OPTION_HELP =
+  "Paperclip data directory root (isolates state from ~/.paperclip)";
+
+program.enablePositionalOptions();
+
+program
+  .name("paperclipai")
+  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .version(cliVersion);
+
+program
+  .command("install")
+  .description("Install Paperclip into a managed per-user CLI store")
+  .option("--canary", "Install the npm canary channel")
+  .option("--version <version>", "Install an exact published npm version")
+  .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
+  .option("--repo <owner/name>", "Override the GitHub repository used with --ref")
+  .option("-y, --yes", "Consent to git-ref code execution and supported shell PATH updates without prompting")
+  .action(installCommand);
+
+program
+  .command("uninstall")
+  .description("Remove the managed CLI install while preserving user data")
+  .action(uninstallCommand);
+
+program
+  .command("update")
+  .alias("upgrade")
+  .description("Check, update, or roll back the Paperclip CLI")
+  .option("--latest", "Switch to the latest stable channel")
+  .option("--canary", "Switch to the canary channel")
+  .option("--version <version>", "Install an exact published version")
+  .option("--rollback", "Flip back to the retained previous managed payload")
+  .option("--check", "Check for an available update without applying it")
+  .option("--dry-run", "Print the action without changing anything")
+  .option("--json", "Print machine-readable output")
+  .option("-y, --yes", "Confirm an explicit downgrade")
+  .option("--no-backup", "Skip the pre-update database backup")
+  .action(updateCommand);
+
+program.hook("preAction", async (_thisCommand, actionCommand) => {
+  const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
+  let dataDirOptions: DataDirOptionLike = options;
+  if (actionCommand.name() === "test-drive") {
+    redactTestDriveArgv(options.apiKey);
+    const prepared = await prepareTestDriveEnvironment({
+      dataDir: options.dataDir,
+      apiKeyEnv: options.apiKeyEnv,
+    });
+    dataDirOptions = { ...options, dataDir: prepared.dataDir };
+  }
+  const optionNames = new Set(actionCommand.options.map((option) => option.attributeName()));
+  applyDataDirOverride(dataDirOptions, {
+    hasConfigOption: optionNames.has("config"),
+    hasContextOption: optionNames.has("context"),
+  });
+  loadPaperclipEnvFile(options.config);
+  if (actionCommand.name() === "test-drive") {
+    assertTestDriveDatabaseIsolation(options.config);
+  }
+  initTelemetryFromConfigFile(options.config);
+});
+
+registerTestDriveCommand(program);
+
+program
+  .command("onboard")
+  .description("Interactive first-run setup wizard")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--bind <mode>", "Quickstart reachability preset (loopback, lan, tailnet)")
+  .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
+  .option("--install-service", "Install and start the background service after onboarding")
+  .option("--no-install-service", "Do not install or suggest the background service")
+  .option("--run", "Start Paperclip immediately after saving config", false)
+  .action(onboard);
+
+program
+  .command("doctor")
+  .description("Run diagnostic checks on your Paperclip setup")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--repair", "Attempt to repair issues automatically")
+  .alias("--fix")
+  .option("-y, --yes", "Skip repair confirmation prompts")
+  .action(async (opts) => {
+    await doctor(opts);
+  });
+
+program
+  .command("env")
+  .description("Print environment variables for deployment")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .action(envCommand);
+
+program
+  .command("channels")
+  .description("Show the release channels and which one this install follows")
+  .option("--json", "Machine-readable output")
+  .action(async (opts) => {
+    await channelsCommand(opts);
+  });
+
+program
+  .command("configure")
+  .description("Update configuration sections")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-s, --section <section>", "Section to configure (llm, database, logging, server, storage, secrets)")
+  .action(configure);
+
+program
+  .command("db:backup")
+  .description("Create a one-off database backup using current config")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--dir <path>", "Backup output directory (overrides config)")
+  .option("--retention-days <days>", "Retention window used for pruning", (value) => Number(value))
+  .option("--filename-prefix <prefix>", "Backup filename prefix", "paperclip")
+  .option("--json", "Print backup metadata as JSON")
+  .action(async (opts) => {
+    await dbBackupCommand(opts);
+  });
+
+program
+  .command("allowed-hostname")
+  .description("Allow a hostname for authenticated/private mode access")
+  .argument("<host>", "Hostname to allow (for example dotta-macbook-pro)")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .action(addAllowedHostname);
+
+const run = program
+  .command("run")
+  .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-i, --instance <id>", "Local instance id (default: default)")
+  .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
+  .option("--repair", "Attempt automatic repairs during doctor", true)
+  .option("--no-repair", "Disable automatic repairs during doctor")
+  .option("--force", "Run even when the same instance is active under the service manager")
+  .action(runCommand);
+
+registerRunCommands(run);
+registerServiceCommands(program);
+
+const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
+
+heartbeat
+  .command("run")
+  .description("Run one agent heartbeat and stream live logs")
+  .requiredOption("-a, --agent-id <agentId>", "Agent ID to invoke")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--context <path>", "Path to CLI context file")
+  .option("--profile <name>", "CLI context profile name")
+  .option("--api-base <url>", "Base URL for the Paperclip server API")
+  .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+  .option(
+    "--source <source>",
+    "Invocation source (timer | assignment | on_demand | automation)",
+    "on_demand",
+  )
+  .option("--trigger <trigger>", "Trigger detail (manual | ping | callback | system)", "manual")
+  .option("--timeout-ms <ms>", "Max time to wait before giving up", "0")
+  .option("--json", "Output raw JSON where applicable")
+  .option("--debug", "Show raw adapter stdout/stderr JSON chunks")
+  .action(heartbeatRun);
+
+registerContextCommands(program);
+registerConnectCommand(program);
+registerConnectionIntentCommands(program);
+registerEmailCommands(program);
+registerCompanyCommands(program);
+registerIssueCommands(program);
+registerAgentCommands(program);
+registerProjectCommands(program);
+registerGoalCommands(program);
+registerTokenCommands(program);
+registerPromptCommands(program);
+registerApprovalCommands(program);
+registerActivityCommands(program);
+registerDashboardCommands(program);
+registerCostCommands(program);
+registerWorkspaceCommands(program);
+registerAccessCommands(program);
+registerRoutineApiCommands(program);
+registerAdapterCommands(program);
+registerManagedAgentCommands(program);
+registerAssetCommands(program);
+registerSkillCommands(program);
+registerRoutineCommands(program);
+registerPipelineCommands(program);
+registerFeedbackCommands(program);
+registerSecretCommands(program);
+registerSkillsCommands(program);
+registerTeamCommands(program);
+registerWorktreeCommands(program);
+registerEnvLabCommands(program);
+registerPluginCommands(program);
+
+const auth = program.command("auth").description("Authentication and bootstrap utilities");
+
+auth
+  .command("bootstrap-ceo")
+  .description("Create a one-time bootstrap invite URL for first instance admin")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--force", "Create new invite even if admin already exists", false)
+  .option("--expires-hours <hours>", "Invite expiration window in hours", (value) => Number(value))
+  .option("--base-url <url>", "Public base URL used to print invite link")
+  .action(bootstrapCeoInvite);
+
+registerClientAuthCommands(auth);
+
+async function main(): Promise<void> {
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));
+
+  let failed = false;
+  try {
+    await program.parseAsync();
+  } catch (err) {
+    failed = true;
+    console.error(err instanceof Error ? err.message : String(err));
+  } finally {
+    await flushTelemetry();
+  }
+
+  if (failed) {
+    process.exit(1);
+  }
+}
+
+void main();

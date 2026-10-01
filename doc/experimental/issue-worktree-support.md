@@ -1,0 +1,78 @@
+# Issue worktree support
+
+Status: experimental, runtime-only, not shipping as a user-facing feature yet.
+
+This branch contains the runtime and seeding work needed for issue-scoped worktrees:
+
+- project execution workspace policy support
+- issue-level execution workspace settings
+- git worktree realization for isolated issue execution
+- optional command-based worktree provisioning
+- seeded worktree fixes for secrets key compatibility
+- seeded project workspace rebinding to the current git worktree
+
+We are intentionally not shipping the UI for this yet. The runtime code remains in place, but the main UI entrypoints are hard-gated off for now.
+
+## What works today
+
+- projects can carry execution workspace policy in the backend
+- issues can carry execution workspace settings in the backend
+- heartbeat execution can realize isolated git worktrees
+- runtime can run a project-defined provision command inside the derived worktree
+- seeded worktree instances can keep local-encrypted secrets working
+- seeded worktree instances can rebind same-repo project workspace paths onto the current git worktree
+
+## Operator default isolation
+
+When both `enableIsolatedWorkspaces` and `enableIsolatedWorkspacesByDefault` are enabled, projects with a configured workspace and no stored execution workspace policy default to isolated worktrees. A project with no configured workspace keeps using its plain managed directory. Tasks without a project also keep their existing behavior.
+
+Explicit project policies and issue workspace settings still take precedence. A request for a Git worktree still requires a valid Git checkout; a missing or invalid checkout fails validation. Trust policy requirements still apply.
+
+## Shared workspace concurrency policy
+
+Projects and individual issues can set `sharedWorkspaceConcurrency` in their execution workspace policy/settings:
+
+- `auto` (the default when absent): allow concurrent shared-workspace runs on `local` and `ssh` environments, and serialize runs on `sandbox` and `plugin` environments. An instance forced to Kubernetes always serializes in `auto` mode.
+- `serialize`: on `sandbox` and `plugin` environments, defer a run while another live run holds the same project workspace, using the `workspace_busy` retry path. Local and SSH folders remain concurrent, even when an existing project or issue policy requests serialization.
+- `allow`: dispatch alongside a live holder on every environment.
+
+Issue settings override the project policy, which overrides the default `auto`. The final execution environment determines whether workspace serialization applies; an instance forced to Kubernetes is a sandbox even if the agent normally runs locally. Local and SSH folder runs never wait for exclusive workspace ownership. Task checkout and per-agent concurrency limits still apply. When concurrency is allowed and a live holder exists, Paperclip adds the holder run and issue to the dispatched task context so agents can coordinate concurrent mutations through commits. The setting is optional JSON policy data, so existing databases require no migration.
+
+## Hidden UI entrypoints
+
+These are the current user-facing UI surfaces for the feature, now intentionally disabled:
+
+- project settings:
+  - `ui/src/components/ProjectProperties.tsx`
+  - execution workspace policy controls
+  - git worktree base ref / branch template / parent dir
+  - provision / teardown command inputs
+
+- issue creation:
+  - `ui/src/components/NewIssueDialog.tsx`
+  - isolated issue checkout toggle
+  - defaulting issue execution workspace settings from project policy
+
+- issue editing:
+  - `ui/src/components/IssueProperties.tsx`
+  - issue-level workspace mode toggle
+  - defaulting issue execution workspace settings when project changes
+
+- agent/runtime settings:
+  - `ui/src/adapters/runtime-json-fields.tsx`
+  - runtime services JSON field, which is part of the broader workspace-runtime support surface
+
+## Why the UI is hidden
+
+- the runtime behavior is still being validated
+- the workflow and operator ergonomics are not final
+- we do not want to expose a partially-baked user-facing feature in issues, projects, or settings
+
+## Re-enable plan
+
+When this is ready to ship:
+
+- re-enable the gated UI sections in the files above
+- review wording and defaults for project and issue controls
+- decide which agent/runtime settings should remain advanced-only
+- add end-to-end product-level verification for the full UI workflow

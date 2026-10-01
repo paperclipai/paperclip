@@ -1,0 +1,69 @@
+import {
+  buildSandboxNpmInstallCommand,
+} from "@paperclipai/adapter-utils";
+
+export const type = "gemini_local";
+export const label = "Gemini CLI";
+
+export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+
+export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
+
+export const models = [
+  { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+];
+
+export const agentConfigurationDoc = `# gemini_local agent configuration
+
+Adapter: gemini_local
+
+Use when:
+- You want Paperclip to run the Gemini CLI locally on the host machine
+- You want Gemini chat sessions resumed across heartbeats with --resume
+- You want Paperclip skills injected locally without polluting the global environment
+
+Don't use when:
+- You need webhook-style external invocation (use http or openclaw_gateway)
+- You only need a one-shot script without an AI coding agent loop (use process)
+- Gemini CLI is not installed on the machine that runs Paperclip
+
+Core fields:
+- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
+- promptTemplate (string, optional): run prompt template
+- model (string, optional): Gemini model id. Defaults to auto.
+- engine (string, optional): defaults to ACP, including legacy unset/"auto" values. Missing prerequisites and execution failures fail the run without changing engines. Set "cli" to explicitly select the CLI engine.
+- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
+- command (string, optional): defaults to "gemini"
+- extraArgs (string[], optional): additional CLI args
+- env (object, optional): KEY=VALUE environment variables
+- agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to gemini --acp
+- mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
+- nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
+- stateDir (string, optional): ACP state directory override when engine="acp"
+- warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
+
+Operational fields:
+- timeoutSec (number, optional): run timeout in seconds
+- graceSec (number, optional): SIGTERM grace period in seconds
+
+Notes:
+- Gemini ACP is the preferred auto lane when Node >=24.11.0 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
+- Runs use --prompt for non-interactive execution, not stdin.
+- The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
+- Sessions resume with --resume when stored session cwd matches the current cwd.
+- Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
+- Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
+`;
