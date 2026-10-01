@@ -6992,7 +6992,34 @@ export function createToolGatewayService(
         clientMetadata,
       });
     }
-    let agentId = row.gateway.agentId;
+    const nativeMetadata = row.gateway.metadata;
+    const nativeAssignment = Object.hasOwn(nativeMetadata ?? {}, "nativeRuntimeAssignmentDigest");
+    const nativeOwner = nativeMetadata?.agentId;
+    if (nativeAssignment && (
+      typeof nativeOwner !== "string" || !uuidPattern.test(nativeOwner) ||
+      typeof nativeMetadata?.nativeRuntimeAssignmentDigest !== "string" ||
+      !/^[a-f0-9]{64}$/.test(nativeMetadata.nativeRuntimeAssignmentDigest) ||
+      (row.gateway.agentId && row.gateway.agentId !== nativeOwner) ||
+      row.token.subjectType !== "heartbeat_run"
+    )) {
+      return recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId, gatewayPublicId: input.gatewayPublicId,
+        bearerToken, reasonCode: "gateway_token_run_context_invalid", clientMetadata,
+      });
+    }
+    if (nativeAssignment) {
+      const [profile] = await db.select({ metadata: toolProfiles.metadata, status: toolProfiles.status })
+        .from(toolProfiles).where(and(eq(toolProfiles.id, row.gateway.profileId), eq(toolProfiles.companyId, row.gateway.companyId))).limit(1);
+      if (profile?.status !== "active" || profile.metadata.source !== "paperclip_runner" ||
+          profile.metadata.agentId !== nativeOwner ||
+          profile.metadata.assignmentDigest !== nativeMetadata!.nativeRuntimeAssignmentDigest) {
+        return recordNamedGatewayAuthFailure({
+          gatewayId: input.gatewayId, gatewayPublicId: input.gatewayPublicId,
+          bearerToken, reasonCode: "gateway_token_run_context_invalid", clientMetadata,
+        });
+      }
+    }
+    let agentId = row.gateway.agentId ?? (nativeAssignment ? nativeOwner as string : null);
     let runId: string | null = null;
     let responsibleUserId: string | null = null;
     let issueId = row.gateway.issueId;
@@ -7036,7 +7063,7 @@ export function createToolGatewayService(
           clientMetadata,
         });
       }
-      if (row.gateway.agentId && row.gateway.agentId !== run.agentId) {
+      if (agentId && agentId !== run.agentId) {
         return recordNamedGatewayAuthFailure({
           gatewayId: input.gatewayId,
           gatewayPublicId: input.gatewayPublicId,
