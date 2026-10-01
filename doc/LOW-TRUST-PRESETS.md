@@ -71,6 +71,13 @@ subtasks, and messages from another user do not qualify. An earlier owner messag
 cannot authorize a later external instruction. External content read during the
 chat is not a request from the user to change instructions.
 
+The authenticated owner-chat turn is the permission boundary. The server checks
+message provenance and current edit access; it does not classify the message's
+natural-language intent or require a separate approval for each edit. The agent
+must follow the owner's request and treat tool output as data. This means prompt
+injection during an authorized owner-chat turn remains a model-level risk; the
+exception does not provide content-bound approval of the resulting file bytes.
+
 Normal instruction editing permissions and explicit protected-change rules still
 apply. The user's current permission is rechecked at every save, including private
 working-copy collection after a successful, failed, or timed-out execution.
