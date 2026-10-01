@@ -1,34 +1,49 @@
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
-/** Select dashboard cards before limiting by count, so repeated runs cannot hide other tasks. */
+const MAX_CANDIDATES_PER_POOL = 1_000;
+const ACTIVE_STATUSES = ["queued", "running"];
+
+/** Select recent dashboard cards without ranking the company's full run history. */
 export async function selectDashboardRunIds(db: Db, companyId: string, limit: number): Promise<string[]> {
   if (limit <= 0) return [];
 
-  const issueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-  const cardKey = sql<string>`coalesce('issue:' || nullif(${issueId}, ''), 'run:' || ${heartbeatRuns.id}::text)`;
-  const activeFirst = sql<number>`case when ${heartbeatRuns.status} in ('queued', 'running') then 0 else 1 end`;
-  const rankedRuns = db
-    .select({
-      id: heartbeatRuns.id,
-      createdAt: heartbeatRuns.createdAt,
-      activeFirst: activeFirst.as("active_first"),
-      cardRank: sql<number>`row_number() over (
-        partition by ${cardKey}
-        order by ${activeFirst}, ${heartbeatRuns.createdAt} desc, ${heartbeatRuns.id} desc
-      )`.as("card_rank"),
-    })
-    .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.companyId, companyId))
-    .as("ranked_dashboard_runs");
+  const columns = {
+    id: heartbeatRuns.id,
+    status: heartbeatRuns.status,
+    createdAt: heartbeatRuns.createdAt,
+    issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+  };
+  const [activeRuns, recentRuns] = await Promise.all([
+    db.select(columns)
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ACTIVE_STATUSES)))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(MAX_CANDIDATES_PER_POOL),
+    db.select(columns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(MAX_CANDIDATES_PER_POOL),
+  ]);
 
-  const selected = await db
-    .select({ id: rankedRuns.id })
-    .from(rankedRuns)
-    .where(eq(rankedRuns.cardRank, 1))
-    .orderBy(rankedRuns.activeFirst, desc(rankedRuns.createdAt), desc(rankedRuns.id))
-    .limit(limit);
+  const candidates = [...new Map([...activeRuns, ...recentRuns].map((run) => [run.id, run])).values()];
+  candidates.sort((a, b) => {
+    const activeOrder = Number(ACTIVE_STATUSES.includes(b.status)) - Number(ACTIVE_STATUSES.includes(a.status));
+    if (activeOrder !== 0) return activeOrder;
+    const createdOrder = b.createdAt.getTime() - a.createdAt.getTime();
+    return createdOrder || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  });
 
-  return selected.map((run) => run.id);
+  const selectedIds: string[] = [];
+  const seenCards = new Set<string>();
+  for (const run of candidates) {
+    const cardKey = run.issueId ? `issue:${run.issueId}` : `run:${run.id}`;
+    if (seenCards.has(cardKey)) continue;
+    seenCards.add(cardKey);
+    selectedIds.push(run.id);
+    if (selectedIds.length === limit) break;
+  }
+  return selectedIds;
 }
