@@ -1,10 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreate = vi.hoisted(() => vi.fn());
@@ -2765,24 +2762,70 @@ describe("Daytona sandbox provider plugin", () => {
         }
       });
 
-      it("retains streamed output when the provider status read times out", async () => {
+      it.each(["status", "final snapshot", "fallback snapshot"])("preserves observation state when the SDK %s times out", async (stage) => {
         process.env.DAYTONA_API_KEY = "host-key";
         const sandbox = createMockSandbox();
         sandbox.process.getSessionCommandLogs.mockImplementation(
           async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
-            onStdout?.("partial;");
+            if (!onStdout) throw new MockDaytonaTimeoutError("provider timeout");
+            onStdout("partial;");
             onStderr?.("partial error;");
+            if (stage === "fallback snapshot") throw new Error("socket error");
           },
         );
-        sandbox.process.getSessionCommand.mockRejectedValue(new MockDaytonaTimeoutError("provider timeout"));
+        sandbox.process.getSessionCommand.mockImplementation(async () => {
+          if (stage === "status") throw new MockDaytonaTimeoutError("provider timeout");
+          return { exitCode: stage === "final snapshot" ? 0 : undefined };
+        });
         mockGet.mockResolvedValue(sandbox);
 
         const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams());
 
         expect(result).toMatchObject({
-          exitCode: null, timedOut: true, stdout: "partial;", stderr: "partial error;provider timeout\n",
+          exitCode: null, timedOut: true, stdout: "partial;",
+          metadata: {
+            timeoutScope: "session_log_observation",
+            commandExitConfirmed: stage === "final snapshot",
+            ...(stage === "final snapshot" ? { observedExitCode: 0 } : {}),
+          },
         });
+        expect(result!.stderr).toMatch(/^partial error;Session log observation timed out/);
         expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(["observation", "legacy fallback", "SDK"])("retains pending replacement characters in a %s timeout result only", async (stage) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        vi.useFakeTimers();
+        try {
+          const sandbox = createMockSandbox();
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
+              onStdout?.("A\uFFFD");
+              onStderr?.("E\uFFFD\uFFFD");
+              if (stage === "legacy fallback") throw new Error("socket error");
+            },
+          );
+          sandbox.process.getSessionCommand.mockImplementation(async () => {
+            if (stage === "SDK") throw new MockDaytonaTimeoutError("provider timeout");
+            return new Promise(() => {});
+          });
+          mockGet.mockResolvedValue(sandbox);
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 400 }));
+          await vi.advanceTimersByTimeAsync(400);
+          const result = await promise;
+          expect(result).toMatchObject({ exitCode: null, timedOut: true, stdout: "A\uFFFD" });
+          expect(result!.stderr).toMatch(/^E\uFFFD\uFFFD/);
+          expect(executionLog.mock.calls).toEqual([["stdout", "A"], ["stderr", "E"]]);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+          restore();
+        }
       });
 
       it.each([
@@ -2790,11 +2833,7 @@ describe("Daytona sandbox provider plugin", () => {
         { text: "A\uFFFD", snapshot: "" },
         { text: "A\uFFFD\uFFFD", snapshot: "A\uFFFD" },
         { text: "A\uFFFD\uFFFD", snapshot: "" },
-      ])("preserves UTF-8 through a real SDK clean close: $text", async ({ text, snapshot }) => {
-        const require = createRequire(import.meta.url);
-        const sdkRoot = path.dirname(require.resolve("@daytonaio/sdk/package.json"));
-        const { stdDemuxStream } = await import(pathToFileURL(path.join(sdkRoot, "esm/utils/Stream.js")).href);
-        const { STDOUT_PREFIX_BYTES, STDERR_PREFIX_BYTES } = await import(pathToFileURL(path.join(sdkRoot, "esm/Process.js")).href);
+      ])("preserves UTF-8 when the SDK decoder flushes on clean close: $text", async ({ text, snapshot }) => {
         process.env.DAYTONA_API_KEY = "host-key";
         const executionLog = vi.fn();
         const restore = __setDaytonaPluginContextForTest(
@@ -2807,19 +2846,20 @@ describe("Daytona sandbox provider plugin", () => {
             async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
               if (!onStdout) return { stdout: snapshot, stderr: "E🙂Z" };
               streams += 1;
-              class Socket extends EventEmitter { close() {} }
-              const socket = new Socket();
-              const done = stdDemuxStream(socket, onStdout, onStderr);
+              // The pinned SDK streams bytes through TextDecoder and flushes
+              // it on clean socket close. Model that native decoder boundary
+              // without importing the optional provider package in root CI.
+              const emitClosedStream = (bytes: Buffer, emit: (chunk: string) => void) => {
+                const decoder = new TextDecoder();
+                const text = decoder.decode(bytes, { stream: true });
+                if (text) emit(text);
+                const tail = decoder.decode();
+                if (tail) emit(tail);
+              };
               const stdout = Buffer.from(text);
               const stderr = Buffer.from("E🙂Z");
-              socket.emit("message", Buffer.concat([
-                Buffer.from(STDOUT_PREFIX_BYTES), streams === 1 && text.includes("🙂") ? stdout.subarray(0, 2) : stdout,
-              ]));
-              socket.emit("message", Buffer.concat([
-                Buffer.from(STDERR_PREFIX_BYTES), streams === 1 ? stderr.subarray(0, 2) : stderr,
-              ]));
-              socket.emit("close");
-              await done;
+              emitClosedStream(streams === 1 && text.includes("🙂") ? stdout.subarray(0, 2) : stdout, onStdout);
+              emitClosedStream(streams === 1 ? stderr.subarray(0, 2) : stderr, onStderr!);
             },
           );
           sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: streams === 1 ? undefined : 0 }));

@@ -1831,6 +1831,7 @@ function createSessionStreamBuffer(
     stream: Stream,
     chunk: string,
     final = false,
+    publish = true,
   ): void {
     // The SDK flushes an incomplete UTF-8 character as U+FFFD on socket close.
     // Do not publish that suffix or count its replacement bytes until a replay
@@ -1855,7 +1856,7 @@ function createSessionStreamBuffer(
     stream.length += tail.length;
     // Deliver only the genuinely new tail to the live sink, so a replayed
     // prefix on a reconnect never reaches the host twice.
-    if (onNewTail && tail.length > 0) {
+    if (publish && onNewTail && tail.length > 0) {
       onNewTail(streamName, tail.toString("utf8"));
     }
   }
@@ -1877,20 +1878,20 @@ function createSessionStreamBuffer(
         stream.connectionBytes = 0;
       }
     },
-    finish(): void {
+    finish(publish = true): void {
       for (const name of ["stdout", "stderr"] as const) {
         const stream = streams[name];
         if (stream.previousReplacement?.offset === stream.connectionBytes &&
             stream.previousReplacement.text.length > stream.pendingReplacement.length) {
           stream.pendingReplacement = stream.previousReplacement.text;
         }
-        append(name, stream, "", true);
+        append(name, stream, "", true, publish);
         // A short terminal snapshot must not discard a genuine trailing
         // replacement character already received from a longer stream.
         const previous = stream.previousReplacement;
         if (previous && previous.offset >= stream.length) {
           stream.connectionBytes = previous.offset;
-          append(name, stream, previous.text, true);
+          append(name, stream, previous.text, true, publish);
         }
         stream.previousReplacement = null;
       }
@@ -1935,7 +1936,9 @@ async function observeSessionCommand<T>(timeoutMs: number, action: () => Promise
   try {
     return await beforeSessionDeadline(Date.now() + timeoutMs, action);
   } catch (error) {
-    if (error instanceof SessionCommandDeadlineError) throw new SessionObservationTimeoutError();
+    if (error instanceof SessionCommandDeadlineError || error instanceof DaytonaTimeoutError) {
+      throw new SessionObservationTimeoutError();
+    }
     throw error;
   }
 }
@@ -2112,9 +2115,16 @@ async function executeInSession(
     // Preserve the legacy budget starting at fallback entry when both stream
     // attempts fail, including a stream that fails after running for hours.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
-    const observe = <T>(action: () => Promise<T>): Promise<T> => streamResult.closedStream
-      ? observeSessionCommand(effectiveTimeoutMs, action)
-      : beforeSessionDeadline(deadlineMs, action);
+    const observe = async <T>(action: () => Promise<T>): Promise<T> => {
+      try {
+        return await (streamResult.closedStream
+          ? observeSessionCommand(effectiveTimeoutMs, action)
+          : beforeSessionDeadline(deadlineMs, action));
+      } catch (error) {
+        if (error instanceof DaytonaTimeoutError) throw new SessionObservationTimeoutError();
+        throw error;
+      }
+    };
     while (true) {
       const status = await observe(() => sandbox.process.getSessionCommand(sessionId, commandId));
       if (typeof status.exitCode === "number") confirmedExitCode = status.exitCode;
@@ -2141,6 +2151,9 @@ async function executeInSession(
     }
   } catch (error) {
     if (error instanceof SessionObservationTimeoutError) {
+      // Preserve undecided decoder suffixes in the partial result, without
+      // injecting a possibly incomplete character into the live protocol.
+      streamBuffer.finish(false);
       return {
         exitCode: null,
         timedOut: true,
@@ -2155,6 +2168,7 @@ async function executeInSession(
       };
     }
     if (error instanceof DaytonaTimeoutError || error instanceof SessionCommandDeadlineError) {
+      streamBuffer.finish(false);
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
         : error instanceof SessionCommandDeadlineError
