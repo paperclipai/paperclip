@@ -909,6 +909,33 @@ async function awaitAdoptedRunnerAuthentication(input: {
   }
 }
 
+/** Preserve the sidecar identity independently of Rust's opaque item ID. */
+export function bridgedAcpxPermissionParams(
+  event: Pick<DurableRecoveryCommittedEvent, "eventType" | "envelope">,
+  threadId: string,
+  turnId: string,
+): Record<string, unknown> | null {
+  const request = record(record(record(event.envelope.payload).payload).request);
+  if (event.eventType !== "runtime_request.created"
+    || request.type !== "permission" || request.requestKind !== "permission_approval"
+    || record(request.origin).method !== "session/request_permission") return null;
+  const toolCallId = record(request.details).toolCallId;
+  // Match the permission adapter's 240-character bound. Never truncate, trim,
+  // hash, or substitute itemId: any of those would change the correlation key.
+  const validToolCallId = typeof toolCallId === "string"
+    && toolCallId.trim().length > 0 && toolCallId.length <= 240
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(toolCallId);
+  return {
+    threadId,
+    turnId,
+    itemId: request.itemId,
+    reason: request.prompt,
+    choices: request.choices,
+    origin: record(request.origin),
+    ...(validToolCallId ? { toolCallId } : {}),
+  };
+}
+
 export function bridgedCodexQuestionParams(
   request: Record<string, unknown>,
   method: string,
@@ -6041,11 +6068,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const method = typeof origin.method === "string" ? origin.method : "";
         const permission = normalizedRequest.type === "permission" && normalizedRequest.requestKind === "permission_approval"
           && method === "session/request_permission";
-        const params = permission ? {
-          threadId: this.#threadId, turnId: this.#turnId,
-          itemId: normalizedRequest.itemId, reason: normalizedRequest.prompt,
-          choices: normalizedRequest.choices, origin,
-        } : bridgedCodexQuestionParams(
+        const params = permission ? bridgedAcpxPermissionParams(
+          event,
+          this.#threadId,
+          this.#turnId,
+        ) : bridgedCodexQuestionParams(
           normalizedRequest,
           method,
           this.#threadId,
