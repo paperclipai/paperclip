@@ -168,6 +168,7 @@ describe("ActiveAgentsPanel", () => {
       createIssueRun(3, "issue-other"),
       createRun(4),
       createRun(5),
+      createRun(6),
     ]);
 
     const root = createRoot(container);
@@ -186,7 +187,7 @@ describe("ActiveAgentsPanel", () => {
 
     expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
       minCount: 4,
-      limit: 4,
+      limit: undefined,
       distinctTasks: true,
     });
     expect([...container.querySelectorAll(".dashboard-agent-card")].map((card) =>

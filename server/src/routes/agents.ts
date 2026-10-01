@@ -6923,7 +6923,9 @@ export function agentRoutes(
     const targetRunCount = Math.min(minCount, limit);
 
     if (distinctTasks) {
-      const selectedIds = await selectDashboardRunIds(db, companyId, targetRunCount || limit);
+      // Return enough representatives for the dashboard to count cards beyond
+      // its visible four, rather than stopping at the minimum display count.
+      const selectedIds = await selectDashboardRunIds(db, companyId, limit);
       const selectedRows = selectedIds.length === 0 ? [] : await db
         .select(columns)
         .from(heartbeatRuns)

@@ -1200,8 +1200,9 @@ Dashboard payload must include:
 The dashboard agent cards show each linked task at most once. The server selects
 distinct task cards before it applies the dashboard card limit. When multiple
 runs belong to one task, an active run takes precedence over completed runs.
-Runs without a linked task remain separate cards. The live runs page can show
-every run.
+Runs without a linked task remain separate cards. The dashboard keeps the
+count of additional distinct cards in its link to the live runs page, which
+can show every run.
 
 ## 10.10 Error Semantics
 
