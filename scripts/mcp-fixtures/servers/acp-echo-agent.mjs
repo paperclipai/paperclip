@@ -42,6 +42,21 @@ async function handleRequest(request) {
           "client did not advertise typed session-failure support",
         );
       }
+      // Optional agent output before the failure, like a turn that fails late.
+      const prelude = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_PRELUDE;
+      if (prelude) {
+        writeMessage({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: request.params.sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: prelude },
+            },
+          },
+        });
+      }
       const sessionFailure = {
         id: `${request.params.sessionId}:error`,
         revision: 1,

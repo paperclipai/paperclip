@@ -165,6 +165,16 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toBe(false);
   });
 
+  it("routes a refused provider model to a configuration blocker instead of retrying", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_model_unavailable",
+      error: "The configured Claude model is not available to this Claude account.",
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure({ errorCode: "provider_model_unavailable" } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
   it("does not treat a generic capacity limit as provider quota", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",

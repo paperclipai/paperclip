@@ -362,13 +362,17 @@ export interface AcpxRemoteManagedHomeResult {
 
 export type AcpxTerminalFailureClassification = Pick<
   AdapterExecutionResult,
-  "errorCode" | "errorFamily" | "retryNotBefore"
+  "errorCode" | "errorFamily" | "retryNotBefore" | "errorMessage"
 >;
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
-  /** Inspect terminal provider text in memory; return only recovery labels and a timestamp. */
+  /**
+   * Inspect terminal provider text in memory; return only recovery labels, a
+   * timestamp, and optionally a fixed adapter-authored message. The message
+   * must never echo provider text.
+   */
   classifyTerminalSessionFailure?: (
     failure: AcpxTerminalSessionFailure,
     now: Date,
@@ -5017,6 +5021,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
+        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
+          ? terminalFailureClassification
+          : null;
         const failureDiagnostic = !timedOut && !channelLost && terminal.status === "failed"
           ? terminalSessionFailure
           : null;
@@ -5024,11 +5031,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : formatTerminalSessionFailure(resultErrorMessage(terminal), failureDiagnostic);
+            // A classifier's fixed message replaces only the generic headline;
+            // the redacted provider diagnostics still follow it.
+            : formatTerminalSessionFailure(
+              classifiedFailure?.errorMessage ?? resultErrorMessage(terminal),
+              failureDiagnostic,
+            );
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
-        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
-          ? terminalFailureClassification
-          : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5085,7 +5094,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
               : {}),
           },
-          summary: buildAcpxRunSummary({
+          // A classified failure's fixed message is the actionable outcome, so
+          // it wins over any output the agent emitted before the failure.
+          summary: classifiedFailure?.errorMessage || buildAcpxRunSummary({
             outputSegments,
             fallback: terminalStopReason || terminal.status,
           }),

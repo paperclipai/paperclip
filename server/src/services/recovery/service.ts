@@ -491,6 +491,9 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_engine_unavailable",
+  // The provider refused the configured model for this account. Retrying the
+  // same model fails the same way; the agent configuration must change.
+  "provider_model_unavailable",
   "agent_not_invokable",
   "agent_not_found",
   "budget_blocked",
@@ -623,8 +626,12 @@ export function classifyAdapterFailureForRecovery(
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
   // An engine prerequisite cannot be repaired by asking the same unavailable
-  // engine to retry. Use the existing configuration-blocker path.
-  if (latestRun.errorCode === "adapter_engine_unavailable") {
+  // engine to retry, and a refused model cannot be repaired by retrying it.
+  // Use the existing configuration-blocker path.
+  if (
+    latestRun.errorCode === "adapter_engine_unavailable" ||
+    latestRun.errorCode === "provider_model_unavailable"
+  ) {
     return { kind: "configuration_incomplete" };
   }
   if (
@@ -2545,6 +2552,8 @@ export function recoveryService(
                   : recoveryCause === "configuration_incomplete"
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
+                      : input.latestRun?.errorCode === "provider_model_unavailable"
+                      ? "Board operator: set the agent's model to one that its AI account can use, then explicitly retry the original owner or reassign."
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(

@@ -5938,6 +5938,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRuns).toHaveLength(1);
   });
 
+  it("blocks a refused provider model with a model-specific next action instead of retrying", async () => {
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "provider_model_unavailable",
+      runError:
+        "The configured Claude model is not available to this Claude account. Choose a model this account can use in the agent configuration, then retry.",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // Retrying the same model fails the same way, so no successor run exists.
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId)),
+    ).toEqual([{ id: runId }]);
+
+    const recoveryAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryAction).toMatchObject({
+      kind: "configuration_validation",
+      cause: "configuration_incomplete",
+      status: "active",
+      ownerType: "board",
+    });
+    expect(recoveryAction?.nextAction).toContain("set the agent's model");
+    expect(recoveryAction?.nextAction).not.toContain("secret");
+  });
+
   it("escalates an interrupted corrective successful-run handoff once its transient retry budget is spent", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
