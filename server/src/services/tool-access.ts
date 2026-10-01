@@ -9018,9 +9018,22 @@ export function toolAccessService(
     const galleryMethod = galleryEntry
       ? connectionMethodForConnection(galleryEntry, connection)
       : null;
+    // Pinned endpoints describe the provider's console-registered OAuth app.
+    // A method that also offers dynamic registration registers against the MCP
+    // server's own authorization server (Linear: mcp.linear.app, not
+    // linear.app), which only discovery finds. So the pins stand in for
+    // discovery only when no registration is possible or the connection
+    // already carries an operator-entered client.
+    const storedOAuth = oauthConfig(connection);
+    const usesOperatorClient =
+      storedOAuth.clientRegistrationSource === "manual" &&
+      connection.ownership !== "dcr" &&
+      typeof storedOAuth.clientId === "string" &&
+      storedOAuth.clientId.trim().length > 0;
     const hasCompleteGalleryEndpointHints = Boolean(
       galleryMethod?.defaults?.authorizationEndpoint &&
-      galleryMethod.defaults.tokenEndpoint,
+      galleryMethod.defaults.tokenEndpoint &&
+      (!galleryMethod.ownershipModes.includes("dcr") || usesOperatorClient),
     );
     // The smoke-lab fixture's endpoints are first-party and complete, so
     // discovery is not just unnecessary there, it must not run: an unreachable
