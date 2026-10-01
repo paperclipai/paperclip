@@ -212,12 +212,15 @@ function resolveLucideIconNode(
   const render = (
     icon as {
       render?: (props: Record<string, unknown>, ref: unknown) => {
-        props?: { iconNode?: Array<[string, Record<string, string>]> };
+        props?: {
+          iconNode?: Array<[string, Record<string, string>]>;
+          icon?: { node?: Array<[string, Record<string, string>]> };
+        };
       } | null;
     }
   ).render;
   const rendered = typeof render === "function" ? render({}, null) : null;
-  const renderedIconNode = rendered?.props?.iconNode;
+  const renderedIconNode = rendered?.props?.icon?.node ?? rendered?.props?.iconNode;
   return Array.isArray(renderedIconNode) && renderedIconNode.length > 0
     ? renderedIconNode
     : null;
