@@ -25,6 +25,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listReviewAttention: vi.fn(),
   addComment: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -36,6 +37,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expirePendingInteractionsForTerminalIssue: vi.fn(),
   answerQuestions: vi.fn(),
   submitItemVerdicts: vi.fn(),
@@ -57,6 +59,15 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
   requestNativeQuestionRunCancellation: mockRequestNativeQuestionRunCancellation,
   validateNativeQuestionResponseInput: vi.fn(),
+}));
+
+vi.mock("../services/runner-goals.js", () => ({
+  runnerGoalService: () => ({
+    projection: vi.fn(async () => null),
+    act: vi.fn(),
+  }),
+  RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+  RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
 }));
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
@@ -81,13 +92,18 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockReviewTransition = vi.hoisted(() => ({
   value: null as null | { actorType: string; actorId: string; details: Record<string, unknown> },
 }));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{ companyId: "company-1", agentId: CREATED_AGENT_ID, contextSnapshot: null }]).then(
-      onFulfilled,
-      onRejected,
-    ),
-})));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => {
+  const result: any = {
+    limit: () => result,
+    orderBy: () => result,
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{ companyId: "company-1", agentId: CREATED_AGENT_ID, contextSnapshot: null }]).then(
+        onFulfilled,
+        onRejected,
+      ),
+  };
+  return result;
+}));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 
@@ -159,6 +175,14 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/runner-goals.js", () => ({
+    runnerGoalService: () => ({
+      projection: vi.fn(async () => null),
+      act: vi.fn(),
+    }),
+    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
+  }));
   vi.doMock("../services/question-response-delivery.js", () => ({
     questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
   }));
@@ -227,6 +251,7 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       upsertForIssue: vi.fn(),
       disableForIssue: vi.fn(async () => null),
+      reconcileForIssueAndAncestors: vi.fn(async () => null),
       revalidateMutationScope: vi.fn(async (scope: unknown) => ({ allowed: true, scope })),
     }),
     logActivity: mockLogActivity,
@@ -345,9 +370,12 @@ describe.sequential("issue thread interaction routes", () => {
       explanation: "Allowed by test grant.",
     }));
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockIssueService.update.mockResolvedValue(createIssue());
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", issueId: ISSUE_ID, body: "test" });
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
     mockInteractionService.getForIssue.mockResolvedValue({
       id: "interaction-withdraw",
@@ -566,6 +594,7 @@ describe.sequential("issue thread interaction routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      limit: () => Promise.resolve(mockRunAttribution.value ? [mockRunAttribution.value] : []),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve(mockRunAttribution.value ? [mockRunAttribution.value] : []).then(
           onFulfilled,
@@ -3089,6 +3118,107 @@ describe.sequential("issue thread interaction routes", () => {
     expect(res.body).toMatchObject({ code: "interaction_scope_denied" });
     expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // The real task-bridge boundary (bridge-created or assigned issues only) is
+  // exercised against the database in authorization-service.test.ts. Here the
+  // access decision mirrors it by issue id, so the routes are tested with a
+  // representative bridge-created issue and an unrelated one.
+  const BRIDGE_KEY_ID = "bridge-key";
+  const bridgeActor = {
+    type: "agent",
+    agentId: CREATED_AGENT_ID,
+    companyId: "company-1",
+    source: "agent_key",
+    keyId: BRIDGE_KEY_ID,
+    keyScope: { kind: "task_bridge" },
+  };
+  function bridgeIssue(overrides: Record<string, unknown> = {}) {
+    // Created by the bridge key and handed to a worker agent, as bridges do.
+    return createIssue({
+      originKind: "task_bridge",
+      originId: BRIDGE_KEY_ID,
+      status: "todo",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      ...overrides,
+    });
+  }
+  function mirrorBridgeBoundary() {
+    mockAccessDecide.mockImplementation(async (input: { action: string; resource?: { issueId?: string } }) =>
+      // A bridge key holds no checkout-management grant over other agents' runs.
+      input.resource?.issueId === OTHER_ISSUE_ID || input.action === "tasks:manage_active_checkouts"
+        ? {
+            allowed: false,
+            action: input.action,
+            reason: "deny_scope",
+            explanation: "Task bridge key can only access assigned or bridge-created issues.",
+          }
+        : {
+            allowed: true,
+            action: input.action,
+            reason: "allow_explicit_grant",
+            explanation: "Allowed for bridge-created or assigned issue.",
+          });
+  }
+
+  it("allows task-bridge keys to comment on bridge issues without runId", async () => {
+    mirrorBridgeBoundary();
+    mockIssueService.getById.mockResolvedValue(bridgeIssue());
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "comment-1",
+      issueId: ISSUE_ID,
+      body: "Bridge comment",
+    });
+    const app = await createApp(bridgeActor);
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "Bridge comment" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("allows task-bridge keys to update idle bridge issues assigned to a worker", async () => {
+    mirrorBridgeBoundary();
+    mockIssueService.getById.mockResolvedValue(bridgeIssue());
+    mockIssueService.update.mockResolvedValueOnce(bridgeIssue({ title: "Updated by bridge" }));
+    const app = await createApp(bridgeActor);
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ title: "Updated by bridge" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("keeps the run lock when a worker is actively running a bridge issue", async () => {
+    mirrorBridgeBoundary();
+    mockIssueService.getById.mockResolvedValue(bridgeIssue({ status: "in_progress" }));
+    const app = await createApp(bridgeActor);
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ title: "Bridge update during a run" });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("denies task-bridge keys updating issues outside the bridge boundary", async () => {
+    mirrorBridgeBoundary();
+    mockIssueService.getById.mockResolvedValue(
+      createIssue({ id: OTHER_ISSUE_ID, status: "todo", assigneeAgentId: UNRELATED_AGENT_ID }),
+    );
+    const app = await createApp(bridgeActor);
+
+    const res = await request(app)
+      .patch(`/api/issues/${OTHER_ISSUE_ID}`)
+      .send({ title: "Unauthorized bridge update" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("reauthorizes suggested-task effects before resolving the interaction", async () => {
