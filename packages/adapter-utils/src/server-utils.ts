@@ -3701,9 +3701,27 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const pathKey =
+    typeof env.PATH === "string" && env.PATH.length > 0
+      ? "PATH"
+      : typeof env.Path === "string" && env.Path.length > 0
+        ? "Path"
+        : "PATH";
+  const inheritedPath = env[pathKey] ?? "";
+  const candidates = [
+    ...inheritedPath.split(path.delimiter),
+    path.dirname(process.execPath),
+    ...defaultPathForPlatform().split(path.delimiter),
+  ].filter(Boolean);
+  const seen = new Set<string>();
+  const pathEntries = candidates.filter((entry) => {
+    const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { ...env, [pathKey]: pathEntries.join(path.delimiter) };
 }
 
 export async function ensureAbsoluteDirectory(
