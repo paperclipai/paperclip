@@ -42,9 +42,13 @@ export interface QuotaPacingWindowInput {
   windowSeconds: number | null;
 }
 
+/**
+ * Every window of each kind from one provider. A provider can report more
+ * than one window of a kind: Codex can report two weekly windows.
+ */
 export interface QuotaPacingWindows {
-  session: QuotaPacingWindowInput | null;
-  weekly: QuotaPacingWindowInput | null;
+  session: QuotaPacingWindowInput[];
+  weekly: QuotaPacingWindowInput[];
 }
 
 export interface QuotaPacingDecisionInput {
@@ -59,8 +63,27 @@ export interface QuotaPacingDecisionInput {
 export interface QuotaPacingDecision {
   mode: QuotaPacingMode;
   reason: QuotaPacingReason;
+  /** The most constraining session window; null when no session window has usage. */
   session: QuotaPacingWindowState | null;
+  /** The most constraining weekly window; null when no weekly window has usage. */
   weekly: QuotaPacingWindowState | null;
+}
+
+/** How hard one window pushes the mode down, from least to most. */
+type WindowPressure = "clear" | "ahead" | "far_ahead" | "limit";
+
+const PRESSURE_RANK: Record<WindowPressure, number> = { clear: 0, ahead: 1, far_ahead: 2, limit: 3 };
+
+interface PressureThresholds {
+  /** Usage at or above this is the hard limit, whatever the pace. */
+  limitPercent: number;
+  /** Ahead of pace by more than this is far ahead. */
+  farAheadPercent: number;
+}
+
+interface MeasuredWindow {
+  window: QuotaPacingWindowState;
+  pressure: WindowPressure;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -77,11 +100,11 @@ function elapsedFraction(window: QuotaPacingWindowInput, now: Date): number | nu
 }
 
 function measureWindow(
-  window: QuotaPacingWindowInput | null,
+  window: QuotaPacingWindowInput,
   now: Date,
   targetAt: (elapsed: number) => number,
 ): QuotaPacingWindowState | null {
-  if (!window || window.usedPercent == null || !Number.isFinite(window.usedPercent)) return null;
+  if (window.usedPercent == null || !Number.isFinite(window.usedPercent)) return null;
   const usedPercent = clamp(window.usedPercent, 0, 100);
   const elapsed = elapsedFraction(window, now);
   // A target above 100% cannot change a decision (usage never exceeds 100%),
@@ -95,6 +118,52 @@ function measureWindow(
     resetsAt: window.resetsAt,
     windowSeconds: window.windowSeconds,
   };
+}
+
+/** One window's pressure. A window without a pace target can still reach the hard limit. */
+function windowPressure(window: QuotaPacingWindowState, thresholds: PressureThresholds): WindowPressure {
+  if (window.usedPercent >= thresholds.limitPercent) return "limit";
+  if (window.aheadPercent != null && window.aheadPercent > thresholds.farAheadPercent) return "far_ahead";
+  if (window.aheadPercent != null && window.aheadPercent > 0) return "ahead";
+  return "clear";
+}
+
+/** Compares two ahead values; a window without a pace target sorts below any value. */
+function compareAhead(a: number | null, b: number | null): number {
+  if (a === b) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  return a - b;
+}
+
+/** Positive when `a` constrains more than `b`: higher pressure, then further ahead, then more used. */
+function compareConstraint(a: MeasuredWindow, b: MeasuredWindow): number {
+  return (
+    PRESSURE_RANK[a.pressure] - PRESSURE_RANK[b.pressure]
+    || compareAhead(a.window.aheadPercent, b.window.aheadPercent)
+    || a.window.usedPercent - b.window.usedPercent
+  );
+}
+
+/**
+ * The most constraining window of one kind: the one with the highest
+ * pressure. Deciding on it equals applying the hard limit to the highest
+ * usage of the kind and the pace rules to the window furthest ahead.
+ */
+function mostConstrainingWindow(
+  windows: QuotaPacingWindowInput[],
+  now: Date,
+  targetAt: (elapsed: number) => number,
+  thresholds: PressureThresholds,
+): MeasuredWindow | null {
+  let worst: MeasuredWindow | null = null;
+  for (const input of windows) {
+    const window = measureWindow(input, now, targetAt);
+    if (!window) continue;
+    const measured = { window, pressure: windowPressure(window, thresholds) };
+    if (!worst || compareConstraint(measured, worst) > 0) worst = measured;
+  }
+  return worst;
 }
 
 /**
@@ -111,24 +180,28 @@ function measureWindow(
  * and "full" otherwise. A manual mode wins over the data. Missing or stale
  * data fails open to "full". A window without a known position (for example
  * CLI-scraped usage without a reset time) still applies the absolute limits.
+ * When a provider reports several windows of one kind, the most constraining
+ * one decides and is the one reported.
  */
 export function decideQuotaPacingMode(input: QuotaPacingDecisionInput): QuotaPacingDecision {
   const { settings, now } = input;
-  const session = measureWindow(
-    input.windows?.session ?? null,
+  const session = mostConstrainingWindow(
+    input.windows?.session ?? [],
     now,
     (elapsed) => elapsed * (100 - settings.sessionReservePercent),
+    { limitPercent: 100 - settings.sessionReservePercent, farAheadPercent: SESSION_AHEAD_LOW_PERCENT },
   );
-  const weekly = measureWindow(
-    input.windows?.weekly ?? null,
+  const weekly = mostConstrainingWindow(
+    input.windows?.weekly ?? [],
     now,
     (elapsed) => elapsed * 100 + settings.weeklyAllowancePercent,
+    { limitPercent: WEEKLY_LOW_PERCENT, farAheadPercent: settings.weeklyAllowancePercent },
   );
   const decide = (mode: QuotaPacingMode, reason: QuotaPacingReason): QuotaPacingDecision => ({
     mode,
     reason,
-    session,
-    weekly,
+    session: session?.window ?? null,
+    weekly: weekly?.window ?? null,
   });
 
   if (settings.mode !== "auto") return decide(settings.mode, "manual_override");
@@ -136,16 +209,12 @@ export function decideQuotaPacingMode(input: QuotaPacingDecisionInput): QuotaPac
   if (input.stale) return decide("full", "stale_data");
   if (!session && !weekly) return decide("full", "no_data");
 
-  const sessionAhead = session?.aheadPercent ?? null;
-  const weeklyAhead = weekly?.aheadPercent ?? null;
-  if (session && session.usedPercent >= 100 - settings.sessionReservePercent) {
-    return decide("low", "session_limit");
-  }
-  if (weekly && weekly.usedPercent >= WEEKLY_LOW_PERCENT) return decide("low", "weekly_limit");
-  if (sessionAhead != null && sessionAhead > SESSION_AHEAD_LOW_PERCENT) return decide("low", "session_ahead");
-  if (weeklyAhead != null && weeklyAhead > settings.weeklyAllowancePercent) return decide("low", "weekly_ahead");
-  if (sessionAhead != null && sessionAhead > 0) return decide("half", "session_ahead");
-  if (weeklyAhead != null && weeklyAhead > 0) return decide("half", "weekly_ahead");
+  if (session?.pressure === "limit") return decide("low", "session_limit");
+  if (weekly?.pressure === "limit") return decide("low", "weekly_limit");
+  if (session?.pressure === "far_ahead") return decide("low", "session_ahead");
+  if (weekly?.pressure === "far_ahead") return decide("low", "weekly_ahead");
+  if (session?.pressure === "ahead") return decide("half", "session_ahead");
+  if (weekly?.pressure === "ahead") return decide("half", "weekly_ahead");
   return decide("full", "on_pace");
 }
 
@@ -172,14 +241,15 @@ export function pacedProviderForAdapterType(adapterType: string): QuotaPacingPro
     : null;
 }
 
-function pacingWindow(windows: QuotaWindow[], kind: "session" | "weekly"): QuotaPacingWindowInput | null {
-  const window = windows.find((entry) => entry.kind === kind);
-  if (!window) return null;
-  return {
-    usedPercent: window.usedPercent,
-    resetsAt: window.resetsAt,
-    windowSeconds: window.windowSeconds ?? null,
-  };
+/** Every window of one kind; the decision weighs all of them. */
+function pacingWindows(windows: QuotaWindow[], kind: "session" | "weekly"): QuotaPacingWindowInput[] {
+  return windows
+    .filter((entry) => entry.kind === kind)
+    .map((window) => ({
+      usedPercent: window.usedPercent,
+      resetsAt: window.resetsAt,
+      windowSeconds: window.windowSeconds ?? null,
+    }));
 }
 
 /** When a result's provider answered; `fallback` when the result does not say or says a later time. */
@@ -412,8 +482,8 @@ export function createQuotaPacingController(options: QuotaPacingControllerOption
       const ok = providerResults.find((result) => result.ok);
       if (ok) {
         entry.windows = {
-          session: pacingWindow(ok.windows, "session"),
-          weekly: pacingWindow(ok.windows, "weekly"),
+          session: pacingWindows(ok.windows, "session"),
+          weekly: pacingWindows(ok.windows, "weekly"),
         };
         // A shared quota read can serve a result that another caller fetched
         // a moment ago; its age counts toward staleness.

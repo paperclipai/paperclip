@@ -78,7 +78,12 @@ export interface QuotaPacingProviderState {
   provider: QuotaPacingProvider;
   mode: QuotaPacingMode;
   reason: QuotaPacingReason;
+  /**
+   * The most constraining session window. A provider can report several
+   * windows of one kind; the one that drives the mode is reported.
+   */
   session: QuotaPacingWindowState | null;
+  /** The most constraining weekly window; see `session`. */
   weekly: QuotaPacingWindowState | null;
   /** When the last successful quota data for this provider arrived. */
   lastPolledAt: string | null;

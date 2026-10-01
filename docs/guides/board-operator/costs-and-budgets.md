@@ -103,6 +103,12 @@ provider and window it computes how much of the window has elapsed
 | `half` | Either window is ahead of its target | half of `maxConcurrentRuns`, rounded up |
 | `full` | Otherwise | `maxConcurrentRuns` |
 
+A provider can report more than one window of a kind; for example, Codex can
+report two weekly windows. Then the most constraining window decides: the
+limits use the highest usage of the kind, and the pace uses the window that is
+furthest ahead. A window without a reset time or length has no pace target,
+but its usage still counts toward the limits.
+
 Pacing changes only how many new runs start. It never cancels a running run
 and it never changes agent configuration. When a provider's mode relaxes,
 queued runs start at once. Other adapters are not paced.

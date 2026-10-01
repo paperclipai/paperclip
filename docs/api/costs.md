@@ -53,10 +53,10 @@ GET /api/companies/{companyId}/costs/quota-pacing
 
 Returns the run pacing state: `enabled`, `settings`, `lastPolledAt`,
 `nextPollAt`, `lastError`, and one entry per paced provider (`anthropic`,
-`openai`) with `mode` (`full`, `half`, or `low`), `reason`, `session` and
-`weekly` windows (`usedPercent`, `targetPercent`, `aheadPercent`,
-`elapsedPercent`, `resetsAt`, `windowSeconds`), `lastPolledAt`, and
-`lastError`. The route returns cached state and does not poll a provider.
+`openai`) with `mode` (`full`, `half`, or `low`), `reason`, the most
+constraining `session` and `weekly` window (`usedPercent`, `targetPercent`,
+`aheadPercent`, `elapsedPercent`, `resetsAt`, `windowSeconds`),
+`lastPolledAt`, and `lastError`. The route returns cached state and does not poll a provider.
 Board access to the company is required.
 
 Change pacing settings with `PATCH /api/instance/settings/general` and a

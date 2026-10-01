@@ -29,12 +29,13 @@ function windowAt(usedPercent: number | null, elapsed: number, windowSeconds: nu
 
 const session = (usedPercent: number | null, elapsed = 0.5) => windowAt(usedPercent, elapsed, SESSION_SECONDS);
 const weekly = (usedPercent: number | null, elapsed = 0.5) => windowAt(usedPercent, elapsed, WEEK_SECONDS);
+const listOf = (window: QuotaPacingWindowInput | null) => (window ? [window] : []);
 
 function decide(overrides: Partial<QuotaPacingDecisionInput> & { mode?: QuotaPacingSettings["mode"] } = {}) {
   const { mode, ...input } = overrides;
   return decideQuotaPacingMode({
     settings: { ...DEFAULT_QUOTA_PACING_SETTINGS, mode: mode ?? "auto" },
-    windows: { session: session(30), weekly: weekly(40) },
+    windows: { session: [session(30)], weekly: [weekly(40)] },
     stale: false,
     now: NOW,
     ...input,
@@ -56,11 +57,14 @@ describe("decideQuotaPacingMode", () => {
     ["session window only", session(45), null, "half", "session_ahead"],
     ["weekly window only", null, weekly(40), "full", "on_pace"],
   ] as const)("%s", (_label, sessionWindow, weeklyWindow, mode, reason) => {
-    expect(decide({ windows: { session: sessionWindow, weekly: weeklyWindow } })).toMatchObject({ mode, reason });
+    expect(decide({ windows: { session: listOf(sessionWindow), weekly: listOf(weeklyWindow) } })).toMatchObject({
+      mode,
+      reason,
+    });
   });
 
   it("computes the session and weekly targets from the elapsed share", () => {
-    const decision = decide({ windows: { session: session(10, 0.25), weekly: weekly(10, 0.25) } });
+    const decision = decide({ windows: { session: [session(10, 0.25)], weekly: [weekly(10, 0.25)] } });
     expect(decision.session).toMatchObject({ usedPercent: 10, targetPercent: 20, aheadPercent: -10, elapsedPercent: 25 });
     expect(decision.weekly).toMatchObject({ usedPercent: 10, targetPercent: 33, aheadPercent: -23, elapsedPercent: 25 });
   });
@@ -68,7 +72,7 @@ describe("decideQuotaPacingMode", () => {
   it("uses the configured reserve and allowance", () => {
     const decision = decideQuotaPacingMode({
       settings: { mode: "auto", sessionReservePercent: 50, weeklyAllowancePercent: 0 },
-      windows: { session: session(26), weekly: weekly(40) },
+      windows: { session: [session(26)], weekly: [weekly(40)] },
       stale: false,
       now: NOW,
     });
@@ -79,7 +83,7 @@ describe("decideQuotaPacingMode", () => {
 
   it("treats a window past its reset time as fully elapsed", () => {
     const expired = { usedPercent: 70, resetsAt: new Date(NOW.getTime() - 60_000).toISOString(), windowSeconds: SESSION_SECONDS };
-    expect(decide({ windows: { session: expired, weekly: null } }).session).toMatchObject({ elapsedPercent: 100, targetPercent: 80 });
+    expect(decide({ windows: { session: [expired], weekly: [] } }).session).toMatchObject({ elapsedPercent: 100, targetPercent: 80 });
   });
 
   it.each([
@@ -91,7 +95,7 @@ describe("decideQuotaPacingMode", () => {
   });
 
   it("lets a manual full mode override data that is far ahead", () => {
-    expect(decide({ mode: "full", windows: { session: session(90), weekly: weekly(99) } })).toMatchObject({
+    expect(decide({ mode: "full", windows: { session: [session(90)], weekly: [weekly(99)] } })).toMatchObject({
       mode: "full",
       reason: "manual_override",
     });
@@ -103,28 +107,70 @@ describe("decideQuotaPacingMode", () => {
 
   it("fails open to full without quota data", () => {
     expect(decide({ windows: null })).toMatchObject({ mode: "full", reason: "no_data" });
-    expect(decide({ windows: { session: null, weekly: null } })).toMatchObject({ mode: "full", reason: "no_data" });
-    expect(decide({ windows: { session: session(null), weekly: weekly(null) } })).toMatchObject({
+    expect(decide({ windows: { session: [], weekly: [] } })).toMatchObject({ mode: "full", reason: "no_data" });
+    expect(decide({ windows: { session: [session(null)], weekly: [weekly(null)] } })).toMatchObject({
       mode: "full",
       reason: "no_data",
     });
   });
 
   it("fails open to full with stale quota data but still reports the last values", () => {
-    const decision = decide({ windows: { session: session(90), weekly: weekly(99) }, stale: true });
+    const decision = decide({ windows: { session: [session(90)], weekly: [weekly(99)] }, stale: true });
     expect(decision).toMatchObject({ mode: "full", reason: "stale_data" });
     expect(decision.session?.usedPercent).toBe(90);
   });
 
   it("applies only the absolute limits when the window position is unknown", () => {
     const cliSession = (usedPercent: number) => ({ usedPercent, resetsAt: null, windowSeconds: SESSION_SECONDS });
-    expect(decide({ windows: { session: cliSession(85), weekly: null } })).toMatchObject({
+    expect(decide({ windows: { session: [cliSession(85)], weekly: [] } })).toMatchObject({
       mode: "low",
       reason: "session_limit",
     });
-    const onPace = decide({ windows: { session: cliSession(50), weekly: null } });
+    const onPace = decide({ windows: { session: [cliSession(50)], weekly: [] } });
     expect(onPace).toMatchObject({ mode: "full", reason: "on_pace" });
     expect(onPace.session).toMatchObject({ targetPercent: null, aheadPercent: null });
+  });
+
+  describe("with several windows of one kind", () => {
+    const noDuration = (usedPercent: number) => ({ usedPercent, resetsAt: null, windowSeconds: null });
+
+    it("drops to low when a second weekly window reaches 95% while the first is on pace", () => {
+      for (const weeklyWindows of [[weekly(40), weekly(95, 0.99)], [weekly(95, 0.99), weekly(40)]]) {
+        const decision = decide({ windows: { session: [session(10)], weekly: weeklyWindows } });
+        expect(decision).toMatchObject({ mode: "low", reason: "weekly_limit" });
+        // The reported window is the one that decided.
+        expect(decision.weekly?.usedPercent).toBe(95);
+      }
+    });
+
+    it.each([
+      ["slightly ahead", 45, "half"],
+      ["more than 10 points ahead", 55, "low"],
+    ] as const)("paces on the session window that is %s", (_label, aheadUsed, mode) => {
+      const decision = decide({ windows: { session: [session(30), session(aheadUsed)], weekly: [weekly(40)] } });
+      expect(decision).toMatchObject({ mode, reason: "session_ahead" });
+      expect(decision.session).toMatchObject({ usedPercent: aheadUsed, targetPercent: 40 });
+    });
+
+    it("applies the hard limits to a window without a duration", () => {
+      const decision = decide({ windows: { session: [session(10)], weekly: [weekly(40), noDuration(96)] } });
+      expect(decision).toMatchObject({ mode: "low", reason: "weekly_limit" });
+      expect(decision.weekly).toMatchObject({ usedPercent: 96, targetPercent: null });
+    });
+
+    it("keeps the pace of a timed window next to a window without a duration", () => {
+      // 62% is 4 points ahead of the 58% weekly target; the 50% window has no target.
+      const decision = decide({ windows: { session: [session(10)], weekly: [noDuration(50), weekly(62)] } });
+      expect(decision).toMatchObject({ mode: "half", reason: "weekly_ahead" });
+      expect(decision.weekly).toMatchObject({ usedPercent: 62, aheadPercent: 4 });
+    });
+
+    it("ignores a window without usage next to one with usage", () => {
+      expect(decide({ windows: { session: [session(null), session(45)], weekly: [] } })).toMatchObject({
+        mode: "half",
+        reason: "session_ahead",
+      });
+    });
   });
 });
 
@@ -218,6 +264,36 @@ describe("quota pacing controller", () => {
       }),
       expect.objectContaining({ provider: "openai", mode: "full", reason: "no_data", lastError: "no local codex auth token" }),
     ]);
+    controller.stop();
+  });
+
+  it("weighs every weekly window that a provider reports", async () => {
+    // Codex classifies a primary window reported as 7 days and the secondary
+    // window as weekly; the second one is at the limit.
+    const resetsAt = new Date(NOW.getTime() + (WEEK_SECONDS / 2) * 1000).toISOString();
+    const controller = createQuotaPacingController({
+      loadSettings: async () => enabled,
+      fetchQuotaWindows: async () => [
+        anthropicResult(10, 10),
+        {
+          provider: "openai",
+          ok: true,
+          windows: [
+            { label: "5h limit", usedPercent: 40, resetsAt, valueLabel: null, kind: "weekly", windowSeconds: WEEK_SECONDS },
+            { label: "Weekly limit", usedPercent: 95, resetsAt, valueLabel: null, kind: "weekly", windowSeconds: WEEK_SECONDS },
+          ],
+        },
+      ],
+    });
+    await controller.ready;
+
+    expect(controller.effectiveMaxConcurrentRuns("codex_local", 4)).toBe(1);
+    expect(controller.getState().providers[1]).toMatchObject({
+      provider: "openai",
+      mode: "low",
+      reason: "weekly_limit",
+      weekly: expect.objectContaining({ usedPercent: 95 }),
+    });
     controller.stop();
   });
 
