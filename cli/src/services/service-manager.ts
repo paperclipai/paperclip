@@ -77,6 +77,47 @@ export function resolveServiceShimPath(homeDir = os.homedir()): string {
   return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
 }
 
+export function servicePathForEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+  executablePath = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const inheritedPath =
+    typeof env.PATH === "string" && env.PATH.length > 0
+      ? env.PATH
+      : typeof env.Path === "string"
+        ? env.Path
+        : "";
+  const delimiter = platform === "win32" ? ";" : ":";
+  const defaults =
+    platform === "win32"
+      ? ["C:\\Windows\\System32", "C:\\Windows", "C:\\Windows\\System32\\Wbem"]
+      : [
+          path.join(env.HOME || os.homedir(), ".local", "bin"),
+          "/usr/local/bin",
+          "/opt/homebrew/bin",
+          "/usr/local/sbin",
+          "/usr/bin",
+          "/bin",
+          "/usr/sbin",
+          "/sbin",
+        ];
+  const candidates = [
+    ...inheritedPath.split(delimiter),
+    path.dirname(executablePath),
+    ...defaults,
+  ].filter(Boolean);
+  const seen = new Set<string>();
+  return candidates
+    .filter((entry) => {
+      const key = platform === "win32" ? entry.toLowerCase() : entry;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(delimiter);
+}
+
 // The installed definition, not the current environment, is the truth
 // about what the service executes: PAPERCLIP_SHIM_PATH may have changed
 // or been unset since the definition was written.
@@ -124,7 +165,7 @@ export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
-export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
+export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string; path: string }): string {
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
 After=network.target
@@ -138,6 +179,7 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
+Environment="PATH=${escapeSystemd(input.path)}"
 WorkingDirectory=%h
 Restart=always
 RestartSec=5
@@ -148,7 +190,7 @@ WantedBy=default.target
 `;
 }
 
-export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
+export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string; path: string }): string {
   const label = launchdServiceName(input.instanceId);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -164,6 +206,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
+    <key>PATH</key><string>${escapeXml(input.path)}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -205,14 +248,16 @@ export class SystemdServiceManager implements ServiceManager {
   readonly platform = "systemd" as const;
   readonly serviceName: string;
   readonly definitionPath: string;
+  private readonly servicePath: string;
 
   constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir()) {
     this.serviceName = systemdServiceName(instanceId);
     this.definitionPath = path.join(userHomeDir, ".config", "systemd", "user", this.serviceName);
+    this.servicePath = servicePathForEnvironment();
   }
 
   renderDefinition(): string {
-    return renderSystemdUnit({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir });
+    return renderSystemdUnit({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, path: this.servicePath });
   }
 
   async installedExecutablePath(): Promise<string | null> {
@@ -280,6 +325,7 @@ export class LaunchdServiceManager implements ServiceManager {
   private readonly domain = `gui/${process.getuid?.() ?? 0}`;
   private readonly stdoutPath: string;
   private readonly stderrPath: string;
+  private readonly servicePath: string;
 
   constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir()) {
     this.serviceName = launchdServiceName(instanceId);
@@ -287,9 +333,10 @@ export class LaunchdServiceManager implements ServiceManager {
     const logDir = path.join(homeDir, "instances", instanceId, "logs");
     this.stdoutPath = path.join(logDir, "service.log");
     this.stderrPath = path.join(logDir, "service.err.log");
+    this.servicePath = servicePathForEnvironment();
   }
 
-  renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
+  renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath, path: this.servicePath }); }
 
   async installedExecutablePath(): Promise<string | null> {
     try {
