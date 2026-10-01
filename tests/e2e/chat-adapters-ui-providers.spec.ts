@@ -140,10 +140,14 @@ test.describe.serial("native chat adapter UI", () => {
       '[role="listitem"][data-app-slug="github"]',
     );
     await expect(connector).toBeVisible();
-    await connector.getByRole("button", { name: "Connect GitHub" }).click();
+    // Without the cloud connector GitHub's default method is a token, so the
+    // card's verb is "Add key" rather than "Connect".
+    await connector.getByRole("button", { name: "Add key GitHub" }).click();
 
     await expect(page).toHaveURL(/\/apps\/connect\?/);
     expect(new URL(page.url()).searchParams.get("source")).toBe("github");
+    // Identity is a stated default; its choices sit behind "Change".
+    await page.getByRole("button", { name: "Change", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "Connect GitHub as" }),
     ).toBeVisible();
@@ -218,7 +222,8 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(connector).toBeVisible({ timeout: 30_000 });
       if (provider.provider === "github") {
         const tools = page.locator('[role="listitem"][data-app-slug="github"]');
-        await tools.getByRole("button", { name: "Connect GitHub", exact: true }).click();
+        await tools.getByRole("button", { name: "Add key GitHub", exact: true }).click();
+        await page.getByRole("button", { name: "Change", exact: true }).click();
         await expect(page.getByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Choose how to connect" })).toHaveCount(0);
         await page.goto(`/${seed.prefix}/apps`);
