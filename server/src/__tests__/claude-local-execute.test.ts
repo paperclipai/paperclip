@@ -437,6 +437,36 @@ describe("claude execute", () => {
     }
   });
 
+  it("adds the local run scratch dir as a Claude --add-dir root only when one is provided", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-scratch-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const scratchDir = path.join(root, "run-scratch");
+    await fs.mkdir(scratchDir);
+    try {
+      const addDirsFor = async (runId: string, context: Record<string, unknown>) => {
+        const result = await execute({
+          runId,
+          agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: { engine: "cli", command: commandPath, cwd: workspace, env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath } },
+          context, onLog: async () => {},
+        });
+        expect(result.exitCode).toBe(0);
+        const { argv } = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[] };
+        return argv.flatMap((arg, index) => arg === "--add-dir" ? [argv[index + 1]] : []);
+      };
+      // Claude's Bash sandbox only writes under cwd, TMPDIR, and --add-dir roots.
+      const withScratch = await addDirsFor("run-scratch", { paperclipScratch: { type: "heartbeat_run", dir: scratchDir } });
+      expect(withScratch).toHaveLength(2);
+      expect(withScratch[1]).toBe(scratchDir);
+      expect(await addDirsFor("run-no-scratch", {})).toHaveLength(1);
+      expect(await addDirsFor("run-empty-scratch", { paperclipScratch: { type: "heartbeat_run", dir: "" } })).toHaveLength(1);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a strict per-agent MCP config only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);

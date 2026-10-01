@@ -134,6 +134,8 @@ describe("claude remote execution", () => {
         },
       },
       context: {
+        // Host scratch paths do not exist on the remote host, so they must not become --add-dir roots.
+        paperclipScratch: { type: "heartbeat_run", dir: "/host/paperclip-scratch/run-1" },
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -202,6 +204,8 @@ describe("claude remote execution", () => {
     );
     expect(call?.[2]).toContain("--add-dir");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
+    expect(call?.[2]).not.toContain("/host/paperclip-scratch/run-1");
+    expect(call?.[2].filter(arg => arg === "--add-dir")).toHaveLength(1);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([

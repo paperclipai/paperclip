@@ -95,3 +95,23 @@ export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenC
   ) return null;
   return claims as unknown as RuntimeToolsTokenClaims;
 }
+
+/**
+ * Recompute the signature for an unsigned `header.claims` token issued by this
+ * instance, so a caller can prove possession without sending it. Callers must
+ * still run verifyRuntimeToolsToken on the rebuilt token for scope and expiry.
+ */
+export function runtimeToolsTokenSignature(unsignedToken: string): string | null {
+  const parts = unsignedToken.split(".");
+  if (parts.length !== 2) return null;
+  let claims: Record<string, unknown>;
+  try {
+    claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  const companyId = typeof claims.company_id === "string" ? claims.company_id : null;
+  const instanceId = typeof claims.instance_id === "string" ? claims.instance_id : null;
+  if (!companyId || !instanceId || instanceId !== resolvePaperclipInstanceId()) return null;
+  return sign(unsignedToken, companyId, instanceId);
+}

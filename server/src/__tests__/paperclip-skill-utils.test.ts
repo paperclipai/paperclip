@@ -71,6 +71,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 printf '%s %s\n' "$method" "$url" >>"$FAKE_CURL_STATE_DIR/request-log"
+printf '%s\n' "$output_file" >>"$FAKE_CURL_STATE_DIR/output-files"
 
 respond() {
   printf '%s' "$1" >"$output_file"
@@ -318,6 +319,45 @@ describe("paperclip skill utils", () => {
     expect(normalizedShortcut).toContain(
       "recovery, governed-action, issue-thread-interaction, hold",
     );
+  });
+
+  it.each([
+    ["the run scratch dir", "scratch"],
+    ["TMPDIR when the run scratch dir is unusable", "tmpdir"],
+    ["/tmp when neither the run scratch dir nor TMPDIR is usable", "slash-tmp"],
+  ] as const)("keeps upload response files in %s", async (_label, expected) => {
+    const harness = await makeArtifactHelperHarness(cleanupDirs);
+    const scratch = path.join(harness.root, "scratch");
+    const tmpdir = path.join(harness.root, "tmpdir");
+    await fs.mkdir(tmpdir);
+    // A regular file stands in for an unwritable dir; root ignores mode bits.
+    if (expected === "scratch") await fs.mkdir(scratch);
+    else await fs.writeFile(scratch, "not a directory", "utf8");
+    const env = {
+      ...harness.env,
+      PAPERCLIP_SCRATCH_DIR: scratch,
+      TMPDIR: expected === "slash-tmp" ? path.join(harness.root, "missing-tmpdir") : tmpdir,
+    };
+    await execFileAsync("bash", [artifactHelperPath, harness.filePath, "--title", "Stable result"], { cwd: harness.root, env });
+
+    const outputFiles = (await fs.readFile(path.join(harness.stateDir, "output-files"), "utf8")).trim().split("\n");
+    const expectedDir = { scratch, tmpdir, "slash-tmp": "/tmp" }[expected];
+    expect(outputFiles.length).toBeGreaterThan(0);
+    for (const file of outputFiles) {
+      expect(path.dirname(file)).toBe(expectedDir);
+      expect(path.basename(file)).toMatch(/^paperclip-upload\./);
+      await expect(fs.access(file)).rejects.toThrow();
+    }
+  });
+
+  it("stops before calling the API when no temporary response file can be created", async () => {
+    const harness = await makeArtifactHelperHarness(cleanupDirs);
+    const binDir = path.join(harness.root, "bin");
+    await fs.writeFile(path.join(binDir, "mktemp"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
+    await expect(
+      execFileAsync("bash", [artifactHelperPath, harness.filePath, "--title", "Stable result"], { cwd: harness.root, env: harness.env }),
+    ).rejects.toMatchObject({ code: expect.any(Number) });
+    await expect(fs.readFile(path.join(harness.stateDir, "request-log"), "utf8")).rejects.toThrow();
   });
 
   it("recovers a committed upload after its response is lost without uploading the file twice", async () => {

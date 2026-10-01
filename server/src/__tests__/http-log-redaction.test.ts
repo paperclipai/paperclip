@@ -417,6 +417,7 @@ describe("HTTP logger redaction", () => {
     await request(app)
       .post("/runtime-tools/github/credentials")
       .set("X-Paperclip-Github-Capability", capability)
+      .set("X-Paperclip-Github-Sealed", `${capability}-sealed`)
       .send({})
       .expect(status);
 
@@ -424,6 +425,7 @@ describe("HTTP logger redaction", () => {
     expect(output).not.toContain(capability);
     const log = JSON.parse(output.trim());
     expect(log.req.headers["x-paperclip-github-capability"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-github-sealed"]).toBe("[Redacted]");
     expect(log.req.url).toBe("/runtime-tools/github/credentials");
     expect(log.res.statusCode).toBe(status);
   });

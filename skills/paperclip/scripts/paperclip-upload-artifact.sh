@@ -113,6 +113,17 @@ sha256_text() {
   fi
 }
 
+# Bare mktemp ignores TMPDIR on macOS and lands outside agent sandbox write
+# roots. Try the run scratch dir, then TMPDIR, then /tmp.
+make_temp_file() {
+  local dir
+  for dir in "${PAPERCLIP_SCRATCH_DIR:-}" "${TMPDIR:-}" /tmp; do
+    [[ -n "$dir" && -d "$dir" && -w "$dir" ]] || continue
+    mktemp "${dir%/}/paperclip-upload.XXXXXX" 2>/dev/null && return 0
+  done
+  mktemp
+}
+
 request_json() {
   local method="$1"
   local url="$2"
@@ -120,7 +131,8 @@ request_json() {
   local response_file
   local status_code
 
-  response_file="$(mktemp)"
+  # Command substitution drops errexit; stop before any API call.
+  response_file="$(make_temp_file)" || return 1
   if [[ -n "$body" ]]; then
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
@@ -163,7 +175,8 @@ upload_file() {
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
-  response_file="$(mktemp)"
+  # Command substitution drops errexit; stop before any API call.
+  response_file="$(make_temp_file)" || return 1
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \

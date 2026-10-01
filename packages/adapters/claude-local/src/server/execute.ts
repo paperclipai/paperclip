@@ -422,6 +422,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
+  const paperclipScratch = parseObject(context.paperclipScratch);
+  const runScratchDir = !executionTargetIsRemote && typeof paperclipScratch.dir === "string" && paperclipScratch.dir
+    ? paperclipScratch.dir
+    : null;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -873,6 +877,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Claude's Bash sandbox only allows writes under the cwd, TMPDIR, and
+    // --add-dir roots; without this the run scratch dir is read-only.
+    if (runScratchDir) args.push("--add-dir", runScratchDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

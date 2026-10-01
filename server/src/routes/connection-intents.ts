@@ -10,7 +10,8 @@ import {
   declineConnectionIntentSchema,
 } from "@paperclipai/shared";
 import { forbidden, unauthorized } from "../errors.js";
-import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
+import { runtimeToolsTokenSignature, verifyRuntimeToolsToken } from "../runtime-tools-token.js";
+import { GITHUB_BROKER_SEALED_HEADER, openSealedGitHubBrokerRequest, sealGitHubBrokerResponse } from "@paperclipai/adapter-utils/github-broker-seal";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { logActivity } from "../services/activity-log.js";
 import { accessService } from "../services/access.js";
@@ -48,13 +49,19 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
-    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
+    // Launchers behind a proxy they did not choose prove possession of the
+    // capability instead of sending it, and get the credentials sealed to them.
+    const sealed = req.headers[GITHUB_BROKER_SEALED_HEADER] === undefined ? null
+      : openSealedGitHubBrokerRequest(req.headers[GITHUB_BROKER_SEALED_HEADER], "/runtime-tools/github/credentials", runtimeToolsTokenSignature);
+    if (req.headers[GITHUB_BROKER_SEALED_HEADER] !== undefined && !sealed) throw unauthorized("Invalid GitHub runtime capability");
+    const claims = verifyRuntimeToolsToken(sealed ? sealed.token : typeof req.headers["x-paperclip-github-capability"] === "string"
       ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
     if (!claims) throw unauthorized("Invalid GitHub runtime capability");
     res.setHeader("Cache-Control", "no-store");
-    res.json(await resolveGitHubOperationCredentials(db, {
+    const credentials = await resolveGitHubOperationCredentials(db, {
       companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
-    }));
+    });
+    res.json(sealed ? sealGitHubBrokerResponse(sealed, credentials) : credentials);
   });
 
   router.get("/mcp/runtime-tools", async (req, res) => {

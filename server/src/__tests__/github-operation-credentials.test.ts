@@ -4,7 +4,8 @@ import request from "supertest";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
-import { randomUUID } from "node:crypto";
+import { createDecipheriv, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID } from "node:crypto";
+import { GITHUB_BROKER_SEALED_HEADER, githubBrokerSealedTranscript } from "@paperclipai/adapter-utils/github-broker-seal";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -907,6 +908,50 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(
         (await post().set("Authorization", `Bearer ${token}`)).status,
       ).toBe(403);
+    });
+
+    it("serves sealed credentials to a launcher that proves the capability without sending it", async () => {
+      const input = await seed();
+      await grant(input, "A");
+      const app = express();
+      app.use(express.json());
+      app.use(runtimeConnectionIntentRoutes(db));
+      app.use(errorHandler);
+      const token = createRuntimeToolsToken({ ...input, responsibleUserId: "A", scope: "github_credentials" })!.token;
+      const [header, claims, signature] = token.split(".");
+      const unsigned = `${header}.${claims}`;
+      // Mirrors the launcher's sealed client in githubLauncherSource().
+      const sealedRequest = (proofKey = signature!) => {
+        const pair = generateKeyPairSync("x25519");
+        const key = pair.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
+        const ts = Date.now();
+        const nonce = randomBytes(16).toString("base64url");
+        const transcript = githubBrokerSealedTranscript({ path: "/runtime-tools/github/credentials", token: unsigned, ts, nonce, key });
+        const proof = createHmac("sha256", proofKey).update(transcript).digest("base64url");
+        const open = (sealed: { key: string; iv: string; data: string; tag: string }) => {
+          const aad = `${transcript}\n${sealed.key}`;
+          const shared = diffieHellman({ privateKey: pair.privateKey, publicKey: createPublicKey({ key: Buffer.from(sealed.key, "base64url"), format: "der", type: "spki" }) });
+          const decipher = createDecipheriv("aes-256-gcm", Buffer.from(hkdfSync("sha256", shared, Buffer.from(signature!), Buffer.from(aad), 32)), Buffer.from(sealed.iv, "base64url"));
+          decipher.setAAD(Buffer.from(aad));
+          decipher.setAuthTag(Buffer.from(sealed.tag, "base64url"));
+          return JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, "base64url")), decipher.final()]).toString("utf8"));
+        };
+        return { value: Buffer.from(JSON.stringify({ v: 1, token: unsigned, ts, nonce, key, proof })).toString("base64url"), open };
+      };
+      const post = () => request(app).post("/runtime-tools/github/credentials");
+      const sealed = sealedRequest();
+      const ok = await post().set(GITHUB_BROKER_SEALED_HEADER, sealed.value);
+      expect(ok.status).toBe(200);
+      expect(ok.headers["cache-control"]).toBe("no-store");
+      expect(JSON.stringify(ok.body)).not.toContain('"login"');
+      expect(sealed.open(ok.body).login).toBe("A");
+      // A proof made without the signature fails, and a valid bearer cannot rescue a bad sealed request.
+      expect((await post().set(GITHUB_BROKER_SEALED_HEADER, sealedRequest("guessed").value)).status).toBe(401);
+      expect((await post().set(GITHUB_BROKER_SEALED_HEADER, "garbage").set("Authorization", `Bearer ${token}`)).status).toBe(401);
+      // Browser signals are still refused before the sealed path.
+      expect((await post().set(GITHUB_BROKER_SEALED_HEADER, sealedRequest().value).set("Origin", "http://127.0.0.1")).status).toBe(403);
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, input.runId));
+      expect((await post().set(GITHUB_BROKER_SEALED_HEADER, sealedRequest().value)).status).toBe(403);
     });
   },
 );
