@@ -37,7 +37,6 @@ export function taskChatStatusRelevance(
   }
   const latestByAgent = new Map<string, number>();
   const latestAttemptByAgent = new Map<string, number>();
-  let latestStart = -Infinity;
   for (const run of byId.values()) {
     // Admission order, not finish order: an old attempt can finish late.
     const createdAt = timestamp(run.createdAt);
@@ -48,8 +47,6 @@ export function taskChatStatusRelevance(
         latestAttemptByAgent.set(run.agentId, Math.max(latestAttemptByAgent.get(run.agentId) ?? -Infinity, order));
       }
     }
-    const startedAt = timestamp(run.startedAt);
-    if (Number.isFinite(startedAt)) latestStart = Math.max(latestStart, startedAt);
   }
 
   const isHistoricalRun = (runId: string): boolean => {
@@ -74,17 +71,19 @@ export function taskChatStatusRelevance(
     // Session resets are durable conversation boundaries, not execution status.
     if (comment.conversationSessionGeneration != null) return false;
     if (comment.authorType !== "system" && comment.presentation?.kind !== "system_notice") return false;
-    if (terminal) return true;
-    if (comment.metadata?.recovery?.actionId === recoveryAction?.id && recoveryAction) {
-      return recoveryAction.status === "resolved" || recoveryAction.status === "cancelled";
-    }
     const sourceRunId = comment.metadata?.sourceRunId ?? comment.createdByRunId
       ?? comment.runId ?? comment.derivedCreatedByRunId;
+    const recoveryActionId = comment.metadata?.recovery?.actionId;
+    // System authorship alone does not make a comment execution status. Child
+    // task relays and other unrelated updates have their own unresolved state.
+    // Without run/recovery provenance, a later run cannot prove them obsolete.
+    if (!sourceRunId && !recoveryActionId) return false;
+    if (terminal) return true;
+    if (recoveryActionId === recoveryAction?.id && recoveryAction) {
+      return recoveryAction.status === "resolved" || recoveryAction.status === "cancelled";
+    }
     if (sourceRunId) return isHistoricalRun(sourceRunId);
-    if (recoveryAction?.status === "active" || recoveryAction?.status === "escalated") return false;
-    // Older notices without run provenance are superseded only by actual work,
-    // never by a new human comment or the passage of time.
-    return timestamp(comment.createdAt) < latestStart;
+    return false;
   };
 
   return { isHistoricalRun, isHistoricalNotice };

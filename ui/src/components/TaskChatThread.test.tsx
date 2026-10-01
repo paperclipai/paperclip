@@ -241,6 +241,15 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(retry).toHaveBeenCalledExactlyOnceWith("new-failure");
   });
 
+  it.each(["in_progress", "done"])("preserves a child's stop relay after parent work (%s)", (issueStatus) => {
+    const relay = { ...comment("child-relay", "System relay: [Child task](/issues/child) transitioned to `blocked`."),
+      authorType: "system" as const, authorAgentId: null };
+    render(<TaskChatThread comments={[relay]} onAdd={async () => {}} issueStatus={issueStatus}
+      linkedRuns={[run("parent-follow-up", "succeeded", 1)]} />);
+    expect(container.querySelector('[data-thread-anchor="child-relay"]')).not.toBeNull();
+    expect(container.textContent).toContain("Child task");
+  });
+
   it("clears old notices as soon as a successor is live, before history refreshes", () => {
     const old = run("old", "failed", 0);
     const live = { ...run("live", "running", 1), id: "live", finishedAt: null,

@@ -18,7 +18,7 @@ const hold: ExecutionProjection = {
 const notice: IssueChatComment = {
   id: "notice", companyId: "company", issueId: "issue", authorType: "system",
   authorAgentId: null, authorUserId: null, body: "Execution needs attention.",
-  presentation: null, metadata: null,
+  presentation: null, metadata: { version: 1, sourceRunId: "old", sections: [] },
   createdAt: new Date("2025-01-01T10:00:30Z"), updatedAt: new Date("2025-01-01T10:00:30Z"),
 };
 
@@ -80,8 +80,8 @@ describe("task chat status relevance", () => {
   it("hides old system notices by provenance without hiding authored messages or session boundaries", () => {
     const policy = taskChatStatusRelevance("in_progress", [oldRun, nextRun]);
     expect(policy.isHistoricalNotice({ ...notice, metadata: { version: 1, sourceRunId: "old", sections: [] } })).toBe(true);
-    expect(policy.isHistoricalNotice({ ...notice, createdByRunId: "next" })).toBe(false);
-    expect(policy.isHistoricalNotice({ ...notice, createdByRunId: "unknown" })).toBe(false);
+    expect(policy.isHistoricalNotice({ ...notice, metadata: null, createdByRunId: "next" })).toBe(false);
+    expect(policy.isHistoricalNotice({ ...notice, metadata: null, createdByRunId: "unknown" })).toBe(false);
     expect(policy.isHistoricalNotice(notice)).toBe(true);
     expect(policy.isHistoricalNotice({ ...notice, authorType: "agent" })).toBe(false);
     expect(policy.isHistoricalNotice({ ...notice, authorType: "user" })).toBe(false);
@@ -93,6 +93,15 @@ describe("task chat status relevance", () => {
     expect(policy.isHistoricalRun("unloaded")).toBe(true);
     expect(policy.isHistoricalNotice(notice)).toBe(true);
     expect(policy.isHistoricalNotice({ ...notice, authorType: "agent" })).toBe(false);
+  });
+
+  it.each(["in_progress", "done", "cancelled"])("preserves unrelated system updates on %s tasks after later work", (status) => {
+    const policy = taskChatStatusRelevance(status, [oldRun, nextRun]);
+    const relay = { ...notice, metadata: null, body: "A child task is still blocked." };
+    expect(policy.isHistoricalNotice(relay)).toBe(false);
+    expect(policy.isHistoricalNotice({ ...relay, presentation: {
+      kind: "system_notice", title: "Child task blocked", tone: "warning", detailsDefaultOpen: false,
+    } })).toBe(false);
   });
 
   it("keeps uncertainty visible when timestamps are missing or tied", () => {
