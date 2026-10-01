@@ -56,3 +56,16 @@ export type {
   WatchdogDecisionRecord,
 } from "./application/types.js";
 export { WatchdogDecisionApplicationError } from "./application/types.js";
+
+/**
+ * Cross-module consumers (services) must import through this index, so the
+ * shared silence thresholds, the silence predicate helper, and the decision
+ * state reader are re-exported here alongside the composed module.
+ */
+export {
+  ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+} from "./thresholds.js";
+export { silenceStartedAt } from "./domain/policy.js";
+export { findLatestWatchdogDecisionState } from "./adapters/decision-state.js";

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -21,6 +21,7 @@ import {
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { RECOVERY_ORIGIN_KINDS } from "../../../services/recovery/origins.js";
 import { isTerminalIssueStatus } from "../domain/policy.js";
+import { findLatestWatchdogDecisionState } from "./decision-state.js";
 import type { WatchdogRunReader, WatchdogWriter } from "../application/ports.js";
 import type {
   EvaluationIssueSnapshot,
@@ -120,42 +121,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   }
 
   async function findLatestDecision(companyId: string, runId: string, now: Date) {
-    const [quietUntilRows, dismissedRows] = await Promise.all([
-      db
-        .select({
-          decision: heartbeatRunWatchdogDecisions.decision,
-          snoozedUntil: heartbeatRunWatchdogDecisions.snoozedUntil,
-        })
-        .from(heartbeatRunWatchdogDecisions)
-        .where(
-          and(
-            eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-            eq(heartbeatRunWatchdogDecisions.runId, runId),
-            inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
-            gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
-          ),
-        )
-        .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
-        .limit(1),
-      db
-        .select({ id: heartbeatRunWatchdogDecisions.id })
-        .from(heartbeatRunWatchdogDecisions)
-        .where(
-          and(
-            eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-            eq(heartbeatRunWatchdogDecisions.runId, runId),
-            eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
-          ),
-        )
-        .limit(1),
-    ]);
-    const quietUntilRow = quietUntilRows[0];
-    return {
-      dismissedFalsePositive: dismissedRows.length > 0,
-      quietUntilDecision: quietUntilRow && quietUntilRow.snoozedUntil
-        ? { decision: quietUntilRow.decision as "snooze" | "continue", snoozedUntil: quietUntilRow.snoozedUntil }
-        : null,
-    };
+    return findLatestWatchdogDecisionState(db, companyId, runId, now);
   }
 
   function selectEvaluationIssueSnapshot() {
