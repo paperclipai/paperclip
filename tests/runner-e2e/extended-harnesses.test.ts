@@ -62,6 +62,23 @@ describe("extended ACP harness qualification", () => {
       }
     }
   });
+  it("admits all four explicit active-Stop cells only for Cursor and Copilot", () => {
+    const cells = selectRunnerExecutions(parseRunnerSelectors(["--suite", "native-active-stop"]));
+    expect(cells).toHaveLength(4);
+    expect(new Set(cells.map(cell => `${cell.profile.qualificationCandidate}:${cell.environment.id}`))).toEqual(
+      new Set(["cursor:local", "cursor:daytona", "copilot:local", "copilot:daytona"]),
+    );
+    for (const cell of cells) {
+      expect(cell.suite.manualOnly).toBe(true);
+      expect(JSON.parse(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!))
+        .toEqual([{ agent: cell.profile.qualificationCandidate, model: cell.profile.model }]);
+      expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, suite: { ...cell.suite, manualOnly: false } }])).toThrow("explicit");
+      expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, profile: { ...cell.profile, qualificationCandidate: "pi" } }])).toThrow("explicit");
+      expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, suite: { ...cell.suite, id: "unrelated-manual-suite" } }])).toThrow("explicit");
+    }
+    const implicit = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
+    expect(implicit.some(cell => cell.suite.id === "native-active-stop")).toBe(false);
+  });
   it("requires both image executable pins for remote native cases before setup", () => {
     const remote = runnerMatrix.filter(cell => cell.environment.id === "daytona" && ["cursor-native", "pi-native", "copilot-protection"].includes(cell.suite.id));
     const valid = { PAPERCLIP_E2E_DAYTONA_NODE_SHA256: `sha256:${"a".repeat(64)}`, PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256: `sha256:${"b".repeat(64)}` };
