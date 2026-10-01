@@ -130,6 +130,13 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
 
+/**
+ * Rows the run history panel renders. Matches the server default for
+ * `GET /companies/:id/heartbeat-runs`; stated here so the page's row budget
+ * is visible at the call site rather than inherited from a route default.
+ */
+const AGENT_RUN_LIST_LIMIT = 200;
+
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
   failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
@@ -891,7 +898,7 @@ export function AgentDetail() {
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined, AGENT_RUN_LIST_LIMIT),
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
 
