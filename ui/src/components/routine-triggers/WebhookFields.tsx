@@ -3,6 +3,7 @@ import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 
 export function CopyField({
   label,
@@ -64,8 +65,6 @@ export function CopyField({
 }
 
 export function AgentInstructions({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState(false);
   return (
     <section
       aria-label="Agent instructions"
@@ -78,41 +77,12 @@ export function AgentInstructions({ value }: { value: string }) {
           authentication key, and step-by-step instructions.
         </p>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        aria-label="Copy for your agent"
-        onClick={async () => {
-          try {
-            await copyTextToClipboard(value);
-            setCopied(true);
-            setError(false);
-          } catch {
-            setError(true);
-          }
-        }}
-      >
-        {copied ? (
-          <Check className="h-3.5 w-3.5" />
-        ) : (
-          <Copy className="h-3.5 w-3.5" />
-        )}
-        {copied ? "Copied instructions" : "Copy for your agent"}
-      </Button>
-      {error && (
-        <div className="space-y-2">
-          <p role="alert" className="text-xs text-destructive">
-            Copy failed. Select and copy the instructions below.
-          </p>
-          <textarea
-            readOnly
-            aria-label="Agent instructions text"
-            value={value}
-            rows={5}
-            className="w-full rounded-md border border-input bg-background p-3 text-sm"
-          />
-        </div>
-      )}
+      <AgentSetupPrompt
+        prompt={value}
+        label="Copy for your agent"
+        title="Webhook setup"
+        description="Paste this into your agent to connect this webhook to your routine."
+      />
     </section>
   );
 }

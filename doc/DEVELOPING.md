@@ -100,6 +100,19 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+Use **Components → Agent setup prompt** to review the shared setup handoff:
+hover/focus logo motion, one-click copying with a prompt preview, animated
+confirmation, and manual-copy recovery. Opening the preview copies immediately;
+the inner copy button remains available for retries and later copies. Stories include Slack and API copy, a compact quick-access placement,
+light and mobile views, and a clipboard paste check. `AgentSetupPrompt` accepts
+the complete `prompt`, `title`, `description`, trigger `label`, and popover
+placement. Use it for prompts handed to an external agent: Slack and GitHub
+connections, MCP configuration help, routine webhook setup, external-agent
+invitations, and task continuation. The **App placements** story collects the
+production controls; **Inside MCP help** exercises the popover inside a dialog.
+Prompt generation can pass `initialCopyStatus` to preserve its automatic copy
+result, and `onCopied` to clear an earlier generation-time clipboard error.
+
 Use **Design explorations → Agent chat sidebar** to review the production secondary
 agent navigation. **Components** covers selection, search, loading, empty results,
 and larger teams. **Pages** puts it beside the production agent chat inside the

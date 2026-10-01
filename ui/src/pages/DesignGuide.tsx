@@ -2286,7 +2286,7 @@ export function DesignGuide() {
       </Section>
 
       <Section title="Browser setup prompt">
-        <p className="text-sm text-muted-foreground">A shared copy action for provider setup instructions. Confirms success inline and offers selectable text if clipboard access fails.</p>
+        <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
         <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
       </Section>
 

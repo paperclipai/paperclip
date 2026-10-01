@@ -3217,3 +3217,79 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   .skill-import-enter, .skill-import-sweep { animation: none; }
   .skill-import-progress::-webkit-progress-value { transition: none; }
 }
+
+/* Agent setup handoff: the same logo stack travels from trigger to prompt. */
+:root {
+  --agent-setup-flight-duration: var(--motion-duration-deliberate);
+  --agent-setup-copied-hold: 2400ms;
+  --agent-setup-popover-width: 21rem;
+  --agent-setup-collision-padding: 12;
+  --agent-setup-preview-height: clamp(6rem, 27dvh, 12rem);
+  --agent-setup-logo-size: calc(var(--spacing) * 7);
+  --agent-setup-logo-overlap: calc(var(--spacing) * -1.5);
+  --agent-setup-logo-lift: calc(var(--spacing) * -1.5);
+  --agent-setup-logo-tilt: 14deg;
+}
+.agent-setup-trigger-logos {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: calc(var(--agent-setup-logo-size) * 3 + var(--agent-setup-logo-overlap) * 2);
+  height: var(--agent-setup-logo-size);
+  margin-left: auto;
+}
+.agent-setup-logos { display: inline-flex; isolation: isolate; }
+.agent-setup-logos[data-hidden="true"] { visibility: hidden; }
+.agent-setup-logo-slot { display: inline-flex; position: relative; }
+.agent-setup-logo-slot + .agent-setup-logo-slot { margin-left: var(--agent-setup-logo-overlap); }
+.agent-setup-flight-layer { position: fixed; inset: 0; z-index: 51; pointer-events: none; }
+.agent-setup-flight-layer .agent-setup-flying-logo { position: absolute; transition: none; }
+.agent-setup-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--agent-setup-logo-size);
+  height: var(--agent-setup-logo-size);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--motion-duration-slow) var(--motion-ease-out-expo);
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(1) .agent-setup-logo {
+  transform: translateY(var(--agent-setup-logo-lift)) rotate(calc(-1 * var(--agent-setup-logo-tilt)));
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(2) .agent-setup-logo {
+  transform: translateY(calc(var(--agent-setup-logo-lift) * 1.6));
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(3) .agent-setup-logo {
+  transform: translateY(calc(var(--agent-setup-logo-lift) * 0.6)) rotate(var(--agent-setup-logo-tilt));
+}
+.agent-setup-popover {
+  width: min(var(--agent-setup-popover-width), calc(100vw - var(--spacing) * 6));
+  max-height: var(--radix-popover-content-available-height);
+  box-shadow: var(--shadow-profile-popover);
+}
+.agent-setup-popover[data-state="open"] { animation: tc-fade-in var(--motion-duration-base) var(--motion-ease-out-expo); }
+.agent-setup-popover[data-state="closed"] { animation: none; }
+.agent-setup-preview {
+  height: var(--agent-setup-preview-height);
+  max-height: max(3rem, calc(var(--radix-popover-content-available-height) - 12rem));
+  scrollbar-width: thin;
+}
+.agent-setup-preview-logos { transform: translateY(-25%); }
+.agent-setup-preview-logos .agent-setup-logo-slot:first-child .agent-setup-logo { transform: rotate(calc(var(--agent-setup-logo-tilt) * -0.5)); }
+.agent-setup-preview-logos .agent-setup-logo-slot:last-child .agent-setup-logo { transform: rotate(calc(var(--agent-setup-logo-tilt) * 0.5)); }
+.agent-setup-check { animation: agent-setup-check var(--motion-duration-slow) var(--motion-ease-out-expo) both; }
+.agent-setup-confirmation { animation: tc-fade-rise var(--motion-duration-base) var(--motion-ease-out-expo) both; }
+.agent-setup-copy[aria-disabled="true"] { opacity: 0.5; }
+@keyframes agent-setup-check {
+  from { opacity: 0; transform: scale(0.6) rotate(-20deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-setup-logo { transition: none; transform: none !important; }
+  .agent-setup-popover, .agent-setup-check, .agent-setup-confirmation { animation: none !important; }
+}
+@media (max-height: 420px) {
+  .agent-setup-popover { overflow-y: auto; }
+}
