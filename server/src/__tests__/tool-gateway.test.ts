@@ -48,6 +48,7 @@ import {
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { actorMiddleware } from "../middleware/auth.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import {
@@ -465,9 +466,13 @@ function createGatewayRouteApp(
   db: Db,
   gateway = createTestToolGatewayService(db),
   actor?: Express.Request["actor"],
+  options: { withActorMiddleware?: boolean } = {},
 ) {
   const app = express();
   app.use(express.json());
+  if (options.withActorMiddleware) {
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+  }
   if (actor) {
     app.use((req, _res, next) => {
       req.actor = actor;
@@ -6095,5 +6100,274 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+
+  describe("run-scoped gateway session-token verification", () => {
+    async function createSessionFixture(companyId: string) {
+      const agent = await createAgent(db, companyId);
+      const { project, issue, run } = await createIssueAndRun(db, companyId, agent.id);
+      const localTool = await createLocalStdioMcpTool(db, companyId, {
+        applicationKey: "local-demo",
+        connectionName: "Local Demo",
+        toolName: "echo",
+        title: "Local echo",
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: "local-demo",
+        connectionId: localTool.connection.id,
+        toolName: "echo",
+      });
+      const profile = await allowToolsForAgent(db, companyId, agent.id, []);
+      await db.insert(toolProfileEntries).values({
+        companyId,
+        profileId: profile.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: localTool.catalogEntry.id,
+      });
+      return { agent, project, issue, run, profile, toolName };
+    }
+
+    it("authenticates tools/list and tools/call for its own session over an Authorization bearer", async () => {
+      const company = await createCompany(db);
+      const { agent, project, issue, run, toolName } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+        ttlMs: 60_000,
+      });
+
+      const listed = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${session.token}`);
+      expect(listed.status).toBe(200);
+      expect(listed.body).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: toolName }),
+      ]));
+
+      const called = await request(app)
+        .post("/api/tool-gateway/tools/call")
+        .set("Authorization", `Bearer ${session.token}`)
+        .send({ tool: toolName, parameters: { message: "hello" } });
+      expect(called.status).toBe(200);
+      expect(called.body).toMatchObject({
+        status: "completed",
+        result: expect.objectContaining({ content: "local:hello" }),
+      });
+
+      const listedByHeader = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("x-paperclip-tool-gateway-token", session.token);
+      expect(listedByHeader.status).toBe(200);
+
+      await db
+        .update(toolGatewaySessions)
+        .set({ expiresAt: new Date(Date.now() - 1_000), updatedAt: new Date() })
+        .where(eq(toolGatewaySessions.id, session.id));
+      const expired = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${session.token}`);
+      expect(expired.status).toBe(401);
+      expect(expired.body).toMatchObject({ reasonCode: "session_expired" });
+    });
+
+    it("reads only a session-token bearer out of Authorization", async () => {
+      const company = await createCompany(db);
+      const { agent, issue, project, run } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway);
+
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+
+      const otherAuthorityBearer = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", "Bearer board-api-key-value");
+      expect(otherAuthorityBearer.status).toBe(401);
+      expect(otherAuthorityBearer.body).toEqual({
+        error: "Tool gateway session token is required",
+      });
+
+      const sessionBearer = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${session.token}`);
+      expect(sessionBearer.status).toBe(200);
+
+      const bothTransports = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("x-paperclip-tool-gateway-token", session.token)
+        .set("Authorization", "Bearer board-api-key-value");
+      expect(bothTransports.status).toBe(200);
+    });
+
+    it("rejects revoked, cross-session, unknown, and malformed session bearers", async () => {
+      const company = await createCompany(db);
+      const { agent, issue, project, run } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+
+      const sessionA = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+      const sessionB = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+      const secretB = sessionB.token.split(".")[1]!;
+
+      await gateway.revokeSession({ companyId: company.id, sessionId: sessionA.id });
+      const revoked = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${sessionA.token}`);
+      expect(revoked.status).toBe(401);
+      expect(revoked.body).toMatchObject({ reasonCode: "session_revoked" });
+
+      for (const badToken of [
+        `pcgt_${sessionA.id}.${secretB}`,
+        `pcgt_${randomUUID()}.${secretB}`,
+        `pcgt_not-a-uuid.${secretB}`,
+        `pcgt_${sessionB.id}`,
+        "pcgt_malformed",
+      ]) {
+        const rejected = await request(app)
+          .get("/api/tool-gateway/tools")
+          .set("Authorization", `Bearer ${badToken}`);
+        expect(rejected.status).toBe(401);
+        expect(rejected.body).toMatchObject({ reasonCode: "session_invalid" });
+      }
+
+      const notASessionBearer = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", "Bearer not-even-a-prefix");
+      expect(notASessionBearer.status).toBe(401);
+      expect(notASessionBearer.body).not.toMatchObject({ reasonCode: "session_invalid" });
+    });
+
+    it("rejects a session bound to another agent's run and a session whose run has finished", async () => {
+      const company = await createCompany(db);
+      const { agent, issue, project, run } = await createSessionFixture(company.id);
+      const otherAgent = await createAgent(db, company.id);
+      const otherRun = await createIssueAndRun(db, company.id, otherAgent.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+
+      const wrongRunSession = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+      await db
+        .update(toolGatewaySessions)
+        .set({ runId: otherRun.run.id, updatedAt: new Date() })
+        .where(eq(toolGatewaySessions.id, wrongRunSession.id));
+      const wrongRun = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${wrongRunSession.token}`);
+      expect(wrongRun.status).toBe(401);
+      expect(wrongRun.body).toMatchObject({ reasonCode: "session_run_inactive" });
+
+      const finishedRunSession = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", completedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run.id));
+      const finishedRun = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${finishedRunSession.token}`);
+      expect(finishedRun.status).toBe(401);
+      expect(finishedRun.body).toMatchObject({ reasonCode: "session_run_inactive" });
+    });
+
+    it("keeps a gateway bearer on the run-scoped session endpoints in actor authentication", async () => {
+      const company = await createCompany(db);
+      const { profile, run, toolName } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+
+      const namedGateway = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: `GW ${randomUUID()}`, profileId: profile.id, defaultProfileMode: "gateway_only" },
+      });
+      const gatewayToken = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: namedGateway.id,
+        body: {
+          name: "gateway-token",
+          clientLabel: "gateway-token",
+          subjectType: "heartbeat_run",
+          subjectId: run.id,
+          allowedActions: ["tools/list", "tools/call"],
+        },
+      });
+
+      const listedByBearer = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("Authorization", `Bearer ${gatewayToken.token}`);
+      expect(listedByBearer.status).toBe(401);
+      expect(listedByBearer.body).not.toMatchObject({ reasonCode: "session_invalid" });
+
+      const gatewayCall = await request(app)
+        .post(`/mcp/gateways/${namedGateway.gatewayPublicId}`)
+        .set("Authorization", `Bearer ${gatewayToken.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: toolName, arguments: { message: "hi" } },
+        });
+      expect(gatewayCall.status).toBe(200);
+    });
+
+    it("rejects a session bearer on a named gateway endpoint", async () => {
+      const company = await createCompany(db);
+      const { agent, issue, profile, project, run } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        projectId: project.id,
+      });
+      const namedGateway = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: `GW ${randomUUID()}`, profileId: profile.id, defaultProfileMode: "gateway_only" },
+      });
+
+      const wrongFamily = await request(app)
+        .post(`/mcp/gateways/${namedGateway.gatewayPublicId}`)
+        .set("Authorization", `Bearer ${session.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+      expect(wrongFamily.status).toBe(401);
+      expect(wrongFamily.body.error.data).toMatchObject({ reasonCode: "gateway_token_invalid" });
+    });
   });
 });
