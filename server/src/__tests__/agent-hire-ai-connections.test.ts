@@ -35,12 +35,12 @@ afterAll(async () => {
   if (home) await rm(home, { recursive: true, force: true });
 });
 
-async function fixture(provider: "anthropic" | "openai", method: "api_key" | "subscription" = "api_key") {
+async function fixture(provider: "anthropic" | "openai" | "openrouter", method: "api_key" | "subscription" = "api_key") {
   const companyId = randomUUID();
   const agentId = randomUUID();
   const userId = `owner-${companyId}`;
   const binding = { provider, method, mode: "responsible_user" } as const;
-  const adapterType = provider === "anthropic" ? "claude_local" : "codex_local";
+  const adapterType = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local" }[provider];
   await db.insert(companies).values({ id: companyId, name: "Hiring connection test", issuePrefix: `H${companyId.slice(0, 7)}`, defaultResponsibleUserId: userId });
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
   await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:create" });
@@ -267,6 +267,149 @@ describe("hired agents sharing a subscription", () => {
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
       await heartbeat.drainActiveRunExecutions();
       unregisterServerAdapter(f.adapterType);
+    }
+  });
+});
+
+describe("save-time binding validation names the real failing check", () => {
+  it("names the failing environment check instead of blaming the AI connection", async () => {
+    const f = await fixture("anthropic");
+    // The save path also checks the responsible user's grant, so this test
+    // needs the direct change permission a real operator would hold.
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    // A clean temp cwd keeps the project-auth file scan away from the host's
+    // real `.claude/settings.json`, which would raise its own verdict here.
+    await db.update(agents).set({ runtimeConfig: {}, adapterConfig: { cwd: home } }).where(eq(agents.id, f.agentId));
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    registerServerAdapter({
+      ...previous,
+      type: "claude_local",
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "fail" as const,
+        checks: [{ code: "claude_cwd_invalid", level: "error" as const, message: 'Could not create working directory "/paperclip/instances/default/projects/acme/site/_default"' }],
+        testedAt: new Date(0).toISOString(),
+      }),
+    });
+    try {
+      const response = await request(f.app)
+        .patch(`/api/agents/${f.agentId}`)
+        .send({ runtimeConfig: { aiConnection: f.binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.error).toContain("claude_cwd_invalid");
+      expect(response.body.error).toContain("Could not create working directory");
+      expect(response.body.error).not.toContain("The selected AI connection failed validation");
+      expect(response.body.details.code).toBe("ai_connection_validation_failed");
+      expect(response.body.details.checks).toEqual([{ code: "claude_cwd_invalid", level: "error" }]);
+    } finally {
+      unregisterServerAdapter("claude_local");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("keeps the AI-connection wording when the connection itself is unauthenticated", async () => {
+    const f = await fixture("anthropic");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    await db.update(agents).set({ runtimeConfig: {}, adapterConfig: { cwd: home } }).where(eq(agents.id, f.agentId));
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    registerServerAdapter({
+      ...previous,
+      type: "claude_local",
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "fail" as const,
+        checks: [
+          { code: "claude_hello_probe_auth_required", level: "error" as const, message: "Authentication required." },
+          { code: "adapter_auth_missing", level: "warn" as const, message: "This environment has no ready authentication for this adapter." },
+        ],
+        testedAt: new Date(0).toISOString(),
+      }),
+    });
+    try {
+      const response = await request(f.app)
+        .patch(`/api/agents/${f.agentId}`)
+        .send({ runtimeConfig: { aiConnection: f.binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.error).toContain("The selected AI connection failed validation in this agent’s environment");
+      expect(response.body.details.code).toBe("ai_connection_validation_failed");
+    } finally {
+      unregisterServerAdapter("claude_local");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("names the first failing check when a rollup code follows it", async () => {
+    const f = await fixture("anthropic", "subscription");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    await db.update(agents).set({ runtimeConfig: {}, adapterConfig: { cwd: home } }).where(eq(agents.id, f.agentId));
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    // The agent's own runtime passes. The subscription fallback probe then
+    // fails, and testManagedEnvironment appends its own rollup code behind that
+    // real cause — the trailing code must not take over the message.
+    let calls = 0;
+    registerServerAdapter({
+      ...previous,
+      type: "claude_local",
+      testEnvironment: async () => {
+        calls += 1;
+        return {
+          adapterType: "claude_local",
+          status: (calls === 1 ? "pass" : "fail") as "pass" | "fail",
+          checks: calls === 1 ? [] : [{ code: "claude_command_unresolvable", level: "error" as const, message: "Command is not executable" }],
+          testedAt: new Date(0).toISOString(),
+        };
+      },
+    });
+    try {
+      const response = await request(f.app)
+        .patch(`/api/agents/${f.agentId}`)
+        .send({ runtimeConfig: { aiConnection: f.binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.error).toContain("claude_command_unresolvable");
+      expect(response.body.error).not.toContain("The selected AI connection failed validation");
+      expect(response.body.details.checks.map((check: { code: string }) => check.code)).toEqual([
+        "claude_command_unresolvable",
+        "ai_connection_validation_incomplete",
+      ]);
+    } finally {
+      unregisterServerAdapter("claude_local");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("names the failing OpenCode environment check when saving an OpenCode agent", async () => {
+    const f = await fixture("openrouter");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    // OpenRouter compatibility reads the model off the adapter config, so keep
+    // it while clearing the save state and pointing the cwd at a clean temp dir.
+    await db.update(agents).set({ runtimeConfig: {}, adapterConfig: { cwd: home, model: "openrouter/xiaomi/mimo-v2.6-pro" } }).where(eq(agents.id, f.agentId));
+    const previous = getServerAdapter("opencode_local");
+    unregisterServerAdapter("opencode_local");
+    registerServerAdapter({
+      ...previous,
+      type: "opencode_local",
+      testEnvironment: async () => ({
+        adapterType: "opencode_local",
+        status: "fail" as const,
+        checks: [{ code: "opencode_command_unresolvable", level: "error" as const, message: "Command is not executable: opencode" }],
+        testedAt: new Date(0).toISOString(),
+      }),
+    });
+    try {
+      const response = await request(f.app)
+        .patch(`/api/agents/${f.agentId}`)
+        .send({ runtimeConfig: { aiConnection: f.binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.error).toContain("opencode_command_unresolvable");
+      expect(response.body.error).toContain("Command is not executable");
+      expect(response.body.error).not.toContain("The selected AI connection failed validation");
+      expect(response.body.details.checks).toEqual([{ code: "opencode_command_unresolvable", level: "error" }]);
+    } finally {
+      unregisterServerAdapter("opencode_local");
+      if (previous) registerServerAdapter(previous);
     }
   });
 });

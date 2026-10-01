@@ -3383,10 +3383,26 @@ export function agentRoutes(
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
         const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
-        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
-          code: "ai_connection_validation_failed",
-          checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
-        });
+        const failing = result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+        if (result.status === "fail" || failing.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) {
+          // The wording follows the first failing check. testManagedEnvironment
+          // appends its own rollup code behind the real cause, and that trailing
+          // code must not restate a settled verdict. Missing adapter auth is the
+          // one exception: it names the connection even when a descriptive check
+          // precedes it.
+          const cause = failing[0];
+          const connectionFailure = failing.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) || Boolean(cause?.code.startsWith("ai_connection_"));
+          const detail = cause ? ` ${cause.code}: ${cause.message.trim().replace(/\.$/, "")}.` : "";
+          throw unprocessable(
+            connectionFailure
+              ? "The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks."
+              : `The agent’s environment failed validation.${detail} Run the agent test to see the failing checks.`,
+            {
+              code: "ai_connection_validation_failed",
+              checks: failing.map(check => ({ code: check.code, level: check.level })),
+            },
+          );
+        }
         if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
       } finally { try { await managed?.cleanup(); } finally { await target.release("released"); } }
     }
