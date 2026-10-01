@@ -433,7 +433,7 @@ export interface PaperclipClaudeSettingsIdentity {
 }
 
 /**
- * The 17 fields the session fingerprint hashes. Company, agent, and task
+ * The configuration fields the session fingerprint hashes. Company, agent, and task
  * identifiers are NOT here; they scope the outer session key only (see
  * `SessionKeyIdentity`). A change to any field here invalidates a warm handle
  * or a resumable session and forces a fresh launch.
@@ -456,6 +456,7 @@ export interface SessionFingerprintIdentity {
   readonly mcpServers: readonly McpServerIdentity[];
   readonly secretManifestHash: string;
   readonly adapterEnvHash: string;
+  readonly managedAiIdentity?: string;
 }
 
 /**

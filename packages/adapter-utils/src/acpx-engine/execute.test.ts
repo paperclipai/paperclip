@@ -1841,6 +1841,43 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(sameEnvNewWake)).toBe(fp(first));
   });
 
+  it.each(["claude", "codex"])("%s resumes across managed homes but rejects real environment and account changes", async (agent) => {
+    const root = await makeTempRoot();
+    const config = { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    async function run(home: string, identity = "grant:user:generation", custom = "one", runtime = {}, managed = true) {
+      return runExecutor({ ...config, env: {
+        HOME: home, XDG_CONFIG_HOME: path.join(home, "config"),
+        XDG_DATA_HOME: path.join(home, "data"), CODEX_HOME: path.join(home, "provider"),
+        GROK_HOME: path.join(home, "provider"), CLAUDE_CONFIG_DIR: path.join(home, "provider"),
+        CUSTOM: custom,
+      } }, { runtime, context: { taskId: "issue-1",
+        ...(managed ? { managedAiRuntime: { home, identity } } : {}),
+      } });
+    }
+    const first = await run(path.join(root, "first"));
+    const second = await run(path.join(root, "second"), undefined, undefined,
+      { sessionParams: first.result.sessionParams });
+    expect(first.result.sessionParams?.configFingerprint).toBeDefined();
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    expect(second.logs.some(({ text }) => text.includes("does not match"))).toBe(false);
+    expect(second.sessionInputs).toContainEqual(expect.objectContaining({
+      resumeSessionId: first.result.sessionParams?.acpSessionId,
+      sessionOptions: expect.objectContaining({ env: expect.objectContaining({
+        HOME: path.join(root, "second"),
+        CLAUDE_CONFIG_DIR: path.join(root, "second", "provider"),
+        CODEX_HOME: path.join(root, "second", "provider"),
+      }) }),
+    }));
+    for (const changed of [
+      await run(path.join(root, "third"), "other-grant:user:generation"),
+      await run(path.join(root, "fourth"), "grant:user:new-generation"),
+      await run(path.join(root, "fifth"), undefined, "two"),
+      await run(path.join(root, "sixth"), undefined, undefined, {}, false),
+    ]) {
+      expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+    }
+  });
+
   it("keeps rotated run scratch paths out of session identity while retaining user temp overrides", async () => {
     const root = await makeTempRoot();
     const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };

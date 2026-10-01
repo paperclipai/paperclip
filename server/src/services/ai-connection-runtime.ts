@@ -15,6 +15,11 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import {
+  managedAiHomeEnvironment,
+  managedAiSessionEnvironment,
+} from "@paperclipai/adapter-utils/managed-ai-home";
+import { linkManagedAiSessionState } from "./managed-ai-session-state.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -166,30 +171,19 @@ done`,
   }
 }
 
-function managedAiHomeEnvironment(home: string): Record<string, string> {
-  const providerHome = path.join(home, "provider");
-  return {
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    CODEX_HOME: providerHome,
-    GROK_HOME: providerHome,
-    CLAUDE_CONFIG_DIR: providerHome,
-  };
-}
-
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
   managedHome: string | undefined,
 ): Record<string, unknown> {
   if (!managedHome) return config;
-  const env = { ...(config.env as Record<string, unknown> | undefined) };
-  const stable = managedAiHomeEnvironment("<managed-ai-home>");
-  for (const [key, value] of Object.entries(managedAiHomeEnvironment(managedHome))) {
-    if (env[key] === value) env[key] = stable[key];
-  }
-  return { ...config, env };
+  return {
+    ...config,
+    env: managedAiSessionEnvironment(
+      (config.env as Record<string, unknown> | undefined) ?? {},
+      managedHome,
+    ),
+  };
 }
 
 export async function prepareManagedAiRuntime(
@@ -309,6 +303,14 @@ export async function prepareManagedAiRuntime(
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,
       home,
+      prepareLocalSessionState: () => linkManagedAiSessionState({
+        home: home!,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        grantId: selection.grant.id,
+        responsibleUserId: input.responsibleUserId,
+        provider: input.binding.provider,
+      }),
       cleanup: async () => {
         try {
           if (subscriptionFile) {

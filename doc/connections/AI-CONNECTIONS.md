@@ -188,6 +188,26 @@ identity before reusing the session; changing identity retires the previous owne
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
 
+Local managed Claude and Codex runs keep transcript directories under
+`<instanceRoot>/managed-ai-sessions/<scope>/`. The scope includes company,
+agent, grant, responsible user, and provider. Each temporary provider home links
+only Claude's `projects` or Codex's `sessions` and `archived_sessions` directories
+to that storage. Authentication files and runtime configuration remain in the
+private per-run home and are removed by normal cleanup. Transcript storage is
+sensitive task data. Include it in instance backups. Run cleanup does not remove
+it, and no automatic transcript garbage collection is added. Previously deleted
+transcripts cannot be recovered.
+This storage applies to local execution; remote sandbox transcript persistence
+is unchanged.
+
+Both heartbeat and ACP session fingerprints normalize only environment values
+that exactly match paths generated from the current managed AI home. Custom
+home values, other environment values, and account or credential changes still
+invalidate compatibility. ACP also normalizes the exact generated Codex home
+and skills directory in its skills identity. Skill selection and content remain
+part of that identity. A successful fingerprint comparison means a resume
+can be attempted; provider session loading must also succeed.
+
 After a verified provider resume, plain-text Slack follow-ups send the new
 authorized message delta instead of repeating the full task framing. The saved
 run and current message identities and bodies must match. Actual brief edits

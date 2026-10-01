@@ -46,6 +46,24 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("keeps Claude transcripts after managed credential cleanup", async () => {
+    const userId = "transcript-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await create(userId, "transcript-connection");
+    const runInput = { ...input, responsibleUserId: userId, config: { cwd: home } };
+    const first = await prepareManagedAiRuntime(db, runInput);
+    await first.prepareLocalSessionState();
+    await writeFile(path.join(first.home, "provider", "projects", "session.jsonl"), "conversation");
+    await first.cleanup();
+    await expect(access(first.home)).rejects.toMatchObject({ code: "ENOENT" });
+    const second = await prepareManagedAiRuntime(db, runInput);
+    try {
+      await second.prepareLocalSessionState();
+      expect(await readFile(path.join(second.home, "provider", "projects", "session.jsonl"), "utf8")).toBe("conversation");
+      expect(second.home).not.toBe(first.home);
+    } finally { await second.cleanup(); }
+  });
+
   it.each([
     ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
   ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {

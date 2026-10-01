@@ -1,3 +1,4 @@
+import { managedAiSessionEnvironment } from "../managed-ai-home.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -1988,6 +1989,8 @@ async function buildRuntime(input: {
   // `env` above and are never present in shapedEnvConfig, so they inherently
   // stay out of the hash and don't reset the session every heartbeat.
   const resolvedAdapterEnv: Record<string, string> = {};
+  const managedAiRuntime = parseObject(context.managedAiRuntime);
+  const managedAiHome = asString(managedAiRuntime.home, "") || undefined;
   const scratch = parseObject(context.paperclipScratch);
   const scratchKeys = scratch.type === "heartbeat_run" && typeof scratch.dir === "string"
     ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_TMPDIR",
@@ -2179,9 +2182,17 @@ async function buildRuntime(input: {
     useRemoteProcessSession && executionTarget?.kind === "remote"
       ? executionTarget.remoteCwd
       : cwd;
-  // The 17 fields the session fingerprint hashes. Company, agent, and task
+  // The configuration fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
+  const fingerprintSkillsIdentity = { ...skillsIdentity };
+  if (managedAiHome && acpxAgent === "codex") {
+    for (const [key, suffix] of [["codexHome", "provider"], ["skillsHome", "provider/skills"]] as const) {
+      if (fingerprintSkillsIdentity[key] === path.join(managedAiHome, suffix)) {
+        fingerprintSkillsIdentity[key] = path.join("<managed-ai-home>", suffix);
+      }
+    }
+  }
   const fingerprintIdentity: SessionFingerprintIdentity = {
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
@@ -2198,7 +2209,7 @@ async function buildRuntime(input: {
     // next launch stages the current referenced-project trees instead of reusing
     // a stale staged tree.
     additionalSourcesIdentity: additionalSourcesIdentity as unknown as Record<string, unknown>,
-    skillsIdentity,
+    skillsIdentity: fingerprintSkillsIdentity,
     skillPromptInstructions,
     paperclipClaudeSettings: paperclipClaudeSettings
       ? {
@@ -2214,9 +2225,11 @@ async function buildRuntime(input: {
     // PAPERCLIP_API_KEY) into the fingerprint so a change to any forwarded value
     // invalidates a warm handle / resumable session and forces a fresh launch
     // that sources the latest env. secretManifestHash alone misses plain-value
-    // edits and same-version secret rotations. Per-wake runtime vars never enter
-    // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
-    adapterEnvHash: shortHash(resolvedAdapterEnv),
+    // edits and same-version secret rotations. Normalize only the exact home
+    // paths supplied by this invocation's managed AI runtime. Keep the account
+    // and credential identity so switching grants also invalidates the session.
+    adapterEnvHash: shortHash(managedAiSessionEnvironment(resolvedAdapterEnv, managedAiHome)),
+    ...(managedAiHome ? { managedAiIdentity: asString(managedAiRuntime.identity, "") } : {}),
   };
   const fingerprint = buildSessionFingerprint(fingerprintIdentity);
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
