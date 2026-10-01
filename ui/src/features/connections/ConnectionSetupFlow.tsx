@@ -1978,7 +1978,7 @@ function StandardConnectionSetupFlow({
     )
   ) : null;
   // A provider can advertise registration and still refuse this deployment's
-  // callback (Asana refuses hosted ones). When the method also accepts an
+  // callback. When the method also accepts an
   // operator's own OAuth client, that client is the recovery path, so it sits
   // in the same Advanced panel and opens itself once sign-in has failed.
   const automaticCustomerClientMethod = automaticOAuthEntry
