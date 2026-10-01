@@ -322,9 +322,9 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await expect(nav.getByRole("link")).toHaveCount(2);
 
     await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Who would you like to talk to?" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await expect(editor).toContainText("Unsent draft for Alpha");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
-    await alphaLink.click();
     await page.getByRole("link", { name: "Configure Alpha", exact: true }).click();
     await expect(page).toHaveURL(/\/agents\/.*\/runtime/);
     await json(await request.post(`/api/issues/${beta.id}/comments`, {
@@ -335,6 +335,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     }));
     await idle(request, betaPath);
     await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
     await compose.click();
     await picker.getByRole("combobox").fill("Beta");
     await picker.getByRole("combobox").press("Enter");
