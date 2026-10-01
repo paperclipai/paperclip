@@ -15778,6 +15778,14 @@ export function issueRoutes(
       } else {
         assertBoard(req);
       }
+      if (isTaskBridgeKeyActor(req)) {
+        return denyIssueThreadInteractionResolution(res, {
+          status: 403,
+          code: "interaction_scope_denied",
+          message:
+            "Task-bridge keys cannot create issue-thread interactions; report owner decisions to Maria instead",
+        });
+      }
 
       const actor = getActorInfo(req);
       const agentSourceRunId =
