@@ -223,7 +223,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:3b97dac7020396a84997040ee2864a47af615d69aaf1c951de391e850038157a",
+                "sha256:98936d763497bd6f0e5605f52831a344f456357de58c457e440e69a1a468a2f4",
             ),
             "grok" => (
                 "grok-4.7",
@@ -2812,7 +2812,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:3b97dac7020396a84997040ee2864a47af615d69aaf1c951de391e850038157a",
+                "sha256:98936d763497bd6f0e5605f52831a344f456357de58c457e440e69a1a468a2f4",
                 None,
                 None,
                 "explicit-model",

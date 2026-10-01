@@ -1763,7 +1763,10 @@ class CodexAcpxSession implements HarnessSession {
       return { outcome: "cancel" };
     }
     const responseDelivery = requireAcpxResponseDelivery(context);
-    const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(this.#agent) ? { allowAlwaysScope: "session" } : {});
+    const normalized = normalizeAcpxPermission(request, {
+      provider: this.#agent, workingDirectory: this.#input.workingDirectory,
+      ...(["pi", "copilot"].includes(this.#agent) ? { allowAlwaysScope: "session" } : {}),
+    });
     const requestId = stableId("acpx-permission", `${turnId}:${++this.#runtimeRequestSequence}:${normalized.toolCallId}`);
     const runtimeRequest: HarnessRuntimeRequest = {
       requestId, requestKind: "permission_approval", method: "session/request_permission",

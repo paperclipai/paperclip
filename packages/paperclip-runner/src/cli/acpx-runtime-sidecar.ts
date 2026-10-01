@@ -778,7 +778,10 @@ async function waitForPermission(
   if (turnId !== activeTurnId || signal.aborted || permissions.size >= MAX_PENDING_INPUTS) {
     return { outcome: "cancel" };
   }
-  const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(agent) ? { allowAlwaysScope: "session" } : {});
+  const normalized = normalizeAcpxPermission(request, {
+    provider: agent, workingDirectory: openParams?.workingDirectory,
+    ...(["pi", "copilot"].includes(agent) ? { allowAlwaysScope: "session" } : {}),
+  });
   const responseDelivery = requireAcpxResponseDelivery(context);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, normalized.toolCallId);
   return await new Promise((settle) => {

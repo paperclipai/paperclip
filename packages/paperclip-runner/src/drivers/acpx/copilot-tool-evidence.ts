@@ -2,7 +2,7 @@ import { updateSingleReadEvidence, type SingleReadEvidence } from "./single-read
 import { createHash } from "node:crypto";
 import { redactPaperclipSemanticValue } from "../../semantic-tools/redaction.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
-import { safeAcpxLocations } from "./safe-locations.js";
+import { safeCopilotEditTarget } from "./copilot-permission-context.js";
 
 const LIMIT = 256;
 const CATEGORY = "copilot_tool_evidence_v1";
@@ -61,20 +61,10 @@ export function createCopilotToolEvidence(binding: {
       details: Object.entries({ stage, toolCallId, ...fields }).map(([name, value]) => ({ name, value: String(value) })),
     }) as Record<string, unknown> });
   }
-  function target(call: Record<string, unknown>): string | undefined {
-    const input = record(call.rawInput);
-    if (Array.isArray(call.locations) && call.locations.length > 16) return;
-    const paths = [input.path, input.fileName, ...(Array.isArray(call.locations) ? call.locations.slice(0, 16).map(x => record(x).path) : [])].filter(x => x !== undefined);
-    if (!paths.length || paths.some(x => typeof x !== "string" || x.length > 2048 || /[\u0000-\u001f\u007f\\]/u.test(x))) return;
-    const safe = paths.flatMap(path => safeAcpxLocations([{ path }], binding.workingDirectory, call.kind, call.title));
-    const names = safe.map(x => x.path).filter((x): x is string => typeof x === "string" && x.length <= 1024 && !x.includes(":"));
-    if (names.length !== paths.length || new Set(names).size !== 1) return;
-    return names[0];
-  }
   function inputFields(call: Record<string, unknown>): Fields {
     const input = record(call.rawInput);
     const fields: Fields = {};
-    if (call.kind === "edit") { const path = target(call); if (path) fields.target = path; }
+    if (call.kind === "edit") { const path = safeCopilotEditTarget(call, binding.workingDirectory); if (path) fields.target = path; }
     if (call.kind === "execute" && typeof input.command === "string" && input.command.length > 0 && Buffer.byteLength(input.command) <= 64 * 1024) {
       // ACP exposes an execution kind, not the native tool name. Never infer
       // `bash` from a provider-controlled title/description.

@@ -1651,6 +1651,42 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "permission verified" });
   });
 
+  it.each(["safe", "missing", "conflicting", "outside"].flatMap(scenario =>
+    ([undefined, "approve-all", "approve-reads"] as const).map(permissionMode => ({ scenario, permissionMode })),
+  ))("binds Copilot edit context before publishing any actionable request ($scenario, $permissionMode)", async ({ scenario, permissionMode }) => {
+    const safe = scenario === "safe";
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: false }, permissionMode });
+    const session = await fixture.driver.openSession({ runId: "run-target", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    expect(fixture.hostOptions?.permissionMode).toBe(permissionMode ?? "approve-all");
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Request an edit." } });
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const response = callback({ inferredKind: "edit", raw: {
+      sessionId: "backend-1", toolCall: { toolCallId: "edit-target", title: "Create file", kind: "edit",
+        rawInput: { ...(scenario === "missing" ? {} : { path: scenario === "outside" ? "../outside.txt" : "/workspace/new.txt" }),
+          ...(scenario === "conflicting" ? { fileName: "other.txt" } : {}), content: "PRIVATE_CONTENT" } },
+      options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ optionId: kind, kind, name: kind })),
+    } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    const events = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    const prompt = safe ? "Change file: new.txt" : "File change requested; target unavailable. Deny or cancel this request.";
+    expect(request.prompt).toBe(prompt);
+    expect(events.at(-1)?.payload).toMatchObject({ request: { prompt, type: "permission" } });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_CONTENT");
+    if (!safe) {
+      expect(request.details).toMatchObject({ choices: [{ key: "decline" }, { key: "cancel" }] });
+      for (const action of ["accept", "accept_for_session"] as const) {
+        await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action } })).rejects.toThrow("offered choice");
+      }
+      expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    }
+    await session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: safe ? "accept" : "decline" } });
+    await expect(response).resolves.toEqual({ outcome: safe ? "allow_once" : "reject_once" });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "target context checked" });
+  });
+
   it.each(["written", "failed"] as const)("waits for the exact provider permission reply receipt: %s", async outcome => {
     const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: false } });
     const session = await fixture.driver.openSession({ runId: "run-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });

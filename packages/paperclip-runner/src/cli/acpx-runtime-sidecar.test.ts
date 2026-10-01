@@ -188,6 +188,38 @@ describe("qualified ACPX runtime sidecar", () => {
     await expect(pending).resolves.toEqual({ outcome: "cancel" });
     expect(permissions.size).toBe(0);
   });
+  it.each(["safe", "missing", "conflicting", "outside"])("puts Copilot target context in the first permission frame (%s)", async scenario => {
+    const safe = scenario === "safe";
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("  const { signal } = context;", source.indexOf("async function waitForPermission"));
+    const end = source.indexOf("\nasync function waitForInput", start);
+    const permissions = new Map<string, { normalized: ReturnType<typeof normalizeAcpxPermission> }>();
+    const emitted: Array<{ title: string; choices: Array<{ key: string }> }> = [];
+    const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
+      `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
+       const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
+       return async function(activeTurnId, agent, request, context, toolEvidence) { ${source.slice(start, end)}`)(
+      permissions, { agent: "copilot", workingDirectory: "/workspace" }, normalizeAcpxPermission,
+      (_event: string, payload: typeof emitted[number]) => emitted.push(payload),
+    );
+    const abort = new AbortController();
+    const pending = wait("turn-1", "copilot", { inferredKind: "edit", raw: {
+      sessionId: "native-session", toolCall: { toolCallId: "call", title: "Create file", kind: "edit",
+        rawInput: { ...(scenario === "missing" ? {} : { path: scenario === "outside" ? "../outside.txt" : "/workspace/new.txt" }),
+          ...(scenario === "conflicting" ? { fileName: "other.txt" } : {}), content: "PRIVATE_CONTENT" } },
+      options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ kind, optionId: kind, name: kind })),
+    } }, { signal: abort.signal, responseDelivery: Promise.resolve() });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.title).toBe(safe ? "Change file: new.txt" : "File change requested; target unavailable. Deny or cancel this request.");
+    expect(emitted[0]!.choices.map(x => x.key)).toEqual(safe
+      ? ["accept", "accept_for_session", "decline", "cancel"] : ["decline", "cancel"]);
+    expect(JSON.stringify(emitted)).not.toContain("PRIVATE_CONTENT");
+    if (!safe) for (const action of ["accept", "accept_for_session"] as const) {
+      expect(() => permissions.get("request-1")!.normalized.resolve({ action })).toThrow("offered choice");
+    }
+    abort.abort(); await expect(pending).resolves.toEqual({ outcome: "cancel" });
+    expect(permissions.size).toBe(0);
+  });
   it("returns the sidecar retirement flag only after cancellation settlement and rejects stale turns", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf('    const expected = boundedIdentity', source.indexOf('if (request.command === "turn.cancel")'));
