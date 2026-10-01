@@ -135,6 +135,8 @@ export async function pendingNativeGovernance(input: {
   if (record(input.executionState).status === "pending") {
     return { kind: "execution_stage", id: input.runId };
   }
+  const [issue] = await input.db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+    .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
   const [pendingInteraction, pendingApproval] = await Promise.all([
     input.db
       .select({ id: issueThreadInteractions.id })
@@ -144,6 +146,18 @@ export async function pendingNativeGovernance(input: {
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, input.issueId),
           eq(issueThreadInteractions.status, "pending"),
+          // A previous chat turn's ordinary input remains answerable in history;
+          // it does not own the lifecycle of every subsequent reply. Current-turn
+          // requests, task execution, and governed approvals keep their gates.
+          isConversation(issue) ? sql`(
+            ${issueThreadInteractions.sourceRunId} is not distinct from ${input.runId}
+            or not (
+              ${issueThreadInteractions.kind} = 'ask_user_questions'
+              or (${issueThreadInteractions.kind} in ('request_confirmation', 'request_checkbox_confirmation')
+                and ${issueThreadInteractions.effectiveResolverPolicy} = 'anyone'
+                and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))
+            )
+          )` : undefined,
         ),
       )
       .limit(1)

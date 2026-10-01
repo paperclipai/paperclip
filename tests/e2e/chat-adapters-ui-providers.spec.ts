@@ -137,13 +137,17 @@ test.describe.serial("native chat adapter UI", () => {
       { timeout: 30_000 },
     );
     const connector = page.locator(
-      `[role="listitem"][data-app-slug="${github.slug}"]`,
+      '[role="listitem"][data-app-slug="github"]',
     );
     await expect(connector).toBeVisible();
-    await connector.getByRole("button", { name: "Connect GitHub" }).click();
+    // Without the cloud connector GitHub's default method is a token, so the
+    // card's verb is "Add key" rather than "Connect".
+    await connector.getByRole("button", { name: "Add key GitHub" }).click();
 
     await expect(page).toHaveURL(/\/apps\/connect\?/);
     expect(new URL(page.url()).searchParams.get("source")).toBe("github");
+    // Identity is a stated default; its choices sit behind "Change".
+    await page.getByRole("button", { name: "Change", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "Connect GitHub as" }),
     ).toBeVisible();
@@ -216,8 +220,16 @@ test.describe.serial("native chat adapter UI", () => {
         `[role="listitem"][data-app-slug="${provider.slug}"]`,
       );
       await expect(connector).toBeVisible({ timeout: 30_000 });
+      if (provider.provider === "github") {
+        const tools = page.locator('[role="listitem"][data-app-slug="github"]');
+        await tools.getByRole("button", { name: "Add key GitHub", exact: true }).click();
+        await page.getByRole("button", { name: "Change", exact: true }).click();
+        await expect(page.getByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Choose how to connect" })).toHaveCount(0);
+        await page.goto(`/${seed.prefix}/apps`);
+      }
       await connector
-        .getByRole("button", { name: `Connect ${provider.name}` })
+        .getByRole("button", { name: `Connect ${provider.provider === "github" ? "GitHub Code Review Bot" : provider.name}` })
         .click();
 
       if (provider.chatAndTool) {
@@ -244,14 +256,6 @@ test.describe.serial("native chat adapter UI", () => {
         expect(new URL(page.url()).searchParams.get("source")).toBe(
           provider.provider,
         );
-        if (provider.provider === "github") {
-          await expect(
-            page.getByRole("heading", { name: "Connect GitHub as" }),
-          ).toBeVisible();
-          await expect(
-            page.getByText("Chat with an agent", { exact: true }),
-          ).toHaveCount(0);
-        }
         await page.goto(chatSetupUrl);
         await expect(
           page.getByRole("heading", { name: "Choose how to connect" }),

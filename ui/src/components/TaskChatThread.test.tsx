@@ -12,6 +12,7 @@ import type {
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
+  TaskBrowser,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
@@ -41,6 +42,7 @@ const DIRECT_ADAPTER_TYPES = [
   "http",
   "custom_plugin",
 ] as const;
+const editorCallbacks = vi.hoisted(() => ({ change: (_value: string) => {} }));
 const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
@@ -91,13 +93,14 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
-    { value }: { value: string },
+    { value, onChange }: { value: string; onChange: (value: string) => void },
     ref: ForwardedRef<unknown>,
   ) {
     useImperativeHandle(ref, () => ({
       insertMarkdown: () => {},
       focus: () => {},
     }));
+    editorCallbacks.change = onChange;
     return <div data-testid="mock-editor">{value}</div>;
   }),
 }));
@@ -148,6 +151,43 @@ function render(ui: ReactElement) {
     ),
   );
 }
+
+it.each([true, false])("interleaves browser sessions with their requests and preserves position on status updates (streamlined=%s)", (streamlined) => {
+  streamlinedState.enabled = streamlined;
+  const onOpenBrowser = vi.fn();
+  const comments = [0, 2, 4].map((minute) => ({
+    id: `comment-${minute}`, companyId: "company", issueId: "issue",
+    authorType: "user" as const, authorAgentId: null, authorUserId: "board",
+    body: `Request at minute ${minute}`, presentation: null, metadata: null,
+    createdAt: new Date(`2026-09-29T12:0${minute}:00Z`), updatedAt: new Date(`2026-09-29T12:0${minute}:00Z`),
+  }));
+  const browsers: TaskBrowser[] = [1, 3].map((minute) => ({
+    id: `browser-${minute}`, sessionId: `session-${minute}`, issueId: "issue",
+    status: "idle" as const, runStatus: "completed" as const, progress: null,
+    costCents: 0, error: null, idleDeadline: null, expiresAt: null,
+    createdAt: `2026-09-29T12:0${minute}:00Z`,
+  }));
+  const show = (next = browsers) => render(<TaskChatThread comments={comments} browsers={next} onOpenBrowser={onOpenBrowser} threadHeader={<div>Task title</div>} onAdd={async () => {}} />);
+  show();
+  const anchors = () => Array.from(container.querySelectorAll('[data-thread-anchor]')).map(el => el.getAttribute('data-thread-anchor'));
+  const expected = ['comment-0', 'browser:session-1', 'comment-2', 'browser:session-3', 'comment-4'];
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-testid="task-chat-thread-header"]')?.textContent).toBe("Task title");
+  const row = container.querySelector('[data-thread-anchor="browser:session-1"]');
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenCalledWith('browser-1');
+  // Provider IDs can become available after startup; session identity stays put.
+  show([{ ...browsers[0], id: 'provider-browser-1', status: 'closed' }, browsers[1]]);
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-thread-anchor="browser:session-1"]')).toBe(row);
+  expect(row?.textContent).toContain("View session");
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenLastCalledWith('provider-browser-1');
+  render(<TaskChatThread comments={comments.slice(1)} browsers={browsers} hasOlderComments onAdd={async () => {}} />);
+  expect(anchors()).toEqual(['comment-2', 'browser:session-3', 'comment-4']);
+  show();
+  expect(anchors()).toEqual(expected);
+});
 
 it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
   const props = {
@@ -209,7 +249,7 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
   });
 
   it.each(["running", "succeeded"])(
-    "waits for a %s run to hydrate even when a scheduled retry is present",
+    "reveals durable comments before a %s run finishes hydrating",
     async (status) => {
       const props = {
         issueId: "issue-1",
@@ -226,10 +266,11 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
         ],
       };
       render(<TaskChatThread {...props} />);
-      expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+      expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
       expect(
         container.querySelector('[data-testid="task-chat-history-loading"]'),
-      ).not.toBeNull();
+      ).toBeNull();
+      expect(container.textContent).toContain("Thread message 1");
 
       transcriptState.hydratedRunIds = new Set(["started-run"]);
       nativeTranscriptState.hydratedRunIds = new Set(["started-run"]);
@@ -565,7 +606,53 @@ describe("TaskChatThread draft pass-through", () => {
 });
 
 describe("TaskChatThread runtime transcript selection", () => {
+  it.each(["queued", "running"])("retains the live log transport for a %s native run with event history", (status) => {
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      { kind: "assistant", text: "Native progress", ts: "2026-08-25T18:00:01.000Z", channel: "progress" },
+    ]);
+    const props = {
+      issueId: "native-live", comments: [], onAdd: async () => {},
+      linkedRuns: [{ runId: "native-run", runtimeMode: "native" as const,
+        status, agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run", status }]);
+
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+  });
+
+  it("does not download fallback logs until native events are empty or fail", () => {
+    const props = {
+      issueId: "native-history", comments: [], onAdd: async () => {},
+      linkedRuns: [{ runId: "native-run", runtimeMode: "native" as const,
+        status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z" }],
+    };
+    nativeTranscriptState.hydratedRunIds = new Set();
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
+    nativeTranscriptState.transcriptByRun.set("native-run", [{ kind: "assistant", text: "Native response", ts: "2026-08-25T18:00:01.000Z", channel: "final" }]);
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+
+    nativeTranscriptState.transcriptByRun.clear();
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run" }]);
+
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.errorsByRun.set("native-run", { message: "Unavailable" });
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run" }]);
+  });
+
   it("selects persisted runtime facts while retaining the log parser as native fallback", () => {
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
     render(
       <TaskChatThread
         comments={[]}
@@ -2662,6 +2749,131 @@ describe("TaskChatThread runtime transcript selection", () => {
       ).toBeNull();
     },
   );
+});
+
+describe("Agent Chat unanswered question history", () => {
+  const old = questionInteraction("old", "Which color?", "2026-08-15T12:00:01Z");
+  const newer = questionInteraction("new", "Which tone?", "2026-08-15T12:05:00Z");
+  const movedOn = createLongThreadComments();
+  const props = { conversationMode: true, issueId: "issue-1", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
+  const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
+  const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  const dismiss = async () => {
+    await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
+  };
+  const click = async (text: string) => {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.trim() === text);
+    expect(button).toBeTruthy();
+    await act(async () => button!.click());
+  };
+
+  it("leaves a compact, reopenable question on reload after moving on", async () => {
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-unanswered-question"]');
+    expect(row?.textContent).toContain("Which color?");
+    await act(async () => row!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    await click("Yes");
+    await click("Submit answers");
+    expect(props.onSubmitInteractionAnswers).toHaveBeenCalledWith(old, [{ questionId: "old-question", optionIds: ["yes"] }]);
+  });
+
+  it("collapses a displayed question when a new user message arrives", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    expect(takeover()).not.toBeNull();
+    await act(async () => render(<TaskChatThread {...props} comments={movedOn} interactions={[old]} />));
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
+  });
+
+  it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    await click("Yes");
+    if (action === "Cancel") await click("Cancel");
+    else await dismiss();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+  });
+
+  it("keeps multiple historical questions out of the composer after reopening and dismissing one", async () => {
+    const anotherOld = questionInteraction("another-old", "Which format?", "2026-08-15T12:00:02Z");
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, anotherOld]} />);
+    expect(container.querySelectorAll('[data-testid="task-chat-unanswered-question"]')).toHaveLength(2);
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    await dismiss();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("counts and cycles approvals without including fresh or historical question cards", async () => {
+    const approval = { ...planReviewInteraction(), id: "approval", title: "Approve the outline?", payload: { version: 1, prompt: "Approve the outline?" } } as IssueThreadInteraction;
+    const nextApproval = { ...approval, id: "next-approval", title: "Approve the note?", createdAt: new Date("2026-08-23T10:02:00Z"), payload: { version: 1, prompt: "Approve the note?" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, newer, approval, nextApproval]} />);
+    expect(takeover()?.textContent).toContain("Approve the note?");
+    await click("2 pending");
+    expect(takeover()?.textContent).toContain("Approve the outline?");
+    await click("2 pending");
+    expect(takeover()?.textContent).toContain("Approve the note?");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).toContain("2 pending");
+    expect(takeover()?.textContent).not.toContain("3 pending");
+    await dismiss();
+    expect(pendingIndicator()?.textContent).toContain("2 pending inputs");
+    await act(async () => pendingIndicator()!.click());
+    expect(takeover()?.textContent).toContain("Approve the note?");
+  });
+
+  it("opens the new question but can reopen the exact historical native question", async () => {
+    const nativeOld = { ...old, sourceRunId: "old-run", payload: { ...old.payload, runtimeRequestId: "old-request" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[nativeOld, newer]} />);
+    expect(takeover()?.textContent).toContain("Which tone?");
+    const oldRow = container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]');
+    await act(async () => oldRow!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    render(<TaskChatThread {...props} comments={[...movedOn]} interactions={[nativeOld, newer]} />);
+    expect(takeover()?.textContent).toContain("Which color?");
+    await dismiss();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which tone?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which tone?");
+  });
+
+  it.each([true, false])("only collapses the question after a successful send (success=%s)", async success => {
+    const onAdd = success ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error("Message not sent"));
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} onAdd={onAdd} />);
+    await click("Yes");
+    await act(async () => editorCallbacks.change("Let's talk about tasks instead."));
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]');
+    expect(send?.disabled).toBe(false);
+    await act(async () => send!.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    if (success) {
+      expect(takeover()).toBeNull();
+      expect(pendingIndicator()).toBeNull();
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-unanswered-question"]')!.click());
+    }
+    expect(takeover()).not.toBeNull();
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
+  });
+
+  it("does not change ordinary task question behavior", async () => {
+    render(<TaskChatThread {...props} conversationMode={false} comments={movedOn} interactions={[old]} />);
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).toBeNull();
+    await dismiss();
+    expect(pendingIndicator()?.textContent).toContain("1 pending input");
+  });
 });
 
 describe("TaskChatThread composer alignment", () => {

@@ -6,7 +6,7 @@ Status: canonical explanatory contract for the Paperclip runner V1 surface.
 
 This document keeps three independent meanings of **group** separate. PRP families describe wire evidence and controller commands; capability placement decides who owns an operation; behavioral eval groups organize the 106 scenario corpus. None of the three axes can be used as a substitute for another.
 
-The generated totals are **105 PRP events in 31 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **52 reconciled semantic operations** (18 always, 34 optional), and **106 scenarios in 16 behavior groups**.
+The generated totals are **105 PRP events in 31 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **53 reconciled semantic operations** (18 always, 35 optional), and **106 scenarios in 16 behavior groups**.
 
 ## Axis 1: PRP v1 event and command families
 
@@ -87,13 +87,13 @@ Placement has exactly three outcomes:
 
 `answer_status_question`, `block_task`, `finish_task`, `get_agent_instruction_history`, `get_task_context`, `get_task_history`, `inspect_operation_result`, `list_document_revisions`, `list_documents`, `read_agent_instructions`, `read_document`, `register_deliverable`, `report_progress`, `request_human_input`, `request_review`, `restore_agent_instructions`, `update_agent_instructions`, `write_document`.
 
-### Optional operations (34) and grant groups (13)
+### Optional operations (35) and grant groups (13)
 
 Grant groups are documentation/exposure bundles, not additional authority. The operation descriptor's exact `requiredClaims` remains decisive.
 
 | Grant group | Operations | Required claims represented | Purpose |
 | --- | --- | --- | --- |
-| `discovery` | `search_tasks`<br>`list_agents`<br>`get_agent`<br>`list_projects`<br>`list_goals` | `discovery:agents:read`<br>`discovery:goals:read`<br>`discovery:projects:read`<br>`discovery:tasks:read` | Company-visible task, agent, project, and goal discovery. |
+| `discovery` | `search_tasks`<br>`list_agents`<br>`get_agent`<br>`list_projects`<br>`list_goals`<br>`set_task_title` | `discovery:agents:read`<br>`discovery:goals:read`<br>`discovery:projects:read`<br>`discovery:tasks:read` | Company-visible task, agent, project, and goal discovery. |
 | `projects` | `create_project`<br>`list_project_repositories` | none | Project creation and authorized repository discovery through the live company/run authority. |
 | `delegation_dependencies` | `create_task`<br>`reassign_task`<br>`set_dependencies`<br>`hire_agent` | `delegation:agents:create`<br>`delegation:tasks:assign`<br>`delegation:tasks:create`<br>`dependencies:write` | Create or reassign delegated work and maintain dependency edges. |
 | `governance` | `list_approvals`<br>`get_approval`<br>`get_approval_context`<br>`request_approval`<br>`decide_approval`<br>`comment_on_approval` | `governance:approvals:comment`<br>`governance:approvals:decide`<br>`governance:approvals:read`<br>`governance:approvals:request` | Read, request, comment on, and decide approvals under governed-action checks. |
@@ -161,6 +161,7 @@ Grant groups are documentation/exposure bundles, not additional authority. The o
 | `search_api` | `optional_agent_tool` | `api:discover` | `standard`<br>`ask`<br>`planning`<br>`skill_test` | `read` | `none` | no | inline/no mapping | `live`<br>`live_codex` | `PaperclipRunnerToolAuthority`<br>Authenticated PRP tool input/result and existing HTTP route authorization/activity records.<br>catalog PRP status: `bound` |
 | `search_tasks` | `optional_agent_tool` | `discovery:tasks:read` | `standard`<br>`ask`<br>`planning`<br>`skill_test` | `read` | `none` | no | `snapshot_read:company_tasks` | `scenario` + `live`<br>`live_codex` | `unbound`<br>read projection surfaced via a tool-result item event; no control-plane state diff<br>catalog PRP status: `audit_pending` |
 | `set_dependencies` | `optional_agent_tool` | `dependencies:write` | `standard`<br>`skill_test` | `company_write` | `required` | no | `semantic_command:set_dependencies` | `scenario` + `live`<br>`live_codex` | `issues.update.blockedByIssueIds`<br>semantic-operation item event plus company-entity state diff and audit record<br>catalog PRP status: `bound` |
+| `set_task_title` | `optional_agent_tool` | none | `standard`<br>`ask`<br>`planning`<br>`skill_test` | `task_write` | `required` | no | inline/no mapping | `live`<br>`live_codex` | `setIssueTitle`<br>Run-bound title update and transactional activity record.<br>catalog PRP status: `bound` |
 | `sync_company_skills` | `optional_agent_tool` | `company_skills:write` | `standard`<br>`skill_test` | `admin` | `required` | no | `mock_extension:company_skills.sync` | `scenario`<br>`scenario_mock` | `unbound`<br>company admin/portability item event plus audit record<br>catalog PRP status: `audit_pending` |
 | `update_agent_instructions` | `always_agent_tool` | none | `standard`<br>`planning` | `company_write` | `recommended` | no | inline/no mapping | `live`<br>`live_codex` | `agentInstructionRevisionService`<br>tool-result item event plus canonical revision receipt for writes; no scenario mock coverage<br>catalog PRP status: `bound` |
 | `upsert_case` | `optional_agent_tool` | `cases:write` | `standard`<br>`skill_test` | `company_write` | `required` | no | `mock_extension:cases.upsert` | `scenario`<br>`scenario_mock` | `unbound`<br>semantic-operation item event plus company-entity state diff and audit record<br>catalog PRP status: `audit_pending` |
@@ -174,7 +175,7 @@ Behavior groups describe expected outcomes and trajectories. They do not grant t
 
 | Group | Owner | Semantic operations | Control-plane operations | Real Paperclip surface | Mock state | Scenarios | PRP evidence | Gap / disposition |
 | --- | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
-| [`hb` — Heartbeat](#behavior-group-hb-heartbeat) | control plane + always tools | `get_task_context` | `select_work`<br>`enforce_budget` | agent identity, inbox-lite, heartbeat context, budget and active-issue services | `company`<br>`actor`<br>`wake`<br>`task`<br>`budget`<br>`run` | 5 | runner/session/run context plus bounded task-context tool results | Production semantic binding is unbound; identity and work selection remain injected/control-plane-owned. |
+| [`hb` — Heartbeat](#behavior-group-hb-heartbeat) | control plane + always tools | `get_task_context`<br>`set_task_title` | `select_work`<br>`enforce_budget` | agent identity, inbox-lite, heartbeat context, budget and active-issue services | `company`<br>`actor`<br>`wake`<br>`task`<br>`budget`<br>`run` | 5 | runner/session/run context plus bounded task-context tool results | Production semantic binding is unbound; identity and work selection remain injected/control-plane-owned. |
 | [`co` — Checkout](#behavior-group-co-checkout) | control plane | none | `checkout_task` | POST /api/issues/:id/checkout and execution-lock services | `task`<br>`actor`<br>`run`<br>`idempotency`<br>`fault` | 6 | run preparation and issue-status decision evidence with checkout receipt | Intentionally no model tool; the production checkout receipt still needs the additive semantic-receipt envelope. |
 | [`st` — Status](#behavior-group-st-status) | always tools + control-plane arbitration | `answer_status_question`<br>`finish_task`<br>`block_task`<br>`request_review` | `reconcile_run`<br>`append_audit_record` | issue PATCH, review/liveness policy, and native finalization arbitration | `task`<br>`comments`<br>`interactions`<br>`blockers`<br>`audit`<br>`run` | 8 | semantic operation receipt, work assessment, issue-status decision, and terminal causality | Production semantic binding and additive typed operation/conflict receipts remain unimplemented. |
 | [`cm` — Comments](#behavior-group-cm-comments) | always tools | `get_task_history`<br>`report_progress` | `append_audit_record` | issue comment list/get/create routes | `task`<br>`comments`<br>`actor`<br>`idempotency`<br>`audit` | 6 | bounded read result or idempotent comment-write receipt plus audit reference | Active-task binding is unbound; cross-task comment mutation is deliberately outside V1. |
@@ -463,10 +464,10 @@ Current responsibility-based paths are normative. Numbered `phase-*` or mileston
 ### Catalog split and deliberate replacement
 
 - Scenario/eval catalog: **39** operations.
-- Live dispatcher catalog: **40** operations.
-- Shared: **27**; union/canonical authority: **52**.
+- Live dispatcher catalog: **41** operations.
+- Shared: **27**; union/canonical authority: **53**.
 - Scenario-only: `administer_company`, `export_company`, `inspect_operation_result`, `list_cases`, `list_company_skills`, `list_goals`, `list_routines`, `list_secret_metadata`, `manage_routine`, `read_secret_value`, `sync_company_skills`, `upsert_case`.
-- Live-only: `call_api`, `create_project`, `get_agent`, `get_agent_instruction_history`, `get_approval`, `get_approval_context`, `hire_agent`, `list_project_repositories`, `read_agent_instructions`, `restore_agent_instructions`, `schedule_wake`, `search_api`, `update_agent_instructions`.
+- Live-only: `call_api`, `create_project`, `get_agent`, `get_agent_instruction_history`, `get_approval`, `get_approval_context`, `hire_agent`, `list_project_repositories`, `read_agent_instructions`, `restore_agent_instructions`, `schedule_wake`, `search_api`, `set_task_title`, `update_agent_instructions`.
 - The generated provider contract contains exactly the live catalog; the canonical union remains the migration authority until all scenario-only operations are either implemented, deferred, or removed by an explicit reconciliation decision.
 - `generic_api_request` stays exported only for controlled tests and cannot be cited as real-surface, mock-parity, or PRP product coverage.
 

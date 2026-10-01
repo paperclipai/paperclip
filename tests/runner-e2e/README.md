@@ -33,6 +33,50 @@ full traces and checks that Vite module loads do not create worker fetches or
 leave the page empty. This isolates browser loading; it does not create a
 Paperclip task, run an agent, or replace a Product E2E result.
 
+## Conversational confirmation replies (explicit only)
+
+`--suite confirmation-replies` selects ten local native Claude/Codex cells:
+conversational single-task approval, saved-plan approval, rejection, card-click
+acceptance as a control, and ambiguous approval with two independent pending
+proposals. The onboarding cells use the production wizard, runtime switch and
+persona. The ambiguity fixture creates ordinary board cards through the public
+API, sends "Yes, go ahead" through the browser, requires both to stay pending
+with a clarification reply and no execution, then approves only one and rejects
+the other through separate browser messages.
+The board-created cards also check that fresh and resumed chat turns receive
+the current confirmation identities, including cards outside provider memory.
+Only ordinary, current-session pending confirmations enter this bounded context;
+the resolution endpoint still rechecks live state and permissions.
+Clarification may be a fresh chat reply or a source-bound question card, including
+a native question-set description and its proposal choices. A generic question
+about tone or deadlines is not evidence that the ambiguous approval was clarified.
+Unauthorized state changes fail immediately. Clarification wording is graded
+after capturing later decisions and reload receipts, so a new wording variant
+does not discard the rest of the paid journey's evidence. A wording failure
+still fails the case; any later offline regrade must be reported separately.
+
+The independent oracle requires the exact original card to hold the decision,
+source user-comment ID and resolving agent/run. Acceptance must precede child
+creation. Expiring/hiding the card, reporting acceptance only in prose, or
+finishing work with a pending card fails. Browser reload verifies the displayed
+accepted/rejected receipt. Existing card-click behavior remains unchanged.
+Accepted onboarding cases also use the 120-second completion/result-access
+probe and retain its semantic evidence. Inspect final prose for obsolete
+requests to clear the approval card; mechanical success alone does not establish
+prose quality. Provider-scoped Claude jobs require separate retained-probe
+judging, as described below.
+
+No model-generated outcome or direct database mutation supplies a pass. Source
+SHA, definition hash, model, run evidence, screenshots, failures, cleanup and
+billing use the existing report pipeline. This suite is opt-in and excluded
+from `--all`; it does not qualify governed tool approvals, human-only policies,
+question-form extraction, or remote execution.
+
+```sh
+pnpm test:e2e:runner -- --list --suite confirmation-replies
+pnpm test:e2e:runner -- --suite confirmation-replies
+```
+
 ## Completion-update probes (explicit only)
 
 `--suite completion-updates` selects ten local Product E2E cells: native Codex
@@ -230,9 +274,8 @@ a warning while full and clear it after cleanup. Rejected bytes must not replace
 the saved file. This adds at most one 256 MiB saved fixture per isolated agent.
 The deadline is twenty minutes per cell, with six expected provider runs;
 normal instance/Daytona cleanup, screenshots, evidence, and billing apply. Run with
-`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed agent directories
-checkpoint and close the provider before collection while retaining conversation
-state. The separate `daytona-warm-continuity` suite covers warm runtime behavior.
+`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed directories in per-turn sessions collect after provider stop. The separate
+`daytona-warm-continuity` suite covers incremental saves while retaining a live native process.
 
 `daytona-warm-continuity` (**Daytona Warm Continuity**) is exactly two paid
 cells: legacy Codex and Runner Codex against one reusable warm Daytona
@@ -242,9 +285,24 @@ three browser-driven turns on one issue. Every turn reads and extends the same
 nonce file, verifies host copy-back, records scheduler/run/end-to-end timing,
 and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
-runner instance, PID, and process-start identity. Each turn is bounded to ten
+runner instance, PID, and process-start identity. The ordinary warm cell uses
+managed instructions and edits AGENT_HOME on every turn: a growing memory file,
+an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
+the canonical bytes after every turn. Native checkpoint receipts must show only
+the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
+The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
+
+`daytona-journal-continuity` is one explicit-only native Codex cell. Select
+`daytona-journal-continuity.runner-codex.daytona.large-journal-three-turn`.
+It reuses the three-turn warm workflow with 240 separate ordinary execution-tool calls, each printing a bounded 65 KB
+synthetic sample through the real provider. Before the first browser follow-up,
+a read-only controller journal oracle requires the exact completed run's journal
+to exceed two MiB. Only byte and call counts enter evidence. No runner state or database
+is injected or modified. The usual workspace, sandbox, provider, process,
+three-run, screenshot, timeout, billing, and cleanup assertions remain required;
+`--all` excludes this stress case.
 
 `daytona-git-streaming` is an explicit-only native Codex Daytona cell for
 large Git filename snapshots. Run
@@ -256,10 +314,9 @@ over the agent setting. Large copyback plus the next preparation
 can exceed the normal five-minute idle window; the PID and process-fingerprint
 continuity checks remain strict. The ordinary warm-continuity cell keeps its
 existing five-minute policy.
-This cell uses a fixed external instruction bundle. Managed agent folders
-intentionally checkpoint and stop the provider after every turn for file
-collection; external instructions allow this cell to test retained-process
-continuity without changing that collection policy.
+This Git stress cell uses a fixed external instruction bundle to isolate workspace
+transfer from managed agent-file persistence. The ordinary warm cell separately
+requires incremental managed-file checkpoints and the same strict process continuity.
 It seeds an empty local Git project, creates 60,000 small untracked files through
 the real provider, then performs the same three browser-driven review turns.
 Each later turn updates all 60,000 generated files to distinct turn-specific
@@ -821,6 +878,38 @@ environment, task, matcher, or future Paperclip object fixture.
 See [SECURITY.md](./SECURITY.md) before enabling paid dispatch, the runner
 group, or permanent public history in this public repository.
 
+## Automatic task titles
+
+The explicit-only `task-titles` suite creates tasks in Chromium with an empty
+title field. Its ordinary writing request contains no naming or tool directions:
+the production execution prompt must cause the agent to call `set_task_title`.
+Six local cells cover standard and Ask naming plus an explicit-title preservation
+control on native Codex and Codex Mini. Each expects one provider run, has a
+six-minute attempt deadline, and applies 500-cent company and agent budget caps.
+
+The oracle captures the browser's original POST and creation response, then
+requires a descriptive replacement title, cleared generation marker, unchanged
+description/assignee, a correlated successful title call within the first five
+tool calls of the initial run and before completion, and a matching agent/run
+audit entry. Reloading the task must show the saved title and requested answer.
+The control rejects even a temporary rewrite of a user-supplied title. A model's
+claim that it renamed the task cannot pass. These cells require the dedicated
+native tool; they do not qualify legacy/API-fallback naming or planning mode.
+
+```sh
+pnpm test:e2e:runner -- --list --suite task-titles
+pnpm test:e2e:runner -- --id task-titles.runner-codex-mini.local.prompt-title-standard --max-automatic-retries 0
+```
+
+Only `OPENAI_API_KEY` is required; no Docker artifact oracle or Daytona is used.
+Use one exact ID for a live smoke run. The existing harness owns fixture setup,
+cleanup, source/model provenance, billing, failure classification, screenshots,
+and reports. All runs in the isolated fixture are included in billing/cleanup.
+Private attempt evidence adds `snapshots/task-title-creation.json` and
+`snapshots/task-title.json`; public screenshots use the existing marked task
+route and final-state capture. `task-titles.test.ts` calibrates correct evidence
+against missing, fabricated, late, misattributed, and overwritten-title outcomes.
+
 ## Everyday user-story evals
 
 See [EVERYDAY-WORKFLOWS.md](EVERYDAY-WORKFLOWS.md) for the explicit-only native-runner stories and their canonical Evalbook importer. These cells do not expand scheduled `--all` runs.
@@ -1307,3 +1396,93 @@ candidate image and the matching controller-owned provider pack described in
 The separate Runner Evals `extended-harnesses` campaign lives in the private
 `paperclip-evals` repository and grades semantic protocol behavior against the
 mock control plane. Neither suite substitutes for the other.
+
+The explicit-only `confirmation-replies` suite also includes `unanswered-question-return` for native Claude and Codex (three provider turns). The browser asks a saved color question, dismisses and reopens the fresh form, sends an unrelated message, verifies the reply while the original stays pending, reloads, reopens the history entry, submits Blue, and verifies the saved answer plus a later agent acknowledgement. After dismissing the fresh form and before and after reload, the history card is the only pending-question reminder; the composer has no duplicate pending-input badge. It checks that no tasks were created. Unique, UI-ready screenshots show each checkpoint; individual checks are included in the report. This is a bounded mechanical workflow check, not broader semantic answer-quality qualification.
+## Direct blocker guidance
+
+`blocker-guidance` is an explicit-only Product E2E suite for the production
+coordination skill: three local cases on legacy Codex and legacy Claude (six
+cells). Native runners omit this operational skill and are deliberately outside
+this suite. This is behavior coverage for PR #14188, not a native recovery or
+connection-authorization qualification.
+
+| Case | User outcome |
+| --- | --- |
+| `human-authority` | A tenant administrator action waits for human direction without assigning work to a manager who lacks access. |
+| `hiring-permission` | A worker without hiring permission asks for authorized direction; no agent or hire approval is created. |
+| `requester-scope` | A confidentiality conflict produces a human-input question the requesting user can answer while the worker retains the task. |
+
+Each cell creates an ordinary worker and a manager with assignment permission
+but no hiring permission or external administrator capability. Both receive the
+normal bundled coordination skill through the production skill-sync API. The
+browser creates the task. The prompts describe business facts and never name
+interaction APIs, expected task statuses, or grading rules. The hiring case
+measures behavior with a persisted missing permission; it does not require the
+model to attempt an HTTP request that it already knows will be denied.
+The company policy requires the requester's decision before drafting a public
+note that was requested with individual salaries. This requirement is limited
+to salary-disclosure requests; it does not require reconfirmation of unrelated
+scope changes. Without that business constraint, a salary-free substitute draft
+is a plausible alternative and does not exercise the intended requester-routing path.
+
+The independent grader requires one saved human-only question set or confirmation and `in_review`,
+preserved ownership including activity history, no extra tasks or manager runs,
+and no hire. After reload, the browser supplies a scenario-specific decision:
+defer the SSO rollout, defer the hire, or write the public note without salaries.
+Each answer includes a unique reference that must appear in the worker's reply.
+The same worker must consume the saved answer, acknowledge it, and finish the
+same task. Question sets may contain multiple questions. For a confirmation,
+the browser declines the proposed action with the new scope saved atomically in
+its reason field. Native closed-choice questions without a custom answer and
+confirmations without a reason field cannot carry the requested free-form scope;
+the helper reports that limitation before clicking, without timing out or waking
+the worker with incomplete instructions. Legacy question cards retain their
+production form's implicit Other answer. The grader requires
+human resolution of the original card and the saved user direction. It never
+approves an administrator or hiring action to get a passing result.
+The requester-scope answer supplies an approved salary-free welcome note and asks
+for its exact publication as a task comment. The grader requires a new worker
+comment whose entire body matches that note; an acknowledgement or a note with
+added salary details fails. This bounded artifact check avoids guessing note
+quality from a keyword. Missing evidence fails. Calibration covers plausible
+wrong outcomes.
+Agent-requester scope routing, legitimate capability-based delegation, real
+connection setup, and issue-dependency resolution remain outside these cells.
+
+```sh
+pnpm test:e2e:runner -- --list --suite blocker-guidance
+pnpm test:e2e:runner -- --id blocker-guidance.legacy-codex.local.human-authority
+pnpm test:e2e:runner -- --suite blocker-guidance --max-parallel 2
+```
+
+Each cell expects two provider turns, permits at most four recorded runs, and
+has an eight-minute deadline. Normal company-wide cancellation and isolated
+instance cleanup apply even if a manager unexpectedly runs. All recorded runs
+contribute to the existing billing contract. Evidence includes the waiting and
+final task screenshots, saved checkpoints, final observations, source revision,
+profile/model, catalog digest, and SHA-256 fingerprints of both changed skill
+files and the grader/flow in `snapshots/blocker-guidance.json`. Grader version
+`paperclip.blocker-guidance.v6` requires the approved public note, a saved answer
+before the confirmation wake, and a new worker reply after the waiting checkpoint,
+accepts writable confirmations and multiple questions, and records `inputUx` separately from
+the blocking checks. Direct text input is the preferred UX for these open-ended
+requests; a valid confirmation can satisfy the waiting contract while losing
+that UX dimension. Version 6 permits an omitted user addressee and verifies that
+the actual requester resolved the scope question; it rejects a conflicting
+explicit recipient or a different resolver. Earlier results retain their original grades. Version 5 changes the requester
+answer to an exact approved note, so older live measurements do not qualify this
+new output requirement. Version 2
+diagnostics exposed local Claude skill shadowing and a redundant browser reply
+after confirmation rejection; do not treat those as clean PR measurements.
+The earlier generic goal-replacement/echo answer is a separate diagnostic probe:
+Claude refused it as prompt injection even with a saved human resolver. Its
+failed grades remain retained; the ordinary workflow uses the business decisions
+above. Compare only matching answer definitions, source hashes, and grader versions.
+Use distinct campaign IDs for independent repetitions; do not overwrite an
+earlier campaign or treat repeated samples as infrastructure retries. Use the normal
+Product E2E report generator; retained failed attempts are part of the result.
+Before dispatch, the fixture verifies that both served company skill files match
+the evaluated checkout byte for byte. The skill snapshot and provider run evidence
+are retained privately alongside the grading checkpoints for failure diagnosis.
+Claude receives a fresh provider home and config directory inside the disposable
+workspace so a user's installed skill cannot shadow the managed skill under test.

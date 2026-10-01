@@ -355,6 +355,11 @@ impl AcpxProviderSession {
                 "ACPX provider session already has an active turn",
             ));
         }
+        if self.state.has_pending_tools() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider session still has unsettled semantic tools",
+            ));
+        }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
         let identity_validation = if rotate_turn_identity_ledger {
             self.state
@@ -618,47 +623,38 @@ impl AcpxProviderSession {
                     }
                 }
                 AcpxProviderStateEvent::TurnTerminal { .. } => {
-                    let settlements = match next_bridge.settle_turn("acpx_turn_settled") {
-                        Ok(settlements) => settlements,
-                        Err(error) => {
-                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                    next_bridge
+                        .settle_turn("acpx_turn_settled")
+                        .map_err(|error| {
+                            self.fail_closed(LocalRunnerError::invalid(format!(
                                 "ACPX provider tool settlement failed: {error}"
-                            ))));
-                        }
-                    };
-                    let reserved_settlements = match next_reserved_bridge
-                        .settle_turn("acpx_reserved_terminal_unsettled")
-                    {
-                        Ok(settlements) => settlements,
-                        Err(error) => {
-                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
-                                "ACPX reserved terminal settlement failed: {error}"
-                            ))));
-                        }
-                    };
-                    if !reserved_settlements.is_empty() {
-                        return Err(self.fail_closed(LocalRunnerError::invalid(
-                            "ACPX turn terminated before its reserved terminal invocation produced a correlated result",
-                        )));
-                    }
-                    // `accept_event` clears the candidate reducer's pending
-                    // tools while the bridge clones settle the corresponding
-                    // calls above. Prove both halves reached the same terminal
-                    // state before committing any of them to the reusable
-                    // session.
-                    if next_state.has_pending_tools()
-                        || next_bridge.pending_calls().next().is_some()
-                        || next_reserved_bridge.pending_calls().next().is_some()
+                            )))
+                        })?;
+                    next_reserved_bridge
+                        .settle_turn("acpx_turn_settled")
+                        .map_err(|error| {
+                            self.fail_closed(LocalRunnerError::invalid(format!(
+                                "ACPX reserved tool settlement failed: {error}"
+                            )))
+                        })?;
+                    // Both ledgers must retain exactly the same dispatched
+                    // effects. Ending the provider turn cannot determine whether
+                    // a server-side operation committed.
+                    let pending: Vec<_> = next_bridge
+                        .pending_calls()
+                        .chain(next_reserved_bridge.pending_calls())
+                        .collect();
+                    if pending.len() != next_state.pending_tool_count()
+                        || pending.iter().any(|call| {
+                            next_state.pending_tool(&call.call_id).is_none_or(|other| {
+                                other.operation_id != call.operation_id || other.input != call.input
+                            })
+                        })
                     {
                         return Err(self.fail_closed(LocalRunnerError::invalid(
                             "ACPX terminal settlement left provider tool state inconsistent",
                         )));
                     }
-                    reconciled_events.extend(
-                        settlements
-                            .into_iter()
-                            .map(AcpxProviderStateEvent::ToolResult),
-                    );
                 }
                 AcpxProviderStateEvent::PermissionRequest { .. } => {
                     if self.config.agent == "codex"
@@ -685,9 +681,11 @@ impl AcpxProviderSession {
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
-        let turn_id = self.ensure_active_turn()?.to_owned();
+        self.ensure_open()?;
         let mut next_state = self.state.clone();
-        next_state.complete_tool(&result.call_id, &result.operation_id)?;
+        if next_state.pending_tool(&result.call_id).is_some() {
+            next_state.complete_tool(&result.call_id, &result.operation_id)?;
+        }
         let mut next_bridge = self.tool_bridge.clone();
         let mut next_reserved_bridge = self.reserved_tool_bridge.clone();
         let bridge = if is_reserved_terminal_operation(&result.operation_id) {
@@ -695,9 +693,24 @@ impl AcpxProviderSession {
         } else {
             &mut next_bridge
         };
+        let duplicate = bridge.has_completed_call(&result.call_id);
+        let detached = bridge.turn_closed();
         bridge.apply_result(result.clone()).map_err(|error| {
-            LocalRunnerError::invalid(format!("ACPX tool result is invalid: {error}"))
+            LocalRunnerError::invalid(format!(
+                "ACPX tool result for call {} operation {} is invalid: {error}",
+                result.call_id, result.operation_id
+            ))
         })?;
+        if duplicate {
+            return Ok(());
+        }
+        if detached {
+            self.state = next_state;
+            self.tool_bridge = next_bridge;
+            self.reserved_tool_bridge = next_reserved_bridge;
+            return Ok(());
+        }
+        let turn_id = self.ensure_active_turn()?.to_owned();
         let resolution = if result.is_error {
             // The durable result remains authoritative for correlation and
             // retry bookkeeping, but provider-facing failures expose only a

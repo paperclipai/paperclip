@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Webhook } from "svix";
 import {
   agentmailApi,
+  AgentmailApiError,
   agentmailMessageSchema,
   emailText,
   emailReplyRecipients,
@@ -137,6 +138,116 @@ describe("AgentMail protocol boundary", () => {
     await expect(agentmailApi("private-key", fetcher).whoami()).rejects.toThrow(
       "AgentMail request failed (403)",
     );
+  });
+  it.each(["missing_permission", "limit_exceeded", "domain_not_verified"])(
+    "keeps a bounded create-inbox diagnostic for %s without provider data",
+    async (code) => {
+      const privateValue = "private-address@example.test";
+      const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        code,
+        message: privateValue,
+        fix: `Use credential ${privateValue}`,
+        docs: `https://example.test/${privateValue}`,
+        nested: { code: privateValue },
+      }), { status: 403 }));
+      const error = await agentmailApi(privateValue, fetcher)
+        .createInbox({ username: privateValue }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(AgentmailApiError);
+      expect(error).toMatchObject({ status: 403, operation: "create_inbox", providerCode: code });
+      expect(String(error)).toBe(`Error: AgentMail request failed (403) [operation=create_inbox, code=${code}]`);
+      expect(JSON.stringify(error)).not.toContain(privateValue);
+      expect((error as Error).stack).not.toContain(privateValue);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([
+    "private email and credentials",
+    JSON.stringify({ code: "private-address@example.test" }),
+    JSON.stringify({ code: ["missing_permission"] }),
+    JSON.stringify([{ code: "missing_permission" }]),
+    JSON.stringify({ message: "Forbidden" }),
+    JSON.stringify(null),
+  ])("does not copy unrecognized provider bodies into diagnostics (%#)", async (body) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(body, { status: 403 }));
+    await expect(agentmailApi("private-key", fetcher).whoami()).rejects.toMatchObject({
+      status: 403,
+      operation: "inspect_key",
+      providerCode: "unknown",
+      message: "AgentMail request failed (403) [operation=inspect_key, code=unknown]",
+    });
+  });
+  it.each([
+    ["GET", "/inboxes?limit=100", "list_inboxes"],
+    ["GET", "/inboxes/private%40example.test", "get_inbox"],
+    ["GET", "/domains?limit=100", "list_domains"],
+    ["GET", "/domains/private.example.test", "get_domain"],
+    ["POST", "/inboxes/private%40example.test/api-keys", "create_inbox_key"],
+    ["DELETE", "/inboxes/private%40example.test/api-keys/private-key", "delete_inbox_key"],
+    ["POST", "/inboxes/private%40example.test/webhooks", "create_webhook"],
+    ["DELETE", "/inboxes/private%40example.test/webhooks/private-hook", "delete_webhook"],
+    ["GET", "/inboxes/private%40example.test/messages?page_token=private-token", "list_messages"],
+    ["GET", "/inboxes/private%40example.test/messages/private-message", "get_message"],
+    ["GET", "/inboxes/private%40example.test/threads/private-thread", "get_thread"],
+    ["POST", "/inboxes/private%40example.test/messages/send", "send_message"],
+    ["POST", "/inboxes/private%40example.test/messages/private-message/reply", "reply_message"],
+    ["GET", "/inboxes/private%40example.test/messages/private-message/attachments/private-attachment", "get_attachment"],
+    ["POST", "/private-path?key=private-key", "request"],
+    ["PATCH", "/inboxes/private%40example.test", "request"],
+  ])("uses a fixed operation for %s route %#", async (method, path, operation) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+    const error = await agentmailApi("private-key", fetcher).request(path, method).catch((error: unknown) => error);
+    expect(error).toMatchObject({ operation, providerCode: "unknown" });
+    expect(String(error)).not.toContain("private");
+    expect(JSON.stringify(error)).not.toContain("private");
+  });
+  it("bounds the error body read and cancels the remaining stream", async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ code: "missing_permission", message: "x".repeat(8192) })));
+      },
+      cancel,
+    }), { status: 403 });
+    await expect(agentmailApi("private-key", vi.fn().mockResolvedValue(response)).whoami())
+      .rejects.toMatchObject({ status: 403, providerCode: "unknown" });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+  it("keeps the HTTP status when the error body stalls or cancellation fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn().mockRejectedValue(new Error("private provider error"));
+      const response = new Response(new ReadableStream({ cancel }), { status: 403 });
+      const failure = expect(agentmailApi("private-key", vi.fn().mockResolvedValue(response)).whoami())
+        .rejects.toMatchObject({ status: 403, providerCode: "unknown" });
+      await vi.advanceTimersByTimeAsync(1000);
+      await failure;
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps retry classification when reading an error body fails", async () => {
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("private provider error")); },
+    }), { status: 429, headers: { "retry-after": "9" } });
+    const fetcher = vi.fn().mockResolvedValue(response);
+    await expect(agentmailApi("private-key", fetcher).send("private@example.test", {}, "private-key"))
+      .rejects.toMatchObject({ status: 429, retryAfterMs: 9000, providerCode: "unknown", operation: "send_message" });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each([403, 429])("preserves HTTP %s when the response body is already locked", async (status) => {
+    const response = new Response(JSON.stringify({ code: "missing_permission" }), {
+      status,
+      headers: { "retry-after": "9" },
+    });
+    const owner = response.body!.getReader();
+    try {
+      await expect(agentmailApi("private-key", vi.fn().mockResolvedValue(response))
+        .send("private@example.test", {}, "private-key"))
+        .rejects.toMatchObject({ status, retryAfterMs: 9000, providerCode: "unknown", operation: "send_message" });
+    } finally {
+      owner.releaseLock();
+    }
   });
   it("constructs deliberate reply-all from visible recipients, excluding self and Bcc", () => {
     const envelope = {

@@ -201,6 +201,68 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
 }
 
 const LOCK_STALE_MS = 30_000;
+const LOCK_DIAGNOSTIC_READ_TIMEOUT_MS = 100;
+const activeDirectoryMergeLocks = new Set<string>();
+const MAX_LOCK_DIAGNOSTIC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export type DirectoryMergeLockOperation =
+  | "agent_directory_release"
+  | "agent_directory_collect"
+  | "agent_directory_checkpoint"
+  | "agent_directory_handoff";
+
+/** Evidence only: neither process age nor this module's holder set can prove
+ * that a lock in another process or PID namespace is safe to reclaim. */
+async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number): Promise<Record<string, string | number | boolean>> {
+  const diagnostics: Record<string, string | number | boolean> = {
+    ownerState: "unknown",
+    knownLocalHolder: activeDirectoryMergeLocks.has(lockDir),
+    waitMs: Math.min(MAX_LOCK_DIAGNOSTIC_AGE_MS, Math.max(0, Math.floor(waitMs))),
+  };
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Abort is best effort: race the read as well so a stalled filesystem
+    // cannot keep the original lock timeout from reaching its caller.
+    const raw = await Promise.race([
+      fs.readFile(path.join(lockDir, "owner.json"), { encoding: "utf8", signal: controller.signal }),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), LOCK_DIAGNOSTIC_READ_TIMEOUT_MS);
+      }),
+    ]);
+    if (raw === undefined) return diagnostics;
+    let owner: { pid?: unknown; createdAt?: unknown } | null;
+    try {
+      owner = JSON.parse(raw) as typeof owner;
+    } catch {
+      diagnostics.ownerState = "invalid";
+      return diagnostics;
+    }
+    if (!owner || !Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0) {
+      diagnostics.ownerState = "invalid";
+      return diagnostics;
+    }
+    const pid = owner.pid as number;
+    diagnostics.ownerSameProcess = pid === process.pid;
+    try {
+      process.kill(pid, 0);
+      diagnostics.ownerState = "alive";
+    } catch (error) {
+      diagnostics.ownerState = (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "unknown";
+    }
+    const createdAt = typeof owner.createdAt === "string" ? Date.parse(owner.createdAt) : NaN;
+    const ageMs = Date.now() - createdAt;
+    if (Number.isFinite(ageMs) && ageMs >= 0) {
+      diagnostics.ownerAgeMs = Math.min(MAX_LOCK_DIAGNOSTIC_AGE_MS, Math.floor(ageMs));
+      if (pid === process.pid) diagnostics.ownerPredatesProcess = ageMs > process.uptime() * 1000 + 1000;
+    }
+  } catch (error) {
+    diagnostics.ownerState = (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unknown";
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
+  return diagnostics;
+}
 
 /**
  * The stable `code` a lock-timeout error carries, so a caller can identify it
@@ -305,7 +367,8 @@ async function isLockStale(lockDir: string): Promise<boolean> {
   }
 }
 
-async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation): Promise<() => Promise<void>> {
+  const startedAt = performance.now();
   const deadline = Date.now() + LOCK_STALE_MS;
   while (true) {
     try {
@@ -315,8 +378,13 @@ async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise
         `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
         "utf8",
       );
+      activeDirectoryMergeLocks.add(lockDir);
       return async () => {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        try {
+          await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        } finally {
+          activeDirectoryMergeLocks.delete(lockDir);
+        }
       };
     } catch (error) {
       const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
@@ -329,10 +397,13 @@ async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise
         continue;
       }
       if (Date.now() >= deadline) {
-        const timeoutError: NodeJS.ErrnoException = new Error(
+        const timeoutError: NodeJS.ErrnoException & { workspaceRestoreLock?: Record<string, string | number | boolean> } = new Error(
           `Timed out waiting for workspace restore lock at ${lockDir}`,
         );
         timeoutError.code = WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE;
+        // Keep the original timeout if the diagnostic read itself fails.
+        timeoutError.workspaceRestoreLock = await directoryMergeLockDiagnostics(lockDir, performance.now() - startedAt).catch(() => undefined);
+        if (operation && timeoutError.workspaceRestoreLock) timeoutError.workspaceRestoreLock.operation = operation;
         throw timeoutError;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -411,13 +482,14 @@ export async function withDirectoryMergeLock<T>(
   targetDir: string,
   fn: (canonicalTargetDir: string) => Promise<T>,
   env: NodeJS.ProcessEnv = process.env,
+  diagnosticOperation?: DirectoryMergeLockOperation,
 ): Promise<T> {
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`));
+  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation);
   try {
     return await fn(canonicalTargetDir);
   } finally {
@@ -571,15 +643,18 @@ export async function mergeDirectoryWithBaseline(input: {
   conflictPolicy?: "reject";
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
+  /** Caller holds the target's writer lock and validated an immutable sparse
+   * source. Unchanged entries need no payload and are never copied. */
+  snapshots?: { source: DirectorySnapshot; current: DirectorySnapshot };
 }): Promise<void> {
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
-  const source = await captureDirectorySnapshot(input.sourceDir, options);
+  const source = input.snapshots?.source ?? await captureDirectorySnapshot(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
       await input.beforeApply?.();
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
-      const current = await captureDirectorySnapshot(canonicalTargetDir,
+      const current = input.snapshots?.current ?? await captureDirectorySnapshot(canonicalTargetDir,
         input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
       try {
         if (input.conflictPolicy === "reject") {

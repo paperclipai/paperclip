@@ -99,6 +99,34 @@ Sending `environmentId: null` tests a change back to the instance default.
 
 ## Runtime isolation
 
+Provider authentication failures, including `acpx_auth_required`, adapter login
+requirements, and expired/invalidated refresh tokens, create an AI connection
+card as the failed run is finalized. The card names the provider and uses the
+same inline connection/reconnect controls as missing-account setup. Pending
+cards are deduplicated. Creating a repair card persists a blocked run classification
+that suppresses immediate and periodic generic retries until the responsible user
+repairs the connection. Unsupported providers and failures that could not create
+a card retain their existing recovery path. Tool permission errors and provider quota failures do not
+request model authentication.
+
+An attributed managed credential is marked as needing reauthorization only if
+its stored generation still matches the failed run. Late failures cannot
+invalidate a refreshed or reconnected credential. Repair preserves the selected
+account and its permissions when the same sign-in method is selected. The card
+also lets the user switch between API key and subscription authentication for
+providers that support both. Switching creates a separate account, then selects
+it as the user's provider default or validates and updates the agent's explicit
+account binding. The original account is retained. Accepting the card resumes with a fresh session
+through the existing durable continuation delivery.
+
+For compatible legacy agents, the card offers the responsible person's provider
+connection without changing authentication automatically. After connecting,
+**Use connection and continue** checks agent-update permissions and validates in
+the agent's execution environment before committing the agent binding, connection
+install, audit, and card completion in one transaction. A failed validation or
+completion leaves the request pending and the old agent configuration and access
+intact. Unsupported harness/provider routes are not guessed.
+
 Codex ACP terminal failures with category `limit` and explicit usage-exhaustion
 wording enter provider-quota recovery. A supported reset clock uses the existing
 Codex parser; when none is available, recovery uses its existing quota backoff.
@@ -324,7 +352,10 @@ Native Codex and ACPX/Claude provider selections follow the same compatibility r
 Hiring may succeed before that personal account exists or while it needs repair,
 including hires awaiting board approval. The first assigned task then shows an AI
 connection card. First-time setup presents the provider's subscription/API controls
-inside the task. Connecting installs access for that agent and resumes the pending
+inside the task. The inline form omits the connection name field and names new
+accounts from the user's display name, provider, and selected authentication
+method (for example, `dotta's Claude API account`). Reconnecting preserves the
+existing account name. Connecting installs access for that agent and resumes the pending
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 

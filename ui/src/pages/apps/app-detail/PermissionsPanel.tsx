@@ -53,7 +53,7 @@ export function PermissionsPanel({
   connectionId: string;
   install: InstallState;
   onSaveAccess: (next: AccessDraft) => void;
-  onSetActionPermission: (id: string, next: ActionPermission) => void;
+  onSetActionPermission: (ids: string[], next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
   refreshPending: boolean;
@@ -222,7 +222,7 @@ export function ActionsSection({
   focusId?: string | null;
   canConfigure: boolean;
   permissionChangeWarning?: string;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
 }) {
@@ -316,9 +316,9 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(id, next) => {
+            onSetPermission={(ids, next) => {
               setShowPermissionChangeWarning(true);
-              onSetPermission(id, next);
+              onSetPermission(ids, next);
             }}
           />
           <ActionGroup
@@ -331,9 +331,9 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(id, next) => {
+            onSetPermission={(ids, next) => {
               setShowPermissionChangeWarning(true);
-              onSetPermission(id, next);
+              onSetPermission(ids, next);
             }}
           />
         </div>
@@ -381,12 +381,45 @@ function ActionGroup({
   disabled: boolean;
   focusId?: string | null;
   canConfigure: boolean;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
   if (actions.length === 0) return null;
+  const groupValue = (() => {
+    const first = actionPermission(actions[0]!.id, enabledIds, askFirstIds);
+    return actions.every((action) => actionPermission(action.id, enabledIds, askFirstIds) === first)
+      ? first
+      : "";
+  })();
   return (
     <div>
-      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+        {canConfigure ? (
+          // PAP-659 C6b: set the whole group at once, so narrowing a fresh
+          // connection's writes is one choice rather than one per action;
+          // per-row overrides stay underneath.
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="sr-only">{`Set every action in ${title}`}</span>
+            <select
+              aria-label={`Set every action in ${title}`}
+              value={groupValue}
+              disabled={disabled}
+              onChange={(event) => {
+                // One change for the whole group: each row's setter rebuilds the
+                // full permission set from the same render, so looping it lets
+                // the last call overwrite the others.
+                onSetPermission(actions.map((action) => action.id), event.target.value as ActionPermission);
+              }}
+              className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+            >
+              {groupValue === "" ? <option value="">Mixed</option> : null}
+              {PERMISSION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{`Set all: ${option.label}`}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
       <div className="divide-y divide-border">
         {actions.map((action) => (
           <ActionRow
@@ -434,7 +467,7 @@ function ActionRow({
   disabled: boolean;
   focused: boolean;
   canConfigure: boolean;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [testOpen, setTestOpen] = useState(false);
@@ -455,7 +488,18 @@ function ActionRow({
         data-action-id={action.id}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-foreground">{title}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-foreground">{title}</span>
+            {/* PAP-659 C7: the gate is only as good as the classifier, so say
+                what each action was classified as. A misfiled tool is then one
+                glance to spot and one click to move. */}
+            <span
+              className="rounded-full border border-border px-1.5 py-px text-xs font-medium uppercase tracking-wide text-muted-foreground"
+              title={`Paperclip classified this action as ${action.riskLevel}`}
+            >
+              {action.riskLevel}
+            </span>
+          </div>
           {action.description ? (
             <div className="truncate text-xs text-muted-foreground">{action.description}</div>
           ) : null}
@@ -480,7 +524,7 @@ function ActionRow({
                         aria-checked={selected}
                         aria-label={`${title}: ${option.label}`}
                         disabled={disabled}
-                        onClick={() => onSetPermission(action.id, option.value)}
+                        onClick={() => onSetPermission([action.id], option.value)}
                         className={cn(
                           "flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors",
                           "hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",

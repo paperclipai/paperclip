@@ -42,13 +42,84 @@ export interface AgentmailScope {
   pod_id?: string;
   inbox_id?: string;
 }
+
+// Only these documented codes may leave the provider boundary. The other
+// response fields (including `fix`) can contain addresses, URLs, or credentials.
+const providerErrorCodes = [
+  "missing_authorization", "invalid_token_type", "unknown_api_key", "unauthorized",
+  "missing_permission", "permission_escalation", "unrestricted_key_required", "forbidden",
+  "validation_error", "not_found", "unprocessable", "query_range_too_wide",
+  "already_exists", "resource_taken", "limit_exceeded", "domain_not_verified",
+  "conflict", "race_condition", "resource_deleting", "cannot_delete", "message_rejected",
+  "rate_limit_exceeded", "service_unavailable", "internal_error",
+] as const;
+type ProviderErrorCode = (typeof providerErrorCodes)[number] | "unknown";
+const providerOperations = [
+  ["GET", /^\/auth\/me$/, "inspect_key"],
+  ["GET", /^\/inboxes$/, "list_inboxes"],
+  ["POST", /^\/inboxes$/, "create_inbox"],
+  ["GET", /^\/inboxes\/[^/]+$/, "get_inbox"],
+  ["GET", /^\/domains$/, "list_domains"],
+  ["GET", /^\/domains\/[^/]+$/, "get_domain"],
+  ["POST", /^\/inboxes\/[^/]+\/api-keys$/, "create_inbox_key"],
+  ["DELETE", /^\/inboxes\/[^/]+\/api-keys\/[^/]+$/, "delete_inbox_key"],
+  ["POST", /^\/inboxes\/[^/]+\/webhooks$/, "create_webhook"],
+  ["DELETE", /^\/inboxes\/[^/]+\/webhooks\/[^/]+$/, "delete_webhook"],
+  ["GET", /^\/inboxes\/[^/]+\/messages$/, "list_messages"],
+  ["GET", /^\/inboxes\/[^/]+\/messages\/[^/]+$/, "get_message"],
+  ["GET", /^\/inboxes\/[^/]+\/threads\/[^/]+$/, "get_thread"],
+  ["POST", /^\/inboxes\/[^/]+\/messages\/send$/, "send_message"],
+  ["POST", /^\/inboxes\/[^/]+\/messages\/[^/]+\/reply$/, "reply_message"],
+  ["GET", /^\/inboxes\/[^/]+\/messages\/[^/]+\/attachments\/[^/]+$/, "get_attachment"],
+] as const;
+type ProviderOperation = (typeof providerOperations)[number][2] | "request";
+
+async function readProviderErrorCode(response: Response): Promise<ProviderErrorCode> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (!response.body) return "unknown";
+    const bodyReader = response.body.getReader();
+    reader = bodyReader;
+    return await Promise.race([
+      (async (): Promise<ProviderErrorCode> => {
+        const parts: Uint8Array[] = [];
+        let bytes = 0;
+        for (;;) {
+          const part = await bodyReader.read();
+          if (part.done) break;
+          bytes += part.value.length;
+          if (bytes > 8 * 1024) return "unknown";
+          parts.push(part.value);
+        }
+        const body: unknown = JSON.parse(Buffer.concat(parts).toString("utf8"));
+        const code = body && typeof body === "object" && !Array.isArray(body)
+          ? (body as Record<string, unknown>).code
+          : undefined;
+        return providerErrorCodes.find((known) => known === code) ?? "unknown";
+      })(),
+      new Promise<ProviderErrorCode>((resolve) => {
+        timeout = setTimeout(() => resolve("unknown"), 1000);
+      }),
+    ]);
+  } catch {
+    // A malformed, truncated, or interrupted body must not replace the HTTP error.
+    return "unknown";
+  } finally {
+    clearTimeout(timeout);
+    void reader?.cancel().catch(() => {});
+  }
+}
+
 export class AgentmailApiError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMs = 1000,
+    readonly operation: ProviderOperation = "request",
+    readonly providerCode: ProviderErrorCode = "unknown",
   ) {
     // Provider bodies may contain credentials or private mail. Never log them.
-    super(`AgentMail request failed (${status})`);
+    super(`AgentMail request failed (${status}) [operation=${operation}, code=${providerCode}]`);
   }
 }
 export const AGENTMAIL_EVENTS = [
@@ -183,6 +254,10 @@ export function agentmailApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
       throw new AgentmailApiError(
         response.status,
         Math.max(1000, Math.min(300_000, Number.isFinite(delay) ? delay : 1000)),
+        providerOperations.find(([verb, route]) =>
+          verb === method && route.test(path.split("?")[0]),
+        )?.[2] ?? "request",
+        await readProviderErrorCode(response),
       );
     }
     if (response.status === 204) return undefined as T;

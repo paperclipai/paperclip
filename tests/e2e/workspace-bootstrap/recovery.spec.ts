@@ -22,7 +22,7 @@ for (const persistent of [false, true]) {
     if (await announcement.isVisible()) await announcement.click();
     await page.getByRole("link", { name: "Tasks", exact: true }).click();
     await page.getByRole("button", { name: "New Task", exact: true }).last().click();
-    await page.getByRole("textbox", { name: "Task title", exact: true }).fill(title);
+    await page.getByPlaceholder("Task title (optional)", { exact: true }).fill(title);
     await page.getByRole("button", { name: "Assignee", exact: true }).click();
     await page.getByRole("button", { name: fixture.agentName, exact: true }).click();
     // Let the closing popover unmount before clicking another popover trigger.

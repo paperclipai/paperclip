@@ -34,6 +34,11 @@ human approval, decline, or scoped remembered permission. Connections and task
 views resolve the same review, and the agent continues with the server-recorded
 outcome. See [the implementation contract](SPEC-implementation.md#124-connection-tool-reviews).
 
+Model authentication failures also surface a provider-specific Connections card
+on the task immediately after failure. Users can reconnect inline and resume;
+legacy agents keep their authentication until an explicit, validated adoption.
+See [AI Connections](connections/AI-CONNECTIONS.md).
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:
@@ -282,7 +287,15 @@ All agent communication flows through the **task system**.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
-Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+
+### Question recipients
+
+Ordinary Agent Chat questions use the server-owned conversation recipient.
+Task questions may optionally name a particular user or agent. Explicit user
+recipients must be valid and authorized in the company before a question is
+saved. See `SPEC-implementation.md` §9.8.1 for the resolver contract.
+
 
 ### Implications
 
@@ -444,6 +457,10 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 ### Work Artifacts
 
 Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
+
+Users may start a task with only a prompt. Paperclip uses a short prompt slice as
+its initial title and asks the assigned agent to name the task early. Explicit
+user titles are preserved, and naming does not change task execution state.
 
 Task work mode is explicit persisted state. Requesting a plan in a title or description does not switch the task into planning mode. Standard execution may produce a plan as its requested deliverable; explicit planning mode separately governs plan-only execution and its approval transition.
 
@@ -645,3 +662,15 @@ omit the already-rejected export, clear stale repair notices, and finalize the
 accepted result without another provider turn, even when its old sandbox is
 unavailable. Preserve current ownership and newer-work fences. See
 `native-workspace-finalization-recovery.md`.
+
+### Git-backed skill library sources
+
+Repositories can supply read-only company skills independently of project repositories.
+A source tracks repository identity, branch, selected paths, and installed commits;
+an existing GitHub connection supplies caller-authorized reads. Manual refresh publishes
+complete local immutable versions, preserving skill identity and assignments. Selection
+operates on whole skill packages, with inspectable included files, declared runtime
+requirements, and advisory warnings for missing or external references. New
+upstream skills require reviewed selection; removed or deselected skills remain
+installed. Editing starts with an independent copy. Write-back and PR publication
+are a later milestone; exact path and commit provenance provide their base.

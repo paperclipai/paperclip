@@ -444,6 +444,145 @@ describe("workspace restore merge", () => {
       // have produced this result.
       expect(caughtError?.message).not.toContain("restore_lock_timeout");
       expect(classifyWorkspaceRestoreFailure(caughtError)).toBe("restore_lock_timeout");
+      expect(caughtError).toMatchObject({ workspaceRestoreLock: {
+        ownerState: "alive", ownerSameProcess: true, knownLocalHolder: false,
+      } });
+    });
+
+    it("reports a known live holder without releasing it when a contender times out", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lock-holder-"));
+      cleanupDirs.push(rootDir);
+      useTempPaperclipHome(path.join(rootDir, "home"), "test-instance");
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir);
+      const lockRoot = path.join(rootDir, "home", "instances", "test-instance", "locks", "directory-merge");
+      const contender = vi.fn();
+      await withDirectoryMergeLock(targetDir, async () => {
+        const now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now)
+          .mockReturnValueOnce(now).mockReturnValueOnce(now + 30_001);
+        try {
+          await expect(withDirectoryMergeLock(targetDir, contender, process.env, "agent_directory_release")).rejects.toMatchObject({
+            code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            workspaceRestoreLock: { ownerState: "alive", ownerSameProcess: true,
+              knownLocalHolder: true, ownerPredatesProcess: false, operation: "agent_directory_release" },
+          });
+        } finally { clock.mockRestore(); }
+        expect(contender).not.toHaveBeenCalled();
+        expect(await readdir(lockRoot)).toHaveLength(1);
+      });
+      expect(await readdir(lockRoot)).toHaveLength(0);
+    });
+
+    it("delivers the timeout when the diagnostic owner read stalls and ignores its late rejection", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lock-read-stall-"));
+      cleanupDirs.push(rootDir);
+      useTempPaperclipHome(path.join(rootDir, "home"), "test-instance");
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir);
+      const contender = vi.fn();
+      await withDirectoryMergeLock(targetDir, async () => {
+        const now = Date.now();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now)
+          .mockReturnValueOnce(now).mockReturnValueOnce(now + 30_001);
+        let markReadStarted!: (signal: AbortSignal) => void;
+        const readStarted = new Promise<AbortSignal>((resolve) => { markReadStarted = resolve; });
+        let rejectStalledRead!: (error: Error) => void;
+        const stalledRead = new Promise<string>((_resolve, reject) => { rejectStalledRead = reject; });
+        const realReadFile = fsPromises.readFile;
+        const readSpy = vi.spyOn(fsPromises, "readFile")
+          .mockImplementation((file, options) => {
+            if (!options || typeof options !== "object" || !options.signal) return realReadFile(file, options);
+            markReadStarted(options.signal);
+            return stalledRead;
+          });
+        try {
+          const pending = withDirectoryMergeLock(targetDir, contender, process.env, "agent_directory_release")
+            .catch((error: unknown) => error);
+          const signal = await readStarted;
+          await vi.advanceTimersByTimeAsync(100);
+          const error = await pending;
+          expect(error).toMatchObject({
+            code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            workspaceRestoreLock: { ownerState: "unknown", knownLocalHolder: true,
+              operation: "agent_directory_release" },
+          });
+          expect(signal.aborted).toBe(true);
+          expect(vi.getTimerCount()).toBe(0);
+          rejectStalledRead(new Error("late filesystem failure"));
+          await Promise.resolve();
+          expect(contender).not.toHaveBeenCalled();
+          expect(error).toMatchObject({ workspaceRestoreLock: { ownerState: "unknown" } });
+        } finally {
+          vi.useRealTimers();
+          readSpy.mockRestore();
+          clock.mockRestore();
+        }
+      });
+    });
+
+    it.each([
+      { label: "malformed JSON", raw: "{invalid-json", code: undefined, ownerState: "invalid" },
+      { label: "a missing file", raw: undefined, code: "ENOENT", ownerState: "missing" },
+      { label: "an unreadable file", raw: undefined, code: "EACCES", ownerState: "unknown" },
+    ])("distinguishes $label in the diagnostic read", async ({ raw, code, ownerState }) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lock-read-state-"));
+      cleanupDirs.push(rootDir);
+      useTempPaperclipHome(path.join(rootDir, "home"), "test-instance");
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir);
+      const contender = vi.fn();
+      await withDirectoryMergeLock(targetDir, async () => {
+        const now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now)
+          .mockReturnValueOnce(now).mockReturnValueOnce(now + 30_001);
+        const realReadFile = fsPromises.readFile;
+        const readSpy = vi.spyOn(fsPromises, "readFile")
+          .mockImplementation(async (file, options) => {
+            if (!options || typeof options !== "object" || !options.signal) return realReadFile(file, options);
+            if (code) throw Object.assign(new Error("owner read failed"), { code });
+            return raw!;
+          });
+        try {
+          await expect(withDirectoryMergeLock(targetDir, contender)).rejects.toMatchObject({
+            code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            workspaceRestoreLock: { ownerState, knownLocalHolder: true },
+          });
+          expect(contender).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+          clock.mockRestore();
+        }
+      });
+    });
+
+    it("reports an owner older than this process without reclaiming a live PID", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lock-older-owner-"));
+      cleanupDirs.push(rootDir);
+      useTempPaperclipHome(path.join(rootDir, "home"), "test-instance");
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir);
+      const lockKey = createHash("sha256").update(await realpath(targetDir)).digest("hex");
+      const lockDir = path.join(rootDir, "home", "instances", "test-instance", "locks", "directory-merge", `${lockKey}.lock`);
+      await mkdir(lockDir, { recursive: true });
+      const now = Date.now();
+      const owner = JSON.stringify({ pid: process.pid, createdAt: new Date(now - process.uptime() * 1000 - 10_000).toISOString(), private: "private owner payload" });
+      await writeFile(path.join(lockDir, "owner.json"), owner);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now)
+        .mockReturnValueOnce(now).mockReturnValueOnce(now + 30_001);
+      let caught: unknown;
+      try { await withDirectoryMergeLock(targetDir, async () => { throw new Error("must not acquire"); }); }
+      catch (error) { caught = error; }
+      finally { clock.mockRestore(); }
+      expect(caught).toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+        workspaceRestoreLock: { ownerState: "alive", ownerSameProcess: true,
+          knownLocalHolder: false, ownerPredatesProcess: true } });
+      const diagnostic = (caught as { workspaceRestoreLock: Record<string, unknown> }).workspaceRestoreLock;
+      expect(Object.keys(diagnostic).sort()).toEqual(["knownLocalHolder", "ownerAgeMs", "ownerPredatesProcess", "ownerSameProcess", "ownerState", "waitMs"]);
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+      expect(JSON.stringify(diagnostic)).not.toContain(lockDir);
+      expect(await readFile(path.join(lockDir, "owner.json"), "utf8")).toBe(owner);
     });
 
     it.skipIf(process.platform === "win32")(

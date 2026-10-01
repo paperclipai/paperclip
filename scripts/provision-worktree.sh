@@ -48,14 +48,23 @@ if [[ -L "$canonical_base_cwd/.paperclip" && ! -d "$canonical_base_cwd/.papercli
   exit 1
 fi
 source_config_path="$canonical_base_cwd/.paperclip/config.json"
+source_config_origin="base project workspace"
 if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
   # A base workspace that is a plain checkout carries no instance config of its own.
   # Fall back to the control plane's own registered instance config, which is process
   # state this workspace cannot rewrite.
   source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"
+  source_config_origin="control-plane instance"
 fi
 if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
-  echo "Registered Paperclip seed source config is missing or is not a canonical file: $source_config_path" >&2
+  if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+    echo "Registered Paperclip seed source config is unavailable ($source_config_origin): $source_config_path" >&2
+    echo "For a seeded development instance, configure a canonical config for that registered source before retrying." >&2
+    echo 'Only for a checkout-only worktree, explicitly set workspaceStrategy.provisionCommand to "true". This skips setup; it does not prepare a development runtime.' >&2
+  else
+    echo "Registered Paperclip seed source config is not a canonical file ($source_config_origin): $source_config_path" >&2
+    echo "Repair the registered source path; symlinks and non-regular files are not accepted." >&2
+  fi
   exit 1
 fi
 canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"

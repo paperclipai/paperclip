@@ -258,7 +258,7 @@ const apps = [
   [
     "github",
     "GitHub",
-    "Give agents repository tools or let people work with an agent from GitHub issues and pull requests.",
+    "Give agents access to GitHub repositories, issues, and pull requests.",
     "developer",
     "github.com",
     ["https://api.githubcopilot.com/mcp/*", "https://github.com/*"],
@@ -271,7 +271,7 @@ const apps = [
         "S3",
         "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
         {
-          label: "Use this connection as an agent tool",
+          label: "Connect GitHub",
           purpose: "tool",
           oauthStrategy: "paperclip_cloud_connector",
           connectorProfile: "github.code",
@@ -306,31 +306,40 @@ const apps = [
           requiredResourceFilters: ["organization", "repository"],
         },
       ),
-      channelMethod(
-        "github",
-        [
-          {
-            ...field("appId", "GitHub App ID", "123456"),
-            type: "text",
-            secret: false,
-          },
-          {
-            ...field(
-              "privateKey",
-              "Private key (PEM)",
-              "-----BEGIN RSA PRIVATE KEY-----",
-            ),
-            type: "textarea",
-          },
-        ],
-        ["organization", "repository"],
-        "Generate the webhook secret in Paperclip, then create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the selectable issue_comment and pull_request_review_comment events. GitHub sends installation and installation_repositories automatically. Install the App only on repositories where people may mention the agent.",
-        {
-          register: "https://github.com/settings/apps/new",
-          docs: "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app",
-        },
-      ),
     ],
+  ],
+  [
+    "github-code-review-bot",
+    "GitHub Code Review Bot",
+    "Have an agent review pull requests and respond to GitHub mentions.",
+    "developer",
+    "github.com",
+    [],
+    channelMethod(
+      "github",
+      [
+        {
+          ...field("appId", "GitHub App ID", "123456"),
+          type: "text",
+          secret: false,
+        },
+        {
+          ...field(
+            "privateKey",
+            "Private key (PEM)",
+            "-----BEGIN RSA PRIVATE KEY-----",
+          ),
+          type: "textarea",
+        },
+      ],
+      ["organization", "repository"],
+      "Generate the webhook secret in Paperclip, then create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the selectable issue_comment and pull_request_review_comment events. GitHub sends installation and installation_repositories automatically. Install the App only on repositories where people may mention the agent.",
+      {
+        register: "https://github.com/settings/apps/new",
+        docs: "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app",
+      },
+    ),
+    { featured: true },
   ],
   [
     "slack",
@@ -817,6 +826,16 @@ const apps = [
         keyPlacement: { location: "header", name: "x-api-key" },
       },
     ),
+  ],
+  ["browser-use-cloud", "Browser Use Cloud", "Delegate browser tasks and watch them live in Paperclip.", "productivity", "browser-use.com", ["https://cloud.browser-use.com/*"],
+    method("cloud-v4", "rest_api", "api_key", { serverUrl: "https://api.browser-use.com/api/v4" }, "S3",
+      "Create an API key in [Browser Use settings](https://cloud.browser-use.com/settings) and paste it below. Your agents can browse websites while you watch and interact from the task's Browser tab.", {
+        label: "Browser Use Cloud",
+        credentialFields: [{ ...field("apiKey", "API key", "bu_…"), helperMd: "Open Browser Use → Settings → API keys. Create a key for the project agents should use." }],
+        keyPlacement: { location: "header", name: "X-Browser-Use-API-Key" },
+        consoleLinks: { keys: "https://cloud.browser-use.com/settings", docs: "https://docs.browser-use.com/cloud/api-v4-overview" },
+      }),
+    { docsUrl: "https://docs.browser-use.com/cloud/api-v4-overview" },
   ],
 ].map(
   ([
@@ -1617,6 +1636,39 @@ for (const [slug, name, subscription, envKey] of [["anthropic", "Claude", true, 
  // AI account flow; saved REST connections remain removable through Connections.
  app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
 }
+// Every tool method has a checked-in permission review. Discovery metadata is
+// evidence for reviewers, never a runtime instruction to request more scopes.
+const permissionReviews = JSON.parse(fs.readFileSync(
+  path.join(root, "doc/connections/tool-method-permission-reviews.json"), "utf8",
+)).methods;
+for (const app of apps) {
+  for (const connectionMethod of app.methods) {
+    if (["channel", "ai"].includes(connectionMethod.purpose)) continue;
+    const review = permissionReviews.find((entry) => entry.app === app.slug && entry.method === connectionMethod.key);
+    if (!review) throw new Error(`${app.slug}/${connectionMethod.key}: permission review required`);
+    if (connectionMethod.auth === "oauth") {
+      if (review.policy === "explicit") {
+        connectionMethod.defaults = { ...connectionMethod.defaults, scopesHint: review.requestedScopes };
+      } else if (review.policy !== "provider-default" || !review.providerDefaultReason) {
+        throw new Error(`${app.slug}/${connectionMethod.key}: reviewed scopes or documented provider default required`);
+      }
+    }
+    for (const configField of connectionMethod.tenantFields ?? []) {
+      if (configField.key === "readOnly") configField.advanced = true;
+    }
+    if (review.keyPermissions) {
+      for (const credential of connectionMethod.credentialFields ?? []) {
+        if (credential.secret !== false) credential.helperMd = review.keyPermissions;
+      }
+    }
+    if (app.slug === "planetscale") {
+      connectionMethod.capabilityProfile = connectionMethod.key === "mcp-insights-only"
+        ? { key: "read", label: "Read only", description: "Inspect database performance with the insights-only server." }
+        : { key: "write", label: "Read and write", description: "Query and change the databases you authorize in PlanetScale." };
+    }
+  }
+}
+
 const validateApp = (app) => {
   if (
     app.schemaVersion !== 1 ||

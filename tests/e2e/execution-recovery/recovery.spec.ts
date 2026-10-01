@@ -324,11 +324,11 @@ for (const journey of [
         await page
           .getByRole("button", { name: "Continue", exact: true })
           .click();
+        await page.getByRole("button", { name: "Change", exact: true }).click();
         await page.getByRole("radio", { name: "Just agents I pick" }).click();
         await page.getByRole("button", { name: /Select agents/ }).click();
         await page.getByRole("checkbox", { name: /Archive holder/ }).check();
         await page.keyboard.press("Escape");
-        await page.getByRole("button", { name: "Save and continue" }).click();
         await page.getByRole("button", { name: /Check link/i }).click();
         await expect(
           page.getByRole("heading", { name: /is ready/i }),

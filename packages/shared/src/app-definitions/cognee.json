@@ -55,7 +55,7 @@
           "required": true,
           "placeholder": "Paste your Cognee API key",
           "secret": true,
-          "helperMd": "Create a key in Cognee → API Keys. The key is shown once."
+          "helperMd": "Add/process knowledge and manage authorized datasets. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

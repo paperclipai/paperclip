@@ -31,7 +31,9 @@ function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
 export async function runWorkspaceGitProcess(input: WorkspaceGitProcessInput): Promise<{ stdout: string; stderr: string }> {
   if (input.signal?.aborted) throw failure("workspace_git_scan_cancelled", "Workspace Git scan was cancelled");
   const child = spawn(input.gitBinary ?? "git", [...(input.gitArgsPrefix ?? []), "-C", input.cwd, ...input.args], {
-    cwd: input.cwd, env: input.env ?? process.env,
+    // Background scans must not compete with real writers by refreshing the
+    // index as a side effect. Mandatory locks for writes remain enforced by Git.
+    cwd: input.cwd, env: { ...(input.env ?? process.env), GIT_OPTIONAL_LOCKS: "0" },
     stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true,
   });
   let error: Error | null = null;

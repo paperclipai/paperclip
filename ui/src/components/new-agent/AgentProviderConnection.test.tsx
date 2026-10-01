@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentProviderConnection } from "./AgentProviderConnection";
+import { defaultAiConnectionName } from "../ai-connections/model";
 import { ApiError } from "@/api/client";
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
@@ -44,7 +45,7 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 async function mount(
-  adapterType: "claude_local" | "codex_local" = "claude_local",
+  adapterType: "claude_local" | "codex_local" | "grok_local" = "claude_local",
   savedLogin = false,
   canLogin = true,
   codexSubscriptions = false,
@@ -148,6 +149,77 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
+  it.each([
+    ["anthropic", "claude_local"], ["openai", "codex_local"], ["xai", "grok_local"],
+  ] as const)("lets %s recovery switch methods without overwriting the original account", async (provider, adapterType) => {
+    const onComplete = vi.fn();
+    const intent = { provider, method: "subscription" as const, name: "Existing API account", ownership: "personal" as const, agentIds: ["agent"], allAgents: false, connectionId: "original" };
+    await mount(adapterType, false, true, false, false, false, {
+      intent, initialMethod: "api_key", fixedMethod: false, onComplete,
+      nameForMethod: method => defaultAiConnectionName("dotta", provider, method),
+    });
+    openProvider();
+    expect(host.querySelector('input[type="password"]')).not.toBeNull();
+    click("Use subscription instead");
+    const subscription = mocks.loginPanel.mock.calls.at(-1)![0].aiConnection;
+    expect(subscription).toMatchObject({ provider, method: "subscription", name: defaultAiConnectionName("dotta", provider, "subscription") });
+    expect(subscription.connectionId).toBeUndefined();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+    click("Use API key instead");
+    flushSync(() => {
+      const input = host.querySelector('input[type="password"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "test-api-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("Connect");
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(managedApi.create).toHaveBeenCalledWith("c1", expect.objectContaining({ connectionId: "original", name: "Existing API account", method: "api_key" }));
+  });
+  it("creates an API account when recovering a subscription with an API key", async () => {
+    const onComplete = vi.fn();
+    await mount("claude_local", false, true, false, false, false, {
+      intent: { provider: "anthropic", method: "subscription", name: "Existing subscription", ownership: "personal", agentIds: [], allAgents: false, connectionId: "subscription" },
+      initialMethod: "subscription", fixedMethod: false, onComplete,
+      nameForMethod: method => defaultAiConnectionName("dotta", "anthropic", method),
+    });
+    openProvider();
+    click("Use API key instead");
+    flushSync(() => {
+      const input = host.querySelector('input[type="password"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "test-api-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("Connect");
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled());
+    const saved = managedApi.create.mock.calls.at(-1)! as unknown as [string, {connectionId?: string; name: string; method: string}];
+    expect(saved[1]).toMatchObject({ name: "dotta's Claude API account", method: "api_key" });
+    expect(saved[1].connectionId).toBeUndefined();
+  });
+
+  it.each([false, true])("names the selected method automatically and preserves reconnect names (reconnect: %s)", async (reconnect) => {
+    const onComplete = vi.fn();
+    const intent = { provider: "anthropic" as const, method: "subscription" as const, name: "Existing account", ownership: "personal" as const, agentIds: [], allAgents: false, ...(reconnect ? { connectionId: "existing" } : {}) };
+    await mount("claude_local", false, true, false, false, false, {
+      intent, onComplete,
+      nameForMethod: method => defaultAiConnectionName("dotta", "anthropic", method),
+    });
+    openProvider();
+    expect(mocks.loginPanel.mock.calls.at(-1)![0].aiConnection.name).toBe(reconnect ? "Existing account" : "dotta's Claude subscription account");
+    click("Back");
+    click("Use API key instead");
+    openProvider();
+    flushSync(() => {
+      const input = host.querySelector('input[type="password"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "test-api-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("Connect");
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(managedApi.create).toHaveBeenCalledWith("c1", expect.objectContaining({
+      name: reconnect ? "Existing account" : "dotta's Claude API account", method: "api_key", apiKey: "test-api-key",
+    }));
+  });
+
   it.each(["claude_local", "codex_local"] as const)("does not offer a server-host command when health disables local login: %s", async adapterType => {
     const onComplete = vi.fn();
     const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "Hosted account", ownership: "personal" as const, agentIds: [], allAgents: false };

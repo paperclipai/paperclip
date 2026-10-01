@@ -61,6 +61,59 @@ execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
 
+## Read/write defaults and credential ownership
+
+New tool connections request the provider-documented permissions needed for their
+supported read **and write** actions. Prefer an available write/draft capability
+before a managed read-only method. Read-only capability choices and provider
+read-only switches belong under **Advanced**. Preserve an explicit method on
+resume/reconnect. Keep the Access → Connect flow and manage action restrictions
+on Permissions; changing OAuth configuration never changes existing consent or
+turns an Off/Ask-first action into Allowed.
+
+Every tool method must have a review in
+[`tool-method-permission-reviews.json`](./tool-method-permission-reviews.json).
+It records requested scopes, supported actions, provider restrictions, official
+evidence, and live-proof status. The ingestion script uses its explicit scope
+lists as `scopesHint`; the catalog regression rejects missing reviews, drift,
+and undocumented omitted OAuth scopes. An omission requires a provider-default
+exception explaining how consent/registration grants access. Never automatically
+request all scopes advertised by an authorization server. See the
+[permission audit](./CONNECTOR-PERMISSION-AUDIT.md) for review findings and limits.
+API-key fields must explain required provider permissions; Paperclip cannot
+increase an already-issued key's permissions. Reconnect with fresh consent/key
+when access is insufficient. A provider's explicit `insufficient_scope` response
+becomes an actionable `oauth_insufficient_scope` error; provider response text
+and credentials are not echoed.
+
+All invocation credential writes use `writeConnectionCredential` (setup,
+replacement, reconnect, OAuth completion and rotation). A personal grant requires
+a **user-scoped** secret owned by its subject and a user-secret definition and
+declaration for the connection. Organization/dedicated-agent credentials use
+company secrets and bindings. OAuth **client-registration** secrets remain
+company-owned and are resolved separately from action credentials. Declaration
+paths are canonical (`credentials.authorization`, `headers.X-Api-Key`,
+`remote.url`, `oauth.access_token`), never double-prefixed. Health, discovery,
+board tests, invocation, and version tracking must use the selected grant's
+refs and the same ownership checks. A personal resolver must not fall back to a
+company credential. Ownership mismatch is `grant_credential_invalid` and tells
+the owner to reconnect.
+
+Existing personal connections with company-scoped invocation credentials require
+their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
+a user-owned credential and updates the grant and declarations while preserving
+the connection identity and action policies. Credential ownership is never
+automatically reassigned at startup. Health, discovery and invocation reject an
+invalid ownership layout with an actionable reconnect error.
+
+Verification must assert stored ownership and declarations, then execute a read
+and a write through a real run-scoped gateway. Cover generic and curated URL
+credentials, bearer/custom headers, shared identities, public endpoints, rotation,
+removal, failed-setup cleanup, owner reconnect of legacy credentials, another user,
+and another company. Fixture-backed MCP calls prove Paperclip behavior; they do
+not prove provider consent or account entitlements. Record account-bound live
+read/write proof separately and never describe metadata discovery as live proof.
+
 ## Contents
 
 - [Mental model and support matrix](#mental-model-five-independent-axes)
@@ -497,6 +550,13 @@ registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
 consumer. This registry describes bundled server implementations, not executable
 code or skill URLs supplied by a credential or external message.
 
+Optional connector instructions must not be placed in the universal `skills/`
+directory, which adapters can enumerate for every agent. A trusted contribution
+can provide `skillMarkdown` from its connector module; the server then materializes
+`SKILL.md` only for authorized assignments. Browser Use Cloud uses this path with
+the app key and skill name `browser-use-cloud`, leaving generic browser skill
+names available to other integrations.
+
 For each contribution, declare its connector key, bundled skill, namespaced tool
 definitions, resource-assignment resolver, and execution handler. Use names such
 as `agentmail_send` rather than extending core tools with provider-specific
@@ -602,8 +662,16 @@ internal discussion; a task comment or agent progress update must not imply
 that an external action occurred. Reuse existing task-feed components and
 preserve one visible record per external event.
 
+**Keep setup to one screen.** The connect screen collects only what proves who
+the user is: a provider sign-in, a key, or an endpoint. It states the default
+access in one line, with **Change** for other choices, and does not add an
+access step. Pick the ranked default method instead of asking. Put scope,
+capability, and per-action choices on the Permissions tab after the connection.
+`connectionSetupStateForMethod` in `packages/shared` classifies each method as
+`instant`, `authorize`, `paste`, or `register`; the gallery verb comes from it.
+
 **Make interactive Storybooks for setup and actual use.** Include the catalog
-card, access and credential steps, any agent-resource wizard, and the task
+card, the connect screen and its credential states, any agent-resource wizard, and the task
 journeys after setup. Provide a clickable walkthrough plus focused stories for
 important steps, loading, errors, and recovery. Use realistic fixtures and
 clearly label simulated actions. Reuse production components as implementation
@@ -2190,6 +2258,16 @@ Collect end-to-end evidence using the production validation matrix above:
 - Revocation removes Notion tools and blocks execution.
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
+
+## Reviewed REST browser connection
+
+[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API through the same
+connection grants, catalog, policies, approvals and audit gateway. Its
+`provider_rest` execution path is limited to the reviewed Browser Use adapter;
+adding `rest_api` to a catalog entry does not enable arbitrary HTTP execution.
+The task Browser panel is a human-only credential viewer, separate from agent
+tool results. Follow that guide for lifecycle, profile scope, cost accounting,
+cleanup and the required live acceptance pass.
 
 ## Slack task tools
 

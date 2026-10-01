@@ -13,7 +13,7 @@ export const CONNECTION_INTENT_AGENT_GUIDANCE = [
   "- Do not use connection tools for arbitrary MCP URLs or unrelated work.",
 ].join("\n");
 
-export const CONNECTIONS_SEARCH_TOOL_DESCRIPTION = "Search Paperclip connections first and eligible external aggregator routes when no built-in service matches. Use first when the user asks to connect a service, or when usable access is uncertain; follow the returned instruction and exact providerQuestion, if any. Do not use for arbitrary MCP URLs. Search is read-only.";
+export const CONNECTIONS_SEARCH_TOOL_DESCRIPTION = "Search connections across tool, channel/email, and AI purposes with a service name or a natural-language description (up to 4000 characters). Results tolerate extra words, split names, and small typos. Choose the relevant match using its description, method purpose, and setupPath; tool methods use connection_request. Also discovers verified external aggregator apps. Use first when the user asks to connect a service, or when usable access is uncertain; follow the returned instruction and exact providerQuestion, if any. Do not use for arbitrary MCP URLs. Search is read-only.";
 
 export const CONNECTION_REQUEST_TOOL_DESCRIPTION = "Request the service identifier returned by connections_search as available or needs_user_action. Follow the search instruction; aggregator routes require the saved provider-selection interaction ID. Only this tool creates the real setup card. If user action is needed, finish independent work, then yield without retrying or asking for credentials in comments.";
 

@@ -1,4 +1,5 @@
 import type { heartbeatRuns } from "@paperclipai/db";
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -146,6 +147,15 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",
   ]));
+  for (const field of ["acpLastEventAgeMs", "acpObservedEventCount", "acpPendingToolCount"]) {
+    const value = read(result, field);
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) execution[field] = value;
+  }
+  const toolInventoryComplete = read(result, "acpToolInventoryComplete");
+  if (typeof toolInventoryComplete === "boolean") execution.acpToolInventoryComplete = toolInventoryComplete;
+  const restoreFailure = read(result, "workspaceRestoreFailure");
+  const restoreCode = WORKSPACE_RESTORE_FAILURE_CODES.find((code) => code === restoreFailure);
+  if (restoreCode) execution.workspaceRestoreFailure = restoreCode;
   const adapter = scalars(options.adapterErrorMeta, [
     "category", "phase", "errorName", "acpCode", "causeMessage", "retryable",
     "stackPreview", "status", "statusCode", "requestId",
@@ -173,6 +183,27 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
+    if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
+      const lock = read(error, "workspaceRestoreLock");
+      const operation = read(lock, "operation");
+      if (["agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
+        execution.restoreLockOperation = operation as string;
+      }
+      const ownerState = read(lock, "ownerState");
+      if (["alive", "dead", "unknown", "missing", "invalid"].some(value => value === ownerState)) {
+        execution.restoreLockOwnerState = ownerState as string;
+      }
+      for (const field of ["knownLocalHolder", "ownerSameProcess", "ownerPredatesProcess"]) {
+        const value = read(lock, field);
+        if (typeof value === "boolean") execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+      }
+      for (const field of ["ownerAgeMs", "waitMs"]) {
+        const value = read(lock, field);
+        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 7 * 24 * 60 * 60 * 1000) {
+          execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+        }
+      }
+    }
     const entry: RunFailureException = {};
     for (const field of ["name", "message", "stack", "code"] as const) {
       const value = read(error, field);

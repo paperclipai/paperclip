@@ -99,9 +99,9 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
         .unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
     assert!(session.state().pending_question_set("input-1").is_none());
-    assert!(session
+    session
         .deliver_tool_result(&tool_result("issues.read"))
-        .is_err());
+        .expect("an identical result replay must be idempotent");
     session.shutdown("test complete").unwrap();
 }
 
@@ -200,7 +200,9 @@ fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
     failed.operation_id = "issues.read".to_owned();
     session.deliver_tool_result(&failed).unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
-    assert!(session.deliver_tool_result(&failed).is_err());
+    session
+        .deliver_tool_result(&failed)
+        .expect("the failure receipt also deduplicates");
     session.shutdown("test complete").unwrap();
 }
 

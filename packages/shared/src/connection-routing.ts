@@ -6,6 +6,8 @@ import {
   isRemoteMcpConnectorId,
   type RemoteMcpConnectorId,
 } from "./remote-mcp-connectors.js";
+import composioCatalog from "./composio-search-catalog.json" with { type: "json" };
+import { prepareConnectionSearch, scoreConnectionSearch } from "./connection-search.js";
 
 export const AGGREGATOR_PRIORITY = [
   "composio",
@@ -24,7 +26,7 @@ export const AGGREGATOR_NAMES: Record<RemoteMcpConnectorId, string> = {
  * Add only services confirmed in the cited official catalog. No provider credentials.
  * Executor has no universal app catalog: use the authorized workspace's indexed tools.
  */
-export const AGGREGATOR_SUPPORT_INDEX = [
+const REVIEWED_AGGREGATOR_SUPPORT = [
   {
     slug: "hubspot",
     name: "HubSpot",
@@ -182,6 +184,43 @@ export const AGGREGATOR_SUPPORT_INDEX = [
     },
   },
 ] as const;
+
+export interface AggregatorServiceDefinition {
+  slug: string;
+  name: string;
+  aliases: readonly string[];
+  providers: Partial<Record<RemoteMcpConnectorId, string>>;
+  evidenceUrls?: Partial<Record<RemoteMcpConnectorId, string>>;
+}
+
+// Keep the other providers' reviewed support claims, and cover the complete
+// public Composio catalog instead of maintaining a tiny app-name allowlist.
+export const AGGREGATOR_SUPPORT_INDEX: AggregatorServiceDefinition[] = REVIEWED_AGGREGATOR_SUPPORT.map(entry => ({ ...entry }));
+for (const [toolkit, name] of composioCatalog.toolkits as Array<[string, string]>) {
+  const slug = toolkit.replaceAll("_", "-").replace(/^-+/, "");
+  const evidenceUrl = `https://docs.composio.dev/toolkits/${toolkit}`;
+  const existing = AGGREGATOR_SUPPORT_INDEX.find(entry => entry.slug === slug
+    || (toolkit.endsWith("_mcp") && entry.slug === slug.slice(0, -4)));
+  if (existing) {
+    existing.aliases = [...new Set([...existing.aliases, toolkit, name])];
+    existing.providers = { ...existing.providers, composio: composioCatalog.verifiedAt };
+    existing.evidenceUrls ??= { composio: evidenceUrl };
+  } else {
+    AGGREGATOR_SUPPORT_INDEX.push({ slug, name,
+      aliases: [toolkit, name.replace(/ MCP$/i, "")],
+      providers: { composio: composioCatalog.verifiedAt },
+      evidenceUrls: { composio: evidenceUrl },
+    });
+  }
+}
+
+export function searchAggregatorServices(query: string | ReturnType<typeof prepareConnectionSearch>) {
+  const prepared = typeof query === "string" ? prepareConnectionSearch(query) : query;
+  return AGGREGATOR_SUPPORT_INDEX.map(service => ({ service,
+    ...scoreConnectionSearch(prepared, [service.slug, service.name, ...service.aliases]),
+  })).filter(match => match.nameScore > 0 && !isRemoteMcpConnectorId(match.service.slug))
+    .sort((a, b) => b.score - a.score || a.service.slug.localeCompare(b.service.slug));
+}
 export const AGGREGATOR_CATALOG_SOURCES: Partial<
   Record<RemoteMcpConnectorId, string>
 > = {
@@ -197,7 +236,7 @@ export function normalizeConnectionQuery(value: string): string {
     .trim();
 }
 
-export function findAggregatorService(query: string) {
+export function findAggregatorService(query: string, rankedMatches?: ReturnType<typeof searchAggregatorServices>) {
   const normalized = normalizeConnectionQuery(query);
   const exact = AGGREGATOR_SUPPORT_INDEX.find((entry) =>
     [entry.slug, entry.name, ...entry.aliases].some(
@@ -207,12 +246,14 @@ export function findAggregatorService(query: string) {
   if (exact) return exact;
   // Agents often include the desired capability ("HubSpot recent contacts").
   // Whole phrases avoid substring guesses; multiple named services need clarification.
-  const matches = AGGREGATOR_SUPPORT_INDEX.filter((entry) =>
-    [entry.slug, entry.name, ...entry.aliases].some((name) =>
-      ` ${normalized} `.includes(` ${normalizeConnectionQuery(name)} `),
-    ),
-  );
-  return matches.length === 1 ? matches[0] : undefined;
+  const matches = (rankedMatches ?? searchAggregatorServices(query))
+    .filter(match => match.nameScore >= 500).map(match => match.service);
+  // "Atlassian Jira" identifies Jira, not both Jira and Atlassian's MCP.
+  const phrases = (entry: AggregatorServiceDefinition) => [entry.slug, entry.name, ...entry.aliases]
+    .map(normalizeConnectionQuery).filter(name => ` ${normalized} `.includes(` ${name} `));
+  const specific = matches.filter(entry => !matches.some(other => other !== entry
+    && phrases(entry).every(name => phrases(other).some(longer => longer !== name && ` ${longer} `.includes(` ${name} `)))));
+  return specific.length === 1 ? specific[0] : undefined;
 }
 
 /** Preserve a provider explicitly named by the user instead of applying default ranking. */
