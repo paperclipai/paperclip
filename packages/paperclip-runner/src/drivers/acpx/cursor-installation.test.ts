@@ -22,7 +22,7 @@ it("matches build materializer pins and launches only package-owned complete dis
 
 it("rejects profile substitutions before reading any native distribution", async () => {
   const base = { ...QUALIFIED_ACPX_PROFILES.cursor, qualificationModel: "explicit", reportedModelId: "explicit" };
-  for (const profile of [QUALIFIED_ACPX_PROFILES.cursor, { ...base, agentServerVersion: "latest" }, { ...base, commandDigest: "forged" }, { ...base, reportedModelId: "different" }, { ...base, agentProfileVersion: 7 as const }, { ...base, agentProfileVersion: 8 as const }]) {
+  for (const profile of [QUALIFIED_ACPX_PROFILES.cursor, { ...base, agentServerVersion: "latest" }, { ...base, commandDigest: "forged" }, { ...base, reportedModelId: "different" }, { ...base, agentProfileVersion: 7 as const }, { ...base, agentProfileVersion: 8 as const }, { ...base, agentProfileVersion: 9 as const }]) {
     await expect(verifyCursorInstallation(profile)).rejects.toThrow("exact pinned profile");
   }
 });

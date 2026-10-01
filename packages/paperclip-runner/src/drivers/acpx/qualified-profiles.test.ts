@@ -63,12 +63,13 @@ describe("qualified ACPX profiles", () => {
   });
 });
 
-it("binds Cursor v9 to inspectable native instructions, closures and exact ACPX guard patch", () => {
-  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v9-identity.json", import.meta.url), "utf8"));
+it("binds Cursor v10 to native instructions, tool identity, closures and the exact ACPX guard patch", () => {
+  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v10-identity.json", import.meta.url), "utf8"));
   const distribution = JSON.parse(readFileSync(new URL("../../../cursor-distributions.json", import.meta.url), "utf8"));
   expect(identity.declaration.distribution).toEqual(distribution);
   expect(identity.declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");
   expect(identity.declaration.nativePlanToolIdentity).toBe("request-item-id-bound-lifecycle-v1");
+  expect(identity.declaration.nativePermissionToolIdentity).toBe("opaque-native-tool-id-sha256-v1");
   expect(identity.declaration.sessionModeAdmission).toBe("native-config-ack-recovery-bound-v1");
   expect(identity.declaration.sessionModes).toEqual(["agent", "plan", "ask"]);
   expect(identity.declaration.defaultSessionMode).toBe("agent");
@@ -77,4 +78,11 @@ it("binds Cursor v9 to inspectable native instructions, closures and exact ACPX 
   expect(identity.commandDigest).toBe(`sha256:${createHash("sha256").update(JSON.stringify(identity.declaration)).digest("hex")}`);
   const patch = readFileSync(new URL("../../../../../patches/acpx@0.13.1.patch", import.meta.url));
   expect(identity.declaration.acpxPatchSha256).toBe(createHash("sha256").update(patch).digest("hex"));
+  for (const [path, field] of [
+    ["cursor-plan-tool-identity.ts", "toolIdentitySourceSha256"],
+    ["acp-permission-adapter.ts", "permissionAdapterSourceSha256"],
+    ["cursor-tool-evidence.ts", "toolEvidenceSourceSha256"],
+  ]) {
+    expect(identity.declaration[field!]).toBe(createHash("sha256").update(readFileSync(new URL(path!, import.meta.url))).digest("hex"));
+  }
 });

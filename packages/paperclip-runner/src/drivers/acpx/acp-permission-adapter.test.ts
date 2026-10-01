@@ -9,6 +9,15 @@ function request(kinds = ["allow_once", "allow_always", "reject_once"]): AcpPerm
   } } as AcpPermissionRequest;
 }
 describe("ACP permission normalization", () => {
+  it.each([undefined, "codex", "claude", "pi", "copilot"])("preserves existing %s native identity behavior", provider => {
+    const native = request(); native.raw.toolCall.toolCallId = "native\u0000tool";
+    expect(normalizeAcpxPermission(native, { provider }).toolCallId).toBe("native\u0000tool");
+  });
+  it.each([undefined, null, "", "   ", "x".repeat(241)])("rejects missing or oversized Cursor identities without deriving one from other fields", toolCallId => {
+    const native = request();
+    Object.assign(native.raw.toolCall, { toolCallId, itemId: "fallback", title: "safe-tool" });
+    expect(() => normalizeAcpxPermission(native, { provider: "cursor" })).toThrow("tool identity");
+  });
   it("keeps requests answerable when a provider omits its operation title", () => {
     for (const title of [undefined, "", "   "]) {
       const value = request();

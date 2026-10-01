@@ -183,5 +183,5 @@ export async function nativeCompletionFeedback(
       throw new Error("The named reviewer is not available in this company. Choose an available reviewer or report the concrete blocker.");
     }
   }
-  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Describe the completed work and any explicitly requested reviewer action; do not claim an approval is needed unless one was requested.";
+  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested.";
 }

@@ -878,6 +878,45 @@ function isPaperclipSchemaDiscriminator(
   );
 }
 
+/** Only restore the public literal in this closed receipt-notice context.
+ * Details use {name,value}, so the ordinary schema-key exemption cannot apply.
+ * Every other value still passes the generic secret/JWT redactor below. */
+function semanticReceiptSchemaDetail(record: Record<string, unknown>): number | null {
+  if (Object.keys(record).sort().join(",") !== "category,details,noticeId,provenance,recoverable,schema,scope,severity,summary,userActionable"
+    || record.schema !== "paperclip.provider.notice.v1" || record.scope !== "turn"
+    || record.severity !== "info" || record.recoverable !== true || record.userActionable !== false
+    || record.summary !== "Paperclip returned a semantic tool result."
+    || typeof record.noticeId !== "string" || !/^copilot-evidence-[a-f0-9]{24}-[1-9][0-9]{0,3}$/.test(record.noticeId)
+    || Number(record.noticeId.slice(record.noticeId.lastIndexOf("-") + 1)) > 2048
+    || !isPlainObject(record.provenance) || !Array.isArray(record.details)) return null;
+  const provenance = record.provenance;
+  if (Object.keys(provenance).sort().join(",") !== "eventType,method,sessionId,turnId"
+    || provenance.method !== "paperclip/semantic_tool_result" || provenance.eventType !== "semantic_result"
+    || ![provenance.sessionId, provenance.turnId].every(value => typeof value === "string"
+      && value.length > 0 && value.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(value))) return null;
+  const version = record.category === "paperclip_semantic_tool_receipt_v1" ? 1
+    : record.category === "paperclip_semantic_tool_receipt_v2" ? 2 : null;
+  if (version === null || record.details.length !== (version === 1 ? 7 : 8)) return null;
+  const details = new Map<string, string>();
+  let schemaIndex: number | null = null;
+  for (const [index, detail] of record.details.entries()) {
+    if (!isPlainObject(detail) || Object.keys(detail).sort().join(",") !== "name,value"
+      || typeof detail.name !== "string" || typeof detail.value !== "string" || details.has(detail.name)) return null;
+    details.set(detail.name, detail.value);
+    if (detail.name === "schema") schemaIndex = index;
+  }
+  const names = ["stage", "schema", "operationId", "callIdentitySha256", "inputSha256", "resultSha256", "outcome",
+    ...(version === 2 ? ["normalizedInputSha256"] : [])];
+  const hex = (value: string | undefined) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  if (!names.every(name => details.has(name)) || details.get("stage") !== "semantic_result"
+    || details.get("schema") !== `paperclip.semantic_tool_receipt.v${version}`
+    || !/^[A-Za-z0-9_.:-]{1,256}$/.test(details.get("operationId") ?? "")
+    || !["callIdentitySha256", "inputSha256", "resultSha256"].every(name => hex(details.get(name)))
+    || !["returned", "error"].includes(details.get("outcome") ?? "")
+    || (version === 2 && details.get("normalizedInputSha256") !== "null" && !hex(details.get("normalizedInputSha256")))) return null;
+  return schemaIndex;
+}
+
 export function sanitizeRecord(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -936,6 +975,12 @@ export function sanitizeRecord(
       continue;
     }
     redacted[key] = sanitizeValue(value);
+  }
+  const schemaIndex = semanticReceiptSchemaDetail(record);
+  if (schemaIndex !== null && Array.isArray(redacted.details)) {
+    // Restore only the exact checked discriminator, never sibling data.
+    (redacted.details[schemaIndex] as Record<string, unknown>).value =
+      (record.details as Array<Record<string, unknown>>)[schemaIndex]!.value;
   }
   return redacted;
 }

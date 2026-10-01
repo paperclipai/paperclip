@@ -472,6 +472,7 @@ export class CodexAcpxDriver implements HarnessDriver {
           : {}),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         semanticTools: {
+          ...(this.#options.agent === "copilot" ? { captureSemanticReceipt: () => session?.captureSemanticReceipt() } : {}),
           tools: this.#options.dynamicTools ?? [],
           handler: (call) => {
             if (!session) {
@@ -754,6 +755,7 @@ class CodexAcpxSession implements HarnessSession {
   >;
   #sourceSequence = 0;
   #activeTurnId: string | null = null;
+  #copilotToolEvidence: CopilotToolEvidence | undefined;
   #semanticResult: PrpStructuredRunResult | null = null;
   #semanticFingerprint: string | null = null;
   #semanticCallId: string | null = null;
@@ -913,6 +915,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) throw new Error("ACP tool activity could not be retained");
       },
     });
+    this.#copilotToolEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let turn: AcpxRuntimeTurn;
     const usageBefore = await readUsageStatus(this.#host);
     try {
@@ -1109,6 +1112,10 @@ class CodexAcpxSession implements HarnessSession {
     return { result: "handed_off", cleanup };
   }
 
+  captureSemanticReceipt() {
+    return this.#copilotToolEvidence?.captureSemanticReceipt();
+  }
+
   async dispatchTool(call: RunnerToolCall): Promise<unknown> {
     this.#assertOpen();
     if (this.#pendingTerminal) {
@@ -1178,6 +1185,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#semanticFingerprint === null ||
         (claimsLaterTurn && !repeatsPendingTransfer)
       ) {
+        const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
         if (
           !this.#emit("run.result.proposed", validation.result, {
             turnId,
@@ -1189,6 +1197,7 @@ class CodexAcpxSession implements HarnessSession {
             "the event consumer must drain provider events before a semantic result can be accepted",
           );
         }
+        commitNormalizedInput?.();
         if (claimsLaterTurn) {
           // A reaffirming retry does not own the durable result until its
           // provider turn completes successfully. A failed or interrupted

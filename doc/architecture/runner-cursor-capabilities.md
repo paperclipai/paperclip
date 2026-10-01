@@ -1,6 +1,22 @@
 # Cursor ACP capability inventory
 
-Current source candidate (2026-09-30): **Cursor profile v9 is unqualified**.
+Current source candidate (2026-10-01): **Cursor profile v10 is unqualified**.
+Native tool IDs containing C0, C1 or DEL control characters now use the same
+bounded hash in permission details, passive evidence and the sidecar tool event.
+Blank permission IDs are rejected because ACPX drops blank tool-event identity.
+Other admitted IDs stay unchanged at this boundary; distinct IDs stay distinct.
+Canonical tool execution then applies the existing Rust opaque-ID conversion.
+For example, `tool/1` remains the native permission/evidence key while its
+execution ID is the deterministic opaque hash. Lifecycle readers explicitly
+convert between these keys; they must not compare them directly. Both-order
+bridge tests cover this distinction, including 161-character IDs. The original ACP request and option identity
+remain intact for response delivery. The declaration binds the identity helper,
+permission adapter and evidence projector. Retained v9 sessions are incompatible.
+The native distribution and its usage limits are unchanged. Deterministic tests
+cover both permission/tool arrival orders and an unresolved real ACPX callback;
+fresh local and Daytona qualification is still required.
+
+Historical source candidate (2026-09-30): **Cursor profile v9 is unqualified**.
 Its declaration binds `paperclip-cursor-usage-v4`, all three newly verified native
 closures and the shared ACPX patch that persists bounded diagnostic observations.
 Every native counter receipt remains partial with unverified semantics; it cannot

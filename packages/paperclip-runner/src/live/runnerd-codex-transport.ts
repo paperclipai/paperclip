@@ -1488,32 +1488,37 @@ export function resolveRunnerdSessionIdentity(input: unknown): {
   };
 }
 
+type NotificationQueueEntry =
+  | { kind: "notification"; value: CodexRpcNotification; bytes: number }
+  | { kind: "control"; dispatch(): void; bytes: number };
+
 class NotificationQueue implements AsyncIterable<CodexRpcNotification> {
-  #values: Array<{ value: CodexRpcNotification; bytes: number }> = [];
-  #waiters: Array<{
-    resolve: (value: IteratorResult<CodexRpcNotification>) => void;
-    reject: (error: Error) => void;
-  }> = [];
+  #values: NotificationQueueEntry[] = [];
+  #waiters: Array<() => void> = [];
   #bytes = 0;
   #closed = false;
   #error: Error | null = null;
 
   push(value: CodexRpcNotification): void {
     if (this.#closed) return;
-    const bytes = Buffer.byteLength(JSON.stringify(value));
-    const waiter = this.#waiters.shift();
-    if (waiter !== undefined) {
-      waiter.resolve({ value, done: false });
-      return;
-    }
-    if (
-      this.#values.length >= MAX_NOTIFICATION_COUNT ||
-      this.#bytes + bytes > MAX_NOTIFICATION_BYTES
-    ) {
+    this.#push({ kind: "notification", value, bytes: Buffer.byteLength(JSON.stringify(value)) });
+  }
+
+  pushControl(value: CodexRpcServerRequest, dispatch: () => void): void {
+    if (this.#closed) return;
+    // Count the retained request just like notification payloads. The callback
+    // is internal; a provider notification cannot create a control entry.
+    this.#push({ kind: "control", dispatch, bytes: Buffer.byteLength(JSON.stringify(value)) });
+  }
+
+  #push(entry: NotificationQueueEntry): void {
+    if (this.#closed) return;
+    if (this.#values.length >= MAX_NOTIFICATION_COUNT || this.#bytes + entry.bytes > MAX_NOTIFICATION_BYTES) {
       throw new Error("PRP provider notification queue bound exceeded");
     }
-    this.#values.push({ value, bytes });
-    this.#bytes += bytes;
+    this.#values.push(entry);
+    this.#bytes += entry.bytes;
+    this.#waiters.shift()?.();
   }
 
   close(error?: Error): void {
@@ -1522,25 +1527,29 @@ class NotificationQueue implements AsyncIterable<CodexRpcNotification> {
     this.#error = error ?? null;
     this.#values = [];
     this.#bytes = 0;
-    for (const waiter of this.#waiters.splice(0)) {
-      if (this.#error !== null) waiter.reject(this.#error);
-      else waiter.resolve({ value: undefined, done: true });
-    }
+    for (const wake of this.#waiters.splice(0)) wake();
   }
 
   [Symbol.asyncIterator](): AsyncIterator<CodexRpcNotification> {
     return {
       next: async () => {
-        const queued = this.#values.shift();
-        if (queued !== undefined) {
-          this.#bytes -= queued.bytes;
-          return { value: queued.value, done: false };
+        for (;;) {
+          if (this.#error !== null) throw this.#error;
+          if (this.#closed) return { value: undefined, done: true };
+          const queued = this.#values.shift();
+          if (queued !== undefined) {
+            this.#bytes -= queued.bytes;
+            if (queued.kind === "control") {
+              // The consumer asks for next only after mapping the previous
+              // notification. Start the request here without awaiting the
+              // human response, so subsequent provider activity keeps flowing.
+              queued.dispatch();
+              continue;
+            }
+            return { value: queued.value, done: false };
+          }
+          await new Promise<void>(resolve => this.#waiters.push(resolve));
         }
-        if (this.#error !== null) throw this.#error;
-        if (this.#closed) return { value: undefined, done: true };
-        return new Promise((resolveValue, reject) =>
-          this.#waiters.push({ resolve: resolveValue, reject }),
-        );
       },
     };
   }
@@ -6087,14 +6096,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             isAcpxCanonicalInputMethod(method) || permission) &&
           !this.#bridgedRuntimeInputs.has(requestId)
         ) {
-          this.#bridgedRuntimeInputs.set(requestId, {
+          const binding = {
             permission,
             durableTurnId:
               typeof event.envelope.turnId === "string"
                 ? event.envelope.turnId
                 : this.#durableTurnId,
-          });
-          void this.#handler({
+          };
+          this.#bridgedRuntimeInputs.set(requestId, binding);
+          const request: CodexRpcServerRequest = {
             id: requestId,
             method,
             params,
@@ -6102,10 +6112,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               sourceEventId: event.sourceEventId,
               sourceEventType: event.eventType,
             },
-          }).catch((error) => {
-            this.#failTransport(
-              error instanceof Error ? error : new Error(String(error)),
-            );
+          };
+          const threadId = this.#threadId, turnId = this.#turnId, handler = this.#handler;
+          this.#queue.pushControl(request, () => {
+            // A detached controller, replaced turn or settled durable request
+            // cannot acquire approval authority when a slow consumer resumes.
+            if (this.#closed || this.#failure || this.#core !== core || this.#handler !== handler
+              || this.#threadId !== threadId || this.#turnId !== turnId
+              || this.#bridgedRuntimeInputs.get(requestId) !== binding) return;
+            try {
+              void handler(request).catch((error) => {
+                this.#failTransport(error instanceof Error ? error : new Error(String(error)));
+              });
+            } catch (error) {
+              this.#failTransport(error instanceof Error ? error : new Error(String(error)));
+            }
           });
         }
         continue;

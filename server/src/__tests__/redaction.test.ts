@@ -10,7 +10,112 @@ import {
   sanitizeRecord,
 } from "../redaction.js";
 
+import { createCopilotToolEvidence } from "../../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js";
+import { appendSemanticToolReceipt } from "../../../packages/paperclip-runner/src/drivers/semantic-tool-receipt.js";
+
+function receiptNotice(version: 1 | 2 = 1): Record<string, any> {
+  return {
+    schema: "paperclip.provider.notice.v1", noticeId: `copilot-evidence-${"a".repeat(24)}-1`,
+    severity: "info", category: `paperclip_semantic_tool_receipt_v${version}`, scope: "turn",
+    recoverable: true, userActionable: false, summary: "Paperclip returned a semantic tool result.",
+    provenance: { method: "paperclip/semantic_tool_result", eventType: "semantic_result", sessionId: "session", turnId: "turn" },
+    details: Object.entries({ stage: "semantic_result", schema: `paperclip.semantic_tool_receipt.v${version}`,
+      operationId: "finish_task", callIdentitySha256: "a".repeat(64), inputSha256: "b".repeat(64),
+      resultSha256: "c".repeat(64), outcome: "returned", ...(version === 2 ? { normalizedInputSha256: "d".repeat(64) } : {}),
+    }).map(([name, value]) => ({ name, value })),
+  };
+}
+const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find((detail: any) => detail.name === "schema").value;
+
 describe("redaction", () => {
+  it("preserves the actual Copilot receipt producer discriminator through nested durable redaction", () => {
+    const events: Array<Record<string, any>> = [];
+    const projector = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace",
+      active: () => true, emit: event => events.push(event) });
+    const receipt = appendSemanticToolReceipt({ tool: "finish_task", callId: "call", arguments: {} },
+      { content: [{ type: "text", text: "accepted" }] }).receipt;
+    expect(receipt.schema).toBe("paperclip.semantic_tool_receipt.v2");
+    projector.captureSemanticReceipt()!(receipt);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.category).toBe("paperclip_semantic_tool_receipt_v2");
+    expect(events[0]!.payload.details).toHaveLength(8);
+    const input = { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1,
+      eventType: "provider.notice.recorded", payload: events[0]!.payload } };
+    expect(redactEventPayload(input)).toEqual(input);
+    expect(redactEventPayload(redactEventPayload(input))).toEqual(input);
+  });
+
+  it.each([1, 2] as const)("preserves only validated v%s receipt schema literals", version => {
+    const notice = receiptNotice(version);
+    expect(redactEventPayload(notice)).toEqual(notice);
+    for (const outcome of ["returned", "error"]) {
+      notice.details.find((d: any) => d.name === "outcome").value = outcome;
+      if (version === 2) notice.details.find((d: any) => d.name === "normalizedInputSha256").value = "null";
+      expect(redactEventPayload(notice)).toEqual(notice);
+    }
+    expect(redactEventPayload({ value: `paperclip.semantic_tool_receipt.v${version}` }))
+      .toEqual({ value: REDACTED_EVENT_VALUE });
+  });
+
+  it.each([
+    ["wrong category", (n: Record<string, any>) => { n.category = "copilot_tool_evidence_v1"; }],
+    ["wrong schema", (n: Record<string, any>) => { n.schema = "paperclip.provider.native.v1"; }],
+    ["wrong scope", (n: Record<string, any>) => { n.scope = "session"; }],
+    ["wrong provenance", (n: Record<string, any>) => { n.provenance.method = "session/update"; }],
+    ["missing provenance", (n: Record<string, any>) => { delete n.provenance.turnId; }],
+    ["unknown provenance field", (n: Record<string, any>) => { n.provenance.extra = "safe"; }],
+    ["oversized identity", (n: Record<string, any>) => { n.provenance.sessionId = "x".repeat(241); }],
+    ["wrong stage", (n: Record<string, any>) => { n.details[0].value = "tool"; }],
+    ["unknown receipt schema", (n: Record<string, any>) => { n.details[1].value = "paperclip.semantic_tool_receipt.v99"; }],
+    ["version mismatch", (n: Record<string, any>) => { n.details[1].value = "paperclip.semantic_tool_receipt.v2"; }],
+    ["duplicate detail", (n: Record<string, any>) => { n.details[2] = { ...n.details[1] }; }],
+    ["unknown detail", (n: Record<string, any>) => { n.details[2].name = "unknown"; }],
+    ["extra detail", (n: Record<string, any>) => { n.details.push({ name: "extra", value: "safe" }); }],
+    ["extra detail property", (n: Record<string, any>) => { n.details[1].extra = "safe"; }],
+    ["nonstring hash", (n: Record<string, any>) => { n.details[3].value = 123; }],
+    ["malformed hash", (n: Record<string, any>) => { n.details[3].value = "bad"; }],
+    ["malformed operation", (n: Record<string, any>) => { n.details[2].value = "bad operation"; }],
+    ["unknown outcome", (n: Record<string, any>) => { n.details[6].value = "accepted"; }],
+  ] as const)("does not exempt receipt schema in %s context", (_label, mutate) => {
+    const notice = receiptNotice(); mutate(notice);
+    expect(receiptSchemaValue(redactEventPayload(notice)!)).toBe(REDACTED_EVENT_VALUE);
+  });
+
+  it("does not restore JWTs or adjacent secrets through receipt-shaped data", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345678";
+    const notice = receiptNotice();
+    notice.details.find((d: any) => d.name === "operationId").value = jwt;
+    notice.provenance.sessionId = jwt;
+    const redacted = redactEventPayload(notice)! as Record<string, any>;
+    expect(receiptSchemaValue(redacted)).toBe("paperclip.semantic_tool_receipt.v1");
+    expect(redacted.details.find((d: any) => d.name === "operationId").value).toBe(REDACTED_EVENT_VALUE);
+    expect(redacted.provenance.sessionId).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload({ notice, password: "canary", arbitrary: jwt }))
+      .toMatchObject({ password: REDACTED_EVENT_VALUE, arbitrary: REDACTED_EVENT_VALUE });
+    const hostile = receiptNotice(); hostile.details[1].value = jwt;
+    expect(receiptSchemaValue(redactEventPayload(hostile)!)).toBe(REDACTED_EVENT_VALUE);
+    const adjacent = receiptNotice(); adjacent.summary = "Authorization: Bearer canary-token";
+    expect(JSON.stringify(redactEventPayload(adjacent))).not.toContain("canary-token");
+    expect(receiptSchemaValue(redactEventPayload(adjacent)!)).toBe(REDACTED_EVENT_VALUE);
+  });
+
+  it("bounds the notice ordinal to the actual producer's 2048-entry limit", () => {
+    const notice = receiptNotice();
+    notice.noticeId = `copilot-evidence-${"a".repeat(24)}-2048`;
+    expect(redactEventPayload(notice)).toEqual(notice);
+    for (const ordinal of ["0", "01", "2049", "9999"]) {
+      notice.noticeId = `copilot-evidence-${"a".repeat(24)}-${ordinal}`;
+      expect(receiptSchemaValue(redactEventPayload(notice)!)).toBe(REDACTED_EVENT_VALUE);
+    }
+  });
+
+  it("rejects malformed v2 normalized hashes without changing historical v1", () => {
+    const notice = receiptNotice(2);
+    notice.details.find((d: any) => d.name === "normalizedInputSha256").value = "bad";
+    expect(receiptSchemaValue(redactEventPayload(notice)!)).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload(receiptNotice(1))).toEqual(receiptNotice(1));
+  });
+
   it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {
     const schema = JSON.parse(
       readFileSync(

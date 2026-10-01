@@ -227,3 +227,100 @@ fn rejects_non_utf8_directories_before_spawning() {
 
     assert!(error.contains("must be valid UTF-8"), "{error}");
 }
+
+/// Exercise the subprocess transport, real event decoder/reducer and tool bridge.
+/// The command journal distinguishes no admission from a late sidecar rejection.
+fn check_tool_receiver_admission(oversized: bool) {
+    let root = std::env::temp_dir().join(format!("acpx-admission-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let journal = root.join("commands.jsonl");
+    let mut fixture = config(if oversized {
+        "admission-tool-oversized"
+    } else {
+        "admission-tool"
+    });
+    fixture
+        .transport
+        .args
+        .extend(["--journal".to_owned(), journal.to_str().unwrap().to_owned()]);
+    let mut session = AcpxProviderSession::start(&fixture).unwrap();
+    session
+        .start_turn("turn-admission", "Read the issue", &std::env::temp_dir())
+        .unwrap();
+    let result = paperclip_runner_core::provider_bridge::ToolResult {
+        call_id: "call-admission".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!({"id":"issue-1"}),
+        is_error: false,
+    };
+    if oversized {
+        let error = session
+            .poll_event(Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("256 KiB admission limit"), "{error}");
+        assert!(!session.state().has_pending_tools());
+        assert!(session.state().pending_tool("call-admission").is_none());
+        // Rejection cannot be bypassed by supplying a matching callback result.
+        assert!(session.deliver_tool_result(&result).is_err());
+    } else {
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(session.state().pending_tool("call-admission").is_some());
+        let mut foreign = result.clone();
+        foreign.call_id = "another-call".to_owned();
+        assert!(session.deliver_tool_result(&foreign).is_err());
+        assert!(session.state().pending_tool("call-admission").is_some());
+        session.deliver_tool_result(&result).unwrap();
+        assert!(!session.state().has_pending_tools());
+        assert!(session.deliver_tool_result(&result).is_err());
+    }
+    session.shutdown("admission test complete").unwrap();
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let emitted: Vec<_> = rows.iter().filter_map(|row| row.get("emitted")).collect();
+    assert_eq!(emitted.len(), 1);
+    let frame = emitted[0];
+    assert_eq!(frame["eventType"], "runtime.tool_called");
+    let payload_bytes = serde_json::to_vec(&frame["payload"]).unwrap().len();
+    let frame_bytes = serde_json::to_vec(frame).unwrap().len() + 1;
+    assert!(
+        frame_bytes < 1024 * 1024,
+        "must reach payload admission, not the line limit"
+    );
+    assert_eq!(payload_bytes > 256 * 1024, oversized);
+    let resolutions: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.get("request"))
+        .filter(|request| request["command"] == "tool.resolve")
+        .collect();
+    if oversized {
+        assert!(
+            resolutions.is_empty(),
+            "rejected event must never send tool.resolve"
+        );
+    } else {
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(
+            resolutions[0]["params"],
+            json!({
+                "callId":"call-admission","turnId":"turn-admission",
+                "result":{"id":"issue-1"},"error":null,
+            })
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn receiver_rejects_sub_megabyte_tool_event_before_pending_admission_or_resolution() {
+    check_tool_receiver_admission(true);
+}
+
+#[test]
+fn receiver_admits_normal_tool_event_and_resolves_only_correlated_call_once() {
+    check_tool_receiver_admission(false);
+}

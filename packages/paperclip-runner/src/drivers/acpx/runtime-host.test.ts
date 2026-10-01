@@ -1,3 +1,7 @@
+import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { readNativeSemanticReceipt, type SemanticToolResult } from "../semantic-tool-receipt.js";
+import { validateAcpxRichEvent } from "./profile-extensions.js";
+import type { CanonicalProviderEvent } from "../../provider-events.js";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -734,6 +738,30 @@ describe("ACPX runtime host", () => {
     expect(assertWorkspaceHeld).toHaveBeenCalledTimes(2);
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+
+  it("forwards semantic receipt capture through the real runtime host and authenticated bridge", async () => {
+    const fixture = await hostFixture();
+    const events: CanonicalProviderEvent[] = [];
+    const evidence = createCopilotToolEvidence({ sessionId: "backend-1", turnId: "turn-1", workingDirectory: fixture.options.workingDirectory,
+      active: () => true, emit: event => { validateAcpxRichEvent(event); events.push(JSON.parse(JSON.stringify(event))); } });
+    let bridge: AcpxRuntimePortOpenOptions["mcpServers"][number] | undefined;
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "copilot", model: "gpt-5.6-sol",
+      permissionMode: "deny-all", environment: { COPILOT_GITHUB_TOKEN: "fixture-not-a-real-credential" },
+      semanticTools: { tools: [{ name: "get_task_context", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+        handler: async () => ({ accepted: false }), captureSemanticReceipt: () => evidence.captureSemanticReceipt() },
+    }, fixture.dependencies({ openRuntime: async options => { bridge = options.mcpServers[0]; return runtimePort(); } }));
+    try {
+      const response = await fetch(bridge!.url, { method: "POST", headers: { Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_task_context", arguments: {} } }) });
+      const body = await response.json() as { result: SemanticToolResult };
+      const receipt = readNativeSemanticReceipt({ contents: body.result.content });
+      expect(receipt).not.toBeNull();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({ category: "paperclip_semantic_tool_receipt_v2", provenance: { sessionId: "backend-1", turnId: "turn-1" },
+        details: expect.arrayContaining([{ name: "schema", value: "paperclip.semantic_tool_receipt.v2" }, { name: "normalizedInputSha256", value: "null" }, { name: "callIdentitySha256", value: receipt!.callIdentitySha256 }, { name: "resultSha256", value: receipt!.resultSha256 }]) });
+    } finally { await host.close({ reason: "receipt forwarding verified" }); }
+    await expect(fetch(bridge!.url)).rejects.toThrow();
   });
 
   it("owns an authenticated semantic bridge without persisting its secret", async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cursorPlanToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
+import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
@@ -152,6 +152,7 @@ let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
 let runId: string | null = null;
 let turnId: string | null = null;
+let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
 let closing = false;
@@ -300,6 +301,7 @@ async function dispatch(
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+          ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {
           // Admission can emit a snapshot before the verified host is assigned.
@@ -383,6 +385,7 @@ async function dispatch(
       emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
       unavailable: () => diagnostic(`${openParams!.agent}_evidence_unavailable`, "ACP tool evidence is incomplete; permission and terminal outcomes are unchanged."),
     });
+    activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -708,13 +711,23 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
         "ACPX semantic result disposition does not match its terminal operation",
       );
     }
+    // Semantic result identity must survive the wire encoder unchanged. Its
+    // display-text Unicode repair is unsuitable for authenticated result data.
+    try {
+      if (stringifyAcpxSidecarFrame(validation.result) !== JSON.stringify(validation.result)) {
+        throw new Error("Semantic input changes during encoding");
+      }
+    } catch {
+      throw new Error("ACPX semantic result cannot be encoded without changing its identity");
+    }
     // The authenticated runner bridge must admit this built-in invocation
     // before the provider sees a result. Keep the call pending until runnerd
     // sends tool.resolve after the server's completion feedback accepts it.
     // This is the same roundtrip used by ordinary dynamic tools; emitting a
     // local semantic_result here would let an invalid review handoff appear
     // accepted before the server has checked it.
-    emit(
+    const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
+    const forwarded = emit(
       "runtime.tool_called",
       {
         callId,
@@ -723,6 +736,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       },
       activeTurnId,
     );
+    if (!forwarded) throw new Error("ACPX semantic tool call exceeds the sidecar frame limit");
     return await new Promise((settle, reject) => {
       const abort = () => {
         const pending = tools.get(callId);
@@ -733,7 +747,13 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       call.signal.addEventListener("abort", abort, { once: true });
       tools.set(callId, {
         turnId: activeTurnId,
-        settle,
+        settle: (result) => {
+          // A pipe write alone does not prove receiver admission. Only this
+          // call's turn-bound tool.resolve success confirms runnerd accepted
+          // the validated body; rejection, cancellation and timeout stay null.
+          commitNormalizedInput?.();
+          settle(result);
+        },
         reject,
         cleanup: () => call.signal.removeEventListener("abort", abort),
       });
@@ -1322,18 +1342,21 @@ function emit(
   eventType: AcpxSidecarEvent["eventType"],
   payload: Record<string, unknown>,
   eventTurnId: string | null = turnId,
-): void {
+): boolean {
   if (sequence >= Number.MAX_SAFE_INTEGER) {
     throw new Error("ACPX sidecar event sequence exhausted");
   }
-  writeFrame({
+  const accepted = writeFrame({
     protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
-    sequence: ++sequence,
+    sequence: sequence + 1,
     eventType,
     runId,
     turnId: eventTurnId,
     payload,
   });
+  // A dropped frame never entered the stream and must not consume an identity.
+  if (accepted) sequence++;
+  return accepted;
 }
 
 function diagnostic(code: string, message: string): void {
@@ -1357,13 +1380,16 @@ function response(
   });
 }
 
-function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): void {
+function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): boolean {
   const line = stringifyAcpxSidecarFrame(value);
   if (Buffer.byteLength(line) > ACPX_SIDECAR_MAX_FRAME_BYTES) {
     process.stderr.write("[paperclip-acpx-sidecar] output_frame_too_large\n");
-    return;
+    return false;
   }
   process.stdout.write(`${line}\n`);
+  // Writable.write(false) accepted the bytes into its queue; it signals
+  // backpressure, not a rejected frame. A synchronous write error still throws.
+  return true;
 }
 
 function requireHost(
@@ -1435,6 +1461,9 @@ function stableRequestId(
 }
 
 function stableProviderIdentity(value: string, kind: string): string {
+  // Cursor alone uses the richer permission/evidence identity policy. Other
+  // providers and message identities retain their existing sidecar mapping.
+  if (kind === "tool" && openParams?.agent === "cursor") return cursorToolIdentity(value);
   if (Buffer.byteLength(value) <= 240 && !/[\u0000-\u001f\u007f]/.test(value)) {
     return value;
   }

@@ -84,11 +84,15 @@ describe("permission events through the actual transport handler", () => {
     };
     const handled = vi.fn(request => handleServerRequest(state as unknown as CodexSessionState, request));
     bundle.transport.setServerRequestHandler(handled);
+    let drain: Promise<void> | undefined;
     try {
       await bundle.transport.request("initialize", {});
       await bundle.transport.request("thread/start", { cwd: root });
       const start = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Fixture" }] });
       state.activeTurnId = (start.turn as { id: string }).id;
+      // The real harness consumes notifications before dispatching a bridged
+      // request at its position in the durable event stream.
+      drain = (async () => { for await (const _notification of bundle.transport.notifications()) { /* Consume the fixture's turn start. */ } })();
       peer.current!.emit("runtime_request.created", { request: {
         requestId: "permission-7", type: "permission", requestKind: "permission_approval",
         itemId: "opaque-item-7", prompt: "Change file: result.txt", details,
@@ -106,6 +110,7 @@ describe("permission events through the actual transport handler", () => {
     } finally {
       for (const entry of pending.values()) entry.settle({ outcome: "cancel" });
       await bundle.detachControllerForRestart();
+      await drain;
       rmSync(root, { recursive: true, force: true });
     }
   });

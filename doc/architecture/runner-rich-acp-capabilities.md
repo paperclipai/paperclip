@@ -1,6 +1,40 @@
 # Rich ACP integration and qualification report
 
-Current source checkpoint (2026-09-30): **Cursor v9, Copilot v8 and Pi v10
+Current source checkpoint (2026-10-01): **Cursor v10, Copilot v12 and Pi v10
+remain unqualified**. Copilot receipt v2 distinguishes original provider
+arguments from the validated outgoing completion input. The sidecar commits
+the captured normalized digest only after its exact pending call receives a
+successful, turn-bound `tool.resolve`. Pipe-write success alone is insufficient:
+Rust may reject a frame at its smaller payload admission limit. Errors,
+cancellation, timeout and stale responses cannot attest delivery.
+
+Delivery remains separate from canonical equality and acceptance. The grader
+still requires the normalized digest to match the unique proposed and accepted
+result bodies. Oversized frames and Unicode repair fail before commitment;
+dropped frames do not consume stream sequence numbers. The server preserves
+only the fixed schema literal inside a validated semantic-receipt notice.
+The failed v10 Daytona attempt and held v11 builds remain historical. Fresh
+v12 runtime packaging and local/Daytona evidence are required. The
+[Copilot inventory](runner-copilot-capabilities.md) records these boundaries.
+
+Historical source checkpoint (2026-10-01): **Cursor v10, Copilot v10 and Pi v10
+remain unqualified**. Cursor now shares the bounded native tool-ID mapping
+across sidecar activity and permissions, then deterministically joins that key
+to the canonical opaque execution ID. Copilot correlates native tool results with
+authenticated, turn-bound semantic receipts instead of display names. Both new
+profile identities reject v9 warm sessions. Their native distribution bytes
+are unchanged; new sidecar assets, runner admission digests and fresh local/Daytona
+qualification are required. The [Cursor](runner-cursor-capabilities.md) and
+[Copilot](runner-copilot-capabilities.md) inventories describe the new contracts,
+the Copilot 256 KiB output limit and the credential-free native proof scope.
+Pi remains blocked on a verifiable OpenRouter spending cap. Prior paid failures
+and case-specific passes remain historical; none is regraded by these fixes.
+The controller now dispatches bridged requests in durable notification order.
+It consumes earlier activity before presenting a request, while a pending human
+answer does not prevent later activity from streaming. A genuine permission-first
+provider sequence remains permission-first.
+
+Historical source checkpoint (2026-09-30): **Cursor v9, Copilot v8 and Pi v10
 remain unqualified**. All three declarations bind shared ACPX patch SHA-256
 `bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e`.
 Cursor additionally binds newly materialized `paperclip-cursor-usage-v4` closures;

@@ -559,7 +559,11 @@ describe("native backend factory", () => {
 
   it.each([
     ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v9-identity.json"],
     ["copilot", "../../test/fixtures/copilot-profile-v7-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v9-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v10-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v11-identity.json"],
     ["pi", "../../test-fixtures/pi-acp/profile-v9-identity.json"],
   ] as const)("rejects the exact historical %s identity before runtime startup", (agent, path) => {
     const historical = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));

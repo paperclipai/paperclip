@@ -1,5 +1,7 @@
+import { appendSemanticToolReceipt } from "../semantic-tool-receipt.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
@@ -24,6 +26,73 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it("captures the direct driver's normalized input only when the exact proposal is retained", async () => {
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-normalized-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Complete" } });
+    const { schema: _, attentionRequests: __, artifacts: ___, ...raw } = completedResult();
+    const commit = vi.fn(), capture = vi.fn((value: unknown) => { expect(commit).not.toHaveBeenCalled(); return commit; });
+    const handler = fixture.hostOptions!.semanticTools!.handler;
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "finish", arguments: raw, signal: new AbortController().signal,
+      captureNormalizedInput: capture })).resolves.toMatchObject({ accepted: true });
+    expect(capture).toHaveBeenCalledExactlyOnceWith(completedResult());
+    expect(commit).toHaveBeenCalledOnce();
+    const repeatedCapture = vi.fn(() => vi.fn());
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "different-call-same-result", arguments: raw, signal: new AbortController().signal,
+      captureNormalizedInput: repeatedCapture })).resolves.toMatchObject({ accepted: true });
+    expect(repeatedCapture).not.toHaveBeenCalled();
+    const invalidCapture = vi.fn(() => vi.fn());
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "invalid", arguments: {}, signal: new AbortController().signal,
+      captureNormalizedInput: invalidCapture })).rejects.toThrow("Invalid semantic run result");
+    expect(invalidCapture).not.toHaveBeenCalled();
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.find(event => event.eventType === "run.result.proposed")?.payload).toEqual(capture.mock.calls[0]![0]);
+    await session.close({ reason: "same-invocation normalization verified" });
+  });
+  it("does not commit a direct normalized input digest when proposal retention is backpressured", async () => {
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, {
+      maxBufferedEvents: 4, terminalEventReserve: 0,
+      runtimeEvents: Array.from({ length: 8 }, (_, n) => ({ type: "text_delta" as const, stream: "output" as const, text: `bounded-${n}` })),
+    });
+    const session = await fixture.driver.openSession({ runId: "run-normalized-pressure", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Complete" } });
+    await vi.waitFor(async () => expect((await session.transcript!()).eventCount).toBeGreaterThanOrEqual(4));
+    const commit = vi.fn(), capture = vi.fn(() => commit);
+    await expect(fixture.hostOptions!.semanticTools!.handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "finish", arguments: completedResult(),
+      signal: new AbortController().signal, captureNormalizedInput: capture })).rejects.toThrow("event consumer must drain");
+    expect(capture).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.some(event => event.eventType === "run.result.proposed")).toBe(false);
+    await session.close({ reason: "unretained input has no digest" });
+  });
+  it.each(["copilot", "cursor", "pi", "codex"] as const)("scopes optional semantic receipts to the actual %s invocation turn", async agent => {
+    const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const first = await session.startTurn({ message: { role: "user", text: "First" } });
+    const capture = fixture.hostOptions!.semanticTools!.captureSemanticReceipt;
+    expect(typeof capture).toBe(agent === "copilot" ? "function" : "undefined");
+    const oldCallback = capture?.();
+    const bound = appendSemanticToolReceipt({ tool: "get_task_context", callId: "1", arguments: {} }, { content: [{ type: "text", text: "{}" }] });
+    oldCallback?.(bound.receipt);
+    fixture.finishTurn({ status: "completed" });
+    const firstEvents = await collectUntil(session.events(), "turn.completed");
+    const receipts = firstEvents.filter(e => e.eventType === "provider.notice.recorded" && e.payload.category === "paperclip_semantic_tool_receipt_v2");
+    expect(receipts).toHaveLength(agent === "copilot" ? 1 : 0);
+    if (agent === "copilot") expect(receipts[0]).toMatchObject({ runId: "run-receipt", turnId: first.turnId, payload: { provenance: { sessionId: "backend-1", turnId: first.turnId } } });
+    const transcript = JSON.parse(JSON.stringify(await session.transcript!()));
+    for (const event of transcript.events) validatePrpEvent(event);
+    expect(transcript.events.filter((e: PrpEvent) => e.payload.category === "paperclip_semantic_tool_receipt_v2")).toEqual(receipts);
+    await session.startTurn({ message: { role: "user", text: "Second" } });
+    oldCallback?.(bound.receipt);
+    fixture.finishTurn({ status: "completed" });
+    const secondEvents = await collectUntil(session.events(), "turn.completed");
+    expect(secondEvents.filter(e => e.payload.category === "paperclip_semantic_tool_receipt_v2")).toEqual([]);
+    await session.close({ reason: "receipt turn scope verified" });
+  });
+
   it.each(["cursor", "copilot"] as const)("emits partial Cursor metadata only for admitted Cursor, preserving %s settlement", async agent => {
     const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-native-usage", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
@@ -1724,28 +1793,31 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "receipt checked" });
   });
 
-  it.each(["written", "failed"] as const)("binds Cursor denial evidence to its original tool and response write: %s", async outcome => {
+  it.each(["cursor-tool", "native\u0000tool", "native\u007ftool"].flatMap(toolCallId => ["written", "failed"].map(outcome => ({ toolCallId, outcome }))))("binds Cursor denial evidence to its original tool and response write: $outcome/$toolCallId", async ({ outcome, toolCallId }) => {
     const command = "printf 'sensitive-value' > /workspace/denied.txt";
     const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", providerPolicy: { readOnly: false } }, {
-      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId: "cursor-tool", title: "Run command", kind: "execute", status: "pending", rawInput: { command } }],
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "Run command", kind: "execute", status: "pending", rawInput: { command } }],
     });
     const session = await fixture.driver.openSession({ runId: "run-cursor-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    const origin = collectUntil(session.events(), "provider.notice.recorded");
+    const origin = collectUntil(session.events(), "tool.execution.started");
     const { turnId } = await session.startTurn({ message: { text: "Request the command." } });
     const originEvents = await origin;
     const created = collectUntil(session.events(), "runtime_request.created");
     const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
     const receipt = deferred<void>();
     const providerResponse = callback({ inferredKind: "execute", raw: {
-      sessionId: "backend-1", toolCall: { toolCallId: "cursor-tool", title: "Run command", kind: "execute" },
+      sessionId: "backend-1", toolCall: { toolCallId, title: "Run command", kind: "execute" },
       options: [{ optionId: "deny", kind: "reject_once", name: "Deny" }],
     } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
     const requested = await created;
     const request = session.pendingRuntimeRequests!()[0]!;
+    const projectedId = cursorToolIdentity(toolCallId);
+    expect(request.details).toMatchObject({ toolCallId: projectedId });
+    expect(originEvents.find(event => event.eventType === "tool.execution.started")!.payload.executionId).toBe(projectedId);
     const evidence = (events: PrpEvent[]) => events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "cursor_tool_evidence_v1");
     const fields = (event: PrpEvent) => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(field => [field.name, field.value]));
     const commandSha256 = `sha256:${createHash("sha256").update(command).digest("hex")}`;
-    expect(evidence(requested).map(fields)).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: "cursor-tool", requestId: request.requestId, commandSha256, declineOffered: "true" })]);
+    expect(evidence(requested).map(fields)).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: projectedId, requestId: request.requestId, commandSha256, declineOffered: "true" })]);
     const settled = collectUntil(session.events(), outcome === "written" ? "runtime_request.resolved" : "runtime_request.expired");
     let acknowledged = false;
     const resolution = session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "decline" } }).then(() => { acknowledged = true; });
