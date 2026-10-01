@@ -173,6 +173,20 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     await expect(call(f, "create_task", { title: "Native root subtask", idempotencyKey: "root-child", status: "backlog" })).resolves.toMatchObject({ task: { parentId: f.issueId, assigneeActorId: f.agentId } });
 
+    const [outside] = await server.db.insert(projects).values({ companyId: f.companyId, name: "Unrelated project" }).returning();
+    const before = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
+    for (const path of [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`]) {
+      const response = await fetch(`${server.apiUrl}${path}`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Root cannot escape into another project", parentId: f.issueId,
+          projectId: outside.id, assigneeAgentId: f.agentId, status: "backlog" }),
+      });
+      expect(response.status, JSON.stringify(await response.json())).toBe(403);
+    }
+    await expect(call(f, "create_task", { title: "Native root cannot escape", projectId: outside.id,
+      idempotencyKey: "root-outside", status: "backlog" })).rejects.toThrow(/outside.*boundary/);
+    expect(await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toEqual(before);
+
     await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", issueIds: [f.issueId] } } } }).where(eq(agents.id, f.agentId));
     await expect(call(f, "create_task", { title: "Exact scope is not a subtree", idempotencyKey: "exact-child" })).rejects.toThrow(/outside.*boundary/);
   });

@@ -54,7 +54,7 @@ export async function hasOwnerChatInstructionAuthority(
       SELECT 1 FROM agent_wakeup_requests w
       JOIN issue_comments message ON message.company_id = w.company_id AND message.issue_id = c.id
         AND message.author_user_id = ${input.userId} AND message.author_agent_id IS NULL
-        AND message.deleted_at IS NULL
+        AND message.deleted_at IS NULL AND message.client_request_id IS NOT NULL
         -- Ordinary messages have no generation; /new records the boundary.
         AND (message.conversation_session_generation IS NULL OR message.conversation_session_generation = c.generation)
         AND (c.boundary_comment_id IS NULL OR EXISTS (
@@ -69,10 +69,14 @@ export async function hasOwnerChatInstructionAuthority(
         AND w.company_id = ${input.companyId}::uuid AND w.agent_id = ${input.agentId}::uuid
         AND w.requested_by_actor_type = 'user' AND w.requested_by_actor_id = ${input.userId}
         AND w.status NOT IN ('skipped', 'cancelled')
-        AND w.payload->'_paperclipWakeContext'->>'source' IN ('issue.comment', 'issue.comment.reopen', 'issue.update')
+        AND w.payload->'_paperclipWakeContext'->>'source' = 'issue.comment'
         AND coalesce(w.payload->>'issueId', w.payload->>'taskId',
           w.payload->'_paperclipWakeContext'->>'issueId', w.payload->'_paperclipWakeContext'->>'taskId') = c.id::text
-        AND (w.idempotency_key IS NULL OR w.idempotency_key NOT LIKE 'chat-inbound:%')
+        -- Only the authenticated Agent Chat outbox mints this receipt. Other
+        -- channels (including Slack Board) also attribute issue.comment wakes
+        -- to users, so an external-channel denylist is insufficient.
+        AND w.idempotency_key = 'conversation-comment:' || message.id::text
+        AND w.source = 'on_demand' AND w.trigger_detail = 'manual'
         -- Use the current instruction, never an earlier message superseded by
         -- another sender. Retries follow their precise accepted identity chain,
         -- and only through server-linked retries of this same chat session.

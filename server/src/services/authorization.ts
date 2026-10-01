@@ -950,6 +950,9 @@ export function authorizationService(db: Db | DbTransaction) {
     if (!resource.parentIssueId || !boundary.rootIssueId) return false;
     const parent = await loadIssue(resource.parentIssueId);
     if (!parent || parent.companyId !== boundary.companyId) return false;
+    // Root ancestry permits decomposition, not selection of an unrelated
+    // project. Projectless children remain possible for projectless roots.
+    if (candidate.projectId && !await projectWithinLowTrustBoundary(boundary, candidate.projectId)) return false;
     return parent.id === boundary.rootIssueId ||
       issueIdIsDescendantOf(parent.id, boundary.rootIssueId, boundary.companyId);
   }

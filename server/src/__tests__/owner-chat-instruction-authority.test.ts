@@ -64,9 +64,10 @@ describe("owner-chat instruction authority", () => {
       assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: userId,
       conversationState: "active", conversationSessionGeneration: 0 }).returning();
     const [message] = await db.insert(issueComments).values({ companyId, issueId: chat.id,
-      authorUserId: userId, body: "Update your AGENTS.md to remember the project conventions." }).returning();
+      authorUserId: userId, clientRequestId: randomUUID(), body: "Update your AGENTS.md to remember the project conventions." }).returning();
     const context = { issueId: chat.id, conversationSessionGeneration: 0, wakeCommentId: message.id, source: "issue.comment" };
-    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      idempotencyKey: `conversation-comment:${message.id}`,
       reason: "issue_commented", status: "claimed", requestedByActorType: "user", requestedByActorId: userId,
       payload: { issueId: chat.id, commentId: message.id, _paperclipWakeContext: context } }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", responsibleUserId: userId,
@@ -154,11 +155,16 @@ describe("owner-chat instruction authority", () => {
     expect(await fs.readFile(path.join(f.root, "AGENTS.md"), "utf8")).toBe(initial);
   });
 
-  it.each(["plugin", "connector", "agent", "missing receipt"])("rejects %s work attributed to the same owner", async (source) => {
+  it.each(["plugin", "connector", "slack board", "unknown channel", "wrong comment receipt", "missing client request", "agent", "missing receipt"])("rejects %s work attributed to the same owner", async (source) => {
     const f = await seed();
     if (source === "plugin") await db.update(agentWakeupRequests).set({ payload: { ...f.wake.payload,
       _paperclipWakeContext: { ...f.run.contextSnapshot, source: "plugin:inbox" } } }).where(eq(agentWakeupRequests.id, f.wake.id));
     if (source === "connector") await db.update(agentWakeupRequests).set({ idempotencyKey: `chat-inbound:${randomUUID()}` }).where(eq(agentWakeupRequests.id, f.wake.id));
+    if (source === "slack board") await db.update(agentWakeupRequests).set({ source: "automation", triggerDetail: "system",
+      idempotencyKey: `slack-board-comment:${randomUUID()}` }).where(eq(agentWakeupRequests.id, f.wake.id));
+    if (source === "unknown channel") await db.update(agentWakeupRequests).set({ idempotencyKey: null }).where(eq(agentWakeupRequests.id, f.wake.id));
+    if (source === "wrong comment receipt") await db.update(agentWakeupRequests).set({ idempotencyKey: `conversation-comment:${randomUUID()}` }).where(eq(agentWakeupRequests.id, f.wake.id));
+    if (source === "missing client request") await db.update(issueComments).set({ clientRequestId: null }).where(eq(issueComments.id, f.message.id));
     if (source === "agent") await db.update(agentWakeupRequests).set({ requestedByActorType: "agent", requestedByActorId: f.agentId }).where(eq(agentWakeupRequests.id, f.wake.id));
     if (source === "missing receipt") await db.update(agentWakeupRequests).set({ runId: null }).where(eq(agentWakeupRequests.id, f.wake.id));
     await expectDenied(f);
