@@ -844,7 +844,14 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     if (deleteFiles) {
-      await stopProjectDeletionActivity(existing);
+      try {
+        await stopProjectDeletionActivity(existing);
+      } catch {
+        res.status(409).json({
+          error: "Project activity could not be stopped. The project was not deleted; retry after its active runs stop.",
+        });
+        return;
+      }
     }
     const project = await svc.remove(existing.id, {
       deleteFiles,

@@ -180,7 +180,7 @@ describe("ProjectProperties — permanent deletion", () => {
     act(() => firstCheckbox.click());
     expect(firstCheckbox.getAttribute("aria-checked")).toBe("true");
 
-    render(makeProject({ id: "project-2", urlKey: "project-2", name: "Second project" }), vi.fn(), vi.fn());
+    render(makeProject({ id: "project-2", urlKey: "project-2", name: "Second project" }), vi.fn(), [], vi.fn());
     clickButton("Delete project");
     const secondCheckbox = container.querySelector<HTMLElement>('[role="checkbox"]');
     expect(secondCheckbox?.getAttribute("aria-checked")).toBe("false");
