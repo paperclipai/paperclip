@@ -45,6 +45,15 @@ alignment in every step and conditional state, not just the first screen.
 
 ## Contextual feedback
 
+Task chat shows execution errors and waits only while they remain relevant.
+Completing or cancelling a task hides its old system notices. A newer attempt by
+the same agent or an explicit successor supersedes earlier run notices; an
+unresolved execution hold remains visible. Historical turns keep their responses,
+files, questions and inspectable activity without a Worked/Stopped status label.
+Run history retains the full diagnostic record. Session reset boundaries remain
+in the conversation. Time passing or a new human comment alone does not resolve
+an error.
+
 Do not show a toast for task or run state already visible on the current screen.
 This includes descendant runs represented by the open subtree. Show local action
 results in place; keep failures actionable inline. Notifications for other work
