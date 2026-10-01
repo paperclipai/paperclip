@@ -287,9 +287,10 @@ All agent communication flows through the **task system**.
 
 Low-trust agents can create self-assigned tasks and subtasks within their
 permitted scope, subject to assignment permissions and the responsible user's
-authority. Created work retains containment; persistent agent instructions such
-as `AGENTS.md` remain protected. Permission failures should name the rejected
-action and the specific restriction.
+authority. Created work retains containment. An authorized user's direct message
+in their own Agent Chat may authorize an agent to edit its own `AGENTS.md`;
+outside work and subtasks do not inherit this authority. Permission failures
+should name the rejected action and the specific restriction.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 

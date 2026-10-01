@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { withHumanDirectedWork } from "./human-directed-work.js";
+import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import {
   agents,
   authUsers,
@@ -975,6 +976,7 @@ export function authorizationService(db: Db | DbTransaction) {
 
   async function decideLowTrustAccess(input: {
     actorAgentId: string;
+    actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
@@ -1004,8 +1006,19 @@ export function authorizationService(db: Db | DbTransaction) {
       });
 
     if (input.action === "agent_instructions:update") {
+      if (input.resource.type === "agent" && input.resource.agentId === input.actorAgentId &&
+          await hasOwnerChatInstructionAuthority(db, {
+            companyId: boundary.companyId,
+            agentId: input.actorAgentId,
+            runId: input.actor.runId,
+            userId: input.actor.onBehalfOfUserId,
+          })) {
+        // Continue through self-instruction permissions, explicit protected
+        // change restrictions, and the responsible user's current edit access.
+        return null;
+      }
       return lowTrustDeny(
-        "Your low-trust permissions do not allow changing persistent agent instructions, including your own AGENTS.md. An authorized human must apply this change; creating a task or editing a private working copy does not grant permission to save it.",
+        "This low-trust run cannot change persistent agent instructions, including AGENTS.md. Self-edits require a direct message in the authorized user's chat with this agent. Outside-triggered work and subtasks do not inherit that authority; ask the authorized user to request the edit in their chat or apply it directly.",
       );
     }
 
@@ -1943,6 +1956,7 @@ export function authorizationService(db: Db | DbTransaction) {
       });
     const lowTrustDecision = await decideLowTrustAccess({
       actorAgentId,
+      actor: input.actor,
       action: input.action,
       resource: input.resource,
       resolution: trustResolution,

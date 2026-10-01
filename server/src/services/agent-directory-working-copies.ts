@@ -232,15 +232,18 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       } catch (error) {
         failure = error;
         logger.warn({ err: error, runId: row.runId, attempt: attempt + 1, stopped }, "Agent file checkpoint failed");
+        if (error instanceof HttpError && error.status < 500) break;
       }
       finally {
         await captured?.cleanup().catch(error => logger.warn({ err: error, runId: row.runId }, "Agent checkpoint scratch cleanup deferred to session retirement"));
       }
     }
-    if (!stopped) return patch(row, { errorCode: "AGENT_FILES_CHECKPOINT_UNSTABLE", errorMessage: "Incremental checkpoint could not be validated; collecting after provider stop.", nextAttemptAt: null });
+    const rejection = failure instanceof HttpError && failure.status === 403 ? failure.message : null;
+    if (!stopped) return patch(row, { errorCode: "AGENT_FILES_CHECKPOINT_UNSTABLE",
+      errorMessage: rejection ? `Agent-file save rejected: ${rejection} Changes were not saved.` : "Incremental checkpoint could not be validated; collecting after provider stop.", nextAttemptAt: null });
     const storageLimit = failure instanceof AgentFileLimitError || String(failure).includes("LIMIT_EXCEEDED");
     return patch(row, { state: "unavailable", processStoppedAt: new Date(), errorCode: storageLimit ? "AGENT_FILES_LIMIT_EXCEEDED" : "AGENT_FILES_SAVE_FAILED",
-      errorMessage: "Agent-file synchronization failed after provider stop. No successful save is claimed.", nextAttemptAt: null,
+      errorMessage: rejection ? `Agent-file save rejected: ${rejection} Changes were not saved.` : "Agent-file synchronization failed after provider stop. No successful save is claimed.", nextAttemptAt: null,
       receipt: { ...row.receipt, storageWarning: storageLimit ? agentStorageWarning(failure instanceof AgentFileLimitError ? failure.message : "Agent folder exceeds a storage limit") : null } });
   }
   async function collectStopped(row: Copy, target?: AdapterExecutionTarget | null) {
@@ -276,7 +279,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         row = await patch(row, { state: "unavailable", nextAttemptAt: null,
           receipt: { ...row.receipt, storageWarning: error instanceof AgentFileLimitError ? agentStorageWarning(error.message) : row.receipt?.storageWarning ?? null },
           errorCode: error instanceof AgentFileLimitError ? "AGENT_FILES_LIMIT_EXCEEDED" : "AGENT_FILES_SAVE_FAILED",
-          errorMessage: error instanceof HttpError && error.status === 422
+          errorMessage: error instanceof HttpError && (error.status === 403 || error.status === 422)
             ? `${error.message}. This run's agent-folder changes were not saved; the temporary copy is discarded.`
             : "Agent-file synchronization failed. No successful save is claimed; the temporary copy is discarded.",
         });

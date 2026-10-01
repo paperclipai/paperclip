@@ -37,9 +37,11 @@ changes that behavior. Low-trust containment instead limits what the low-trust
 agent can read or mutate through the Paperclip API and prevents raw untrusted
 output from being automatically promoted into higher-trust agent context.
 
-Low-trust agents cannot read or mutate agent configuration, instruction bundles,
-or company skill configuration through direct grants. Configuration changes from
-low-trust work must go through higher-trust review and promotion paths instead.
+Low-trust agents cannot read or mutate privileged agent configuration or company
+skill configuration through direct grants. Persistent instruction edits are also
+restricted, except for the direct-chat self-edit described below. Configuration
+changes from outside-triggered work must go through higher-trust review and
+promotion paths instead.
 
 Low trust does not prohibit task creation. Agents may create tasks assigned to
 themselves, and subtasks of their own tasks, within their permitted project or
@@ -53,10 +55,30 @@ not grant access to an unrelated project. An explicit root-task scope includes
 its descendants. Self-assigned decomposition is not a delegation cycle.
 
 Permission denials must identify the rejected action and specific restriction.
-In particular, agents must explain that low-trust permissions prevent saving
-persistent instructions such as their own `AGENTS.md`, surface failed save
-receipts, and provide proposed changes for an authorized human to apply. Creating
+Agents must surface failed instruction-save receipts and explain when the current
+run lacks direct-chat authority or the user lacks editing permission. The user
+can request the edit in their authorized chat or apply it directly. Creating
 another task does not authorize the instruction change.
+
+## Direct-chat instruction edits
+
+When an authorized user directly asks an agent in their own Agent Chat to edit
+its persistent instructions, the agent may save its own `AGENTS.md` even under
+`low_trust_review`. The exception requires the current accepted execution identity
+and a recorded authenticated board-message wake for that chat, user, and agent.
+User attribution alone, outside connector/plugin messages, ordinary tasks,
+subtasks, and messages from another user do not qualify. An earlier owner message
+cannot authorize a later external instruction. External content read during the
+chat is not a request from the user to change instructions.
+
+Normal instruction editing permissions and explicit protected-change rules still
+apply. The user's current permission is rechecked at every save, including private
+working-copy collection after a successful, failed, or timed-out execution.
+Cancellation, chat reset, reassignment, message deletion, and revoked access
+invalidate the exception. A server-linked retry of the same chat request may use
+its original authenticated message; unrelated continuations may not. This
+authority is never written into the inherited trust policy and does not grant
+peer instruction edits, general configuration access, or other privileged APIs.
 
 ## Human-directed work
 

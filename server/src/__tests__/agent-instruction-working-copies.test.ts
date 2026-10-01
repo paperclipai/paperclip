@@ -230,7 +230,7 @@ describe("registered run instruction copies", () => {
     } }).where(eq(agents.id, agentId));
     const denied = await copies.collectStopped({ companyId, runId: copy.runId });
     expect(denied?.state).toBe("conflict");
-    expect(denied?.errorMessage).toContain("Your low-trust permissions do not allow changing persistent agent instructions, including your own AGENTS.md");
+    expect(denied?.errorMessage).toContain("This low-trust run cannot change persistent agent instructions, including AGENTS.md");
     expect(denied?.candidateBase64).not.toBeNull();
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
   });
