@@ -250,6 +250,34 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await server.db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(2);
   });
 
+  it("does not reuse an out-of-scope task through a title or idempotency collision", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const [outside] = await server.db.insert(projects).values({ companyId: f.companyId, name: "Private project" }).returning();
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    for (const parentId of [null, f.issueId]) {
+      const key = randomUUID();
+      const title = `Existing private work ${randomUUID()}`;
+      const existing = await issueService(server.db).create(f.companyId, { projectId: outside.id, parentId,
+        title, description: "Private contents", assigneeAgentId: f.agentId, status: "backlog", idempotencyKey: key });
+      for (const allowed of [false, true]) {
+        await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
+          trustBoundary: { mode: "low_trust_review", projectIds: [f.projectId, ...(allowed ? [outside.id] : [])] },
+        } } }).where(eq(agents.id, f.agentId));
+        for (const collision of [{ idempotencyKey: key, title: "Different proposed task" }, { title }]) {
+          const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/issues`, {
+            method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: f.projectId, parentId, assigneeAgentId: f.agentId, status: "backlog", ...collision }),
+          });
+          const body = await response.json();
+          expect(response.status, JSON.stringify(body)).toBe(allowed ? 200 : 403);
+          if (allowed) expect(body).toMatchObject({ id: existing.id, projectId: outside.id, deduplicated: true });
+          else expect(JSON.stringify(body)).not.toContain("Private contents");
+        }
+      }
+      expect((await issueService(server.db).getById(existing.id))?.projectId).toBe(outside.id);
+    }
+  });
+
   it("retains ordinary child delegation and projectless task creation", async () => {
     const f = await server.fixture();
     const result = await call(f, "create_task", { title: "Delegate ordinary work", idempotencyKey: "child" }) as any;

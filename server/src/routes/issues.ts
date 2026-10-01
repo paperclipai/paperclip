@@ -4876,16 +4876,14 @@ export function issueRoutes(
       if (!workspace) throw notFound("Project workspace not found");
       return workspace.projectId;
     }
-    if ((await instanceSettings.getExperimental()).enableIsolatedWorkspaces) {
-      const hasExecutionOverride = input.executionWorkspaceId !== undefined ||
-        input.executionWorkspacePreference !== undefined || input.executionWorkspaceSettings !== undefined;
-      const executionWorkspaceId = input.executionWorkspaceId ?? (hasExecutionOverride ? null : source?.executionWorkspaceId);
-      if (executionWorkspaceId) {
-        const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
-          .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId)));
-        if (!workspace) throw notFound("Execution workspace not found");
-        return workspace.projectId;
-      }
+    const hasExecutionOverride = input.executionWorkspaceId !== undefined ||
+      input.executionWorkspacePreference !== undefined || input.executionWorkspaceSettings !== undefined;
+    const executionWorkspaceId = input.executionWorkspaceId ?? (hasExecutionOverride ? null : source?.executionWorkspaceId);
+    if (executionWorkspaceId && (await instanceSettings.getExperimental()).enableIsolatedWorkspaces) {
+      const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId)));
+      if (!workspace) throw notFound("Execution workspace not found");
+      return workspace.projectId;
     }
     return null;
   }
@@ -4912,6 +4910,17 @@ export function issueRoutes(
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function assertCanReuseCreatedIssue(req: Request, issue: typeof issueRows.$inferSelect) {
+    if (req.actor.type !== "agent") return;
+    await assertCanAssignTasks(req, issue.companyId, {
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+    });
   }
 
   function isTaskBridgeKeyActor(req: Request) {
@@ -11839,6 +11848,7 @@ export function issueRoutes(
         actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
+        assertCanReuseIssue: (existing: typeof issueRows.$inferSelect) => assertCanReuseCreatedIssue(req, existing),
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
           deduplicationReason = reason;
         },
@@ -12196,6 +12206,7 @@ export function issueRoutes(
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
         watchdogActorRunId: actor.runId,
+        assertCanReuseIssue: (existing) => assertCanReuseCreatedIssue(req, existing),
       });
       await externalObjectsSvc.syncIssueSafely(issue.id);
 
