@@ -86,3 +86,25 @@ it("retains conversation retry eligibility for a transient restore lock timeout"
     workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
   } })).toBe(false);
 });
+
+it("treats a graceful server shutdown as a control-plane stop, not a board hold", () => {
+  const shutdown = {
+    runtimeMode: "legacy", status: "interrupted", errorCode: "server_shutdown_interrupted",
+    resultJson: { executionRecovery: { kind: "server_shutdown", providerStopped: true, controlPlaneInitiated: true } },
+  };
+  expect(legacyExecutionNeedsReconciliation(shutdown)).toBe(false);
+  // Only the server's own stop evidence qualifies; an unstamped interruption
+  // (process loss, kill -9, lost lease) keeps the hold.
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, resultJson: {} })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, errorCode: "process_lost" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, status: "failed" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, resultJson: {
+    executionRecovery: { kind: "server_shutdown", providerStopped: false, controlPlaneInitiated: true },
+  } })).toBe(true);
+  // The bounded retry budget still ends a repeated deploy loop in a hold.
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, scheduledRetryAttempt: 2 })).toBe(true);
+  // A run whose provider work never started stays on its own bootstrap lane.
+  expect(legacyExecutionNeedsReconciliation({ ...shutdown, resultJson: {
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+  } })).toBe(false);
+});

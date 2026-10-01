@@ -15139,7 +15139,24 @@ export function heartbeatService(
           signal,
           resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
             conversationContinuationEligible: await runUsedConversationAdapter(db, run),
-            resultJson: persistedCancellationResult,
+            resultJson: {
+              ...persistedCancellationResult,
+              // This server signalled the run's provider process and observed it
+              // exit, so no provider session survives this stop. Record the
+              // control-plane stop as evidence: without it the generic
+              // reconciliation rule turns a deploy into a board-owned hold that
+              // parks every later wake on the issue.
+              ...(running
+                ? {
+                    executionRecovery: {
+                      kind: "server_shutdown",
+                      providerStopped: true,
+                      controlPlaneInitiated: true,
+                      signal,
+                    },
+                  }
+                : {}),
+            },
             errorCode: "server_shutdown_interrupted",
             errorMessage: message,
           }),
