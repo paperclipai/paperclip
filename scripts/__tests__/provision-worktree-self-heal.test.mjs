@@ -102,11 +102,12 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix, setupWorktree, existingWorktree } = {}) {
+function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, existingWorktree } = {}) {
   const worktreeCwd = existingWorktree ?? makeTempDir("paperclip-provision-worktree-");
   setupWorktree?.(worktreeCwd);
   const worktreesHome = makeTempDir("paperclip-provision-home-");
   const paperclipHome = makeInstanceHome();
+  setupInstance?.(paperclipHome);
   const result = spawnSync("bash", [script], {
     cwd: worktreeCwd,
     encoding: "utf8",
@@ -182,15 +183,52 @@ test("uses the base CLI when its import graph boots", () => {
   );
 });
 
+test("explains unavailable instance source config without creating target state", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /config is unavailable \(control-plane instance\)/);
+  assert.match(result.stderr, /For a seeded development instance, configure a canonical config/);
+  assert.match(result.stderr, /Only for a checkout-only worktree/);
+  assert.match(result.stderr, /workspaceStrategy\.provisionCommand to "true"/);
+  assert.match(result.stderr, /does not prepare a development runtime/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
 test("rejects a dangling base workspace config symlink instead of falling back", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
   fs.symlinkSync(path.join(baseCwd, "absent.json"), path.join(baseCwd, ".paperclip", "config.json"));
 
-  const { result } = runProvision(baseCwd);
+  const { result, worktreeCwd } = runProvision(baseCwd);
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /is missing or is not a canonical file/);
+  assert.match(result.stderr, /is not a canonical file \(base project workspace\)/);
+  assert.doesNotMatch(result.stderr, /checkout-only|provisionCommand/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
+test("rejects a non-regular instance config without suggesting a setup bypass", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    setupInstance: (home) => {
+      const configPath = path.join(home, "instances", "default", "config.json");
+      fs.rmSync(configPath);
+      fs.mkdirSync(configPath);
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /is not a canonical file \(control-plane instance\)/);
+  assert.match(result.stderr, /Repair the registered source path/);
+  assert.doesNotMatch(result.stderr, /checkout-only|provisionCommand/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
 });
 
 test("rejects a dangling base workspace .paperclip symlink instead of falling back", () => {
