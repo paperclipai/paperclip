@@ -11,12 +11,16 @@ import { ActionTestDialog, errorHints } from "./ActionTestDialog";
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
 const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
 const runTestCallMock = vi.hoisted(() => vi.fn());
+const getTestCallStatusMock = vi.hoisted(() => vi.fn());
+const declineActionRequestMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listTestAgents: (connectionId: string) => listTestAgentsMock(connectionId),
     getTestAgentAccess: (connectionId: string, agentId: string) => getTestAgentAccessMock(connectionId, agentId),
     runTestCall: (connectionId: string, input: unknown) => runTestCallMock(connectionId, input),
+    getTestCallStatus: (connectionId: string, requestId: string) => getTestCallStatusMock(connectionId, requestId),
+    declineActionRequest: (companyId: string, requestId: string) => declineActionRequestMock(companyId, requestId),
   },
 }));
 vi.mock("@/context/CompanyContext", () => ({
@@ -58,6 +62,16 @@ const entry = {
   updatedAt: new Date("2026-10-01T00:00:00Z"),
 } as ToolCatalogEntry;
 
+const askFirstEntry = {
+  ...entry,
+  id: "asana-create-task",
+  toolName: "create_task",
+  title: "Create task",
+  riskLevel: "write",
+  isReadOnly: false,
+  isWrite: true,
+} as ToolCatalogEntry;
+
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let client: QueryClient;
@@ -77,18 +91,42 @@ async function flushReact() {
   }
 }
 
-async function openAndRun() {
+async function renderDialog(testEntry = entry) {
   await act(() => root.render(
     <QueryClientProvider client={client}>
-      <ActionTestDialog connectionId="conn-1" appName="Asana" entry={entry} open onOpenChange={() => undefined} />
+      <ActionTestDialog connectionId="conn-1" appName="Asana" entry={testEntry} open onOpenChange={() => undefined} />
     </QueryClientProvider>,
   ));
   await flushReact();
+}
+
+async function openAndRun(testEntry = entry) {
+  await renderDialog(testEntry);
   const button = [...document.body.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Run");
   expect(button).toBeTruthy();
   await act(() => button!.click());
   await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 260)); });
   await flushReact();
+}
+
+function allowAskFirst() {
+  getTestAgentAccessMock.mockResolvedValue({
+    access: {
+      connectionId: "conn-1", toolCount: 1, allowedCount: 0, askFirstCount: 1, offCount: 0,
+      lastChangedAt: null, lastChangedByAgentId: null, lastChangedByName: null,
+      tools: [{ toolName: "create_task", gatewayToolName: "asana__create_task", displayName: "Create task", risk: "write", decision: "ask_first", reasonCode: null, matchedPolicyIds: [] }],
+    },
+  });
+  runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "ask-invocation", actionRequestId: "request-1" });
+}
+
+function requestStatus(phase: "waiting" | "running" | "done" | "denied") {
+  return {
+    actionRequestId: "request-1", invocationId: "ask-invocation", phase,
+    parameters: {}, requestedAt: "2026-10-01T00:00:00.000Z",
+    resolvedAt: phase === "waiting" ? null : "2026-10-01T00:00:05.000Z",
+    durationMs: phase === "done" ? 1200 : null,
+  };
 }
 
 beforeEach(() => {
@@ -107,6 +145,8 @@ beforeEach(() => {
     },
   });
   runTestCallMock.mockReset();
+  getTestCallStatusMock.mockReset().mockResolvedValue(requestStatus("waiting"));
+  declineActionRequestMock.mockReset();
   window.sessionStorage.clear();
 });
 
@@ -148,6 +188,17 @@ describe("Permissions action Test dialog", () => {
     expect(document.body.querySelector("table")?.textContent).toContain("Q4 launch");
   });
 
+  it("uses structured content when an MCP result has no content blocks", async () => {
+    runTestCallMock.mockResolvedValue({
+      decision: "allowed", invocationId: "structured-only",
+      result: { content: "", data: { structuredContent: { results: [{ name: "Northstar launch plan" }] }, isError: false } },
+    });
+    await openAndRun();
+    expect(document.body.textContent).toContain("Worked. 1 row came back.");
+    expect(document.body.querySelector("table")?.textContent).toContain("Northstar launch plan");
+    expect(document.body.textContent).not.toContain("structuredContent");
+  });
+
   it("shows wide search results as readable cards with a safe page link", async () => {
     const rows = [{
       id: "11111111-2222-4333-8444-555555555555",
@@ -166,6 +217,54 @@ describe("Permissions action Test dialog", () => {
     expect(document.body.textContent).toContain("Northstar launch plan");
     expect(document.body.textContent).toContain("The launch plan covers milestones");
     expect(document.body.querySelector('a[href="https://www.notion.so/11111111222243338444555555555555"]')?.textContent).toBe("Open link");
+  });
+
+  it("shows a non-link URL as a field in a result card", async () => {
+    const rows = [{ title: "Northstar launch plan", url: "notion://workspace/launch", description: "A long description that keeps the card layout useful even when the provider supplies a URL that cannot open in a browser." }];
+    runTestCallMock.mockResolvedValue({
+      decision: "allowed", invocationId: "non-link-url",
+      result: { content: JSON.stringify({ results: rows }), data: { content: [{ type: "text", text: JSON.stringify({ results: rows }) }], isError: false } },
+    });
+    await openAndRun();
+    expect(document.body.querySelector('a[href="notion://workspace/launch"]')).toBeNull();
+    expect(document.body.textContent).toContain("notion://workspace/launch");
+  });
+
+  it("keeps an ask-first request visible after reopening the dialog", async () => {
+    allowAskFirst();
+    await openAndRun(askFirstEntry);
+    expect(document.body.textContent).toContain("Sent for your OK.");
+    expect(document.body.textContent).toContain("Cancel this request");
+    expect(document.body.querySelector('a[href="/apps/conn-1/review"]')).toBeTruthy();
+
+    await act(() => root.unmount());
+    root = createRoot(container);
+    await renderDialog(askFirstEntry);
+    expect(runTestCallMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("Sent for your OK.");
+  });
+
+  it("shows an approved request running and then the completed result", async () => {
+    allowAskFirst();
+    getTestCallStatusMock.mockResolvedValue(requestStatus("running"));
+    await openAndRun(askFirstEntry);
+    expect(document.body.textContent).toContain("Approved · running");
+    expect(document.body.textContent).not.toContain("Cancel this request");
+
+    getTestCallStatusMock.mockResolvedValue({ ...requestStatus("done"), result: [{ name: "Northstar launch plan" }] });
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tools"] }); });
+    await flushReact();
+    expect(document.body.textContent).toContain("Worked.");
+    expect(document.body.textContent).toContain("Northstar launch plan");
+    expect(runTestCallMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a denied request without offering cancellation", async () => {
+    allowAskFirst();
+    getTestCallStatusMock.mockResolvedValue(requestStatus("denied"));
+    await openAndRun(askFirstEntry);
+    expect(document.body.textContent).toContain("Denied — see Review for why");
+    expect(document.body.textContent).not.toContain("Cancel this request");
   });
 
   it("shows a tool error and opens its raw response", async () => {

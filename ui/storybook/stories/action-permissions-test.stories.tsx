@@ -191,6 +191,15 @@ export const StructuredRows: Story = {
   ) }} />,
 };
 
+export const StructuredOnly: Story = {
+  name: "Structured data without content blocks",
+  render: () => <PermissionsTestStory result={{
+    decision: "allowed",
+    invocationId: "structured-only",
+    result: { content: "", data: { structuredContent: { data: PROJECTS }, isError: false } },
+  }} />,
+};
+
 export const JsonInText: Story = {
   name: "JSON inside text",
   render: () => <PermissionsTestStory result={{ decision: "allowed", invocationId: "json-text", result: mcpResult(

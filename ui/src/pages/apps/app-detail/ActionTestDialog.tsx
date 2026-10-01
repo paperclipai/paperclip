@@ -787,8 +787,9 @@ function resultPreview(value: unknown): { items: Array<{ label: string | null; v
   const data = wrapper.data && typeof wrapper.data === "object" && !Array.isArray(wrapper.data)
     ? wrapper.data as Record<string, unknown>
     : null;
-  const result = data && Array.isArray(data.content) ? data : wrapper;
-  if (!Array.isArray(result.content)) {
+  const result = data && (Array.isArray(data.content) || data.structuredContent != null) ? data : wrapper;
+  const blocks = Array.isArray(result.content) ? result.content : null;
+  if (!blocks && result.structuredContent == null) {
     return { items: [{ label: null, value }], summary: value };
   }
 
@@ -801,7 +802,7 @@ function resultPreview(value: unknown): { items: Array<{ label: string | null; v
   if (structured !== null && structured !== undefined) {
     items.push({ label: null, value: structuredValue });
   }
-  for (const block of result.content) {
+  for (const block of blocks ?? []) {
     if (!block || typeof block !== "object" || Array.isArray(block)) {
       return { items: [{ label: null, value }], summary: value, rawFallback: true };
     }
@@ -809,7 +810,7 @@ function resultPreview(value: unknown): { items: Array<{ label: string | null; v
     if (content.type === "text" && typeof content.text === "string") {
       const parsed = parseText(content.text);
       if (structured === null || structured === undefined || safeStringify(parsed) !== safeStringify(structuredValue)) {
-        items.push({ label: result.content.length > 1 || (structured !== null && structured !== undefined) ? "Text" : null, value: parsed });
+        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? "Text" : null, value: parsed });
       }
     } else if (content.type === "image" || content.type === "audio") {
       items.push({ label: content.type === "image" ? "Image" : "Audio", value: typeof content.mimeType === "string" ? content.mimeType : "Media attachment" });
@@ -971,9 +972,9 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
   const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
   const details = Object.entries(row)
-    .filter(([key]) => key !== titleKey && key !== summaryKey && key !== "url")
+    .filter(([key]) => key !== titleKey && key !== summaryKey && (key !== "url" || !url))
     .sort(([left], [right]) => {
-      const order = ["type", "status", "timestamp", "id"];
+      const order = ["url", "type", "status", "timestamp", "id"];
       const leftRank = order.indexOf(left);
       const rightRank = order.indexOf(right);
       return (leftRank < 0 ? order.length : leftRank) - (rightRank < 0 ? order.length : rightRank);
