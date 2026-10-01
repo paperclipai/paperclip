@@ -8,7 +8,7 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -303,6 +303,43 @@ describe("managed AI connections", () => {
     await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id, adapterType: "claude_local", startedByUserId: "alice", publicSessionId: cancelled, status: "cancelled", expiresAt: new Date(Date.now() + 60000) });
     await expect(service.save(companyId, "alice", { ...intent, agentIds: [] }, "fixture-never-save", cancelled)).rejects.toThrow("no longer active");
   });
+  it("reactivates the provider application when a new account follows the removal of the last one", async () => {
+    const appCompanyId = randomUUID();
+    await db.insert(companies).values({ id: appCompanyId, name: "Archived provider app", issuePrefix: "AIA" });
+    await db.insert(companyMemberships).values({ companyId: appCompanyId, principalId: "carol", principalType: "user", status: "active", membershipRole: "member" });
+    const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
+    const first = await service.save(appCompanyId, "carol", { ...account, name: "First" }, "fixture-first");
+    const [firstConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    await toolAccessService(db).archiveConnection(first.connectionId, appCompanyId);
+    const [archivedApp] = await db.select().from(toolApplications).where(eq(toolApplications.id, firstConnection!.applicationId));
+    expect(archivedApp?.status).toBe("archived");
+
+    const second = await service.save(appCompanyId, "carol", { ...account, name: "Second" }, "fixture-second");
+    const [secondConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, second.connectionId));
+    const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, secondConnection!.applicationId));
+    expect(secondConnection!.applicationId).toBe(firstConnection!.applicationId);
+    expect(app).toMatchObject({ status: "active", archivedAt: null });
+  });
+
+  it("keeps the provider application active when a new account races the removal of the last one", async () => {
+    const raceCompanyId = randomUUID();
+    await db.insert(companies).values({ id: raceCompanyId, name: "Racing provider app", issuePrefix: "AIR" });
+    await db.insert(companyMemberships).values({ companyId: raceCompanyId, principalId: "dave", principalType: "user", status: "active", membershipRole: "member" });
+    const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
+    let last = await service.save(raceCompanyId, "dave", { ...account, name: "Initial" }, "fixture-initial");
+    for (let round = 0; round < 8; round += 1) {
+      const [, next] = await Promise.all([
+        toolAccessService(db).archiveConnection(last.connectionId, raceCompanyId),
+        service.save(raceCompanyId, "dave", { ...account, name: `Round ${round}` }, `fixture-${round}`),
+      ]);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, next.connectionId));
+      const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection!.applicationId));
+      expect(connection!.status).toBe("active");
+      expect(app?.status).toBe("active");
+      last = next;
+    }
+  });
+
   it("preserves connection identity and defaults through reconnect; revocation wins over older attempts", async () => {
     const current = await service.select({ ...input, userId: "bob" });
     const reconnect = { ...binding, ownership: "personal" as const, name: current.connection.name, apiKey: "fixture", agentIds: [], allAgents: true, connectionId: current.connection.id };

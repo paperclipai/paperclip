@@ -6302,6 +6302,14 @@ export function toolAccessService(
       .returning({ id: connectionTokenIssuances.id });
 
     const archived = await db.transaction(async (tx) => {
+      // Lock the application before the connection. A concurrent AI connect
+      // locks the same row, so the remaining-connection check below sees a
+      // connection that it attached, and the connect sees this archive.
+      await tx
+        .select({ id: toolApplications.id })
+        .from(toolApplications)
+        .where(eq(toolApplications.id, connection.applicationId))
+        .for("update");
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({ status: "archived", enabled: false, updatedAt: now })
