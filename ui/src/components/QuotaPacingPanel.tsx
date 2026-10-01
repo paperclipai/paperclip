@@ -54,17 +54,43 @@ const PROVIDER_AGENTS: Record<string, string> = {
   openai: "Codex local agents",
 };
 
+/** The pacing settings that the form edits. */
+type PacingFields = Pick<QuotaPacingSettings, "mode" | "sessionReservePercent" | "weeklyAllowancePercent">;
+
 interface PacingDraft {
   mode: QuotaPacingModeSetting;
   sessionReservePercent: string;
   weeklyAllowancePercent: string;
 }
 
-function draftFromSettings(settings: QuotaPacingSettings): PacingDraft {
+interface PacingForm {
+  /** Server values the form was last synced to. A save sends only the fields that differ from them. */
+  baseline: PacingFields;
+  draft: PacingDraft;
+}
+
+interface ParsedDraft {
+  mode: QuotaPacingModeSetting;
+  /** Null when the input is not a valid percentage. */
+  sessionReservePercent: number | null;
+  /** Null when the input is not a valid percentage. */
+  weeklyAllowancePercent: number | null;
+}
+
+const PACING_FIELDS = ["mode", "sessionReservePercent", "weeklyAllowancePercent"] as const;
+
+function formFromSettings(settings: PacingFields): PacingForm {
   return {
-    mode: settings.mode,
-    sessionReservePercent: String(settings.sessionReservePercent),
-    weeklyAllowancePercent: String(settings.weeklyAllowancePercent),
+    baseline: {
+      mode: settings.mode,
+      sessionReservePercent: settings.sessionReservePercent,
+      weeklyAllowancePercent: settings.weeklyAllowancePercent,
+    },
+    draft: {
+      mode: settings.mode,
+      sessionReservePercent: String(settings.sessionReservePercent),
+      weeklyAllowancePercent: String(settings.weeklyAllowancePercent),
+    },
   };
 }
 
@@ -74,6 +100,59 @@ function parseWholePercent(value: string, max: number): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   return parsed <= max ? parsed : null;
+}
+
+function parseDraft(draft: PacingDraft): ParsedDraft {
+  return {
+    mode: draft.mode,
+    sessionReservePercent: parseWholePercent(draft.sessionReservePercent, QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT),
+    weeklyAllowancePercent: parseWholePercent(draft.weeklyAllowancePercent, QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT),
+  };
+}
+
+/** Fields whose draft value differs from the baseline. An invalid percentage counts as edited. */
+function editedFields(form: PacingForm): Set<keyof PacingFields> {
+  const parsed = parseDraft(form.draft);
+  return new Set(PACING_FIELDS.filter((field) => parsed[field] !== form.baseline[field]));
+}
+
+/**
+ * The patch for this form: only the fields edited here, so a save never
+ * sends values that another admin may have changed since the form loaded.
+ * The server merges a partial `quotaPacing` key by key. Null when an
+ * edited percentage is invalid.
+ */
+function pacingPatch(form: PacingForm): PatchQuotaPacingSettings | null {
+  const parsed = parseDraft(form.draft);
+  if (parsed.sessionReservePercent == null || parsed.weeklyAllowancePercent == null) return null;
+  const edited = editedFields(form);
+  return {
+    ...(edited.has("mode") ? { mode: parsed.mode } : {}),
+    ...(edited.has("sessionReservePercent") ? { sessionReservePercent: parsed.sessionReservePercent } : {}),
+    ...(edited.has("weeklyAllowancePercent") ? { weeklyAllowancePercent: parsed.weeklyAllowancePercent } : {}),
+  };
+}
+
+/**
+ * Move the form onto newer server values. A field not edited here follows
+ * the server; an edited field keeps its value, so the next save still sends
+ * only what this form changed.
+ */
+function rebaseForm(form: PacingForm, server: PacingFields): PacingForm {
+  const edited = editedFields(form);
+  const next = formFromSettings(server);
+  return {
+    baseline: next.baseline,
+    draft: {
+      mode: edited.has("mode") ? form.draft.mode : next.draft.mode,
+      sessionReservePercent: edited.has("sessionReservePercent")
+        ? form.draft.sessionReservePercent
+        : next.draft.sessionReservePercent,
+      weeklyAllowancePercent: edited.has("weeklyAllowancePercent")
+        ? form.draft.weeklyAllowancePercent
+        : next.draft.weeklyAllowancePercent,
+    },
+  };
 }
 
 function formatResetTime(resetsAt: string): string {
@@ -183,7 +262,10 @@ function ProviderPacing({ state }: { state: QuotaPacingProviderState }) {
 export function QuotaPacingPanel({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
   const fieldId = useId();
-  const [draft, setDraft] = useState<PacingDraft>(() => draftFromSettings(DEFAULT_QUOTA_PACING_SETTINGS));
+  const [form, setForm] = useState<PacingForm>(() => formFromSettings(DEFAULT_QUOTA_PACING_SETTINGS));
+  const { draft } = form;
+  const setDraft = (update: (current: PacingDraft) => PacingDraft) =>
+    setForm((current) => ({ ...current, draft: update(current.draft) }));
 
   const settingsQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -203,12 +285,15 @@ export function QuotaPacingPanel({ companyId }: { companyId: string }) {
 
   const settings = settingsQuery.data?.quotaPacing ?? null;
   useEffect(() => {
-    if (settings) setDraft(draftFromSettings(settings));
+    if (settings) setForm((current) => rebaseForm(current, settings));
   }, [settings?.mode, settings?.sessionReservePercent, settings?.weeklyAllowancePercent]);
 
   const updateMutation = useMutation({
     mutationFn: (patch: PatchQuotaPacingSettings) => instanceSettingsApi.updateGeneral({ quotaPacing: patch }),
-    onSuccess: async () => {
+    onSuccess: async (updated) => {
+      // Sync the baseline to the stored values at once, so the next save
+      // diffs against them and not against the values this form loaded.
+      setForm((current) => rebaseForm(current, updated.quotaPacing));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.usageQuotaPacing(companyId) }),
@@ -220,23 +305,14 @@ export function QuotaPacingPanel({ companyId }: { companyId: string }) {
   // the current access is known and is not an instance admin.
   const canManage = !boardAccess || boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
   const editable = Boolean(settings) && canManage && !updateMutation.isPending;
-  const sessionReserve = parseWholePercent(draft.sessionReservePercent, QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT);
-  const weeklyAllowance = parseWholePercent(draft.weeklyAllowancePercent, QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT);
-  const dirty = settings != null && (
-    draft.mode !== settings.mode
-    || sessionReserve !== settings.sessionReservePercent
-    || weeklyAllowance !== settings.weeklyAllowancePercent
-  );
-  const canSave = editable && dirty && sessionReserve != null && weeklyAllowance != null;
+  const { sessionReservePercent: sessionReserve, weeklyAllowancePercent: weeklyAllowance } = parseDraft(draft);
+  const patch = pacingPatch(form);
+  const canSave = editable && patch != null && Object.keys(patch).length > 0;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSave || sessionReserve == null || weeklyAllowance == null) return;
-    updateMutation.mutate({
-      mode: draft.mode,
-      sessionReservePercent: sessionReserve,
-      weeklyAllowancePercent: weeklyAllowance,
-    });
+    if (!canSave || !patch) return;
+    updateMutation.mutate(patch);
   }
 
   const enabled = settings?.enabled === true;

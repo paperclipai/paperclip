@@ -4,8 +4,9 @@ import { createElement, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { QuotaPacingSettings, QuotaPacingState } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings, QuotaPacingSettings, QuotaPacingState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { QuotaPacingPanel } from "./QuotaPacingPanel";
 
 const mockCostsApi = vi.hoisted(() => ({ quotaPacing: vi.fn() }));
@@ -220,6 +221,81 @@ describe("QuotaPacingPanel", () => {
     });
     // The panel refreshes the pacing state after a save.
     await vi.waitFor(() => expect(mockCostsApi.quotaPacing).toHaveBeenCalledTimes(2));
+  });
+
+  it("sends only the field changed in this form", async () => {
+    await renderPanel();
+    await vi.waitFor(() => expect(input("Weekly allowance (%)").disabled).toBe(false));
+
+    flushSync(() => setInputValue(input("Weekly allowance (%)"), "10"));
+    flushSync(() => saveButton().click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith({ quotaPacing: { weeklyAllowancePercent: 10 } });
+  });
+
+  describe("against stored settings that other admins change", () => {
+    let stored: QuotaPacingSettings;
+
+    beforeEach(() => {
+      // A minimal server: PATCH merges quotaPacing key by key, GET returns the result.
+      stored = SETTINGS;
+      mockInstanceSettingsApi.getGeneral.mockImplementation(async () => generalSettings(stored));
+      mockInstanceSettingsApi.updateGeneral.mockImplementation(async (patch: PatchInstanceGeneralSettings) => {
+        stored = { ...stored, ...patch.quotaPacing };
+        return generalSettings(stored);
+      });
+    });
+
+    function modeSelect() {
+      return container.querySelector<HTMLSelectElement>('select[aria-label="Pacing mode"]')!;
+    }
+
+    it("follows newer server values for fields this form did not edit", async () => {
+      await renderPanel();
+      await vi.waitFor(() => expect(input("Weekly allowance (%)").disabled).toBe(false));
+      flushSync(() => setInputValue(input("Weekly allowance (%)"), "10"));
+
+      // Another admin changes the mode and the session reserve.
+      stored = { ...stored, mode: "low", sessionReservePercent: 30 };
+      await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+      await vi.waitFor(() => expect(modeSelect().value).toBe("low"));
+      expect(input("Session reserve (%)").value).toBe("30");
+      expect(input("Weekly allowance (%)").value).toBe("10");
+
+      flushSync(() => saveButton().click());
+      await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+      expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith({ quotaPacing: { weeklyAllowancePercent: 10 } });
+      expect(stored).toMatchObject({ mode: "low", sessionReservePercent: 30, weeklyAllowancePercent: 10 });
+    });
+
+    it("diffs the next save against the values the last save stored", async () => {
+      await renderPanel();
+      await vi.waitFor(() => expect(input("Weekly allowance (%)").disabled).toBe(false));
+      flushSync(() => setInputValue(input("Weekly allowance (%)"), "10"));
+      flushSync(() => saveButton().click());
+      await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(input("Session reserve (%)").disabled).toBe(false));
+      expect(saveButton().disabled).toBe(true);
+
+      flushSync(() => setInputValue(input("Session reserve (%)"), "25"));
+      flushSync(() => saveButton().click());
+
+      await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledTimes(2));
+      expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenLastCalledWith({
+        quotaPacing: { sessionReservePercent: 25 },
+      });
+    });
+  });
+
+  it("disables the save when an edit is undone", async () => {
+    await renderPanel();
+    await vi.waitFor(() => expect(input("Weekly allowance (%)").disabled).toBe(false));
+
+    flushSync(() => setInputValue(input("Weekly allowance (%)"), "10"));
+    expect(saveButton().disabled).toBe(false);
+    flushSync(() => setInputValue(input("Weekly allowance (%)"), "8"));
+    expect(saveButton().disabled).toBe(true);
   });
 
   it("turns pacing off from the toggle", async () => {
