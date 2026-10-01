@@ -4,6 +4,7 @@ import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { collectRunEvents } from "./run-observations.js";
 import { createTaskThroughUi } from "./user-actions.js";
+import { onlyCopilotAttachedOperations, readCopilotSemanticCompletion } from "./copilot-semantic-evidence.js";
 import { copilotOrigin, readCopilotToolEvidence, type CopilotToolNotice } from "./copilot-evidence.js";
 import { createAttachedCommandFixture, createDeniedTargetFixture, bindDeniedTargetPrompt, exists, observeRunProcesses } from "./copilot-local-fixtures.js";
 import { gradeCopilotAttachedSettlement, gradeCopilotDeniedWrite, type CopilotDeniedWriteEvidence } from "./copilot-protection-cases.js";
@@ -239,9 +240,11 @@ export async function runCopilotProtectionFlow(input: {
         markerMatches: localMarkerMatches, afterCleanupMarkerMatches: localAfterCleanupMarkerMatches });
       const call = matched?.call;
       check("single-exact-command", Boolean(matched), "Exactly one native execution matches the fixture command with at most eight leading ASCII SPACE/TAB bytes");
-      if (remote) check("no-extra-native-operation", copilotActionNotices(notices, call!, { actionFile: remoteFixture!.actionFile, events: runEvents }).every(n =>
-        n.runId === call!.runId && n.sessionId === call!.sessionId && n.turnId === call!.turnId
-        && (n.toolCallId === call!.toolCallId || n.commandToolCallId === call!.toolCallId)), "Only setup reads and the exact native attached command/result are allowed");
+      const semantic = readCopilotSemanticCompletion(runEvents, { companyId: fixtures.company.id, runId: call!.runId, turnId: call!.turnId,
+        nativeSessionId: call!.sessionId, command: call!, summary: execution.task.buildVisibleMarker(nonce) });
+      await input.evidence("copilot-semantic-completion.json", semantic);
+      check("accepted-canonical-completion", true, "One exact native finish receipt matches the proposed and control-plane accepted result; transport success alone is insufficient");
+      check("no-extra-native-operation", onlyCopilotAttachedOperations(copilotActionNotices(notices, call!, remoteFixture ? { actionFile: remoteFixture.actionFile, events: runEvents } : undefined), call!, semantic), "Only attested setup reads, the exact attached command/result, and one authoritatively correlated accepted finish are allowed");
       const started = notices.find(n => n.toolCallId === call!.toolCallId && n.shellState === "started");
       const result = notices.find(n => n.commandToolCallId === call!.toolCallId && n.shellState === "completed");
       const terminal = runEvents.find(r => r.eventType === "turn.completed" && r.payload?.prpEvent?.turnId === call!.turnId)?.payload.prpEvent;

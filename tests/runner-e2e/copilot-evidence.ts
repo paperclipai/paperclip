@@ -2,6 +2,7 @@
 export interface CopilotToolNotice {
   runId: string; sessionId: string; turnId: string; toolCallId: string;
   observedAtMs: number; seq: number;
+  semanticOperationId?: string; semanticCallIdentitySha256?: string; semanticInputSha256?: string; semanticNormalizedInputSha256?: string | null; semanticResultSha256?: string; semanticOutcome?: "returned" | "error";
   stage: "tool" | "permission_requested" | "permission_delivered";
   status?: "pending" | "in_progress" | "completed" | "failed";
   operation?: "edit" | "execute" | "read"; target?: string; requestId?: string;
@@ -12,7 +13,7 @@ export interface CopilotToolNotice {
 const rec = (v: unknown): Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, any> : {};
 const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v) && !v.includes("[REDACTED]");
 const enums = { stage: ["tool", "permission_requested", "permission_delivered"], status: ["pending", "in_progress", "completed", "failed"], operation: ["edit", "execute", "read"], outcome: ["allow_once", "allow_always", "reject_once", "cancel"], mode: ["sync", "async"], shellState: ["started", "completed"] };
-const names = new Set(["stage", "toolCallId", "status", "operation", "target", "requestId", "declineOffered", "outcome", "commandSha256", "readTargetSha256", "mode", "detach", "shellId", "commandToolCallId", "shellState", "exitCode"]);
+const names = new Set(["stage", "toolCallId", "status", "operation", "target", "requestId", "declineOffered", "outcome", "commandSha256", "readTargetSha256", "mode", "detach", "shellId", "commandToolCallId", "shellState", "exitCode", "semanticOperationId", "semanticCallIdentitySha256", "semanticInputSha256", "semanticNormalizedInputSha256", "semanticResultSha256", "semanticOutcome"]);
 export function readCopilotToolEvidence(rows: readonly unknown[], expectedRunId: string): CopilotToolNotice[] {
   const result: CopilotToolNotice[] = [];
   for (const row of rows) {
@@ -42,6 +43,15 @@ export function readCopilotToolEvidence(rows: readonly unknown[], expectedRunId:
     if (fields.commandSha256 !== undefined) { if (!/^sha256:[a-f0-9]{64}$/u.test(fields.commandSha256)) throw new Error("Invalid command digest"); notice.commandSha256 = fields.commandSha256; }
     if (fields.shellId !== undefined) { if (!/^[A-Za-z0-9_.-]{1,80}$/u.test(fields.shellId)) throw new Error("Invalid shell identity"); notice.shellId = fields.shellId; }
     if (fields.exitCode !== undefined) { if (!/^-?\d{1,10}$/u.test(fields.exitCode) || !Number.isSafeInteger(Number(fields.exitCode))) throw new Error("Invalid exit code"); notice.exitCode = Number(fields.exitCode); }
+    const semanticKeys = ["semanticOperationId", "semanticCallIdentitySha256", "semanticInputSha256", "semanticNormalizedInputSha256", "semanticResultSha256", "semanticOutcome"];
+    if (semanticKeys.some(k => fields[k] !== undefined)) {
+      if (!semanticKeys.every(k => fields[k] !== undefined) || fields.stage !== "tool" || !["completed", "failed"].includes(fields.status!)
+        || !/^[A-Za-z0-9_.:-]{1,256}$/.test(fields.semanticOperationId!) || !["returned", "error"].includes(fields.semanticOutcome!)
+        || ["semanticCallIdentitySha256", "semanticInputSha256", "semanticResultSha256"].some(k => !/^[a-f0-9]{64}$/.test(fields[k]!))) throw new Error("Invalid semantic receipt fields");
+      if (fields.semanticNormalizedInputSha256 !== "null" && !/^[a-f0-9]{64}$/.test(fields.semanticNormalizedInputSha256!)) throw new Error("Invalid normalized semantic digest");
+      for (const key of semanticKeys) notice[key] = fields[key];
+      notice.semanticNormalizedInputSha256 = fields.semanticNormalizedInputSha256 === "null" ? null : fields.semanticNormalizedInputSha256;
+    }
     result.push(notice as unknown as CopilotToolNotice);
   }
   return result;

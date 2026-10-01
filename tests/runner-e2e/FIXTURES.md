@@ -441,3 +441,42 @@ The existing `copilot-protection` denial remains distinct: rejecting a permissio
 before Stop does not exercise this pending-callback boundary. This new suite has
 pure calibration and wiring tests, not a paid qualification result. Provider
 process death is not simulated by substituting the chat runner-worker crash hook.
+
+### Copilot attached semantic completion evidence (suite 8)
+
+Attached settlement now requires one native `paperclip_finish` lifecycle joined
+to an invocation-captured, bounded Paperclip bridge receipt by exact call, input
+and result digests in the same run/turn/native session and durable source stream.
+A matching display title is not authority. The exact proposed completion input
+must match a control-plane `run.result.accepted` body and the requested summary.
+Transport `returned` alone, including a returned rejection, cannot pass. The
+visible exact terminal comment remains an independent assertion. Both local and
+Daytona cases reject extra native operations; existing attested bootstrap reads,
+command settlement, process retirement and marker checks remain required.
+
+The receipt reader fails closed when the production native receipt projection is
+missing, partial, duplicated or outside its bounds (including 256 KiB for the
+whole native rawOutput, which may repeat text). This oracle depends on the new
+production semantic-receipt contract and does not regrade earlier failed runs.
+The bridge call hash identifies the invocation and its native receipt. It is not
+inferred from `run.result.proposed.itemId`, which can identify the run instead.
+The v2 receipt keeps the raw invocation input digest separate from the normalized
+input digest captured by that same authenticated invocation after production
+validation. Raw arguments may omit schema, artifacts and attention requests;
+the production validator supplies those defaults. The oracle never reconstructs
+or normalizes a body to make it match. The raw call/input/result hashes still join
+the native lifecycle; its normalized input hash must also match the authority.
+Exactly one proposed body must hash to that normalized digest and equal exactly
+one accepted body; identical duplicate proposals or receipts still fail.
+
+Suite 8 writes `paperclip.e2e.copilot-semantic-completion.v2` and requires
+`paperclip.semantic_tool_receipt.v2` under `paperclip_semantic_tool_receipt_v2`.
+The authority has exactly eight bounded details. An explicit null normalized
+digest is diagnostic only and cannot qualify a successful finish. Legacy v1
+receipts do not qualify fresh runs. This fixture depends on the corresponding
+production receipt and durable-redaction fixes; it does not supply them. The shell
+result is one separate complete read lifecycle: pending and any progress name the
+started shell, and its successful terminal also names the original command. A
+completed-only read or a second shell read cannot inherit that exemption.
+
+Denial case version 5 and denial settlement schema v3 are unchanged.
