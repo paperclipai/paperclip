@@ -40,6 +40,10 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelRun: vi.fn(),
+  waitForRunExecutionDrain: vi.fn(),
+}));
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -48,6 +52,7 @@ vi.mock("../telemetry.js", () => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   environmentService: () => mockEnvironmentService,
+  heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
@@ -68,6 +73,7 @@ vi.mock("../services/instance-settings.js", () => ({
 
 vi.mock("../services/workspace-runtime.js", () => ({
   startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForExecutionWorkspace: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
@@ -84,6 +90,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     environmentService: () => mockEnvironmentService,
+    heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
@@ -104,11 +111,12 @@ function registerModuleMocks() {
 
   vi.doMock("../services/workspace-runtime.js", () => ({
     startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
 }
 
-async function createApp() {
+async function createApp(actorType: "board" | "agent" = "board") {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -118,7 +126,8 @@ async function createApp() {
   app.use((req, _res, next) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (req as any).actor = {
-      type: "board",
+      type: actorType,
+      ...(actorType === "agent" ? { agentId: "agent-1", companyId: "company-1" } : {}),
       userId: "board-user",
       companyIds: ["company-1"],
       source: "local_implicit",
@@ -216,6 +225,8 @@ describe("project workspace host-path floor", () => {
     mockProjectService.listWorkspaces.mockResolvedValue([buildWorkspace()]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     setManagedSandboxOnly(false);
+    mockHeartbeatService.cancelRun.mockResolvedValue(undefined);
+    mockHeartbeatService.waitForRunExecutionDrain.mockResolvedValue(undefined);
   });
 
   it("creates a project workspace with a cwd when the policy is off", async () => {
@@ -314,5 +325,13 @@ describe("project workspace host-path floor", () => {
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockProjectService.createWorkspace).toHaveBeenCalled();
+  });
+
+  it("requires board authorization before deleting managed project files", async () => {
+    const app = await createApp("agent");
+    const res = await request(app).delete("/api/projects/project-1?deleteFiles=true");
+
+    expect(res.status).toBe(403);
+    expect(mockProjectService.remove).not.toHaveBeenCalled();
   });
 });

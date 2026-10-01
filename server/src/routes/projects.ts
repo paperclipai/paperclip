@@ -152,6 +152,8 @@ export function projectRoutes(db: Db) {
     ]);
     for (const runId of activeRunIds) {
       await heartbeat.cancelRun(runId, "Cancelled because the project was deleted");
+    }
+    for (const runId of activeRunIds) {
       await heartbeat.waitForRunExecutionDrain(runId);
     }
     for (const workspace of project.workspaces) {
@@ -844,13 +846,17 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     if (deleteFiles) {
+      assertBoard(req);
       try {
         await stopProjectDeletionActivity(existing);
-      } catch {
-        res.status(409).json({
-          error: "Project activity could not be stopped. The project was not deleted; retry after its active runs stop.",
-        });
-        return;
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("Timed out waiting for heartbeat run ")) {
+          res.status(409).json({
+            error: "Project activity could not be stopped. The project was not deleted; retry after its active runs stop.",
+          });
+          return;
+        }
+        throw err;
       }
     }
     const project = await svc.remove(existing.id, {
