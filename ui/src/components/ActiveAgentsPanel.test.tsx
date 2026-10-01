@@ -159,7 +159,48 @@ describe("ActiveAgentsPanel", () => {
     });
   });
 
+  it("shows each linked task once on the dashboard while keeping distinct taskless runs", async () => {
+    const repeatedIssueId = "issue-repeated";
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      createIssueRun(1, repeatedIssueId),
+      { ...createIssueRun(2, repeatedIssueId), status: "succeeded", finishedAt: "2026-04-24T11:00:00.000Z" },
+      createIssueRun(3, "issue-other"),
+      createRun(4),
+      createRun(5),
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" dedupeLinkedTasks />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll(".dashboard-agent-card")].map((card) =>
+      card.querySelector('a[aria-label$=". View run"]')?.getAttribute("href"),
+    )).toEqual([
+      "/agents/agent-1/runs/run-1",
+      "/agents/agent-3/runs/run-3",
+      "/agents/agent-4/runs/run-4",
+      "/agents/agent-5/runs/run-5",
+    ]);
+    expect(container.textContent).toContain("1 more active/recent run");
+
+    await act(async () => root.unmount());
+  });
+
   it("can request the full live dashboard page limit without a hidden-runs link", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      createIssueRun(1, "issue-repeated"),
+      { ...createIssueRun(2, "issue-repeated"), status: "succeeded" },
+    ]);
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -187,6 +228,7 @@ describe("ActiveAgentsPanel", () => {
     });
     expect(container.textContent).not.toContain("more active/recent");
     expect(container.textContent).not.toContain("Run output");
+    expect(container.querySelectorAll(".dashboard-agent-card")).toHaveLength(2);
 
     await act(async () => {
       root.unmount();

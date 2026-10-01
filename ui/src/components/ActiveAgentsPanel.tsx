@@ -44,6 +44,7 @@ interface ActiveAgentsPanelProps {
   queryScope?: string;
   showMoreLink?: boolean;
   showTranscripts?: boolean;
+  dedupeLinkedTasks?: boolean;
 }
 
 export function ActiveAgentsPanel({
@@ -58,6 +59,7 @@ export function ActiveAgentsPanel({
   queryScope = "dashboard",
   showMoreLink = true,
   showTranscripts = false,
+  dedupeLinkedTasks = false,
 }: ActiveAgentsPanelProps) {
   const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }] as const;
   const sharedLiveRuns = useSharedPollingQuery({
@@ -75,7 +77,19 @@ export function ActiveAgentsPanel({
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   const runs = liveRuns ?? [];
-  const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
+  const visibleRuns = useMemo(() => {
+    if (!dedupeLinkedTasks) return runs.slice(0, cardLimit);
+
+    // The endpoint orders active runs first, then recent completed runs. Keep
+    // the first run for each task so an active attempt wins over its history.
+    const seenIssueIds = new Set<string>();
+    return runs.filter((run) => {
+      if (!run.issueId) return true;
+      if (seenIssueIds.has(run.issueId)) return false;
+      seenIssueIds.add(run.issueId);
+      return true;
+    }).slice(0, cardLimit);
+  }, [cardLimit, dedupeLinkedTasks, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const visibleIssueIds = useMemo(
     () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
