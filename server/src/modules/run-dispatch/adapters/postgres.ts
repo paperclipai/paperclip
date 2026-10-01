@@ -7,6 +7,7 @@ import {
   agentWakeupRequests,
   agents,
   approvals,
+  companies,
   issueApprovals,
   issueThreadInteractions,
   heartbeatRuns,
@@ -208,6 +209,13 @@ export function createPostgresRunDispatchAdapter(
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } =
         await db.transaction(async (tx) => {
           const typedTx = tx as unknown as Db;
+          const company = await typedTx
+            .select({ status: companies.status })
+            .from(companies)
+            .where(eq(companies.id, input.companyId))
+            .for("share")
+            .then((rows) => rows[0] ?? null);
+          if (!company) return { kind: "missing" as const };
           if (hintedIssueId) {
             await typedTx
               .select({ id: issues.id })
@@ -753,6 +761,14 @@ export function createPostgresRunDispatchAdapter(
         !run.scheduledRetryAt ||
         new Date(run.scheduledRetryAt).getTime() > now.getTime()
       ) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
+      const company = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .then((rows) => rows[0] ?? null);
+      if (company?.status !== "active") {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
       const factsResult = await loadGateFacts(

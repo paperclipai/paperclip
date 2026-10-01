@@ -17246,6 +17246,15 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
   ) {
+    async function lockActiveCompanyForClaim(tx: Db) {
+      const [company] = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .for("share");
+      return company?.status === "active";
+    }
+
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -18092,14 +18101,6 @@ export function heartbeatService(
           outcome,
         },
       });
-    }
-    async function lockActiveCompanyForClaim(tx: Db) {
-      const [company] = await tx
-        .select({ status: companies.status })
-        .from(companies)
-        .where(eq(companies.id, run.companyId))
-        .for("share");
-      return company?.status === "active";
     }
   }
 
