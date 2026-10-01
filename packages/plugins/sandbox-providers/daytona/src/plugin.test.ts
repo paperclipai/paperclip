@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreate = vi.hoisted(() => vi.fn());
@@ -2460,8 +2463,8 @@ describe("Daytona sandbox provider plugin", () => {
 
         const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams());
 
-        // The callback stream form ran (four args), not the 50-ms snapshot poll.
-        expect(sandbox.process.getSessionCommandLogs).toHaveBeenCalledTimes(1);
+        // One callback stream plus a final snapshot to reconcile unseen bytes.
+        expect(sandbox.process.getSessionCommandLogs).toHaveBeenCalledTimes(2);
         const streamCall = sandbox.process.getSessionCommandLogs.mock.calls[0]!;
         expect(typeof streamCall[2]).toBe("function");
         expect(typeof streamCall[3]).toBe("function");
@@ -2492,6 +2495,348 @@ describe("Daytona sandbox provider plugin", () => {
         expect(result).toMatchObject({ exitCode: 5, timedOut: false, stdout: "done" });
       });
 
+      it("keeps a running command alive after a clean log-stream close", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        try {
+          const sandbox = createMockSandbox();
+          let streams = 0;
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+              if (!onStdout) return { stdout: "first;last;", stderr: "" };
+              streams += 1;
+              onStdout?.("first;");
+              if (streams === 2) onStdout?.("last;");
+              // The SDK resolves on WebSocket close, including an idle close.
+            },
+          );
+          sandbox.process.getSessionCommand.mockImplementation(async () => ({
+            id: "cmd-1", command: "", exitCode: streams === 1 ? undefined : 7,
+          }));
+          mockGet.mockResolvedValue(sandbox);
+
+          const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 2000 }));
+
+          expect(result).toMatchObject({ exitCode: 7, timedOut: false, stdout: "first;last;" });
+          expect(executionLog.mock.calls).toEqual([["stdout", "first;"], ["stdout", "last;"]]);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(streams).toBe(2);
+        } finally {
+          restore();
+        }
+      });
+
+      it.each(["first;live;done;", "first;"])("polls live output after repeated clean stream closes with terminal snapshot %j", async (finalSnapshot) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        try {
+          const sandbox = createMockSandbox();
+          let snapshots = 0;
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+              if (onStdout) {
+                onStdout("first;");
+                return;
+              }
+              snapshots += 1;
+              return { stdout: snapshots === 1 ? "first;live;" : finalSnapshot, stderr: "" };
+            },
+          );
+          sandbox.process.getSessionCommand.mockImplementation(async () => {
+            if (snapshots > 0) {
+              // New output must reach the bridge while the command still runs.
+              expect(executionLog).toHaveBeenCalledWith("stdout", "live;");
+            }
+            return { id: "cmd-1", command: "", exitCode: snapshots > 0 ? 9 : undefined };
+          });
+          mockGet.mockResolvedValue(sandbox);
+
+          const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 2000 }));
+
+          expect(result).toMatchObject({
+            exitCode: 9, timedOut: false, stdout: finalSnapshot.length > 11 ? finalSnapshot : "first;live;",
+          });
+          expect(executionLog.mock.calls).toEqual([
+            ["stdout", "first;"], ["stdout", "live;"],
+            ...(finalSnapshot.endsWith("done;") ? [["stdout", "done;"]] : []),
+          ]);
+          expect(sandbox.process.getSessionCommandLogs.mock.calls.filter((call) => call[2]).length).toBe(2);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+        } finally {
+          restore();
+        }
+      });
+
+      it.each(["close", "reject"])("preserves healthy stream lifetimes after an aged %s", async (ending) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        let streams = 0;
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (!onStdout) return { stdout: "first;last;", stderr: "" };
+            streams += 1;
+            onStdout("first;");
+            await new Promise((resolve) => setTimeout(resolve, 3_600_000));
+            if (streams === 1 && ending === "reject") throw new Error("socket error");
+            if (streams === 2) onStdout("last;");
+          },
+        );
+        sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: streams === 2 ? 7 : undefined }));
+        mockGet.mockResolvedValue(sandbox);
+        vi.useFakeTimers();
+        try {
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 300_000 }));
+          let settled = false;
+          void promise?.then(() => { settled = true; });
+          await vi.advanceTimersByTimeAsync(3_600_000);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(350);
+          expect(streams).toBe(2);
+          await vi.advanceTimersByTimeAsync(300_001);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(3_300_000);
+          expect(await promise).toMatchObject({ exitCode: 7, timedOut: false, stdout: "first;last;" });
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("polls an aged running command after repeated EOF without inventing an exit or lifetime cap", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        let streams = 0;
+        let snapshots = 0;
+        let exited = false;
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (!onStdout) { snapshots += 1; return { stdout: "partial;", stderr: "" }; }
+            onStdout("partial;");
+            if (++streams === 1) await new Promise((resolve) => setTimeout(resolve, 3_600_000));
+          },
+        );
+        sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: exited ? 0 : undefined }));
+        mockGet.mockResolvedValue(sandbox);
+        vi.useFakeTimers();
+        try {
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 400 }));
+          let settled = false;
+          void promise?.then(() => { settled = true; });
+          await vi.advanceTimersByTimeAsync(3_602_700);
+          expect(settled).toBe(false);
+          expect(snapshots).toBe(3);
+          exited = true;
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await promise).toMatchObject({ exitCode: 0, timedOut: false, stdout: "partial;" });
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it.each([0, 3_600_000])("retains the fallback budget and partial output after a failed stream lasting %i ms", async (streamLifetime) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        let streams = 0;
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (onStdout) {
+              onStdout("partial;");
+              if (++streams === 1 && streamLifetime > 0) await new Promise((resolve) => setTimeout(resolve, streamLifetime));
+              throw new Error("socket error");
+            }
+            return { stdout: "partial;", stderr: "" };
+          },
+        );
+        sandbox.process.getSessionCommand.mockResolvedValue({ exitCode: undefined });
+        mockGet.mockResolvedValue(sandbox);
+        vi.useFakeTimers();
+        try {
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 400 }));
+          let settled = false;
+          void promise?.then(() => { settled = true; });
+          await vi.advanceTimersByTimeAsync(streamLifetime + 399);
+          expect(settled).toBe(false);
+          expect(streams).toBe(2);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(await promise).toMatchObject({ exitCode: null, timedOut: true, stdout: "partial;" });
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("preserves provider status errors after a clean stream close", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        sandbox.process.getSessionCommandLogs.mockResolvedValue(undefined);
+        sandbox.process.getSessionCommand.mockRejectedValue(new Error("session no longer exists"));
+        mockGet.mockResolvedValue(sandbox);
+
+        await expect(plugin.definition.onEnvironmentExecute?.(streamExecParams()))
+          .rejects.toThrow("session no longer exists");
+        expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it("reads bytes written after socket close before the exit code becomes visible", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (onStdout) onStdout("prefix;");
+            else return { stdout: "prefix;tail;", stderr: "final error output" };
+          },
+        );
+        sandbox.process.getSessionCommand
+          .mockResolvedValueOnce({ exitCode: undefined })
+          .mockResolvedValue({ exitCode: 3 });
+        mockGet.mockResolvedValue(sandbox);
+
+        const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams());
+
+        expect(result).toMatchObject({ exitCode: 3, stdout: "prefix;tail;", stderr: "final error output" });
+        expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(["status", "snapshot", "final snapshot"])("bounds a stalled %s observation after clean close and ignores late callbacks", async (stall) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        vi.useFakeTimers();
+        try {
+          const sandbox = createMockSandbox();
+          let streams = 0;
+          let lateOutput: ((chunk: string) => void) | undefined;
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
+              if (onStdout) {
+                streams += 1;
+                lateOutput = onStdout;
+                onStdout("partial;");
+                onStderr?.("partial error;");
+                return;
+              }
+              return new Promise(() => {});
+            },
+          );
+          sandbox.process.getSessionCommand.mockImplementation(async () => {
+            if (stall === "status") return new Promise(() => {});
+            return { exitCode: stall === "final snapshot" ? 0 : undefined };
+          });
+          mockGet.mockResolvedValue(sandbox);
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 800 }));
+          let settled = false;
+          void promise?.then(() => { settled = true; });
+          await vi.advanceTimersByTimeAsync(799);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(701);
+          const result = await promise;
+
+          expect(result).toMatchObject({
+            exitCode: null,
+            timedOut: true,
+            stdout: "partial;",
+            metadata: {
+              timeoutScope: "session_log_observation",
+              commandExitConfirmed: stall === "final snapshot",
+              ...(stall === "final snapshot" ? { observedExitCode: 0 } : {}),
+            },
+          });
+          expect(result!.stderr).toMatch(/^partial error;Session log observation timed out/);
+          const received = [...executionLog.mock.calls];
+          lateOutput?.("late output must be ignored");
+          expect(executionLog.mock.calls).toEqual(received);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+          restore();
+        }
+      });
+
+      it("retains streamed output when the provider status read times out", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
+            onStdout?.("partial;");
+            onStderr?.("partial error;");
+          },
+        );
+        sandbox.process.getSessionCommand.mockRejectedValue(new MockDaytonaTimeoutError("provider timeout"));
+        mockGet.mockResolvedValue(sandbox);
+
+        const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams());
+
+        expect(result).toMatchObject({
+          exitCode: null, timedOut: true, stdout: "partial;", stderr: "partial error;provider timeout\n",
+        });
+        expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        { text: "A🙂Z", snapshot: "A🙂Z" },
+        { text: "A\uFFFD", snapshot: "" },
+        { text: "A\uFFFD\uFFFD", snapshot: "A\uFFFD" },
+        { text: "A\uFFFD\uFFFD", snapshot: "" },
+      ])("preserves UTF-8 through a real SDK clean close: $text", async ({ text, snapshot }) => {
+        const require = createRequire(import.meta.url);
+        const sdkRoot = path.dirname(require.resolve("@daytonaio/sdk/package.json"));
+        const { stdDemuxStream } = await import(pathToFileURL(path.join(sdkRoot, "esm/utils/Stream.js")).href);
+        const { STDOUT_PREFIX_BYTES, STDERR_PREFIX_BYTES } = await import(pathToFileURL(path.join(sdkRoot, "esm/Process.js")).href);
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        try {
+          const sandbox = createMockSandbox();
+          let streams = 0;
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
+              if (!onStdout) return { stdout: snapshot, stderr: "E🙂Z" };
+              streams += 1;
+              class Socket extends EventEmitter { close() {} }
+              const socket = new Socket();
+              const done = stdDemuxStream(socket, onStdout, onStderr);
+              const stdout = Buffer.from(text);
+              const stderr = Buffer.from("E🙂Z");
+              socket.emit("message", Buffer.concat([
+                Buffer.from(STDOUT_PREFIX_BYTES), streams === 1 && text.includes("🙂") ? stdout.subarray(0, 2) : stdout,
+              ]));
+              socket.emit("message", Buffer.concat([
+                Buffer.from(STDERR_PREFIX_BYTES), streams === 1 ? stderr.subarray(0, 2) : stderr,
+              ]));
+              socket.emit("close");
+              await done;
+            },
+          );
+          sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: streams === 1 ? undefined : 0 }));
+          mockGet.mockResolvedValue(sandbox);
+
+          const result = await plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 2000 }));
+
+          expect(result).toMatchObject({ exitCode: 0, stdout: text, stderr: "E🙂Z" });
+          for (const [stream, expected] of [["stdout", text], ["stderr", "E🙂Z"]]) {
+            expect(executionLog.mock.calls.filter(([name]) => name === stream).map(([, chunk]) => chunk).join("")).toBe(expected);
+          }
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+        } finally {
+          restore();
+        }
+      });
+
       it("falls back to the poll path when the stream promise rejects (test_log_stream_disconnect_rejects_and_falls_back_to_poll)", async () => {
         process.env.DAYTONA_API_KEY = "host-key";
         const sandbox = createMockSandbox();
@@ -2507,7 +2852,7 @@ describe("Daytona sandbox provider plugin", () => {
               onStdout("partial");
               throw new Error("socket error");
             }
-            return { stdout: "poll-out", stderr: "poll-err" };
+            return { stdout: "partialpoll-out", stderr: "poll-err" };
           },
         );
         // The command still runs to its exit on the server, so the poll reads it.
@@ -2518,7 +2863,7 @@ describe("Daytona sandbox provider plugin", () => {
 
         // The poll fallback served the final result, and the command still
         // yielded its exit code.
-        expect(result).toMatchObject({ exitCode: 9, timedOut: false, stdout: "poll-out", stderr: "poll-err" });
+        expect(result).toMatchObject({ exitCode: 9, timedOut: false, stdout: "partialpoll-out", stderr: "poll-err" });
         // The snapshot form (two args) ran for the fallback read.
         const snapshotCalls = sandbox.process.getSessionCommandLogs.mock.calls.filter(
           (call) => call[2] === undefined,
@@ -2559,7 +2904,7 @@ describe("Daytona sandbox provider plugin", () => {
 
         // The pre-disconnect bytes appear one time, not two.
         expect(result).toMatchObject({ exitCode: 0, timedOut: false, stdout: "AAABBB", stderr: "EEEFFF" });
-        expect(sandbox.process.getSessionCommandLogs).toHaveBeenCalledTimes(2);
+        expect(sandbox.process.getSessionCommandLogs.mock.calls.filter((call) => call[2])).toHaveLength(2);
       });
 
       it("emits each new chunk to the host and drops a replayed prefix (test_log_stream_emits_execute_log_per_chunk)", async () => {
