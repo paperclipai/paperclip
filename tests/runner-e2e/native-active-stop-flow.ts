@@ -27,7 +27,9 @@ export async function stopAtPendingPermission(input: {
   const pending = observeActiveStopPending({ ...state, scope: input.scope, caller: input.caller, cancellationRequestId, bootstrap: input.bootstrap });
   await input.retain(pending);
   const fresh = observeActiveStopPending({ ...await input.load(), scope: input.scope, caller: input.caller, cancellationRequestId, bootstrap: input.bootstrap });
-  if (fresh.requestRowSha256 !== pending.requestRowSha256 || fresh.permissionRowSha256 !== pending.permissionRowSha256 || Date.now() >= input.deadlineAt) throw new Error("Native active Stop pending boundary changed or expired");
+  if (fresh.requestRowSha256 !== pending.requestRowSha256 || fresh.permissionRowSha256 !== pending.permissionRowSha256
+    || fresh.toolOriginRowSha256 !== pending.toolOriginRowSha256 || fresh.toolStartedRowSha256 !== pending.toolStartedRowSha256
+    || Date.now() >= input.deadlineAt) throw new Error("Native active Stop pending boundary changed or expired");
   const dispatchMonotonicNs = process.hrtime.bigint().toString();
   const stopped = await input.stop(input.scope.runId, cancellationRequestId);
   if (stopped.id !== input.scope.runId || stopped.resultJson?.nativeCancellation?.intentId !== `native-cancellation:${cancellationRequestId}`) throw new Error("Native active Stop response has a foreign intent");

@@ -1448,6 +1448,27 @@ exact native write, observes its unanswered permission card, then sends the
 public Stop request with a freshly retained caller UUID. It never denies or
 approves that callback before Stop.
 
+Suite version 3 accepts a permission card before or after its correlated tool
+start. Both the exact native origin and canonical start must already exist with
+the unanswered permission when the fixture retains and rechecks the pre-Stop
+API snapshot. The v2 pending receipt binds all four rows by hash and source
+sequence through settlement. Missing, changed or replayed evidence cannot be
+filled in after Stop. This is a new grader definition; old v1 pending receipts
+and failed paid attempts are not regraded. No original provider wire order is
+inferred from API insertion or display order.
+Native notice ordering follows each real projector: Cursor waits for its exact
+command origin before emitting permission evidence; Copilot can emit the
+permission notice first. Both still require the exact tool origin before Stop.
+
+Suite version 4 uses the normalized Product cancellation contract and writes
+`paperclip.e2e.native-active-stop-settlement.v2`. It requires the exact request,
+item and turn closure with `reason: turn_terminal`, followed by the same stream's
+`turn.cancelled` with `status: cancelled` and `error: null`. The Product harness
+emits these fields; raw backend-only cancellation metadata is not its contract.
+The retained pending v2 receipt, caller UUID and durable scoped acknowledgement
+remain mandatory. This fixes an oracle mismatch observed after a real Stop was
+acknowledged; the failed attempt remains failed and needs a fresh live run.
+
 Passage requires a canonical cancelled request and cancelled provider turn,
 exact caller-intent acknowledgement, an unfinished task, rejection of a later
 stale answer, no follow-up run, continuous target no-effect observation and
@@ -1457,7 +1478,7 @@ issue-interaction rows are not substituted for their authority. Pending and fina
 screenshots, `native-active-stop-pending.json`, `native-active-stop-settlement.json`
 and cleanup evidence retain the boundaries. Daytona also requires the exact
 owned lease and sealed remote observer proof before sandbox deletion. Suite
-version 2 records remote filesystem coverage only through verified retirement
+version 2 introduced remote filesystem coverage only through verified retirement
 of the owned runner/provider tree, with no target or workspace mutations; it
 does not call a later read of the seal a fresh observation. Local cases retain
 four filesystem phases through cleanup. Remote UI/stale-answer checks and final

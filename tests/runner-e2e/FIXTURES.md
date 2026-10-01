@@ -397,7 +397,7 @@ request can stop; it does not accept a no-op Stop of an already terminal run.
 
 `native-active-stop` / `pending-permission-stop` has four explicit-only cells:
 Cursor and Copilot, each local and Daytona. Its `native_active_stop` flow retains
-`paperclip.e2e.native-active-stop-pending.v1` from the public API while exactly one
+`paperclip.e2e.native-active-stop-pending.v2` from the public API while exactly one
 native permission remains pending, the exact controller run is running, and no
 Stop or answer marker exists. The receipt independently binds native session,
 normalized session, turn, source instance, request/tool IDs, source sequences and
@@ -407,10 +407,34 @@ boundaries. Remote provider clocks and database transaction timestamps never
 establish that ordering. The atomic caller UUID fence rejects an earlier racing
 Stop instead of borrowing its acknowledgement.
 
-`paperclip.e2e.native-active-stop-settlement.v1` accepts only
-`pending_permission_cancelled`: explicit-cancellation request closure with
-`replayAllowed:false`, then one exact `turn.cancelled`, plus the same scoped
-caller-owned native Stop acknowledgement. Missing, duplicate, foreign, failed,
+Suite version 3 accepts either canonical card/tool-start arrival order. The
+exact native origin, canonical tool start and unanswered permission must all
+exist in both pre-Stop API observations. The v2 pending receipt adds the native
+origin and tool-start row hashes and source sequences. The fresh reread and
+settlement must preserve those exact rows; a later tool start cannot backfill
+missing pre-Stop evidence. Command/path, request, tool, turn, session and source
+checks remain strict. Cursor's native evidence projector still requires the
+exact tool origin before it can emit correlated permission evidence. Copilot
+emits permission evidence immediately, so its permission notice may also precede
+the native tool notice. Calibration tests exercise both actual projectors in
+both input orders. Neither policy claims the original ACP wire order of a live
+attempt. Old v1 receipts are not valid inputs to the
+new grader. Earlier paid failures retain their original definition and grade.
+
+Suite version 4 and `paperclip.e2e.native-active-stop-settlement.v2` accept only
+`pending_permission_cancelled`: the Product harness's exact
+`runtime_request.cancelled` closure (`reason: turn_terminal`, matching request,
+item and turn, no answer), then one exact `turn.cancelled` (`status: cancelled`,
+`error: null`), plus the same scoped caller-owned native Stop acknowledgement.
+Both events must belong to the retained source/session/turn and follow all four
+pre-Stop evidence rows. The harness consumes raw backend request closures and
+projects its own pending-request outcome before the terminal. Raw backend-only
+`provider`, `requestType`, `replayAllowed` and `providerTurnId` fields are not
+required from that Product projection. Replay refusal is independently checked
+through the stale public answer below. A generic terminal without the retained
+request and exact acknowledged caller UUID is insufficient. The v2 settlement
+receipt records this changed oracle; historical v1 receipts and failed attempts
+retain their original grades. Missing, duplicate, foreign, failed,
 interrupted or normal terminal evidence fails. Only after this proof does the
 fixture attempt a stale public answer, requiring HTTP409 and an unanswerable
 browser card. It retains one cancelled run, issue `in_progress`, exact target
@@ -418,7 +442,7 @@ absence through continuous observation, and all observed owned descendants
 retired. Local files require four fresh observations through cleanup. Daytona
 instead retains two live snapshots (baseline and pending) plus one automatic
 owned-process-retirement seal, with a continuous zero-mutation watcher and the
-same complete root/descendant journal. Suite version 2 retains this as
+same complete root/descendant journal. Since suite version 2, this is retained as
 `paperclip.e2e.native-active-stop-remote-retirement.v1`; it explicitly records
 `filesystemAfterRetirementObserved:false`. The per-turn observer seals itself
 when the owned tree retires, before the sandbox is released. Reading that receipt

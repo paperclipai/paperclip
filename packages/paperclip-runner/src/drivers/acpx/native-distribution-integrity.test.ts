@@ -108,6 +108,9 @@ describe("native ACPX execution closure", () => {
     expect(first.text).toMatch(/^native:fixed:.*paperclip-acpx-native-.*\/state$/);
     expect(first.text).not.toBe(second.text);
   });
+  // Copy/hash the real Node closure and start its bootstrap + owned shim. These
+  // operations share the adjacent native-closure test's bounded allowance;
+  // Vitest's 5s default is not a provider startup or permission deadline.
   it("loads the owned Copilot distribution through a guarded private shim and ignores ambient overrides", async () => {
     const declaration = await fixture({ node: true });
     const entries = await readNativeAcpxDistributionEntries(declaration);
@@ -130,7 +133,7 @@ describe("native ACPX execution closure", () => {
     await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "../ambient" })).rejects.toThrow("launch declaration");
     await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "missing" })).rejects.toThrow("owned entrypoint");
     await expect(readNativeAcpxDistributionEntries({ ...owned, entrypoint: "entry.cjs" })).rejects.toThrow("launch declaration");
-  });
+  }, 30_000);
   it("loads a pinned Node entrypoint while rejecting unqualified external modules", async () => {
     const declaration = await fixture({ node: true });
     const result = await output((await (await verifyNativeAcpxInstallation(declaration)).openCommand()).spawn());
