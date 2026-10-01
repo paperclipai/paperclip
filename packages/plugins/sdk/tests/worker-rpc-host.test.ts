@@ -16,6 +16,7 @@ import {
   isJsonRpcResponse,
   isJsonRpcNotification,
   parseMessage,
+  JsonRpcCallError,
   PLUGIN_RPC_ERROR_CODES,
   serializeMessage,
   type JsonRpcNotification,
@@ -23,6 +24,73 @@ import {
   type PluginInvocationContext,
 } from "../src/protocol.js";
 import { isWorkerEntrypoint, startWorkerRpcHost } from "../src/worker-rpc-host.js";
+
+describe("action and data handler RPC errors", () => {
+  async function invoke(method: "performAction" | "getData", error?: Error, hostData?: unknown) {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const lines = createInterface({ input: stdout });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const hostMethods: string[] = [];
+    let nextId = 0;
+    const worker = startWorkerRpcHost({ stdin, stdout, plugin: definePlugin({
+      async setup(ctx) {
+        const handler = async () => {
+          if (error) throw error;
+          return ctx.config.get();
+        };
+        ctx.actions.register("test", handler);
+        ctx.data.register("test", handler);
+      },
+    }) });
+    lines.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcRequest(message)) {
+        hostMethods.push(message.method);
+        stdin.write(serializeMessage(createErrorResponse(message.id, -32042, "Host refusal", hostData)));
+      } else if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      }
+    });
+    function call(method: string, params: unknown) {
+      const id = `handler-${nextId++}`;
+      const response = new Promise<JsonRpcResponse>((resolve) => pending.set(id, resolve));
+      stdin.write(serializeMessage(createRequest(method, params, id)));
+      return response;
+    }
+    try {
+      await expect(call("initialize", {
+        manifest: { id: "paperclip.error-test", apiVersion: 1, version: "1.0.0", displayName: "Error test",
+          description: "RPC error test", author: "Paperclip", categories: ["automation"], capabilities: [], entrypoints: {} },
+        config: {}, databaseNamespace: null,
+      })).resolves.toMatchObject({ result: { ok: true } });
+      return { response: await call(method, { key: "test", params: {} }), hostMethods };
+    } finally {
+      worker.stop(); lines.close(); stdin.destroy(); stdout.destroy();
+    }
+  }
+
+  for (const method of ["performAction", "getData"] as const) {
+    it.each([{ reason: "conflict", version: 3 }, null, false, 0])(`preserves explicit JSON-RPC data through ${method}: %j`, async (data) => {
+      const { response } = await invoke(method, new JsonRpcCallError({ code: -32042, message: "Handler refusal", data }));
+      expect(response).toEqual({ jsonrpc: "2.0", id: "handler-1", error: { code: -32042, message: "Handler refusal", data } });
+    });
+
+    it(`preserves a host refusal rethrown through ${method}`, async () => {
+      const data = { code: "version_conflict", status: 409, details: { version: 3 } };
+      const { response, hostMethods } = await invoke(method, undefined, data);
+      expect(hostMethods).toEqual(["config.get"]);
+      expect(response).toEqual({ jsonrpc: "2.0", id: "handler-1", error: { code: -32042, message: "Host refusal", data } });
+    });
+
+    it(`does not serialize arbitrary exception properties through ${method}`, async () => {
+      const { response } = await invoke(method, Object.assign(new Error("Handler failed"), { data: { secret: "private-value" } }));
+      expect(response).toEqual({ jsonrpc: "2.0", id: "handler-1",
+        error: { code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "Handler failed" } });
+    });
+  }
+});
 
 describe("isWorkerEntrypoint", () => {
   const tempRoots: string[] = [];

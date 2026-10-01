@@ -58,6 +58,14 @@ describe("failed environment creation ownership", () => {
     expect("error" in response && response.error).not.toHaveProperty("data");
   });
 
+  it.each(["environmentAcquireLease", "environmentDestroyLease", "environmentProbe"])("does not forward general JSON-RPC error data for %s", async (method) => {
+    const response = await invoke(method, new JsonRpcCallError({
+      code: -32042, message: "Provider refusal", data: { apiKey: "secret-key" },
+    }));
+    expect(response).toEqual({ jsonrpc: "2.0", id: "cleanup-test",
+      error: { code: -32042, message: "Provider refusal" } });
+  });
+
   it.each([
     { providerLeaseId: "../other" }, { companyId: "" }, { environmentId: null }, { attemptId: "a".repeat(201) },
     { runId: "other/run" }, { observedProviderLeaseId: "../other" }, { accountFingerprint: "secret-key" }, { labels: { apiKey: "secret-key" } },

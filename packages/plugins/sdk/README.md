@@ -108,6 +108,19 @@ runWorker(plugin, import.meta.url);
 
 **Trusted local folders:** Declare `manifest.localFolders[]` and the `local.folders` capability when a plugin needs an operator-configured company-scoped folder. Use `ctx.localFolders.configure()`, `status()`, `readText()`, and `writeTextAtomic()` instead of resolving arbitrary filesystem paths yourself. The host validates absolute roots, read/write access, required relative folders/files, traversal attempts, symlink escapes, and writes through temp-file-plus-rename atomic replacement.
 
+### Action and data errors
+
+When an action or data handler throws a `JsonRpcCallError` from
+`@paperclipai/plugin-sdk/protocol`, its worker RPC response preserves the numeric
+`code`, human-readable `message`, and JSON-serializable `data`. This also applies
+when the handler lets a failed host API call propagate. Callers can inspect
+structured data instead of parsing the message.
+
+Only include data intended for the RPC caller. Arbitrary properties on other
+exceptions are not serialized. Environment provider calls retain their separate
+cleanup-envelope rules. This worker RPC behavior does not define how an HTTP
+route or UI displays the error.
+
 ## Events
 
 Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name, filter, handler)`. Emit plugin-scoped events with `ctx.events.emit(name, companyId, payload)` (requires `events.emit`).
