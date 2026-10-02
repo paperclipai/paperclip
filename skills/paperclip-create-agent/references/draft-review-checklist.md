@@ -70,6 +70,18 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] If the role may handle private disclosures or security advisories, the hire names a confidential workflow (dedicated skill or documented manual process) instead of relying on normal issue threads
 - [ ] No tool, skill, or capability is listed that this environment cannot actually provide
 
+## H.5. Local-adapter governance gates (opt-in, Gates 5a/5b)
+
+Applies when your company maintains a hire-flow gates policy. Skip if not applicable.
+Applies to `claude_local`, `opencode_local`, and `codex_local` hires only.
+
+- [ ] Bundle contains `claude-config/settings.json` whose `permissions.deny` is a superset of the company baseline (see `<governance-dir>/claude-permissions-baseline.md`).
+- [ ] Hire-request comment names exactly one of: `settings.json: applies baseline as-is`, OR a board-approved override clause referencing a specific approval ID + justification (and `claude-config/baseline-override.md` is in the bundle).
+- [ ] If `adapterConfig.dangerouslySkipPermissions: true` (default for `claude_local`), bundle contains `claude-config/justification.md` covering Why / Which / Compensating-controls.
+- [ ] If `dangerouslySkipPermissions: false`, the hire-request comment states this explicitly.
+
+Spec: `<governance-dir>/hire-flow-gates.md` in your company's governance directory.
+
 ## I. Done criteria
 
 - [ ] `AGENTS.md` states how the agent verifies its work before marking an issue done
