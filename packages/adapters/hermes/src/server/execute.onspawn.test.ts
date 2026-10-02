@@ -104,6 +104,15 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(opts.onSpawn).toBe(onSpawn);
   });
 
+  it("keeps wake data in the prompt and drops configured JSON env copies", async () => {
+    const { ctx } = makeCtx({ env: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale configured wake" } });
+    const wake = { reason: "issue_assigned", issue: { id: "issue-1", description: "Current task brief" } };
+    await execute({ ...ctx, context: { ...ctx.context, paperclipWake: wake } } as any);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[3].env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(call[2]).toContainEqual(expect.stringContaining("Current task brief"));
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches
@@ -117,6 +126,74 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       onSpawn: async () => undefined,
     };
     expect(opts.onSpawn).toBeDefined();
+  });
+
+  it("preserves a specific stderr diagnostic for a nonzero exit", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "Error: provider unavailable\n",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBe("Error: provider unavailable");
+  });
+
+  it("reports the exit code when a nonzero exit has no diagnostic", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 130,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBe("Hermes exited with code 130");
+  });
+
+  it("leaves timeout diagnostics to the heartbeat timeout path", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 143,
+      signal: "SIGTERM",
+      timedOut: true,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("does not label signal cancellation as a silent nonzero exit", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBeUndefined();
   });
 
   it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {

@@ -131,7 +131,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   }
 
-  async function activeRun(input: { companyId: string; agentId: string; issueId: string; status?: string; current?: boolean }) {
+  async function activeRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status?: string;
+    current?: boolean;
+    scheduledRetryAt?: Date;
+  }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -139,6 +146,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId: input.agentId,
       status: input.status ?? "running",
       contextSnapshot: { issueId: input.issueId },
+      scheduledRetryAt: input.scheduledRetryAt,
     });
     if (input.current !== false) {
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, input.issueId));
@@ -447,6 +455,47 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("returns the direct path and link details when an intermediate blocker is selected", async () => {
+    const { companyId, agentId } = await createCompany("PBI");
+    const rootId = await insertIssue({ companyId, identifier: "PBI-1", title: "Root", status: "blocked" });
+    const directId = await insertIssue({
+      companyId,
+      identifier: "PBI-2",
+      title: "Direct blocker",
+      status: "blocked",
+    });
+    const intermediateId = await insertIssue({
+      companyId,
+      identifier: "PBI-3",
+      title: "Stalled intermediate review",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    const leafId = await insertIssue({
+      companyId,
+      identifier: "PBI-4",
+      title: "Downstream leaf",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: directId, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: intermediateId, blockedIssueId: directId });
+    await block({ companyId, blockerIssueId: leafId, blockedIssueId: intermediateId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "stalled",
+      directBlockerIssueId: directId,
+      terminalBlockerIssueId: intermediateId,
+      terminalBlocker: {
+        id: intermediateId,
+        identifier: "PBI-3",
+        title: "Stalled intermediate review",
+      },
+    });
+  });
+
   it("prefers needs_attention over stalled when the chain also has a hard attention case", async () => {
     const { companyId, agentId } = await createCompany("PBQ");
     const parentId = await insertIssue({ companyId, identifier: "PBQ-1", title: "Parent", status: "blocked" });
@@ -561,7 +610,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("does not treat a scheduled retry as actively covered work", async () => {
+  it("does not treat an expired scheduled retry as actively covered work", async () => {
+    const pinnedNow = new Date("2026-08-20T12:00:00.000Z");
+    const expiredRetryAt = new Date(pinnedNow.getTime() - 60_000);
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
     const blockerId = await insertIssue({
@@ -572,7 +623,13 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
-    await activeRun({ companyId, agentId, issueId: blockerId, status: "scheduled_retry" });
+    await activeRun({
+      companyId,
+      agentId,
+      issueId: blockerId,
+      status: "scheduled_retry",
+      scheduledRetryAt: expiredRetryAt,
+    });
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 

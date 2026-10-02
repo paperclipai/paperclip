@@ -1,3 +1,15 @@
+import { skillSourceService, type SkillSourceContext } from "../services/skill-sources.js";
+import { skillSourceGitHubReader } from "../services/skill-source-github-access.js";
+import { toolAccessService } from "../services/tool-access.js";
+import { skillSourceCreateSchema, skillSourceDiscoverySchema, skillSourcePreviewSchema, skillSourceSelectionSchema } from "@paperclipai/shared";
+import type { ActivityPublication } from "../services/activity-log.js";
+import { once } from "node:events";
+import type { SkillSourceDiscoveryEvent } from "@paperclipai/shared";
+import { createHash } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { activityLog } from "@paperclipai/db";
+import { persistActivity, publishActivity } from "../services/activity-log.js";
+import { projectToolContext } from "../services/project-tool-context.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -40,7 +52,7 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { badRequest, forbidden, unauthorized } from "../errors.js";
+import { badRequest, conflict, forbidden, unauthorized, HttpError } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import {
@@ -87,6 +99,7 @@ export function companySkillRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const svc = companySkillService(db);
+  const sourceSvc = skillSourceService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const skillPolicies = companySkillPolicyService(db);
@@ -98,6 +111,7 @@ export function companySkillRoutes(db: Db) {
   }
 
   function deriveTrackedSkillRef(skill: SkillTelemetryInput): string | null {
+    if (skill.metadata?.skillSourceId) return null;
     if (skill.sourceType === "skills_sh") {
       return skill.key;
     }
@@ -281,6 +295,105 @@ export function companySkillRoutes(db: Db) {
       assigneeUserId: issue.assigneeUserId ?? null,
     };
   }
+
+  async function sourceOperation<T>(req: Request, companyId: string, operation: (context: SkillSourceContext) => Promise<T>) {
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const publications: ActivityPublication[] = [];
+    const result = await operation({
+      actor: skillActor(req),
+      read: connectionId => skillSourceGitHubReader(db, companyId, req.actor, connectionId),
+      authorize: (action, resource) => assertCanMutateCompanySkills(req, companyId, action, resource),
+      audit: async (tx, sourceId, action, details) => {
+        const { publication } = await persistActivity(tx as unknown as Db, { ...actor, companyId, action, entityType: "company_skill_source", entityId: sourceId, details });
+        publications.push(publication);
+      },
+    });
+    publications.forEach(publishActivity);
+    return result;
+  }
+
+  router.get("/companies/:companyId/skill-sources/repositories", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const viewer = req.actor.type === "board"
+      ? { userId: req.actor.userId ?? null, localTrusted: req.actor.source === "local_implicit" }
+      : await projectToolContext(db, req.actor);
+    res.json(await toolAccessService(db).listGitHubRepositories(companyId, viewer.userId, viewer.localTrusted));
+  });
+  router.get("/companies/:companyId/skill-sources", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await sourceSvc.list(companyId));
+  });
+  router.post("/companies/:companyId/skill-sources/discover", validate(skillSourceDiscoverySchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.vary("Accept");
+    if (!req.get("Accept")?.includes("application/x-ndjson")) {
+      res.json(await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context)));
+      return;
+    }
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    res.on("close", stop);
+    const send = async (event: SkillSourceDiscoveryEvent) => {
+      controller.signal.throwIfAborted();
+      if (!res.headersSent) {
+        res.set({ "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
+        res.flushHeaders();
+      }
+      if (!res.write(`${JSON.stringify(event)}\n`)) {
+        const stalled = setTimeout(() => {
+          controller.abort();
+          res.destroy();
+        }, 30_000);
+        stalled.unref();
+        try {
+          await once(res, "drain", { signal: controller.signal });
+        } finally {
+          clearTimeout(stalled);
+        }
+      }
+    };
+    try {
+      const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }));
+      await send({ type: "complete", discovery });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      // Preserve normal HTTP errors (including session recovery) before streaming starts.
+      if (!res.headersSent) throw error;
+      await send({ type: "error", status: error instanceof HttpError ? error.status : 500,
+        error: error instanceof HttpError ? error.message : "Repository scan interrupted. Try again." });
+    } finally {
+      res.off("close", stop);
+      if (res.headersSent && !res.destroyed) res.end();
+    }
+  });
+  router.post("/companies/:companyId/skill-sources/preview", validate(skillSourcePreviewSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(req.body, context)));
+  });
+  router.post("/companies/:companyId/skill-sources", validate(skillSourceCreateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.status(201).json(await sourceOperation(req, companyId, context => sourceSvc.create(companyId, req.body, context)));
+  });
+  router.get("/companies/:companyId/skill-sources/:sourceId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await sourceSvc.detail(companyId, req.params.sourceId as string));
+  });
+  router.patch("/companies/:companyId/skill-sources/:sourceId", validate(skillSourceSelectionSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.refresh(companyId, req.params.sourceId as string, context, req.body)));
+  });
+  router.post("/companies/:companyId/skill-sources/:sourceId/refresh", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.refresh(companyId, req.params.sourceId as string, context)));
+  });
+  router.delete("/companies/:companyId/skill-sources/:sourceId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.disconnect(companyId, req.params.sourceId as string, context)));
+  });
 
   router.get("/skills/catalog", async (req, res) => {
     assertAuthenticated(req);
@@ -984,6 +1097,15 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     assertCompanyAccess(req, companyId);
+    const managed = await sourceSvc.sourceForSkill(companyId, skillId);
+    if (managed) {
+      const skill = await svc.getById(companyId, skillId);
+      if (!managed.enabled || managed.entries.find(entry => entry.skillId === skillId)?.selection !== "selected") { res.json({ supported: false, reason: "Source is disconnected. Reconnect it in Skills → Sources.", trackingRef: managed.trackingRef, currentRef: skill?.sourceRef, latestRef: null, hasUpdate: false }); return; }
+      const read = skillSourceGitHubReader(db, companyId, req.actor, managed.connectionId);
+      const latest = await read(`/repos/${managed.fullName}/commits/${encodeURIComponent(managed.trackingRef)}`) as { sha: string };
+      res.json({ supported: true, reason: null, trackingRef: managed.trackingRef, currentRef: skill?.sourceRef, latestRef: latest.sha, hasUpdate: latest.sha !== managed.lastScanCommit });
+      return;
+    }
     const result = await svc.updateStatus(companyId, skillId);
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
@@ -1013,26 +1135,49 @@ export function companySkillRoutes(db: Db) {
       await assertCanMutateCompanySkills(req, companyId, "skills.create", {
         sourceType: "generated",
       });
-      const result = await svc.createLocalSkill(companyId, req.body, skillActor(req));
-
+      const { idempotencyKey, ...input } = req.body;
       const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "company.skill_created",
-        entityType: "company_skill",
-        entityId: result.id,
-        details: {
-          slug: result.slug,
-          name: result.name,
-        },
+      const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
+        ? await projectToolContext(db, req.actor, true, "Skill") : null;
+      const event = (skill: Awaited<ReturnType<typeof svc.createLocalSkill>>) => ({
+        companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+        runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, issueId: runContext?.issue.id,
+        action: "company.skill_created", entityType: "company_skill", entityId: skill.id,
+        details: { slug: skill.slug, name: skill.name, description: skill.description,
+          sourceIssueId: runContext?.issue.id ?? null, versionId: skill.currentVersionId },
       });
-
-      res.status(201).json(result);
+      if (!idempotencyKey) {
+        const skill = await svc.createLocalSkill(companyId, input, skillActor(req));
+        await logActivity(db, event(skill));
+        res.status(201).json(skill);
+        return;
+      }
+      // Scope to task and actor, not run: a replacement runner must recover the
+      // same result after a lost acknowledgement. The route still reauthorizes.
+      const receiptKey = `skill:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}`;
+      const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const result = await db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+        if (runContext) await projectToolContext(tx as unknown as Db, req.actor, true, "Skill");
+        const [prior] = await tx.select().from(activityLog).where(and(
+          eq(activityLog.companyId, companyId), eq(activityLog.action, "company.skill_created"),
+          sql`${activityLog.details}->>'idempotencyKey' = ${receiptKey}`,
+        ));
+        const service = companySkillService(tx as unknown as Db);
+        if (prior) {
+          if (prior.details?.fingerprint !== fingerprint) throw conflict("Skill idempotency key was used with different inputs");
+          const skill = await service.getById(companyId, prior.entityId);
+          if (!skill) throw conflict("Previously created skill is no longer available");
+          return { skill, publication: null, duplicate: true };
+        }
+        const skill = await service.createLocalSkill(companyId, input, skillActor(req));
+        const activity = await persistActivity(tx as unknown as Db, {
+          ...event(skill), details: { ...event(skill).details, idempotencyKey: receiptKey, fingerprint },
+        });
+        return { skill, publication: activity.publication, duplicate: false };
+      });
+      if (result.publication) publishActivity(result.publication);
+      res.status(result.duplicate ? 200 : 201).json(result.skill);
     },
   );
 
@@ -1080,6 +1225,7 @@ export function companySkillRoutes(db: Db) {
         String(req.body.path ?? ""),
         String(req.body.content ?? ""),
         skillActor(req),
+        { encoding: req.body.encoding, executable: req.body.executable },
       );
 
       const actor = getActorInfo(req);
@@ -1141,10 +1287,14 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const source = String(req.body.source ?? "");
       await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
-      const result = await svc.importFromSource(companyId, source);
+      const parsed = parseSkillImportSourceInput(source);
+      const managedGitHub = !parsed.originalSkillsShUrl && /^https:\/\/github\.com\//.test(parsed.resolvedSource);
+      const result = managedGitHub
+        ? await sourceOperation(req, companyId, context => sourceSvc.importFromUrl(companyId, source, context))
+        : await svc.importFromSource(companyId, source);
 
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      if (!managedGitHub) await logActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -1332,6 +1482,15 @@ export function companySkillRoutes(db: Db) {
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.update", () => skillPolicyResource({ companyId, skillId }));
       const before = await svc.getById(companyId, skillId);
+      const managed = await sourceSvc.sourceForSkill(companyId, skillId);
+      if (managed) {
+        if (managed.entries.find(entry => entry.skillId === skillId)?.selection !== "selected") throw conflict("This skill is no longer selected. Manage its source to resume syncing.");
+        const result = await sourceOperation(req, companyId, context => sourceSvc.refresh(companyId, managed.id, context));
+        const entry = result.source.entries.find(entry => entry.skillId === skillId);
+        if (entry?.error || !entry?.present) throw conflict(entry?.error ?? "This skill was removed from its source. Its installed copy was kept.");
+        res.json(await svc.getById(companyId, skillId));
+        return;
+      }
       const result = await svc.installUpdate(companyId, skillId, req.body);
       if (!result) {
         res.status(404).json({ error: "Skill not found" });

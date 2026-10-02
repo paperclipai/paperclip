@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
@@ -84,7 +85,6 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -941,7 +941,7 @@ function PipelinesIndex() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select an organization to view pipelines.</div>;
   }
   if (pipelinesQuery.isLoading) return <PageSkeleton />;
 
@@ -1363,7 +1363,7 @@ function PipelineBoardColumn({
               className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
               title={`Edit ${stage.name} automation`}
             >
-              <AgentIcon icon={automationAgent.icon} className="h-3.5 w-3.5 shrink-0" />
+              <AgentAvatar agent={automationAgent} size={16} className="h-3.5 w-3.5 shrink-0"/>
               <span className="truncate">{automationAgent.name}</span>
             </Link>
           ) : null}
@@ -2409,10 +2409,17 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(conversationIssueId) });
   }, [conversationIssueId, queryClient]);
 
-  const handleInterruptConversationQueuedRun = useCallback(async (runId: string) => {
-    await heartbeatsApi.cancel(runId);
-    await invalidateConversation();
-  }, [invalidateConversation]);
+  const handleInterruptConversationQueuedRun = useCallback(async (runId: string | null) => {
+    if (!conversationIssueId) return;
+    try {
+      await issuesApi.interruptLatestQueuedComments(conversationIssueId, runId);
+      pushToast({ title: "Interrupt requested", body: "Queued messages will be sent when the previous run has stopped.", tone: "success" });
+    } catch (error) {
+      pushToast({ title: "Interrupt failed", body: error instanceof Error ? error.message : "Unable to send queued messages", tone: "error" });
+    } finally {
+      await invalidateConversation();
+    }
+  }, [conversationIssueId, invalidateConversation, pushToast]);
 
   const handleCancelConversationQueuedComment = useCallback(async (commentId: string) => {
     if (!conversationIssueId) return;
@@ -2430,9 +2437,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     interaction: PipelineConversationActionableInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => {
     if (!conversationIssueId) return;
-    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds });
+    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds, rememberAction });
     await invalidateConversation();
   }, [conversationIssueId, invalidateConversation]);
 
@@ -4941,7 +4949,7 @@ export function ReviewQueue() {
 
   const bulkApprove = useMutation({
     mutationFn: async (targetRows: ReviewQueueRow[]) => {
-      if (!selectedCompanyId) throw new Error("Select a company first.");
+      if (!selectedCompanyId) throw new Error("Select an organization first.");
       const reviewRows = targetRows.filter((row) => row.kind === "review");
       const suggestionRows = targetRows.filter((row) => row.kind === "suggestion" && row.suggestionId);
       const tasks: Promise<unknown>[] = [];
@@ -5046,7 +5054,7 @@ export function ReviewQueue() {
   }, [activeRowId, decideRow, openItem, visibleRows]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view the review queue." />;
+    return <EmptyState icon={Hexagon} message="Select an organization to view the review queue." />;
   }
 
   if (attentionQuery.isLoading || reviewCasesQuery.isLoading) {
@@ -5170,7 +5178,7 @@ export function Learnings() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={BookOpenText} message="Select a company to view learnings." />;
+    return <EmptyState icon={BookOpenText} message="Select an organization to view learnings." />;
   }
 
   if (learningsQuery.isLoading && !learningsQuery.data) {

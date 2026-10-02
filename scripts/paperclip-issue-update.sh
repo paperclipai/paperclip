@@ -102,9 +102,65 @@ if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERC
   exit 1
 fi
 
-curl -sS -X PATCH \
-  "$PAPERCLIP_API_URL/api/issues/$issue_id" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H 'Content-Type: application/json' \
-  --data-binary "$payload"
+# A successful PATCH always returns the updated issue JSON. An empty body or a
+# connection-level failure means the write did NOT land, even when a pipeline
+# exit code says otherwise, so verify the response instead of inferring success.
+# Two attempts total: the shared heartbeat policy stops a control-plane write
+# after two consecutive failures, so the helper must not send a third.
+max_attempts=2
+attempt=1
+while :; do
+  http_code=""
+  body=""
+  set +e
+  response="$(
+    curl -sS -m 30 -X PATCH \
+      "$PAPERCLIP_API_URL/api/issues/$issue_id" \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$payload" \
+      -w '\n%{http_code}'
+  )"
+  curl_exit=$?
+  set -e
+
+  if [[ "$curl_exit" -eq 0 ]]; then
+    http_code="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+  fi
+
+  if [[ "$curl_exit" -eq 0 && "$http_code" == 2* ]]; then
+    if [[ -z "$body" ]]; then
+      printf 'Issue update FAILED: HTTP %s with an empty response body. A real update echoes the issue JSON; treat this write as not saved.\n' "$http_code" >&2
+      exit 1
+    fi
+    if [[ -n "$status" ]]; then
+      returned_status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
+      if [[ "$returned_status" != "$status" ]]; then
+        printf 'Issue update FAILED: server echoed status %s instead of requested %s.\n' "${returned_status:-<none>}" "$status" >&2
+        printf '%s\n' "$body" >&2
+        exit 1
+      fi
+    fi
+    printf '%s\n' "$body"
+    exit 0
+  fi
+
+  # 4xx (other than 429) is a definitive rejection; retrying cannot change it.
+  if [[ "$curl_exit" -eq 0 && "$http_code" == 4* && "$http_code" != "429" ]]; then
+    printf 'Issue update rejected (HTTP %s).\n' "$http_code" >&2
+    [[ -n "$body" ]] && printf '%s\n' "$body" >&2
+    exit 1
+  fi
+
+  if (( attempt >= max_attempts )); then
+    printf 'Issue update FAILED after %d attempts (curl exit %s, HTTP %s). The status/comment was NOT saved — report this write as failed, do not assume it landed.\n' "$max_attempts" "$curl_exit" "${http_code:-000}" >&2
+    [[ -n "$body" ]] && printf '%s\n' "$body" >&2
+    exit 1
+  fi
+
+  printf 'Issue update attempt %d/%d failed (curl exit %s, HTTP %s); retrying...\n' "$attempt" "$max_attempts" "$curl_exit" "${http_code:-000}" >&2
+  sleep $((attempt * 2))
+  attempt=$((attempt + 1))
+done

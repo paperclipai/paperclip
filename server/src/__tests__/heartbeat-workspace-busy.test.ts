@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentRuntimeState,
@@ -45,6 +45,14 @@ import {
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+
+// Exercise the real SSH lease and heartbeat paths without connecting to a host.
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>(),
+  ensureSshWorkspaceReady: async (config: { remoteWorkspacePath: string }) => ({
+    remoteCwd: config.remoteWorkspacePath,
+  }),
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -176,6 +184,29 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     return await heartbeat.getRun(runId);
   }
 
+  // A deferral does two writes in order: first it cancels the original run,
+  // then it inserts the scheduled-retry row. waitForRunToLeaveActiveStates
+  // returns after the first write, so a read of the retry row can land before
+  // the second write and find nothing. Poll until the retry row exists so the
+  // retry-row assertions never observe the gap between the two writes.
+  async function waitForRetryRun(originalRunId: string, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const retryRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, originalRunId))
+        .then((rows) => rows[0] ?? null);
+      if (retryRun) return retryRun;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, originalRunId))
+      .then((rows) => rows[0] ?? null);
+  }
+
   interface WorkspaceFixture {
     companyId: string;
     projectId: string;
@@ -193,7 +224,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     holderProjectWorkspaceId?: string;
     holderActivityAt?: Date;
     issueWorkspaceSettings?: Record<string, unknown> | null;
-    agentEnvironmentDriver?: "sandbox";
+    projectWorkspacePolicy?: Record<string, unknown>;
+    agentEnvironmentDriver?: "local" | "ssh" | "sandbox";
   }): Promise<WorkspaceFixture> {
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const companyId = randomUUID();
@@ -205,7 +237,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const nonAssigneeAgentId = randomUUID();
-    const agentEnvironmentId = input?.agentEnvironmentDriver ? randomUUID() : null;
+    // Deferral/retry tests exercise sandbox protection. Local and SSH folders
+    // must remain concurrent even when an older policy requests serialization.
+    const agentEnvironmentDriver = input?.agentEnvironmentDriver ?? "sandbox";
+    const agentEnvironmentId = agentEnvironmentDriver === "local" ? null : randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const now = new Date();
 
@@ -221,6 +256,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       id: projectId,
       companyId,
       name: "Workspace Busy Project",
+      executionWorkspacePolicy: input?.projectWorkspacePolicy ?? null,
     });
 
     await db.insert(projectWorkspaces).values({
@@ -237,10 +273,12 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       await db.insert(environments).values({
         id: agentEnvironmentId,
         companyId,
-        name: `Workspace busy ${input!.agentEnvironmentDriver} ${agentEnvironmentId}`,
-        driver: input!.agentEnvironmentDriver!,
+        name: `Workspace busy ${agentEnvironmentDriver} ${agentEnvironmentId}`,
+        driver: agentEnvironmentDriver,
         status: "active",
-        config: { provider: "fake", image: "fake:test", reuseLease: false },
+        config: agentEnvironmentDriver === "ssh"
+          ? { host: "workspace-test.invalid", username: "test", remoteWorkspacePath: workspaceCwd }
+          : { provider: "fake", image: "fake:test", reuseLease: false },
       });
     }
 
@@ -275,7 +313,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
             maxConcurrentRuns: 1,
           },
         },
-        ...(id === agentId && agentEnvironmentId ? { defaultEnvironmentId: agentEnvironmentId } : {}),
+        ...(agentEnvironmentId ? { defaultEnvironmentId: agentEnvironmentId } : {}),
         permissions: {},
       });
     }
@@ -352,6 +390,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   it("auto dispatches alongside a local holder and adds coordination context", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
+      agentEnvironmentDriver: "local",
     });
 
     const run = await heartbeat.invoke(
@@ -395,6 +434,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   it("auto defers when instance policy forces Kubernetes", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
+      agentEnvironmentDriver: "local",
     });
     await db.insert(environments).values({
       id: randomUUID(),
@@ -420,9 +460,18 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).not.toContain(run!.id);
   });
 
-  it("serialize defers even when the final environment driver is local", async () => {
+  it.each([
+    { driver: "local", policySource: "issue" },
+    { driver: "local", policySource: "project" },
+    { driver: "ssh", policySource: "issue" },
+    { driver: "ssh", policySource: "project" },
+  ] as const)("dispatches on $driver despite a $policySource serialize policy", async ({ driver, policySource }) => {
     const fixture = await seedWorkspaceFixture({
-      issueWorkspaceSettings: { sharedWorkspaceConcurrency: "serialize" },
+      agentEnvironmentDriver: driver,
+      issueWorkspaceSettings: policySource === "issue" ? { sharedWorkspaceConcurrency: "serialize" } : null,
+      projectWorkspacePolicy: policySource === "project"
+        ? { enabled: true, defaultMode: "shared_workspace", sharedWorkspaceConcurrency: "serialize" }
+        : undefined,
     });
 
     const run = await heartbeat.invoke(
@@ -434,8 +483,17 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
-    expect(executedRunIds).not.toContain(run!.id);
+    expect(finishedRun?.status).toBe("succeeded");
+    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).toContain(run!.id);
+    expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
+      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
+    );
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+    const retryRuns = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(
+      and(eq(heartbeatRuns.companyId, fixture.companyId), eq(heartbeatRuns.scheduledRetryReason, WORKSPACE_BUSY_RETRY_REASON)),
+    );
+    expect(retryRuns).toHaveLength(0);
   });
 
   it("allow passes the busy gate for a sandbox environment and adds coordination context", async () => {
@@ -491,11 +549,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     // The deferred run's adapter never executed — the whole point of the gate.
     expect(executedRunIds).not.toContain(run!.id);
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForRetryRun(run!.id);
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryAttempt: 1,
@@ -560,11 +614,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForRetryRun(run!.id);
     expect(retryRun?.status).toBe("scheduled_retry");
 
     // Holder finishes; the due retry promotes, queues, and executes.
@@ -583,34 +633,26 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).toContain(retryRun!.id);
   });
 
-  it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
+  it("preserves a legacy accepted mention run through workspace retry", async () => {
     const fixture = await seedWorkspaceFixture();
 
-    // A comment-mention wake for an agent that is NOT the issue assignee —
-    // the interaction-wake shape that legitimately reaches adapter dispatch
-    // without assignee-ship.
-    const run = await heartbeat.invoke(
-      fixture.nonAssigneeAgentId,
-      "on_demand",
-      {
-        issueId: fixture.issueId,
-        wakeReason: "issue_comment_mentioned",
-        commentId: randomUUID(),
+    // Existing queued work can contain coalesced assignment or feedback.
+    // Only new mention requests are ignored; keep accepted work's rules.
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.nonAssigneeAgentId,
+      invocationSource: "on_demand", status: "queued", responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId, wakeReason: "issue_comment_mentioned", commentId: randomUUID(),
       },
-      "system",
-    );
-    expect(run).not.toBeNull();
+    }).returning();
+    await heartbeat.resumeQueuedRuns();
 
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");
     expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).not.toContain(run!.id);
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForRetryRun(run!.id);
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
@@ -658,11 +700,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForRetryRun(run!.id);
     expect(retryRun?.status).toBe("scheduled_retry");
     expect(
       (retryRun?.contextSnapshot as Record<string, unknown> | null)?.workspaceBusyDeferredWhileAssignee,
@@ -849,11 +887,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).not.toContain(retryRunId);
 
-    const nextRetry = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, retryRunId))
-      .then((rows) => rows[0] ?? null);
+    const nextRetry = await waitForRetryRun(retryRunId);
     expect(nextRetry).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryAttempt: priorAttempts + 1,

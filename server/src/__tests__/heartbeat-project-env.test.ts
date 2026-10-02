@@ -21,6 +21,32 @@ import type { AuthorizationActor, AuthorizationDecision } from "../services/auth
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
+  it("does not preflight or resolve legacy GitHub token bindings for managed executions", async () => {
+    const assertNoGitHubBinding = (env: Record<string, unknown>) => {
+      for (const key of Object.keys(env)) if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN)$/.test(key)) {
+        throw new Error("Unavailable legacy GitHub secret must not be resolved at startup");
+      }
+    };
+    const missing = { type: "user_secret_ref", key: "old-github-token", required: true };
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1", agentId: "agent-1", environmentId: "environment-1",
+      projectId: "project-1", routineId: "routine-1", managedGitHubCredentials: true,
+      executionRunConfig: { env: { GH_TOKEN: missing, AGENT_VALUE: "ok" } },
+      environmentEnv: { GITHUB_TOKEN: missing, ENVIRONMENT_VALUE: "ok" },
+      projectEnv: { GH_ENTERPRISE_TOKEN: missing, PROJECT_VALUE: "ok" },
+      routineEnv: { GITHUB_ENTERPRISE_TOKEN: missing, PAPERCLIP_GIT_TOKEN: missing, ROUTINE_VALUE: "ok" },
+      secretsSvc: {
+        collectMissingRuntimeBindings: vi.fn(async (_companyId, env) => { assertNoGitHubBinding(env); return []; }),
+        resolveAdapterConfigForRuntime: vi.fn(async (_companyId, config) => {
+          assertNoGitHubBinding(config.env); return { config, secretKeys: new Set(), manifest: [] };
+        }),
+        resolveEnvBindings: vi.fn(async (_companyId, env) => {
+          assertNoGitHubBinding(env); return { env, secretKeys: new Set(), manifest: [] };
+        }),
+      } as any,
+    });
+    expect(result.resolvedConfig.env).toEqual({ AGENT_VALUE: "ok", ENVIRONMENT_VALUE: "ok", PROJECT_VALUE: "ok", ROUTINE_VALUE: "ok" });
+  });
   it("overlays environment, project, and routine env on top of agent env and unions secret keys", async () => {
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
       config: {
@@ -168,6 +194,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentId: "environment-1",
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
@@ -224,6 +251,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       ROUTINE_ONLY: "routine-only",
     });
     expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_API_KEY");
+    expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_RUNNER_NETWORK_ACCESS");
   });
 
   it("skips project env resolution when the project has no bindings", async () => {
@@ -301,6 +329,81 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
     expect(resolveEnvBindings.mock.calls[2]?.[2]).toMatchObject({
       allowedBindingIds: ["binding-1"],
+    });
+  });
+
+  it("does not project brokered GitHub credentials across a low-trust boundary", async () => {
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      trustedEnvProjection: {
+        GH_TOKEN: "brokered-github-token",
+        GITHUB_TOKEN: "brokered-github-token",
+      },
+      trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({});
+    expect(result.secretKeys).toEqual(new Set());
+  });
+
+  it("does not let a brokered projection satisfy low-trust push preflight", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project"],
+        reason: "push_write_credential_missing",
+        remediation: "Bind an explicitly allowed GitHub write credential.",
+      },
+      trustedEnvProjection: { GH_TOKEN: "brokered-github-token" },
+      trustedEnvSecretKeys: ["GH_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: { reason: "push_write_credential_missing" },
+      },
     });
   });
 
@@ -1019,17 +1122,18 @@ describe("buildReferencedProjectRunObservability", () => {
       failures: [
         { projectId: "project-b", reason: "authorization" },
         { projectId: "project-c", reason: "resolution" },
-        { projectId: "project-d", reason: "staging" },
+        { projectId: "project-d", reason: "staging", error: "extract failed: boom" },
       ],
     });
 
     // Requested is the synced count plus every dropped project, so the counts reconcile.
     expect(observability.referenced_projects_requested).toBe(4);
     expect(observability.referenced_projects_synced).toBe(1);
+    // A staging failure carries its error message; a failure without one omits the field.
     expect(observability.referenced_project_failures).toEqual([
       { project_id: "project-b", reason: "authorization" },
       { project_id: "project-c", reason: "resolution" },
-      { project_id: "project-d", reason: "staging" },
+      { project_id: "project-d", reason: "staging", error: "extract failed: boom" },
     ]);
   });
 

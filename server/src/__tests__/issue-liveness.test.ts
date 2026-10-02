@@ -128,6 +128,38 @@ describe("issue graph liveness classifier", () => {
     ]);
   });
 
+  it("skips human agents in the reporting chain when recommending a recovery owner", () => {
+    const humanManagerId = "human-manager";
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Missing unblock work",
+          status: "todo",
+          assigneeAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent({ reportsTo: humanManagerId }),
+        agent({
+          id: humanManagerId,
+          name: "Human Manager",
+          role: "manager",
+          adapterType: "human",
+          reportsTo: managerId,
+        }),
+        manager,
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.recommendedOwnerAgentId).toBe(managerId);
+    expect(findings[0]?.recommendedOwnerCandidateAgentIds).not.toContain(humanManagerId);
+  });
+
   it("does not flag a live blocked chain with an active assignee and wake path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

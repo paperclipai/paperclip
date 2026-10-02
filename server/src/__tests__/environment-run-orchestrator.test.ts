@@ -10,6 +10,8 @@ const mockBuildWorkspaceRealizationRequest = vi.hoisted(() => vi.fn());
 const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockLoggerInfo = vi.hoisted(() => vi.fn());
+const mockGetEnvironment = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -27,7 +29,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 vi.mock("../services/environments.js", () => ({
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
-    getById: vi.fn(),
+    getById: mockGetEnvironment,
     acquireLease: vi.fn(),
     releaseLease: vi.fn(),
     updateLeaseMetadata: mockUpdateLeaseMetadata,
@@ -42,6 +44,15 @@ vi.mock("../services/execution-workspaces.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    info: mockLoggerInfo,
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -245,6 +256,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it.each([false, true])("only requests active-work cancellation for explicit Stop: %s", async (cancelActiveWork) => {
+    const releaseRunLeases = vi.fn().mockResolvedValue([]);
+    const runtime = makeMockRuntime({ releaseRunLeases });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    await orchestrator.releaseForRun({
+      heartbeatRunId: "run-1", companyId: "company-1", agentId: "agent-1",
+      providerResourceDisposition: "stop_and_retain", cancelActiveWork,
+    });
+    expect(releaseRunLeases).toHaveBeenCalledWith(
+      "run-1", "released", expect.any(Function), "stop_and_retain",
+      ...(cancelActiveWork ? [true] : []),
+    );
+  });
+
   it("happy path: returns lease, executionTarget, and remoteExecution on successful realization", async () => {
     const executionTarget = { kind: "local", environmentId: "env-1", leaseId: "lease-1" };
     const remoteExecution = { kind: "local", environmentId: "env-1", leaseId: "lease-1" };
@@ -433,6 +458,84 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     });
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
       kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "ssh",
+            remote: { path: "/remote/workspace" },
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("ssh"),
+    }));
+
+    // The `ssh` driver runs the command on the remote host that shares the
+    // workspace path, so the configured provision command still runs there.
+    expect(runtime.execute).toHaveBeenCalledOnce();
+    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({ driver: "ssh" }),
+      lease: expect.objectContaining({ id: "lease-1" }),
+      command: "bash",
+      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
+      cwd: "/remote/workspace",
+      env: {
+        SHELL: "/bin/bash",
+      },
+    }));
+    // The sandbox skip log is specific to the sandbox driver; ssh stays quiet.
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+
+  it("skips the host provision command for a sandbox environment and logs the skip", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
       transport: "sandbox",
       providerKey: "e2b",
       remoteCwd: "/remote/workspace",
@@ -458,17 +561,59 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       environment: makeEnvironment("sandbox"),
     }));
 
-    expect(runtime.execute).toHaveBeenCalledOnce();
-    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
-      environment: expect.objectContaining({ driver: "sandbox" }),
-      lease: expect.objectContaining({ id: "lease-1" }),
-      command: "bash",
-      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
-      cwd: "/remote/workspace",
-      env: {
-        SHELL: "/bin/bash",
+    // The sandbox receives the provisioned tree through the adapter stage.sync
+    // step, so the orchestrator must not run the host command in the sandbox.
+    expect(runtime.execute).not.toHaveBeenCalled();
+    // The skip is observable: exactly one log line records it with the driver.
+    expect(mockLoggerInfo).toHaveBeenCalledOnce();
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ driver: "sandbox", environmentId: "env-1" }),
+      expect.stringContaining("Skip host provisionCommand"),
+    );
+  });
+
+  it("does not rerun the provision command during local environment realization", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
       },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "local",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("local"),
     }));
+
+    // Local workspace provisioning already ran the command before realizeForRun.
+    expect(runtime.execute).not.toHaveBeenCalled();
+    // The sandbox skip log is specific to the sandbox driver; local stays quiet.
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 
   it("runs project-level provision commands for ssh environments", async () => {
@@ -588,7 +733,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
 
     await expect(orchestrator.realizeForRun(makeRealizeInput({
-      environment: makeEnvironment("sandbox"),
+      environment: makeEnvironment("ssh"),
     }))).rejects.toSatisfy(
       (err: unknown) =>
         err instanceof EnvironmentRunError &&
@@ -597,5 +742,76 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
 
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("native runner lifecycle changes before lease acquisition", () => {
+  it("requests a reusable lease when an existing task switches from per-turn to warm", async () => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({
+      environment: input.environment,
+      lease: makeLease({ leasePolicy: input.environment.config.reuseLease ? "reuse_by_environment" : "ephemeral" }),
+      leaseContext: { executionWorkspaceId: "existing-workspace", executionWorkspaceMode: "shared_workspace" },
+    }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    const input = {
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+      adapterType: "paperclip_runner", issueId: "existing-task", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: { id: "existing-workspace", mode: "shared_workspace" as const },
+      executionWorkspaceSettings: null,
+    };
+    const cold = await orchestrator.acquireForRun({ ...input, adapterConfig: { lifecycleMode: "per_turn" } });
+    expect(cold.lease.leasePolicy).toBe("ephemeral");
+    const warm = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-2", adapterConfig: { lifecycleMode: "warm", idleTimeoutMs: 60_000 } });
+    expect(warm.lease.leasePolicy).toBe("reuse_by_environment");
+    expect(warm.environment.config).toEqual({ provider: "daytona", reuseLease: true });
+    expect(acquireRunLease.mock.calls[1][0].persistedExecutionWorkspace).toEqual(input.persistedExecutionWorkspace);
+    // Run-scoped adaptation must not change the shared environment or other agents.
+    expect(environment.config).toEqual({ provider: "daytona", reuseLease: false });
+    const coldAgain = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-3", adapterConfig: { lifecycleMode: "per_turn" } });
+    expect(coldAgain.lease.leasePolicy).toBe("ephemeral");
+  });
+
+  it.each([
+    ["paperclip_runner", undefined, undefined, false],
+    ["paperclip_runner", "inherit", "per_turn", false],
+    ["paperclip_runner", "per_turn", "warm", false],
+    ["paperclip_runner", "warm", "per_turn", true],
+    ["paperclip_runner", "inherit", "warm", true],
+    ["codex_local", "inherit", "warm", false],
+  ])("respects environment precedence and adapter scope (%s, %s, %s)", async (adapterType, runnerLifecycleMode, lifecycleMode, expectedReuse) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType,
+      adapterConfig: { lifecycleMode }, issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(expectedReuse);
+  });
+});
+
+
+describe("admitted native lifecycle recovery", () => {
+  it.each([
+    ["warm", "per_turn", "per_turn", true],
+    ["per_turn", "warm", "warm", false],
+  ] as const)("preserves admitted %s over changed agent/environment settings", async (admittedLifecycleMode, lifecycleMode, runnerLifecycleMode, expectedReuse) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+      adapterType: "paperclip_runner", adapterConfig: { lifecycleMode }, admittedLifecycleMode,
+      issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(expectedReuse);
+    expect(environment.config.reuseLease).toBe(false);
   });
 });

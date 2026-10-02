@@ -140,6 +140,21 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "created_at" timestamptz NOT NULL DEFAULT now()
           );
         `);
+        await sourceSql.unsafe(`
+          CREATE FUNCTION "public"."backup_test_mark_done"()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+            NEW."state" := 'done';
+            RETURN NEW;
+          END;
+          $$;
+          CREATE TRIGGER "backup_test_mark_done_trigger"
+          BEFORE UPDATE OF "title" ON "public"."backup_test_records"
+          FOR EACH ROW
+          EXECUTE FUNCTION "public"."backup_test_mark_done"();
+        `);
 
         const payload = "x".repeat(8192);
         for (let index = 0; index < 160; index += 1) {
@@ -213,6 +228,18 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             metadata: { index: 159, even: false },
           },
         ]);
+
+        await restoreSql.unsafe(`
+          UPDATE "public"."backup_test_records"
+          SET "title" = 'triggered'
+          WHERE "title" = 'row-0'
+        `);
+        const triggeredRows = await restoreSql.unsafe<{ state: string }[]>(`
+          SELECT "state"::text AS "state"
+          FROM "public"."backup_test_records"
+          WHERE "title" = 'triggered'
+        `);
+        expect(triggeredRows).toEqual([{ state: "done" }]);
       } finally {
         await sourceSql.end();
         await restoreSql.end();
@@ -462,7 +489,9 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
       const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
       const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
       process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+      process.env.PAPERCLIP_PSQL_PATH = "/bin/false";
 
       try {
         await sourceSql.unsafe(`
@@ -498,6 +527,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(backupSql.indexOf("-- Data for: public.aaa_child_records")).toBeLessThan(
           backupSql.indexOf("-- Data for: public.zzz_parent_records"),
         );
+        expect(backupSql).not.toContain(" FROM stdin;");
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
@@ -515,6 +545,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           delete process.env.PAPERCLIP_PG_DUMP_PATH;
         } else {
           process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
         }
         await sourceSql.end();
         await restoreSql.end();

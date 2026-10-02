@@ -589,7 +589,7 @@ describe("IssueDocumentsSection", () => {
     expect(document.body.textContent).toContain("CodexCoder");
     expect(document.body.textContent).toContain("Dotta");
     expect(document.body.textContent).not.toContain("• agent");
-    expect(document.body.querySelectorAll('[data-slot="avatar"]').length).toBeGreaterThanOrEqual(2);
+    expect(document.body.querySelectorAll('[data-slot="avatar"], [data-slot="agent-avatar"]').length).toBeGreaterThanOrEqual(2);
 
     await act(async () => {
       root.unmount();

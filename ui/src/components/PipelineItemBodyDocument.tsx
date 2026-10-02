@@ -38,7 +38,7 @@ type CaseBodyDocument = PipelineCaseDocumentPayload["document"] & {
 function getPipelineRevisionActor(
   revision: { createdByAgentId?: string | null; createdByUserId?: string | null },
   maps: {
-    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
     userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   },
 ): DocumentFrameHeaderRevisionActor {
@@ -48,6 +48,7 @@ function getPipelineRevisionActor(
       kind: "agent",
       name: agent?.name ?? revision.createdByAgentId.slice(0, 8),
       agentIcon: agent?.icon ?? null,
+      agent: agent ?? { id: revision.createdByAgentId },
     };
   }
 
@@ -76,7 +77,7 @@ export interface PipelineItemBodyDocumentProps {
   /** Active conversation issue the body document is/should be anchored to. */
   conversationIssueId: string | null;
   conversationIssue: Issue | null;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   mentions?: MentionOption[];
   imageUploadHandler?: (file: File) => Promise<string>;

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ensureManagedProjectWorkspace } from "../services/heartbeat.ts";
+import { ensureManagedProjectWorkspace, prepareProjectRepositoryWorkspaces } from "../services/heartbeat.ts";
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
 import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
@@ -38,6 +38,108 @@ async function createLocalSourceRepo() {
 }
 
 describe("ensureManagedProjectWorkspace clone credentials", () => {
+  it("materializes every repository-only project row inside the task workspace and reuses local edits", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    try {
+      const anchor = await ensureManagedProjectWorkspace({ companyId: "repo-only", projectId: "two", repoUrl: first });
+      await execFile("git", ["checkout", "-b", "project-branch"], { cwd: second });
+      const resolveGitAuth = vi.fn(async () => null);
+      const input = {
+        cwd: anchor.cwd, anchorRepoUrl: first, resolveGitAuth,
+        workspaces: [
+          { id: "first", repoUrl: first, repoRef: null },
+          { id: "duplicate-first", repoUrl: first, repoRef: null },
+          { id: "second", repoUrl: second, repoRef: "project-branch" },
+        ],
+      };
+      const additional = await prepareProjectRepositoryWorkspaces(input);
+      expect(additional).toHaveLength(1);
+      expect(additional[0]!.workspaceId).toBe("second");
+      expect(path.relative(anchor.cwd, additional[0]!.cwd)).toMatch(/^\.paperclip-repositories\//);
+      expect((await execFile("git", ["branch", "--show-current"], { cwd: additional[0]!.cwd })).stdout.trim()).toBe("project-branch");
+      expect(resolveGitAuth).toHaveBeenCalledWith(second);
+      await fs.writeFile(path.join(additional[0]!.cwd, "README.md"), "work in progress");
+      expect(await prepareProjectRepositoryWorkspaces(input)).toEqual(additional);
+      expect(await fs.readFile(path.join(additional[0]!.cwd, "README.md"), "utf8")).toBe("work in progress");
+      expect((await execFile("git", ["status", "--porcelain"], { cwd: anchor.cwd })).stdout).toBe("");
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
+  it("fails task preparation when any attached repository cannot be cloned", async () => {
+    const first = await createLocalSourceRepo();
+    try {
+      const anchor = await ensureManagedProjectWorkspace({ companyId: "repo-failure", projectId: "two", repoUrl: first });
+      await expect(prepareProjectRepositoryWorkspaces({
+        cwd: anchor.cwd, anchorRepoUrl: first,
+        workspaces: [{ id: "missing", repoUrl: path.join(first, "missing.git"), repoRef: null }],
+      })).rejects.toThrow("Failed to prepare managed checkout");
+    } finally {
+      await fs.rm(first, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds a configured second local checkout with its uncommitted work and ignores", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    try {
+      const anchor = await ensureManagedProjectWorkspace({ companyId: "local-project", projectId: "two", repoUrl: first });
+      await fs.writeFile(path.join(second, "README.md"), "local changes");
+      await fs.writeFile(path.join(second, ".gitignore"), "secret.txt\n");
+      await fs.writeFile(path.join(second, "secret.txt"), "private");
+      const [repo] = await prepareProjectRepositoryWorkspaces({
+        cwd: anchor.cwd, anchorRepoUrl: first,
+        workspaces: [{ id: "second", cwd: second, repoUrl: "https://github.com/example/backend.git", repoRef: null }],
+      });
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("local changes");
+      await expect(fs.stat(path.join(repo!.cwd, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: repo!.cwd })).stdout.trim()).toBe("https://github.com/example/backend.git");
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+  it("keeps different repositories with the same name separate within one project", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    try {
+      const results = await Promise.all([first, second].map((repoUrl) => ensureManagedProjectWorkspace({
+        companyId: "company-multiple", projectId: "project-multiple", repoUrl,
+      })));
+      expect(results[0]!.cwd).not.toBe(results[1]!.cwd);
+      for (let i = 0; i < results.length; i++) {
+        const origin = await execFile("git", ["remote", "get-url", "origin"], { cwd: results[i]!.cwd });
+        expect(origin.stdout.trim()).toBe([first, second][i]);
+      }
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+  it("rechecks the repository when another process wins the checkout rename", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    const companyId = "cross-process-race";
+    const projectId = "same-name";
+    const sharedCwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+    try {
+      // A different process does not share managedCheckoutMaterializations. Publish
+      // its completed checkout after this caller chose its destination, before rename.
+      const resolveGitAuth = vi.fn(async () => {
+        if (!(await fs.stat(sharedCwd).catch(() => null))) {
+          await execFile("git", ["clone", second, sharedCwd]);
+        }
+        return null;
+      });
+      const result = await ensureManagedProjectWorkspace({ companyId, projectId, repoUrl: first, resolveGitAuth });
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: result.cwd })).stdout.trim()).toBe(first);
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: sharedCwd })).stdout.trim()).toBe(second);
+      expect(result.cwd).not.toBe(sharedCwd);
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
   it("clones exactly as before when no auth provider is configured", async () => {
     const sourceRepo = await createLocalSourceRepo();
     try {
