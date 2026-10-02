@@ -49,7 +49,7 @@ export function crossIssueInfluenceRunContextError(
   // `runHeaderPresent` picks between "you never sent it", "it arrived but did not
   // resolve", and — when omitted, because the request is not in hand — a hedge that
   // covers both. Advising a header the caller demonstrably already sent is what sent
-  // the OIG-307 probe agent hunting its own request instead of the transport.
+  // the probe agent in #12118 hunting its own request instead of the transport.
   const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
     runHeaderPresent: options.runHeaderPresent,
   });

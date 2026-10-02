@@ -211,7 +211,7 @@ describe("cross-issue influence limit rollout", () => {
 
   // An unscoped (`on_demand`) run carries no `contextSnapshot.issueId`. It used to be
   // refused on every target, including issues it owns, which denied it strictly less
-  // than the cap already grants a scoped run — OIG-221. These four cases pin the
+  // than the cap already grants a scoped run — #13078. These four cases pin the
   // narrowed rule: ownership the server can prove is admitted, everything else still
   // fails closed.
   const unscopedRun = { contextSnapshot: {} };
@@ -234,7 +234,7 @@ describe("cross-issue influence limit rollout", () => {
       now: new Date(CROSS_ISSUE_INFLUENCE_ENFORCE_AT.getTime() - 1),
     })).resolves.toMatchObject({ count: 1, allowed: true });
     // Assignment proves permission, not scope. The write is admitted — the whole point
-    // of OIG-221 — but it is accounted for, so one run cannot fan out across every
+    // of #13078 — but it is accounted for, so one run cannot fan out across every
     // issue its agent holds without ever reaching the cap.
     expect(fake.inserted).toEqual([
       expect.objectContaining({
@@ -429,7 +429,7 @@ describe("run-context denial distinguishes an absent header from an unresolved o
       status: 403,
       details: {
         code: "cross_issue_influence_run_context_required",
-        // OIG-221's ownership guidance must survive the new branch.
+        // #13078's ownership guidance must survive the new branch.
         sanctionedPath: expect.stringContaining("assigned to you or checked out by this run"),
       },
     });

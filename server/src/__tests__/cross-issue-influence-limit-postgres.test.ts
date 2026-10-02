@@ -118,7 +118,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
   });
 
-  // The ownership fallback for an unscoped run (OIG-221) is the one branch that reads a
+  // The ownership fallback for an unscoped run (#13078) is the one branch that reads a
   // second table inside the locked transaction. Only real SQL proves that query; the
   // fake-db unit test cannot tell a working `where` from a mistyped one.
   it("resolves ownership for an unscoped run against the real issues table", async () => {
