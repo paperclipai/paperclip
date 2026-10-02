@@ -70,7 +70,7 @@ export default {
   entryPoints: ["src/index.ts"],
   bundle: true,
   platform: "node",
-  target: "node20",
+  target: "node24",
   format: "esm",
   outfile: "dist/index.js",
   banner: { js: "#!/usr/bin/env node" },

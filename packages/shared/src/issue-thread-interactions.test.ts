@@ -8,7 +8,9 @@ import {
 import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
+  askUserQuestionsPayloadSchema,
   createIssueThreadInteractionSchema,
+  paperclipQuestionSetPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsResultSchema,
@@ -256,6 +258,75 @@ describe("issue thread interaction schemas", () => {
       expirationReason: "superseded_by_comment",
       commentId: "11111111-1111-4111-8111-111111111111",
     });
+  });
+
+  it("retains canonical runner question sets without narrowing their public bounds", () => {
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      title: "Runner input",
+      questions: [{
+        id: "deployment-color",
+        prompt: "Which deployment color should the runner use?",
+        required: true,
+        answerMode: "single_select" as const,
+        options: [{ id: "blue", label: "Blue" }],
+      }],
+    };
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "deployment-color",
+          prompt: "Which deployment color should the runner use?",
+          selectionMode: "single",
+          allowOther: false,
+          options: [{ id: "blue", label: "Blue" }],
+        }],
+        questionSet,
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+
+    expect(() => paperclipQuestionSetPayloadSchema.parse({
+      ...questionSet,
+      questions: [{ ...questionSet.questions[0], answerMode: "text", options: questionSet.questions[0].options }],
+    })).toThrow("text questions cannot define options");
+  });
+
+  it("rejects creation of a form that hides required questions, while retaining historical readability", () => {
+    const payload = {
+      version: 1,
+      questions: [
+        { id: "club_name", prompt: "Club name?", selectionMode: "single", required: true, options: [{ id: "text", label: "Answer", freeText: true }] },
+        { id: "audience", prompt: "Audience?", selectionMode: "single", required: true, options: [{ id: "beginners", label: "Beginners" }, { id: "everyone", label: "Everyone" }] },
+      ],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "club_name", prompt: "Club name?", answerMode: "text", required: true }] },
+    };
+    expect(() => createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload })).toThrow("must present every questions entry");
+    expect(askUserQuestionsPayloadSchema.parse(payload).questions).toHaveLength(2);
+    const complete = { ...payload, questionSet: { ...payload.questionSet, questions: [...payload.questionSet.questions, { id: "audience", prompt: "Audience?", answerMode: "single_select", required: true, options: payload.questions[1].options }] } };
+    expect(createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: complete }).payload).toMatchObject({ questionSet: { questions: expect.any(Array) } });
+  });
+
+  it.each([
+    ["required", { required: false }],
+    ["answer mode", { answerMode: "multi_select" }],
+    ["option IDs", { options: [{ id: "different", label: "Blue" }] }],
+    ["option labels", { options: [{ id: "blue", label: "Red" }] }],
+    ["prompt", { prompt: "A different question?" }],
+  ])("rejects conflicting canonical %s at creation", (_name, changes) => {
+    const payload = {
+      version: 1,
+      questions: [{ id: "color", prompt: "Color?", required: true, selectionMode: "single", options: [{ id: "blue", label: "Blue" }] }],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "color", prompt: "Color?", required: true, answerMode: "single_select", options: [{ id: "blue", label: "Blue" }], ...changes }] },
+    };
+    expect(() => createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload })).toThrow("must match");
+    expect(askUserQuestionsPayloadSchema.parse(payload).questions).toHaveLength(1);
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {

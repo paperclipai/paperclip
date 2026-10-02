@@ -22,15 +22,21 @@ We are intentionally not shipping the UI for this yet. The runtime code remains 
 - seeded worktree instances can keep local-encrypted secrets working
 - seeded worktree instances can rebind same-repo project workspace paths onto the current git worktree
 
+## Operator default isolation
+
+When both `enableIsolatedWorkspaces` and `enableIsolatedWorkspacesByDefault` are enabled, projects with a configured workspace and no stored execution workspace policy default to isolated worktrees. A project with no configured workspace keeps using its plain managed directory. Tasks without a project also keep their existing behavior.
+
+Explicit project policies and issue workspace settings still take precedence. A request for a Git worktree still requires a valid Git checkout; a missing or invalid checkout fails validation. Trust policy requirements still apply.
+
 ## Shared workspace concurrency policy
 
 Projects and individual issues can set `sharedWorkspaceConcurrency` in their execution workspace policy/settings:
 
 - `auto` (the default when absent): allow concurrent shared-workspace runs on `local` and `ssh` environments, and serialize runs on `sandbox` and `plugin` environments. An instance forced to Kubernetes always serializes in `auto` mode.
-- `serialize`: defer a run while another live run holds the same project workspace, using the `workspace_busy` retry path.
+- `serialize`: on `sandbox` and `plugin` environments, defer a run while another live run holds the same project workspace, using the `workspace_busy` retry path. Local and SSH folders remain concurrent, even when an existing project or issue policy requests serialization.
 - `allow`: dispatch alongside a live holder on every environment.
 
-Issue settings override the project policy, which overrides the default `auto`. When concurrency is allowed and a live holder exists, Paperclip adds the holder run and issue to the dispatched task context so agents can coordinate concurrent mutations through commits. The setting is optional JSON policy data, so existing databases require no migration.
+Issue settings override the project policy, which overrides the default `auto`. The final execution environment determines whether workspace serialization applies; an instance forced to Kubernetes is a sandbox even if the agent normally runs locally. Local and SSH folder runs never wait for exclusive workspace ownership. Task checkout and per-agent concurrency limits still apply. When concurrency is allowed and a live holder exists, Paperclip adds the holder run and issue to the dispatched task context so agents can coordinate concurrent mutations through commits. The setting is optional JSON policy data, so existing databases require no migration.
 
 ## Hidden UI entrypoints
 

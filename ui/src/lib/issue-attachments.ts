@@ -1,11 +1,6 @@
 import type { IssueAttachment } from "@paperclipai/shared";
-import { isVideoLikeOutput } from "./issue-output";
-
-const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
-  "application/octet-stream",
-  "binary/octet-stream",
-  "application/x-binary",
-]);
+import { isMarkdownAttachmentContent } from "@paperclipai/shared";
+import { isImageLikeOutput, isVideoLikeOutput } from "./issue-output";
 
 type AttachmentPathLike = {
   contentPath: string;
@@ -29,8 +24,9 @@ export function attachmentDownloadPath(attachment: AttachmentPathLike) {
   return attachment.downloadPath ?? `${attachment.contentPath}?download=1`;
 }
 
-export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType">) {
-  return normalizedContentType(attachment).startsWith("image/");
+export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType"> & Partial<Pick<IssueAttachment, "originalFilename">>) {
+  const type = normalizedContentType(attachment);
+  return isImageLikeOutput(type, attachment.originalFilename) && !/^image\/hei[cf](?:-sequence)?$/.test(type);
 }
 
 export function isVideoAttachment(
@@ -42,17 +38,17 @@ export function isVideoAttachment(
 export function isMarkdownAttachment(
   attachment: Pick<IssueAttachment, "contentType" | "originalFilename">,
 ) {
-  const contentType = normalizedContentType(attachment);
-  if (
-    contentType === "text/markdown" ||
-    contentType === "text/x-markdown" ||
-    contentType === "application/markdown" ||
-    contentType === "application/x-markdown"
-  ) {
-    return true;
-  }
+  return isMarkdownAttachmentContent(attachment);
+}
 
-  const filename = (attachment.originalFilename ?? "").toLowerCase();
-  if (!filename.endsWith(".md") && !filename.endsWith(".markdown")) return false;
-  return contentType === "text/plain" || GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType);
+export function isTextAttachment(attachment: {
+  contentType: string;
+  originalFilename?: string | null;
+}) {
+  const type = attachment.contentType.toLowerCase().split(";")[0].trim();
+  return isMarkdownAttachmentContent(attachment)
+    || type.startsWith("text/")
+    || /^(application\/(json|xml|javascript|x-yaml|yaml)|application\/[\w.-]+\+json)$/.test(type)
+    || (["", "application/octet-stream"].includes(type)
+      && /\.(txt|log|csv|json|yaml|yml|toml|ini|sh|ts|tsx|js|jsx|py|css|html)$/i.test(attachment.originalFilename ?? ""));
 }

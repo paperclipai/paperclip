@@ -55,6 +55,7 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
@@ -160,6 +161,7 @@ export interface EnvironmentEventRecord {
     | "acquireLease"
     | "resumeLease"
     | "releaseLease"
+    | "stopLease"
     | "destroyLease"
     | "realizeWorkspace"
     | "execute"
@@ -185,8 +187,9 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onProbe?: (params: PluginEnvironmentProbeParams) => Promise<PluginEnvironmentProbeResult>;
     onAcquireLease?: (params: PluginEnvironmentAcquireLeaseParams) => Promise<PluginEnvironmentLease>;
     onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
-    onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<void>;
-    onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
+    onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
+    onStopLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt>;
+    onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
     onStartInteractiveSetup?: (params: PluginEnvironmentStartInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
@@ -210,9 +213,11 @@ export interface EnvironmentTestHarness extends TestHarness {
   /** Invoke the environment driver's resumeLease hook. */
   resumeLease(params: PluginEnvironmentResumeLeaseParams): Promise<PluginEnvironmentLease>;
   /** Invoke the environment driver's releaseLease hook. */
-  releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<void>;
+  releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
+  /** Stop and preserve an allocation independently of its release policy. */
+  stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt>;
   /** Invoke the environment driver's destroyLease hook. */
-  destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<void>;
+  destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Invoke the environment driver's realizeWorkspace hook. */
   realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   /** Invoke the environment driver's execute hook. */
@@ -2478,12 +2483,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         // No-op in test harness — the host runner log sink is not wired here.
       },
     },
-    setupTokenPty: {
-      output(_workerSessionId: string, _chunk: string) {
+    loginPty: {
+      output(_hostRouteId: string, _workerSessionId: string, _chunk: string) {
         // No-op in test harness — the host login route is not wired here.
       },
-      exit(_workerSessionId: string, _exitCode: number | null) {
+      exit(_hostRouteId: string, _workerSessionId: string, _exitCode: number | null) {
         // No-op in test harness — the host login route is not wired here.
+      },
+    },
+    duplexChannel: {
+      data(_hostRouteId: string, _workerSessionId: string, _chunk: Uint8Array) {
+        // No-op in test harness — the host duplex route is not wired here.
+      },
+      exit(_hostRouteId: string, _workerSessionId: string, _exitCode: number | null) {
+        // No-op in test harness — the host duplex route is not wired here.
       },
     },
     tools: {
@@ -2717,6 +2730,9 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async releaseLease(params) {
       return callHook("releaseLease", driver.onReleaseLease, params, "onReleaseLease");
+    },
+    async stopLease(params) {
+      return callHook("stopLease", driver.onStopLease, params, "onStopLease");
     },
     async destroyLease(params) {
       return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");

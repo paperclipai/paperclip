@@ -37,8 +37,10 @@ export type WorkspaceAccessNotice = {
   action: WorkspaceAccessAction;
 };
 
+export type WorkspaceAccessDisplayState = WorkspaceReadinessState | "stopped";
+
 export type WorkspaceAccessState = {
-  state: WorkspaceReadinessState;
+  state: WorkspaceAccessDisplayState;
   title: string;
   description: string;
   action: WorkspaceAccessAction;
@@ -81,6 +83,19 @@ function failedRepairNotice(repair: WorkspaceOperation): WorkspaceAccessNotice {
   };
 }
 
+function failedProvisionNotice(provision: WorkspaceOperation): WorkspaceAccessNotice {
+  const phase = typeof provision.metadata?.seedFailurePhase === "string"
+    ? provision.metadata.seedFailurePhase
+    : null;
+  return {
+    title: "Database provisioning failed",
+    description: phase
+      ? `The earlier clone attempt failed during ${phase}. The workspace later became usable.`
+      : "An earlier clone attempt failed, but the workspace later became usable.",
+    action: { kind: "view_logs", label: "View provisioning log" },
+  };
+}
+
 const HANDOFF_REASON_COPY: Record<string, string> = {
   handoff_not_configured:
     "This instance has no workspace login handoff configured, so opening the board falls back to snapshot-local credentials.",
@@ -93,9 +108,9 @@ const HANDOFF_REASON_COPY: Record<string, string> = {
 
 const READINESS_FAILURE_COPY: Record<string, string> = {
   database_unreachable: "The isolated database is not answering.",
-  clone_data_missing: "The clone restored no company or issue rows.",
+  clone_data_missing: "The clone restored no organization or issue rows.",
   clone_data_unreadable: "The cloned product tables could not be read.",
-  cloned_membership_missing: "No cloned user has an active company membership.",
+  cloned_membership_missing: "No cloned user has an active organization membership.",
   cloned_identity_unreadable: "The cloned identity tables could not be read.",
   auth_handoff_not_configured: "The workspace was started without a login handoff key.",
   seed_manifest_unreadable: "The seed manifest is unreadable, so the restore cannot be trusted.",
@@ -134,8 +149,12 @@ export function resolveWorkspaceAccessState(input: {
   const servingService = runtimeServices.find(
     (service) => service.status === "running" && service.healthStatus === "healthy" && service.url,
   );
+  const startingService = runtimeServices.find(
+    (service) => service.status === "provisioning" || service.status === "starting",
+  );
   const repairFinishedAt = timestampMs(repair?.finishedAt);
   const servingServiceStartedAt = timestampMs(servingService?.startedAt);
+  const provisionFinishedAt = timestampMs(provision?.finishedAt);
   const readinessConfirmsServing = Boolean(servingService && failure?.readiness?.state === "ready");
   const runtimeStartedAfterRepair = repairFinishedAt !== null
     && servingServiceStartedAt !== null
@@ -144,9 +163,24 @@ export function resolveWorkspaceAccessState(input: {
     servingService
     && (readinessConfirmsServing || runtimeStartedAfterRepair),
   );
+  const successfulRepairFinishedAt = repair?.status === "succeeded"
+    ? timestampMs(repair.finishedAt)
+    : null;
+  // A failed seed is historical once the workspace is demonstrably serving,
+  // or once a later repair has replaced and revalidated that database.
+  const provisionFailureWasSuperseded = provision?.status === "failed" && Boolean(
+    servingService
+    || (
+      provisionFinishedAt !== null
+      && successfulRepairFinishedAt !== null
+      && provisionFinishedAt < successfulRepairFinishedAt
+    ),
+  );
   const secondaryNotice = repair?.status === "failed" && repairFailureWasSuperseded
     ? failedRepairNotice(repair)
-    : undefined;
+    : provision?.status === "failed" && provisionFailureWasSuperseded
+      ? failedProvisionNotice(provision)
+      : undefined;
 
   // A live repair outranks everything: it is already changing the answer.
   if (repair?.status === "running") {
@@ -179,7 +213,7 @@ export function resolveWorkspaceAccessState(input: {
       handoffAvailable,
     };
   }
-  if (provision?.status === "failed") {
+  if (provision?.status === "failed" && !provisionFailureWasSuperseded) {
     const seedPhase = typeof provision.metadata?.seedFailurePhase === "string"
       ? provision.metadata.seedFailurePhase
       : null;
@@ -198,9 +232,9 @@ export function resolveWorkspaceAccessState(input: {
   // runtime rows, because it is the only signal that looked inside the clone.
   const staleNotReadyFailure = failure?.reason === "workspace_not_ready" && readinessConfirmsServing;
   if (failure && !staleNotReadyFailure) {
-    if (failure.reason === "runtime_not_running" && !servingService) {
+    if (failure.reason === "runtime_not_running" && !servingService && !startingService) {
       return {
-        state: "provisioning",
+        state: "stopped",
         title: "Workspace is not running",
         description: "Start the workspace runtime to publish its board.",
         action: { kind: "start", label: "Start workspace" },
@@ -237,6 +271,16 @@ export function resolveWorkspaceAccessState(input: {
     }
   }
 
+  if (startingService) {
+    return {
+      state: "provisioning",
+      title: "Workspace is starting",
+      description: "Paperclip is starting the workspace runtime and waiting for its board URL.",
+      action: { kind: "wait", label: "Starting workspace" },
+      handoffAvailable,
+    };
+  }
+
   if (servingService) {
     return {
       state: "ready",
@@ -263,7 +307,7 @@ export function resolveWorkspaceAccessState(input: {
   }
 
   return {
-    state: "provisioning",
+    state: "stopped",
     title: "Workspace is not running",
     description: "Start the workspace runtime to publish its board.",
     action: { kind: "start", label: "Start workspace" },

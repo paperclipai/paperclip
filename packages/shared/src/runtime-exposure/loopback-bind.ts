@@ -18,8 +18,8 @@
  * Pure string functions only — no I/O, no process state.
  */
 
-/** The only address an exposed managed runtime may bind. */
-export const RUNTIME_EXPOSURE_BIND_MODE = "custom";
+/** The only bind preset an exposed managed runtime may use. */
+export const RUNTIME_EXPOSURE_BIND_MODE = "loopback";
 export const RUNTIME_EXPOSURE_BIND_HOST = "127.0.0.1";
 
 /**
@@ -72,7 +72,7 @@ export function forceLoopbackBindInCommand(command: string): string {
   if (!isPaperclipDevRunnerCommand(command)) return command;
   const stripped = command.replace(BIND_SELECTING_ARG, "").trim();
   if (stripped.length === 0) return command;
-  return `${stripped} --bind ${RUNTIME_EXPOSURE_BIND_MODE} --bind-host ${RUNTIME_EXPOSURE_BIND_HOST}`;
+  return `${stripped} --bind ${RUNTIME_EXPOSURE_BIND_MODE}`;
 }
 
 /**

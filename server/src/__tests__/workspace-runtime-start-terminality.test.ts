@@ -27,6 +27,27 @@ describe("managed runtime start terminality", () => {
     readiness: { type: "http", timeoutSec: 1, intervalMs: 50 },
   } as Record<string, unknown>;
 
+  it("reports the fetch transport cause and probe count without extending the deadline", async () => {
+    const transportError = new Error("connect ECONNREFUSED 127.0.0.1:42000");
+    const fetchError = new TypeError("fetch failed", { cause: transportError });
+    let now = 0;
+    const refusingFetch = (async () => {
+      now = 1_000;
+      throw fetchError;
+    }) as typeof fetch;
+
+    await expect(waitForRuntimeServiceReadiness({
+      service: hangingService,
+      url: "http://127.0.0.1:42000/",
+      readinessUrl: null,
+      fetchImpl: refusingFetch,
+      now: () => now,
+    })).rejects.toMatchObject({
+      message: "Readiness check failed for http://127.0.0.1:42000/: fetch failed: connect ECONNREFUSED 127.0.0.1:42000 (1 probes over 1000ms)",
+      cause: fetchError,
+    });
+  });
+
   it("fails a readiness check whose probes never answer instead of hanging forever", async () => {
     let probes = 0;
     const abortedProbes: string[] = [];
@@ -127,6 +148,23 @@ describe("managed runtime start terminality", () => {
     await expect(
       allocateRuntimeServicePort({ probe: async () => 49881, portOwnerLookup: async () => null }),
     ).resolves.toBe(49881);
+  });
+
+  it("skips a candidate port inside the runtime exposure app-port range", async () => {
+    // The kernel can hand an ephemeral port inside the exposure app-port range
+    // (42000-42999). The reconciler classifies a persisted row by its port: a
+    // port in that range marks the row as an exposure reservation, not a managed
+    // auto port. So the allocator must never return an in-range port; it drops
+    // the in-range candidate and takes the next out-of-range one.
+    const candidates = [42500, 49883];
+    let index = 0;
+    const probe = async () => candidates[Math.min(index++, candidates.length - 1)]!;
+    const portOwnerLookup = async () => null;
+
+    await expect(allocateRuntimeServicePort({ probe, portOwnerLookup })).resolves.toBe(49883);
+    // The allocator skipped 42500 before it reserved a candidate, so the in-range
+    // port stays free. A later start can still claim it through the exposure path.
+    expect(claimRuntimeServiceBindPort(42500, null)).toBe(true);
   });
 
   it("refuses a configured port a sibling start is already claiming", () => {

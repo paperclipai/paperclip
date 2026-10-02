@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { InlineEntitySelector } from "./InlineEntitySelector";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,6 +31,112 @@ describe("InlineEntitySelector", () => {
     window.matchMedia = originalMatchMedia;
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("allows touch scrolling in a mobile picker portalled outside a parent dialog", async () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 40rem)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    const root = createRoot(container);
+    await act(() => {
+      root.render(
+        <Dialog defaultOpen>
+          <DialogContent aria-describedby={undefined}>
+            <DialogTitle>New task</DialogTitle>
+            <InlineEntitySelector
+              value=""
+              options={Array.from({ length: 20 }, (_, index) => ({ id: `agent-${index}`, label: `Agent ${index}` }))}
+              placeholder="Assignee"
+              noneLabel="No assignee"
+              searchPlaceholder="Search assignees..."
+              emptyMessage="No assignees found."
+              onChange={vi.fn()}
+              triggerTestId="nested-assignee-picker"
+              openOnFocus={false}
+              disablePortal
+            />
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    try {
+      await act(() => {
+        document.querySelector<HTMLButtonElement>("[data-testid=nested-assignee-picker]")!.click();
+      });
+      // Let both real Radix scroll locks install their document listeners.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const list = document.querySelector<HTMLElement>("[data-mobile-entity-picker-list]")!;
+      expect(list).not.toBeNull();
+      expect(document.querySelector("[data-slot=dialog-content]")!.contains(list)).toBe(false);
+      // jsdom has no layout; supply the geometry of a list with more rows than fit.
+      list.style.overflowY = "auto";
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+      });
+      const option = list.querySelector("button")!;
+      const touch = (type: string, y: number) => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperties(event, {
+          touches: { value: [{ clientX: 100, clientY: y }] },
+          changedTouches: { value: [{ clientX: 100, clientY: y }] },
+        });
+        option.dispatchEvent(event);
+        return event;
+      };
+      touch("touchstart", 150);
+      expect(touch("touchmove", 100).defaultPrevented).toBe(false);
+      // The background stays locked while the picker is open.
+      const outsideMove = new Event("touchmove", { bubbles: true, cancelable: true });
+      Object.defineProperties(outsideMove, {
+        touches: { value: [{ clientX: 100, clientY: 100 }] },
+        changedTouches: { value: [{ clientX: 100, clientY: 100 }] },
+      });
+      document.body.dispatchEvent(outsideMove);
+      expect(outsideMove.defaultPrevented).toBe(true);
+    } finally {
+      await act(() => root.unmount());
+    }
+  });
+
+  it("opens on the next keyboard focus after a desktop outside dismissal", async () => {
+    const root = createRoot(container);
+    await act(() => {
+      root.render(<>
+        <button type="button" data-testid="outside-picker">Outside</button>
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "agent-1", label: "Agent One" }]}
+          placeholder="Assignee"
+          noneLabel="No assignee"
+          searchPlaceholder="Search assignees..."
+          emptyMessage="No assignees found."
+          onChange={vi.fn()}
+          triggerTestId="desktop-assignee-picker"
+        />
+      </>);
+    });
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>("[data-testid=desktop-assignee-picker]")!;
+      const outside = container.querySelector<HTMLButtonElement>("[data-testid=outside-picker]")!;
+      await act(() => trigger.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await act(() => {
+        outside.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+        outside.focus();
+        outside.click();
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
+      expect(document.activeElement).toBe(outside);
+      await act(() => trigger.focus());
+      expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    } finally {
+      await act(() => root.unmount());
+    }
   });
 
   it("keeps handled search navigation keys inside the popover", async () => {
@@ -91,7 +198,7 @@ describe("InlineEntitySelector", () => {
 
   it("focuses the search input when opened on coarse pointers", async () => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === "(pointer: coarse)",
+      matches: query === "(pointer: coarse)" || query === "(max-width: 40rem)",
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -116,6 +223,7 @@ describe("InlineEntitySelector", () => {
           searchPlaceholder="Search responsible..."
           emptyMessage="No responsible found."
           onChange={vi.fn()}
+          disablePortal
         />,
       );
     });
@@ -129,7 +237,59 @@ describe("InlineEntitySelector", () => {
 
     const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
+    expect(searchInput?.className).toContain("text-base");
+    expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    expect(container.contains(document.querySelector("[data-mobile-entity-picker]"))).toBe(false);
+    expect(document.querySelector("[data-mobile-entity-picker-header]")?.textContent).toContain("Responsible");
+    expect(document.querySelector('button[aria-label="Close selector"]')).not.toBeNull();
     expect(document.activeElement).toBe(searchInput);
+
+    await act(async () => {
+      (document.querySelector('button[aria-label="Close selector"]') as HTMLButtonElement | null)?.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opens on programmatic focus without toggling an open popover closed", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "project-1", label: "Project One" }]}
+          placeholder="Project"
+          noneLabel="No project"
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
 
     act(() => {
       root.unmount();

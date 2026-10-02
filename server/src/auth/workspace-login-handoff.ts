@@ -394,13 +394,16 @@ export function workspaceHandoffKeyFingerprint(key: string): string {
 }
 
 /**
- * Strip the ticket from a URL or URL-ish string before it reaches a log sink.
- * Applied by the request logger and by the guest's own audit records.
+ * Strip query-carried bearer capabilities from a URL or URL-ish string before
+ * they reach a log sink. Applied by the request logger and audit records.
  */
 export function redactWorkspaceHandoffTicket(value: string): string {
-  if (!value.includes(WORKSPACE_HANDOFF_TICKET_QUERY_PARAM)) return value;
-  return value.replace(
+  const workspaceRedacted = value.replace(
     new RegExp(`([?&]${WORKSPACE_HANDOFF_TICKET_QUERY_PARAM}=)[^&#\\s]+`, "gi"),
+    "$1[redacted]",
+  );
+  return workspaceRedacted.replace(
+    /([?&]paperclip_capability=)[^&#\s]+/gi,
     "$1[redacted]",
   );
 }

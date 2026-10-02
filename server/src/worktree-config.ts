@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   mergePaperclipConfig,
@@ -8,6 +9,11 @@ import {
   type PaperclipConfig,
 } from "@paperclipai/shared";
 import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@paperclipai/shared/env-file";
+import {
+  readWorktreePortRegistry,
+  withWorktreePortRegistryLockSync,
+  writeWorktreePortRegistry,
+} from "@paperclipai/shared/worktree-port-registry";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { rewriteUrlPort } from "./url-utils.js";
 
@@ -98,89 +104,6 @@ type WorktreeRuntimeContext = {
   storageDir: string;
   secretsKeyFilePath: string;
 };
-
-type WorktreePortRegistry = {
-  version: 1;
-  configPaths: string[];
-};
-
-const WORKTREE_PORT_REGISTRY_FILE = "worktree-port-reservations.json";
-const WORKTREE_PORT_REGISTRY_LOCK_DIR = ".worktree-port-reservations.lock";
-const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 5_000;
-const WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS = 10_000;
-const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
-
-function sleepSync(durationMs: number): void {
-  Atomics.wait(sleepSyncBuffer, 0, 0, durationMs);
-}
-
-function withWorktreePortRegistryLock<T>(homeDir: string, run: () => T): T {
-  fs.mkdirSync(homeDir, { recursive: true });
-  const lockPath = path.resolve(homeDir, WORKTREE_PORT_REGISTRY_LOCK_DIR);
-  const deadline = Date.now() + WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS;
-
-  while (true) {
-    try {
-      fs.mkdirSync(lockPath);
-      break;
-    } catch (error) {
-      const code = error instanceof Error && "code" in error ? error.code : null;
-      if (code !== "EEXIST") throw error;
-
-      try {
-        const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
-        if (ageMs > WORKTREE_PORT_REGISTRY_LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for worktree port reservation lock at ${lockPath}`);
-      }
-      sleepSync(25);
-    }
-  }
-
-  try {
-    return run();
-  } finally {
-    fs.rmSync(lockPath, { recursive: true, force: true });
-  }
-}
-
-function readWorktreePortRegistry(homeDir: string): Set<string> {
-  const registryPath = path.resolve(homeDir, WORKTREE_PORT_REGISTRY_FILE);
-  if (!fs.existsSync(registryPath)) return new Set();
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as Partial<WorktreePortRegistry>;
-    if (parsed.version !== 1 || !Array.isArray(parsed.configPaths)) return new Set();
-    return new Set(
-      parsed.configPaths
-        .filter((configPath): configPath is string => typeof configPath === "string" && configPath.length > 0)
-        .map((configPath) => path.resolve(configPath)),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function writeWorktreePortRegistry(homeDir: string, configPaths: Iterable<string>): void {
-  const registryPath = path.resolve(homeDir, WORKTREE_PORT_REGISTRY_FILE);
-  const persistedPaths = Array.from(new Set(Array.from(configPaths, (configPath) => path.resolve(configPath))))
-    .filter((configPath) => fs.existsSync(configPath))
-    .sort();
-  const registry: WorktreePortRegistry = {
-    version: 1,
-    configPaths: persistedPaths,
-  };
-  const temporaryPath = `${registryPath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporaryPath, registryPath);
-}
 
 function resolveWorktreeRuntimeContext(
   env: NodeJS.ProcessEnv,
@@ -354,7 +277,6 @@ function collectSiblingWorktreePorts(
         serverPorts.add(siblingConfig.server.port);
       }
       if (
-        siblingConfig.database.mode === "embedded-postgres" &&
         Number.isInteger(siblingConfig.database.embeddedPostgresPort) &&
         siblingConfig.database.embeddedPostgresPort > 0
       ) {
@@ -542,7 +464,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   let repairedConfig = false;
   if (fs.existsSync(context.configPath)) {
     try {
-      const runtimeConfig = withWorktreePortRegistryLock(context.homeDir, () => {
+      const runtimeConfig = withWorktreePortRegistryLockSync(context.homeDir, () => {
         const parsed = JSON.parse(fs.readFileSync(context.configPath, "utf8")) as PaperclipConfig;
         let selectedConfig = parsed;
         const registeredConfigPaths = readWorktreePortRegistry(context.homeDir);
@@ -609,6 +531,15 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     }
   }
 
+  const existingContents = fs.existsSync(context.envPath)
+    ? fs.readFileSync(context.envPath, "utf8")
+    : null;
+  const existingEnvEntries = parseEnvFile(existingContents ?? "");
+  const toolActionSigningSecret =
+    nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    nonEmpty(existingEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    randomBytes(32).toString("hex");
+
   const managedEnvEntries: Record<string, string> = {
     PAPERCLIP_HOME: context.homeDir,
     PAPERCLIP_INSTANCE_ID: context.instanceId,
@@ -617,13 +548,11 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     PAPERCLIP_IN_WORKTREE: "true",
     PAPERCLIP_DB_BACKUP_ENABLED: "false",
     PAPERCLIP_WORKTREE_NAME: context.worktreeName,
+    PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
   };
 
   process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
-
-  const existingContents = fs.existsSync(context.envPath)
-    ? fs.readFileSync(context.envPath, "utf8")
-    : null;
+  process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = toolActionSigningSecret;
   const repairedContents = updateEnvFileContents(
     existingContents ?? emptyWorktreeEnvFileContents(),
     managedEnvEntries,
@@ -671,4 +600,3 @@ export function maybePersistWorktreeRuntimePorts(input: {
     writeConfigFile(context.configPath, config);
   }
 }
-

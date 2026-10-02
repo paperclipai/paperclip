@@ -1,43 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { buildOnboardingGreeting } from "./onboarding-greeting.js";
+import { renderOnboardingGreeting } from "./onboarding-greeting.js";
 
-describe("buildOnboardingGreeting", () => {
-  it("introduces the agent by name as the user's first teammate and reflects the goals", () => {
-    const greeting = buildOnboardingGreeting({
+describe("renderOnboardingGreeting", () => {
+  it("introduces the agent by name as the user's first teammate", async () => {
+    const greeting = await renderOnboardingGreeting({
       agentName: "Nova",
-      teamName: "Acme",
-      goals: "Launch a marketplace for local makers.",
+      organizationName: "Acme",
     });
 
     expect(greeting).toContain(
-      "Welcome! I'm Nova, your first agent teammate on Paperclip.",
+      "Welcome to Paperclip! I'm Nova, your first agent teammate.",
     );
-    expect(greeting).toContain("Here's what I understand you're aiming for:");
-    expect(greeting).toContain("> Launch a marketplace for local makers.");
-    expect(greeting).toContain("propose a team of agents");
-    expect(greeting).toContain("few focused questions");
-  });
-
-  it("falls back to a generic teammate intro when no agent name is set", () => {
-    const greeting = buildOnboardingGreeting({ agentName: null, goals: null });
-
-    expect(greeting).toContain(
-      "Welcome! I'm your first agent teammate on Paperclip.",
-    );
-  });
-
-  it("collapses whitespace in the reflected goals", () => {
-    const greeting = buildOnboardingGreeting({
-      goals: "  Build\n\n  a  SaaS product.  ",
-    });
-
-    expect(greeting).toContain("> Build a SaaS product.");
-  });
-
-  it("omits the reflect-back block when no goals are provided", () => {
-    const greeting = buildOnboardingGreeting({ agentName: "Nova", goals: null });
-
+    // No goal quote and no "give me one moment" — the agent is not about to run.
     expect(greeting).not.toContain("aiming for");
-    expect(greeting).toContain("propose a team of agents");
+    expect(greeting).not.toContain("one moment");
+    // The "what would you like to do" ask moved to the opening card; the
+    // greeting only points at it.
+    expect(greeting).toContain("Pick how you'd like to start");
+  });
+
+  it("drops the name gracefully when no agent name is set", async () => {
+    const greeting = await renderOnboardingGreeting({
+      agentName: null,
+      organizationName: "Acme",
+    });
+
+    expect(greeting).toContain(
+      "Welcome to Paperclip! I'm your first agent teammate.",
+    );
+    expect(greeting).not.toContain("{{agentName}}");
+  });
+
+  it("trims whitespace/blank names to the no-name phrasing", async () => {
+    const greeting = await renderOnboardingGreeting({ agentName: "   " });
+
+    expect(greeting).toContain("I'm your first agent teammate.");
   });
 });

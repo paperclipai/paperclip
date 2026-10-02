@@ -1,6 +1,5 @@
 import {
   buildSandboxNpmInstallCommand,
-  type AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
@@ -14,23 +13,16 @@ export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
   { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
-];
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Gemini Flash Lite as the budget Gemini CLI lane while preserving the primary model.",
-    adapterConfig: {
-      model: "gemini-2.5-flash-lite",
-    },
-    source: "adapter_default",
-  },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration
@@ -52,7 +44,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
+- engine (string, optional): defaults to ACP, including legacy unset/"auto" values. Missing prerequisites and execution failures fail the run without changing engines. Set "cli" to explicitly select the CLI engine.
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
@@ -68,7 +60,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Gemini ACP is the preferred auto lane when Node >=20 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Auto selection falls back to the CLI lane when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
+- Gemini ACP is the preferred auto lane when Node >=24.11.0 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
 - Runs use --prompt for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.

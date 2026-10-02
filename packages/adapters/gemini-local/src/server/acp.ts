@@ -31,18 +31,19 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "20.0.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type GeminiExecutionEngine = "cli" | "acp";
 
 export interface GeminiEngineSelection {
   engine: GeminiExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type GeminiEngineResolutionInput =
@@ -71,15 +72,15 @@ export async function resolveGeminiExecutionEngineForRun(
   input: GeminiEngineResolutionInput,
 ): Promise<GeminiEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
-  if (selection.explicit || selection.engine !== "acp") return selection;
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): GeminiEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
 
-  const fallbackReason = await defaultGeminiAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatGeminiAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Gemini ACP default unavailable; falling back to Gemini CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await geminiAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -162,19 +163,13 @@ async function prepareGeminiRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] => async () => {
-    try {
-      await onLog("stdout", "[paperclip] Restoring workspace changes from the sandbox.\n");
-      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[paperclip] Gemini ACP teardown workspace restore failed: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
-    }
-  };
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
+    });
   const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
   const stagedRuntime = await input.stage(
     geminiSkillsHome
@@ -358,7 +353,7 @@ function sandboxTargetHasProcessSessionBridge(
   return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
 }
 
-async function defaultGeminiAcpFallbackReason(
+async function geminiAcpUnavailableReason(
   input: GeminiEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
@@ -372,7 +367,7 @@ async function defaultGeminiAcpFallbackReason(
     return "Gemini ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsGeminiAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = resolveGeminiAcpCommand(input.config);
   if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
@@ -437,7 +432,7 @@ export async function testGeminiAcpEnvironment(
     level: nodeVersionMeetsGeminiAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsGeminiAcpMinimum()
       ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
     hint: nodeVersionMeetsGeminiAcpMinimum()
       ? undefined
       : `Run Gemini ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,

@@ -17,9 +17,33 @@ You need either:
 - board access, or
 - agent permission `can_create_agents=true` in your company
 
-If you do not have this permission, escalate to your CEO or board.
+If you do not have this permission, keep the current task assigned to yourself
+and identify the missing hiring authority. A CEO or manager title does not grant
+hiring permission. Do not reassign the task or create an escalation task to bypass
+the denial. Use the applicable approval flow when available; otherwise save a
+human-input interaction on the current task with `resolverPolicy: "human_only"`
+and `continuationPolicy: "wake_assignee"`, then leave it `in_review`. Use the
+complete human-input payload in the `paperclip` skill; when the requesting user
+owns the decision, address it with their actual `addresseeUserId`. A human answer
+does not itself grant permission: recheck authorization before any hire.
 
 ## Workflow
+
+### Choose the API transport
+
+On **Paperclip Runner**, use the advertised Paperclip tools. Use `get_task_context`
+and `list_agents` for identity and team context, then `search_api` to discover the
+configuration, instruction-template, icon, and `agent-hires` endpoints used below.
+Call the discovered operations with `call_api`; the server supplies company and
+authentication context. Read the returned schemas before drafting the hire.
+
+The shell examples below apply to adapters that receive `PAPERCLIP_API_URL` and
+`PAPERCLIP_API_KEY`. Paperclip Runner does not supply those variables. Do not
+search workspace files for a server address or credentials to recreate that path.
+If `search_api` / `call_api` are unavailable, report that hiring requires the
+operator to enable runner API tools for this company. Preserve the proposed hire
+in the conversation; do not claim an agent was created or substitute a temporary
+subagent for the requested permanent hire.
 
 ### 1. Confirm identity and company context
 

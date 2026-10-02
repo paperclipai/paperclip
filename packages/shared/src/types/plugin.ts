@@ -173,6 +173,21 @@ export interface SandboxProviderCapabilities {
    * `false`.
    */
   concurrentSyncOperations?: boolean;
+  /**
+   * Provider opens one persistent, bidirectional duplex channel that carries the
+   * command stream, in place of the file transport of the callback bridge. This
+   * is an opt-in behavioral guarantee, not a worker-method property: a provider
+   * that keeps persistent sessions and runs independent control commands still
+   * does not carry a framed duplex stream unless it declares this key. An omitted
+   * key denies the capability, so the provider keeps the file bridge. Only a
+   * provider that declares this key `true` and whose worker verifies the duplex
+   * open method selects the duplex channel path.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+   */
+  duplexCommandStream?: boolean;
+  /** Provider can expose runnerd through a private authenticated WebSocket ingress. */
+  runnerWebSocketIngress?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {
@@ -190,6 +205,13 @@ export interface PluginEnvironmentDriverDeclaration {
   displayName: string;
   /** Optional description for operator-facing docs or UI affordances. */
   description?: string;
+  /**
+   * Default provider budget for a fresh lease acquisition, in milliseconds.
+   * The host adds RPC overhead. A valid explicit config.timeoutMs overrides
+   * this default; bridgeRequestTimeoutMs can extend the resulting budget.
+   * Omit to retain the worker's normal RPC timeout. This is not lease lifetime.
+   */
+  defaultAcquireTimeoutMs?: number;
   /**
    * Sandbox providers must opt in before the host retains and resumes provider
    * leases across runs. Providers without this flag keep per-run acquire/release

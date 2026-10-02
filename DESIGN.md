@@ -35,6 +35,42 @@ Existing tiers already in index.css (~80+ tokens) — extraction maps to these o
 7. **Words are part of the system.** One name per concept across the entire UI — the canonical term is *task* (never *issue* or *ticket* in copy, labels, or empty states). Buttons name the action ("Approve hire," not "Submit"). Errors say what happened and what to do. Empty states say what to do first. **Note:** enforcing the task rename is a visible change and is explicitly OUT of the zero-visual-change extraction run; it happens in its own follow-up run.
 8. **Agent-modifiable by design.** The system must be changeable via instructions: single token source, lint rules that enforce it, and this document kept current. A correct change should be expressible as "edit tokens + run checks," not "visit 40 files."
 
+## Form and wizard footers
+
+Keep **Save & exit** (or Cancel/Back) and the primary Continue/Connect/Finish
+action in one shared footer row, vertically centered. Put the subdued secondary
+action on the left and the primary action on the right. A step owns its whole
+footer: do not render Save & exit in a separate parent block below it. Check this
+alignment in every step and conditional state, not just the first screen.
+
+## Contextual feedback
+
+Task chat shows execution errors and waits only while they remain relevant.
+Completing or cancelling a task hides its old execution notices. A newer attempt by
+the same agent or an explicit successor supersedes earlier run notices; an
+unresolved execution hold remains visible. Historical turns keep their responses,
+files, questions and inspectable activity without a Worked/Stopped status label.
+Run history retains the full diagnostic record. Session reset boundaries remain
+in the conversation. Time passing or a new human comment alone does not resolve
+an error. Stored notices need run or recovery provenance before they can be hidden;
+child-task relays and other unrelated system updates stay visible.
+
+Do not show a toast for task or run state already visible on the current screen.
+This includes descendant runs represented by the open subtree. Show local action
+results in place; keep failures actionable inline. Notifications for other work
+remain useful. Repeated delivery of the same run outcome must refresh cached state
+without repeating its toast, including after reconnecting. A terminal outcome
+delivered more than five minutes after the run finished is historical and should
+refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+paused.” and “Resume this task to send a message.” with a “Resume task” action.
+Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
+dismissed, retains drafts, and hides message inputs until the pause is released.
+
+Pending questions, confirmations, and other task-thread inputs appear in a separate
+card directly above the ordinary composer. The composer stays available for new
+messages while the card is open. Dismissing a card leaves a pending indicator that
+can reopen it; resolving or skipping the input removes that indicator.
+
 ## Enforcement (what "compliant" means for the extraction run)
 
 - **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved.
@@ -82,3 +118,5 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
 - **Reduced motion is honored at the token layer.** A `prefers-reduced-motion: reduce`
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
+
+Agent Chat keeps pending questions as compact “Unanswered question” entries at their original position in history. A newer user message dismisses the old question form without resolving it. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.

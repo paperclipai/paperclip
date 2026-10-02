@@ -3,12 +3,14 @@ import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import {
   canBufferForUtf8Validation,
+  formatAttachmentSize,
   isAllowedContentType,
+  isInlineAttachmentContentType,
   isTextualAttachmentContentType,
   isValidUtf8Buffer,
   MAX_ATTACHMENT_BYTES,
@@ -123,7 +125,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `File is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -140,7 +144,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+      res.status(400).json({
+        error: `Invalid image metadata: ${ASSET_NAMESPACE_RULE}`,
+        details: parsedMeta.error.issues,
+      });
       return;
     }
 
@@ -227,7 +234,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `Image is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -323,15 +332,35 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
     if (!asset) return;
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    // Use the persisted size only after resource authorization. Single ranges
+    // keep saved API text pages bounded all the way to disk or object storage.
+    const rawRange = req.headers.range;
+    const rangeSyntax = rawRange && /^bytes=(\d*)-(\d*)$/i.exec(rawRange);
+    const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
+    const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
+    res.setHeader("Accept-Ranges", "bytes");
+    if (/^[a-f0-9]{64}$/.test(asset.sha256)) res.setHeader("ETag", `"${asset.sha256}"`);
+    if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
+      || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
+      res.setHeader("Content-Range", `bytes */${asset.byteSize}`);
+      res.status(416).end();
+      return;
+    }
+    const range = Array.isArray(ranges) ? ranges[0] : undefined;
+    const object = await storage.getObject(asset.companyId, asset.objectKey, range ? { range } : undefined);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const inlineSafe = mediaType !== SVG_CONTENT_TYPE
+      && isInlineAttachmentContentType(mediaType);
 
     // Storage accepts arbitrary bytes for textual content types (upload never
     // validates encoding), so only assert charset=utf-8 once the full body is
-    // confirmed to actually be valid UTF-8.
+    // confirmed to actually be valid UTF-8. A range response only carries a
+    // slice of the bytes, which can't be validated reliably, so it stays unlabeled.
     let bufferedBody: Buffer | null = null;
     let responseHeaderContentType = responseContentType;
     if (
+      !range &&
       isTextualAttachmentContentType(responseContentType) &&
       canBufferForUtf8Validation(asset.byteSize ?? object.contentLength)
     ) {
@@ -349,20 +378,28 @@ export function assetRoutes(db: Db, storage: StorageService) {
         validatedUtf8: isValidUtf8Buffer(bufferedBody),
       });
     } else {
-      // Textual content too large (or of unknown size) to safely buffer for
-      // UTF-8 validation is streamed unlabeled instead, same as binary content.
       responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, { validatedUtf8: false });
     }
 
     res.setHeader("Content-Type", responseHeaderContentType);
-    res.setHeader("Content-Length", String(bufferedBody ? bufferedBody.length : asset.byteSize || object.contentLength || 0));
+    res.setHeader(
+      "Content-Length",
+      String(bufferedBody ? bufferedBody.length : range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0),
+    );
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
+    }
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (responseContentType === SVG_CONTENT_TYPE) {
-      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    if (!inlineSafe) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = inlineSafe
+      ? "inline"
+      : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     if (bufferedBody) {
       res.end(bufferedBody);
@@ -370,6 +407,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       object.stream.on("error", (err) => {
         next(err);
       });
+      res.on("close", () => object.stream.destroy());
       object.stream.pipe(res);
     }
   });

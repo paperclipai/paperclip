@@ -1,3 +1,4 @@
+import { aiConnectionLoginIntentSchema } from "../ai-connections.js";
 import { z } from "zod";
 import { AGENT_ADAPTER_TYPES } from "../constants.js";
 import { ADAPTER_AUTH_SESSION_STATUSES } from "../types/agent.js";
@@ -18,8 +19,8 @@ export type AdapterAuthSessionFailure = z.infer<typeof adapterAuthSessionFailure
 // The public response schema. `.strict()` rejects an extra field, so a prompt, a
 // token, an account identifier, or a provider lease identifier never validates.
 export const adapterAuthSessionResponseSchema = z.object({
-  sessionId: z.string().uuid(),
-  environmentId: z.string().uuid(),
+  sessionId: z.string().guid(),
+  environmentId: z.string().guid(),
   status: adapterAuthSessionStatusSchema,
   expiresAt: isoDateTime.nullable(),
   failure: adapterAuthSessionFailureSchema.nullable(),
@@ -35,12 +36,14 @@ export type AdapterAuthSessionPrompt = z.infer<typeof adapterAuthSessionPromptSc
 // The owner read schema. It adds the one-time prompt to the public response.
 export const adapterAuthSessionOwnerResponseSchema = adapterAuthSessionResponseSchema.extend({
   prompt: adapterAuthSessionPromptSchema.nullable(),
+  aiConnection: aiConnectionLoginIntentSchema.optional(),
 }).strict();
 export type AdapterAuthSessionOwnerResponse =
   z.infer<typeof adapterAuthSessionOwnerResponseSchema>;
 
 export const startAdapterAuthSessionRequestSchema = z.object({
-  environmentId: z.string().uuid(),
+  aiConnection: aiConnectionLoginIntentSchema.optional(),
+  environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
   ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),
 }).strict();

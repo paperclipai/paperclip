@@ -1,6 +1,6 @@
-import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
+import { Readable } from "node:stream";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import type { StorageService } from "../storage/types.js";
@@ -175,6 +175,68 @@ describe("POST /api/companies/:companyId/assets/images", () => {
     });
   });
 
+  it("accepts namespaces that hold identity-provider user ids", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const namespace = "profiles/oidc:example|jane.example@example.com";
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", namespace)
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(png.__calls.putFileInputs[0]).toMatchObject({
+      companyId: "company-1",
+      namespace: `assets/${namespace}`,
+      originalFilename: "avatar.png",
+      contentType: "image/png",
+    });
+  });
+
+  it("rejects namespaces with characters outside the accepted set", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "profiles/bad name!")
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("namespace");
+    expect(res.body.details?.[0]?.path).toEqual(["namespace"]);
+    expect(png.__calls.putFileInputs).toHaveLength(0);
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects namespaces that hold a dot path segment", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "profiles/../secrets")
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("namespace");
+    expect(png.__calls.putFileInputs).toHaveLength(0);
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
   it("allows supported non-image attachments outside the company logo flow", async () => {
     const text = createStorageService("text/plain");
     const app = await createApp(text);
@@ -195,6 +257,21 @@ describe("POST /api/companies/:companyId/assets/images", () => {
     expect([200, 201]).toContain(res.status);
     expect(res.body.contentPath).toBe("/api/assets/asset-1/content");
     expect(res.body.contentType).toBe("text/plain");
+  });
+
+  it("names the limit in human units when a file exceeds the attachment cap", async () => {
+    const app = await createApp(createStorageService());
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const file = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .attach("file", file, "too-large.png"),
+    );
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("File is larger than the 10 MB limit");
   });
 });
 
@@ -298,7 +375,7 @@ describe("POST /api/companies/:companyId/logo", () => {
     );
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes`);
+    expect(res.body.error).toBe("Image is larger than the 10 MB limit");
   });
 
   it("rejects unsupported image types", async () => {
@@ -436,5 +513,101 @@ describe("GET /api/assets/:assetId/content", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("text/plain");
     expect(Buffer.compare(Buffer.from(res.body as Buffer), oversizedBody)).toBe(0);
+  });
+
+  it("reads only the requested storage range for a large asset", async () => {
+    const storage = createStorageService("text/plain");
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain", byteSize: 10 * 1024 * 1024 });
+    vi.mocked(storage.getObject).mockImplementation(async (_company, _key, options) => {
+      expect(options).toEqual({ range: { start: 8192, end: 12288 } });
+      return { stream: Readable.from(Buffer.alloc(4097, 65)), contentLength: 4097 };
+    });
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", "bytes=8192-12288"));
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe("bytes 8192-12288/10485760");
+    expect(res.headers["content-length"]).toBe("4097");
+    expect(res.text).toBe("A".repeat(4097));
+  });
+
+  it.each(["bytes=999-1000", "bytes=0-1,3-4", "bytes=1x-3", "bytes=-", "items=0-3"])("rejects invalid asset ranges before storage reads: %s", async range => {
+    const storage = createStorageService();
+    getAssetByIdMock.mockResolvedValue(createAsset());
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", range));
+    expect(res.status).toBe(416);
+    expect(res.headers["content-range"]).toBe("bytes */40");
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it("downloads script-capable HTML with nosniff and a sandbox CSP", async () => {
+    const html = Buffer.from("<script>globalThis.__assetXss = true</script>");
+    const storage = createStorageService("text/html");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "text/html",
+      byteSize: html.byteLength,
+      originalFilename: "proof.html",
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(html),
+      contentType: "text/html",
+      contentLength: html.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="proof.html"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  });
+
+  it("downloads SVG instead of rendering it on the application origin", async () => {
+    const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>");
+    const storage = createStorageService("image/svg+xml; charset=utf-8");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "image/svg+xml; charset=utf-8",
+      byteSize: svg.byteLength,
+      originalFilename: "logo.svg",
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(svg),
+      contentType: "image/svg+xml; charset=utf-8",
+      contentLength: svg.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="logo.svg"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  });
+
+  it("keeps curated image types inline", async () => {
+    const image = Buffer.from("png-bytes");
+    const storage = createStorageService("image/png");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      byteSize: image.byteLength,
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(image),
+      contentType: "image/png",
+      contentLength: image.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('inline; filename="logo.png"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers).not.toHaveProperty("content-security-policy");
   });
 });

@@ -112,6 +112,7 @@ export function trackAgentTaskCompleted(
     agentId: string;
     adapterType: RawDimension<EventDimensionsMap["agent.task_completed"]["adapter_type"]>;
     model?: string;
+    taskId?: string;
   },
 ): void {
   client.track("agent.task_completed", {
@@ -119,7 +120,106 @@ export function trackAgentTaskCompleted(
     agent_id: dims.agentId,
     adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
   });
+}
+
+export function trackAgentTaskRun(
+  client: TelemetryClient,
+  dims: {
+    agentId: string;
+    state: RawDimension<EventDimensionsMap["agent.task_run"]["state"]>;
+    adapterType?: RawDimension<EventDimensionsMap["agent.task_run"]["adapter_type"]>;
+    agentRole?: RawDimension<EventDimensionsMap["agent.task_run"]["agent_role"]>;
+    model?: string;
+    durationSeconds?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    taskId?: string;
+  },
+): void {
+  client.track("agent.task_run", {
+    agent_id: dims.agentId,
+    state: asEventDimension(dims.state),
+    ...(dims.adapterType ? { adapter_type: asEventDimension(dims.adapterType) } : {}),
+    ...(dims.agentRole ? { agent_role: asEventDimension(dims.agentRole) } : {}),
+    ...(dims.model ? { model: dims.model } : {}),
+    ...(dims.durationSeconds === undefined ? {} : { duration_seconds: dims.durationSeconds }),
+    ...(dims.inputTokens === undefined ? {} : { input_tokens: dims.inputTokens }),
+    ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
+    ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+  });
+}
+
+export function trackConnectionCreated(
+  client: TelemetryClient,
+  dims: {
+    connector_key: RawDimension<"custom">;
+    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
+    auth_kind: RawDimension<"oauth" | "api_key" | "none">;
+    setup_flow: RawDimension<"gallery" | "api" | "example">;
+    status: RawDimension<"draft" | "active" | "disabled" | "archived">;
+    enabled: boolean;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure which catalog connectors installations create connections for
+    "connection.created",
+    dims,
+  );
+}
+
+export function trackConnectionUpdated(
+  client: TelemetryClient,
+  dims: {
+    connector_key: RawDimension<"custom">;
+    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
+    auth_kind: RawDimension<"oauth" | "api_key" | "none">;
+    change_source: RawDimension<
+      | "api"
+      | "gallery"
+      | "oauth_callback"
+      | "credential_refresh"
+      | "archive"
+      | "example"
+    >;
+    previous_status: RawDimension<"draft" | "active" | "disabled" | "archived">;
+    status: RawDimension<"draft" | "active" | "disabled" | "archived">;
+    previous_enabled: boolean;
+    enabled: boolean;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure connector lifecycle transitions (configured, paused, archived) after creation
+    "connection.updated",
+    dims,
+  );
+}
+
+export function trackConnectionInvoked(
+  client: TelemetryClient,
+  dims: {
+    connector_key: RawDimension<"custom">;
+    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
+    status: RawDimension<
+      | "succeeded"
+      | "failed"
+      | "denied"
+      | "cancelled"
+      | "timed_out"
+      | "rate_limited"
+    >;
+    origin: RawDimension<"setup_test" | "agent" | "user" | "system" | "plugin">;
+    duration_seconds?: number;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure whether connected connectors are successfully used and where invocations fail; records completed invocation attempts and their terminal status, never invocation starts
+    "connection.invoked",
+    dims,
+  );
 }
 
 export function trackErrorHandlerCrash(

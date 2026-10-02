@@ -1,8 +1,10 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { workspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +15,14 @@ import {
   fetchGitBundleIntoLocalRef,
   integrateImportedGitHead,
   isMissingGitPrerequisiteError,
-  readGitWorkspaceSnapshot,
+  readGitWorkspaceSnapshot as readRawSnapshot,
+  disposeGitWorkspaceSnapshot,
+  type ExpensiveWorkspaceGitInput,
+  type GitWorkspaceSnapshot,
+  ReferencedSourceIgnoreScanLimitExceededError,
+  readReferencedSourceGitIgnoredPaths,
+  REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
+  REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES,
   runLocalGit,
   sanitizeGitRemoteUrl,
   setExpensiveWorkspaceGitExecutor,
@@ -21,6 +30,21 @@ import {
 } from "./git-workspace-sync.js";
 
 const execFile = promisify(execFileCallback);
+
+const snapshots: GitWorkspaceSnapshot[] = [];
+async function readGitWorkspaceSnapshot(...args: Parameters<typeof readRawSnapshot>) {
+  const snapshot = await readRawSnapshot(...args);
+  if (!snapshot) return null;
+  snapshots.push(snapshot);
+  // Small fixture assertions use arrays; production consumes only iterators.
+  return { ...snapshot, overlayPaths: [...workspacePaths(snapshot.overlayPaths)].sort((a,b)=>a.localeCompare(b)),
+    deletedPaths: [...workspacePaths(snapshot.deletedPaths)], ignoredPaths: [...workspacePaths(snapshot.ignoredPaths)] };
+}
+function executeScan(input: ExpensiveWorkspaceGitInput) {
+  if (!input.onStdout) return runLocalGit(input.localDir, [...input.args], input);
+  return runWorkspaceGitProcess({ cwd: input.localDir, args: input.args, timeoutMs: input.timeout,
+    maxStdoutBytes: input.maxBuffer, maxStderrBytes: input.maxBuffer, onStdout: input.onStdout, signal: input.signal, env: input.env });
+}
 
 async function git(cwd: string, args: string[]): Promise<string> {
   return (await runLocalGit(cwd, args)).stdout.trim();
@@ -31,12 +55,13 @@ describe("git workspace sync", () => {
 
   afterEach(async () => {
     setExpensiveWorkspaceGitExecutor(null);
+    for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
-  });
+  }, 30_000); // The output-limit fixture removes 40,000 files on teardown.
 
   it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
@@ -46,10 +71,7 @@ describe("git workspace sync", () => {
     const operations: string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       operations.push(input.operation);
-      return await runLocalGit(input.localDir, [...input.args], {
-        timeout: input.timeout,
-        maxBuffer: input.maxBuffer,
-      });
+      return executeScan(input);
     });
 
     const snapshot = await readGitWorkspaceSnapshot(repo);
@@ -63,6 +85,126 @@ describe("git workspace sync", () => {
     ]);
   });
 
+  it("keeps every filename byte for a padded name in each of the four anchor lanes", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-anchor-whitespace-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    // Deleted lane: commit the file first (in isolation, before anything else
+    // is staged), then remove it from the work tree.
+    const deletedName = " deleted padded ";
+    await writeFile(path.join(repo, deletedName), "deleted\n", "utf8");
+    await git(repo, ["add", deletedName]);
+    await git(repo, ["commit", "-qm", "add deleted padded"]);
+    await rm(path.join(repo, deletedName));
+
+    // Overlay lane, staged-new half: `git diff --diff-filter=ACMRTUXB HEAD`
+    // reports a staged-but-uncommitted file as added.
+    const overlayName = " overlay padded ";
+    await writeFile(path.join(repo, overlayName), "overlay\n", "utf8");
+    await git(repo, ["add", overlayName]);
+
+    // Overlay lane, untracked half: `ls-files --others --exclude-standard`.
+    const untrackedName = " untracked padded ";
+    await writeFile(path.join(repo, untrackedName), "untracked\n", "utf8");
+
+    // Ignored lane: a double-wildcard pattern avoids the separate rule that
+    // Git trims an unescaped trailing space in a .gitignore PATTERN itself;
+    // the padding under test lives in the matched FILE name.
+    const ignoredName = " ignored padded ";
+    await writeFile(path.join(repo, ".gitignore"), "*ignored*padded*\n", "utf8");
+    await writeFile(path.join(repo, ignoredName), "ignored\n", "utf8");
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain(overlayName);
+    expect(snapshot?.overlayPaths).toContain(untrackedName);
+    expect(snapshot?.deletedPaths).toContain(deletedName);
+    expect(snapshot?.ignoredPaths).toContain(ignoredName);
+  });
+
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled", "workspace_git_scan_failed"])("preserves %s instead of reporting a non-Git folder", async (code) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scan-failure-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const failure = Object.assign(new Error("Git enumeration failed"), { code });
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") throw failure;
+      return executeScan(input);
+    });
+    await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
+  });
+
+  it("lists ignored paths without traversing ignored directory contents", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ignored-scan-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, ".gitignore"), "dependencies/\n*.secret\n");
+    await mkdir(path.join(repo, "dependencies", "nested"), { recursive: true });
+    await writeFile(path.join(repo, "dependencies", "nested", "private"), "private");
+    await writeFile(path.join(repo, "token.secret"), "private");
+    let ignoredArgs: readonly string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
+      return executeScan(input);
+    });
+    expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
+    expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  });
+
+  it("snapshots a generated directory with more than 1 MiB of filenames", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-large-untracked-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const generatedDir = path.join(repo, "storybook-output");
+    await mkdir(generatedDir);
+    const names = Array.from({ length: 5_000 }, (_, index) => `${"asset-".repeat(36)}${index}.js`);
+    for (let start = 0; start < names.length; start += 100) {
+      await Promise.all(names.slice(start, start + 100).map((name) => writeFile(path.join(generatedDir, name), "")));
+    }
+    const raw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(raw.stdout)).toBeGreaterThan(1024 * 1024);
+    setExpensiveWorkspaceGitExecutor(executeScan);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.overlayPaths).toEqual(
+      names.map((name) => `storybook-output/${name}`).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // A larger tree exceeds the old 8 MiB bound but fits the new 32 MiB bound.
+    for (let start = 5_000; start < 40_000; start += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(
+        path.join(generatedDir, `${"asset-".repeat(36)}${start + index}.js`), "",
+      )));
+    }
+    const largerRaw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(largerRaw.stdout)).toBeGreaterThan(8 * 1024 * 1024);
+    const largerSnapshot = await readGitWorkspaceSnapshot(repo);
+    expect(largerSnapshot?.overlayPaths).toEqual(
+      largerRaw.stdout.split("\0").filter(Boolean).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // Reuse the files with longer parent paths to exceed 32 MiB without
+    // creating hundreds of thousands of files solely to test the bound.
+    const deepParent = path.join(repo, ...Array.from({ length: 4 }, () => "nested-".repeat(30)));
+    await mkdir(deepParent, { recursive: true });
+    await rename(generatedDir, path.join(deepParent, "storybook-output"));
+    expect(Buffer.byteLength(largerRaw.stdout) + 40_000 * (path.relative(repo, deepParent).length + 1))
+      .toBeGreaterThan(32 * 1024 * 1024);
+    const streamed = await readRawSnapshot(repo);
+    snapshots.push(streamed!);
+    let count = 0;
+    let bytes = 0;
+    for (const relative of workspacePaths(streamed!.overlayPaths)) { count++; bytes += Buffer.byteLength(relative) + 1; }
+    expect(count).toBe(40_000);
+    expect(bytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(JSON.stringify(streamed).length).toBeLessThan(4096);
+  }, 60_000);
+
   async function createRepo(rootDir: string): Promise<string> {
     const repo = path.join(rootDir, "repo");
     await mkdir(repo, { recursive: true });
@@ -75,6 +217,19 @@ describe("git workspace sync", () => {
     await git(repo, ["commit", "-m", "base"]);
     return repo;
   }
+
+  it("does not classify a selected repository subfolder as a cloneable repository root", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-selected-folder-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const selectedDir = path.join(repo, "project");
+    await mkdir(selectedDir);
+    await writeFile(path.join(selectedDir, "draft.md"), "selected work\n");
+
+    expect(await git(selectedDir, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+    expect(await readGitWorkspaceSnapshot(selectedDir)).toBeNull();
+    expect((await readGitWorkspaceSnapshot(repo))?.headCommit).toBe(await git(repo, ["rev-parse", "HEAD"]));
+  });
 
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
@@ -100,6 +255,43 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
     });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves nested repository symlinks after the temporary clone is removed", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-nested-links-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const nested = await createRepo(path.join(repo, ".paperclip-repositories"));
+    await writeFile(path.join(repo, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await mkdir(path.join(nested, "skills", "demo"), { recursive: true });
+    await mkdir(path.join(nested, ".claude", "skills"), { recursive: true });
+    await writeFile(path.join(nested, "skills", "demo", "SKILL.md"), "skill content\n");
+    const links = [
+      [".claude/skills/demo", "../../skills/demo"],
+      ["skill.md", "skills/demo/SKILL.md"],
+      ["skill-alias", ".claude/skills/demo"],
+      ["future", "future.txt"],
+    ] as const;
+    for (const [name, target] of links) await symlink(target, path.join(nested, name));
+    await git(nested, ["add", "."]);
+    await git(nested, ["commit", "-m", "add repository links"]);
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.repositories).toHaveLength(1);
+
+    await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      // The nested clone's callback has already returned and deleted its temp
+      // directory. Relative links must keep their repository meaning here.
+      const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
+      for (const [name, target] of links) {
+        expect((await lstat(path.join(copied, name))).isSymbolicLink()).toBe(true);
+        expect(await readlink(path.join(copied, name))).toBe(target);
+      }
+      expect(await readFile(path.join(copied, ".claude/skills/demo/SKILL.md"), "utf8")).toBe("skill content\n");
+      expect(await readFile(path.join(copied, "skill-alias/SKILL.md"), "utf8")).toBe("skill content\n");
+      await expect(stat(path.join(copied, "future"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(copied, ["status", "--porcelain"])).toBe("");
+    });
+    expect(await git(nested, ["status", "--porcelain"])).toBe("");
   });
 
   it("copies the workspace origin remote into the shallow clone", async () => {
@@ -533,6 +725,285 @@ describe("git workspace sync", () => {
     await expect(integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))
       .rejects.toThrow(/Failed to merge concurrent remote git histories/);
     expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+  });
+
+  describe("readReferencedSourceGitIgnoredPaths", () => {
+    it("returns null for a directory that is not a Git work tree", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-nogit-"));
+      cleanupDirs.push(rootDir);
+      const plainDir = path.join(rootDir, "plain");
+      await mkdir(plainDir, { recursive: true });
+      await writeFile(path.join(plainDir, "file.txt"), "body\n", "utf8");
+
+      await expect(readReferencedSourceGitIgnoredPaths(plainDir)).resolves.toBeNull();
+    });
+
+    it.each([
+      { code: "workspace_git_scan_failed", exitCode: 128, signal: null, nonGit: true },
+      { code: "workspace_git_scan_timeout", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_cancelled", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_output_limit", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_failed", exitCode: null, signal: "SIGTERM", nonGit: false },
+    ])("classifies scheduled non-repository failures without swallowing $code/$signal", async ({ code, exitCode, signal, nonGit }) => {
+      const error = Object.assign(new Error("Workspace Git scan failed"), {
+        code,
+        details: { exitCode, signal, stderr: "fatal: not a git repository (or any of the parent directories): .git" },
+      });
+      setExpensiveWorkspaceGitExecutor(async () => { throw error; });
+      try {
+        const result = readReferencedSourceGitIgnoredPaths("/plain-workspace");
+        if (nonGit) await expect(result).resolves.toBeNull();
+        else await expect(result).rejects.toBe(error);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+    });
+
+    it("reads the repository top level and the ignored paths of a Git work tree", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-git-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "secret.env\nbuild/\n", "utf8");
+      await writeFile(path.join(repo, "secret.env"), "TOKEN=abc\n", "utf8");
+      await mkdir(path.join(repo, "build"), { recursive: true });
+      await writeFile(path.join(repo, "build", "out.js"), "artifact\n", "utf8");
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+      expect(scan?.toplevel).toBe(await git(repo, ["rev-parse", "--show-toplevel"]));
+      expect(scan?.ignoredPaths).toEqual(["build", "secret.env"]);
+    });
+
+    it("preserves trailing whitespace in an ignored path entry", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-trailing-ws-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // A wildcard pattern avoids the separate rule that git trims an
+      // unescaped trailing space in a .gitignore pattern itself; the trailing
+      // space under test lives in the matched FILE name, not the pattern.
+      const paddedName = "secret.env ";
+      await writeFile(path.join(repo, ".gitignore"), "secret.env*\n", "utf8");
+      await writeFile(path.join(repo, paddedName), "TOKEN=abc\n", "utf8");
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+      expect(scan?.ignoredPaths).toEqual([paddedName]);
+    });
+
+    it("fails closed when the parsed ignored-entry count exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-count-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Synthesize the `git ls-files --others --ignored -z` output directly,
+      // rather than creating ten thousand real files, by intercepting the
+      // scan at the executor seam. The parser must reject this before it
+      // sorts or re-relativizes the list.
+      const overLimitCount = REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 1;
+      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `entry-${index}`).join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
+    });
+
+    it("fails closed when the summed UTF-8 byte size of ignored paths exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-bytes-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // One entry alone exceeds the byte bound, well under the entry-count bound.
+      const hugeEntry = "a".repeat(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES + 1);
+      const syntheticIgnored = `${hugeEntry}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
+    });
+
+    it("fails closed on the byte bound while it is still accumulating, before it would ever reach a later entry-count breach", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-order-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Three entries alone cross the byte bound. Many more small entries
+      // follow, so the FULL response also carries more than the entry-count
+      // bound. A parser that fully builds the list before checking either
+      // bound (post-parse) would report the entry-count breach, because it
+      // checks that bound first against the whole materialized list. A
+      // parser that checks both bounds while the list accumulates rejects on
+      // the byte bound instead, the moment the third entry crosses it, well
+      // before the count bound is ever reached.
+      const oversizedEntry = "a".repeat(Math.ceil(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES / 2) + 1);
+      const bigEntries = Array.from({ length: 3 }, (_, index) => `${oversizedEntry}-${index}`);
+      const trailingEntries = Array.from(
+        { length: REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 10 },
+        (_, index) => `trailing-${index}`,
+      );
+      const syntheticIgnored = `${[...bigEntries, ...trailingEntries].join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toThrow(/UTF-8 bytes/);
+    });
+
+    it("bounds the raw command-output allowance to the ignore-scan limits, not the general-purpose full-tree ceiling", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-raw-buffer-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      let observedMaxBuffer: number | undefined;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          observedMaxBuffer = input.maxBuffer;
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await readReferencedSourceGitIgnoredPaths(repo);
+
+      // Enough headroom for a scan within bounds to complete, but a small
+      // multiple of the byte bound — not the far larger allowance the
+      // anchor workspace's general-purpose full-tree reads use.
+      expect(observedMaxBuffer).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES);
+      expect(observedMaxBuffer).toBeLessThan(16 * 1024 * 1024);
+    });
+
+    it("does not fail closed on a huge amount of unrelated tracked-change and untracked noise, when the ignored set itself stays in bounds", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-mixed-status-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "secret.env\n", "utf8");
+      await writeFile(path.join(repo, "secret.env"), "TOKEN=abc\n", "utf8");
+
+      // Many long-named, untracked, NOT-ignored files at the repository root.
+      // `git status` reports one record per file (root-level files are never
+      // collapsed the way an entirely untracked directory is), so this alone
+      // makes the raw `git status --ignored` response exceed the raw buffer
+      // bound this scan used to apply to the WHOLE response, well before the
+      // parser ever got to discard these non-ignored records. The ignored set
+      // above stays a single small entry throughout.
+      const noiseNameLength = 220;
+      const noiseFileCount = 30_000;
+      const noiseNames = Array.from(
+        { length: noiseFileCount },
+        (_, index) => `${"n".repeat(noiseNameLength - 6)}${String(index).padStart(6, "0")}`,
+      );
+      const writeConcurrency = 200;
+      for (let start = 0; start < noiseNames.length; start += writeConcurrency) {
+        const batch = noiseNames.slice(start, start + writeConcurrency);
+        await Promise.all(batch.map((name) => writeFile(path.join(repo, name), "", "utf8")));
+      }
+
+      // Confirm this test actually reproduces the reported defect precondition:
+      // the raw `git status --ignored` response for this repository state is
+      // larger than the 4 MiB raw buffer bound the scan used to apply to the
+      // whole response, not just to the declared ignored-set limits. A large
+      // explicit maxBuffer is required here only to observe that raw size;
+      // the scan under test never issues this command.
+      const rawStatusResult = await runLocalGit(
+        repo,
+        ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        { maxBuffer: 16 * 1024 * 1024 },
+      );
+      expect(Buffer.byteLength(rawStatusResult.stdout, "utf8")).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2);
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+
+      expect(scan?.ignoredPaths).toEqual(["secret.env"]);
+    });
+
+    it("routes both scan commands through the registered scheduler instead of spawning git directly", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-scheduler-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "build/\n", "utf8");
+      await mkdir(path.join(repo, "build"), { recursive: true });
+      await writeFile(path.join(repo, "build", "out.js"), "artifact\n", "utf8");
+
+      const operations: string[] = [];
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        operations.push(input.operation);
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+
+      expect(scan?.ignoredPaths).toEqual(["build"]);
+      // Both the toplevel probe and the ignored-paths read go through the SAME
+      // process-wide admission seam the anchor workspace's expensive reads
+      // use. A host process that bounds concurrent scans there also bounds
+      // referenced-project scans, so a run with many referenced projects
+      // cannot spawn one unbounded Git process per project.
+      expect(operations.sort()).toEqual(["referenced_source.ignored_files", "referenced_source.toplevel"]);
+    });
+
+    it("carries the hardened arguments and does not inherit a poisoned GIT_CONFIG_GLOBAL", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-hardened-env-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      const badGlobalConfig = path.join(rootDir, "bad-global-gitconfig");
+      await writeFile(badGlobalConfig, "this is not valid git config syntax [[[\n", "utf8");
+
+      const priorGlobal = process.env.GIT_CONFIG_GLOBAL;
+      process.env.GIT_CONFIG_GLOBAL = badGlobalConfig;
+      try {
+        // A plain invocation inherits the poisoned global config and fails to parse it.
+        await expect(execFile("git", ["-C", repo, "status", "--porcelain"])).rejects.toThrow();
+        // The hardened helper does not inherit GIT_CONFIG_GLOBAL from this process's
+        // environment, so it succeeds regardless.
+        await expect(readReferencedSourceGitIgnoredPaths(repo)).resolves.toMatchObject({ ignoredPaths: [] });
+      } finally {
+        if (priorGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = priorGlobal;
+      }
+    });
+
+    it("neutralizes a repository-local core.fsmonitor hook", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-fsmonitor-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      const markerPath = path.join(rootDir, "pwned.txt");
+      // A malicious repository-local config: a non-boolean `core.fsmonitor` value
+      // is a hook COMMAND Git runs on every status-like read. `--no-optional-locks`
+      // alone does not stop this; only the command-line `-c core.fsmonitor=false`
+      // override does, because command-line config wins over repository config.
+      await git(repo, ["config", "core.fsmonitor", `sh -c 'touch ${markerPath}; printf 1'`]);
+
+      await readReferencedSourceGitIgnoredPaths(repo);
+
+      await expect(stat(markerPath)).rejects.toThrow();
+    });
   });
 });
 

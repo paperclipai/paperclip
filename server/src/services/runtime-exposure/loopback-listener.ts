@@ -160,6 +160,6 @@ export async function diagnoseRuntimeListenerBinds(ports: number[]): Promise<str
     `${violations.join("; ")} instead of loopback only. The broker will not expose a listener `
     + "reachable off-loopback. This means the workspace checkout's dev server ignored the managed "
     + "loopback bind — a checkout that predates managed HTTPS exposure overwrites PAPERCLIP_BIND "
-    + "from its own --bind argv, so the start command must pass --bind custom --bind-host 127.0.0.1."
+    + "from its own --bind argv, so the start command must pass --bind loopback."
   );
 }

@@ -8,7 +8,6 @@ import {
   asBoolean,
   asNumber,
   asStringArray,
-  parseJson,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -16,27 +15,34 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
-  describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
-  describeClaudeFailure,
   detectClaudeLoginRequired,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
-import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCommandLooksLike,
+  claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
+  readClaudeCommandVersion,
+} from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
+  buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
-  logRedactedSandboxProbeDiagnostic,
+  logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
+import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -48,37 +54,12 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-function lastNonInitStdoutLine(text: string): string {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]!;
-    const parsed = parseJson(line);
-    if (parsed && asString(parsed.type, "") === "system" && asString(parsed.subtype, "") === "init") {
-      continue;
-    }
-    return line;
-  }
-  return "";
-}
-
-function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || lastNonInitStdoutLine(stdout);
-  if (!raw) return null;
-  const clean = raw.replace(/\s+/g, " ").trim();
-  const max = 240;
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+function localExecutablesMatch(
+  trustedCommand: string | null,
+  runtimeCommand: string | null,
+): boolean {
+  if (!trustedCommand || !runtimeCommand) return false;
+  return trustedCommand === runtimeCommand;
 }
 
 export async function testEnvironment(
@@ -88,38 +69,36 @@ export async function testEnvironment(
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testClaudeAcpEnvironment(ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    checks.push({
-      code: "claude_acp_default_fallback",
-      level: "warn",
-      message: "Claude ACP default is unavailable; testing the Claude CLI fallback lane.",
-      detail: engineSelection.fallbackReason,
-      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
-    });
-  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
-  const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
-    : null;
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  if (targetLabel) {
-    checks.push({
-      code: "claude_environment_target",
-      level: "info",
-      message: `Probing inside environment: ${targetLabel}`,
-    });
-  }
+  // Always name the target the Test probed, so a pass result never hides which
+  // target it checked. A local probe reports the fixed host label.
+  checks.push(
+    buildAdapterTestTargetCheck({ targetIsRemote, environmentName: ctx.environmentName }),
+  );
 
   try {
     await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
@@ -146,8 +125,17 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  // For a local probe, resolve the trusted `claude` executable and a
+  // deny-by-default child env from the shared builder, so a hostile caller
+  // value can neither select the executable nor reach the child. A remote
+  // target keeps the caller command and env; the remote transport owns its own
+  // env sanitization.
+  const localProbe = targetIsRemote
+    ? null
+    : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
       runId,
       target,
       cwd,
@@ -161,8 +149,17 @@ export async function testEnvironment(
     })),
   );
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  let localRuntimeCommand: string | null = null;
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+    if (!targetIsRemote) {
+      localRuntimeCommand = await resolveAdapterExecutionTargetCommandForLogs(
+        command,
+        target,
+        cwd,
+        runtimeEnv,
+      );
+    }
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -181,7 +178,7 @@ export async function testEnvironment(
   // reflect what the agent will actually see at runtime. Only consider env
   // vars from the adapter config in that case; the probe itself will surface
   // any auth issues on the remote box.
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -208,13 +205,14 @@ export async function testEnvironment(
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
-      level: "warn",
+      level: selectedApiKey ? "info" : "warn",
       message:
-        "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
+        selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -245,7 +243,62 @@ export async function testEnvironment(
         check.code !== "claude_command_unresolvable" &&
         check.code !== "claude_managed_config_dir_failed",
     );
-  if (canRunProbe) {
+  let configuredModelIsCompatible = true;
+  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...process.env, ...env } : env);
+  const minimumCliVersion =
+    claudeCommandLooksLike(command, "claude") &&
+    (!hasBedrock || isBedrockModelId(configuredModel))
+    ? minimumClaudeCliVersionForModel(configuredModel)
+    : null;
+  const versionProbeCommand = localProbe?.command ?? (targetIsRemote ? command : null);
+  const versionProbeMatchesRuntime = targetIsRemote || localExecutablesMatch(
+    localProbe?.command ?? null,
+    localRuntimeCommand,
+  );
+  if (
+    canRunProbe &&
+    minimumCliVersion &&
+    versionProbeCommand &&
+    !versionProbeMatchesRuntime
+  ) {
+    configuredModelIsCompatible = false;
+    checks.push({
+      code: "claude_cli_version_probe_mismatch",
+      level: "warn",
+      message:
+        `Skipped ${configuredModel} readiness probing because the runtime PATH selects a different Claude executable than the trusted local Test probe.`,
+      hint:
+        `Ensure the runtime-selected Claude Code is ${minimumCliVersion} or newer. Execution will verify that exact executable before launch.`,
+    });
+  } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
+    const versionProbeEnv = localProbe?.env ?? env;
+    const detectedCliVersion = await readClaudeCommandVersion({
+      runId,
+      command: versionProbeCommand,
+      target,
+      cwd,
+      env: versionProbeEnv,
+      timeoutSec: 45,
+      graceSec: 5,
+    });
+    if (
+      !detectedCliVersion ||
+      !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
+    ) {
+      configuredModelIsCompatible = false;
+      checks.push({
+        code: "claude_cli_version_incompatible",
+        level: "error",
+        message: `${configuredModel} requires Claude Code ${minimumCliVersion} or newer on the CLI lane.`,
+        detail: detectedCliVersion
+          ? `Detected Claude Code ${detectedCliVersion}.`
+          : "Could not determine the installed Claude Code version.",
+        hint: "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
+      });
+    }
+  }
+
+  if (canRunProbe && configuredModelIsCompatible) {
     if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
@@ -254,12 +307,22 @@ export async function testEnvironment(
         detail: command,
         hint: "Use the `claude` CLI command to run the automatic login and installation probe.",
       });
+    } else if (localProbe && !localProbe.command) {
+      // The trusted server PATH holds no `claude`, so the local probe cannot
+      // run. Report a warn, never a silent pass.
+      checks.push({
+        code: "claude_hello_probe_skipped_unresolved_command",
+        level: "warn",
+        message: "Skipped the Claude hello probe because `claude` is not installed on the Paperclip host.",
+        hint: "Install the `claude` CLI on the Paperclip host, then retry the Test.",
+      });
     } else {
-      const model = asString(config.model, "").trim();
+      const model = configuredModel;
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox }));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -283,13 +346,14 @@ export async function testEnvironment(
             code: "claude_effort_flag_unsupported",
             level: "warn",
             message:
-              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
-            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+              "Claude CLI in the environment does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the environment CLI/template to a newer Claude Code release to restore reasoning-effort control.",
           });
         }
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (config.managedAiConnection) args.push("--setting-sources", "user");
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,
@@ -312,14 +376,19 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
+      // A local probe uses the trusted resolved executable and the
+      // deny-by-default child env. A remote probe uses the caller command and
+      // env, because the remote transport owns its own env sanitization.
+      const probeCommand = localProbe?.command ?? command;
+      const probeEnv = localProbe ? localProbe.env : env;
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
-        command,
+        probeCommand,
         args,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           stdin: "Respond with hello.",
@@ -343,11 +412,12 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
         });
       } else if (loginMeta.requiresLogin) {
-        // The raw probe output is untrusted. Route it to the log-only boundary
-        // and return only a fixed public message and a safe hint.
-        logRedactedSandboxProbeDiagnostic(
+        // The raw probe output is untrusted. Log only the fixed context and the
+        // allowlisted classification. Return only a fixed public message and a
+        // safe hint.
+        logSandboxProbeDiagnostic(
           "Claude CLI hello probe reported login required",
-          summarizeProbeDetail(probe.stdout, probe.stderr),
+          "auth_required",
         );
         checks.push({
           code: "claude_hello_probe_auth_required",
@@ -362,19 +432,20 @@ export async function testEnvironment(
           checks.push({
             code: ADAPTER_AUTH_MISSING_CHECK_CODE,
             level: "warn",
-            message: "The sandbox has no ready authentication for this adapter.",
-            hint: "Provide credentials for this adapter, or start login in the sandbox.",
+            message: "This environment has no ready authentication for this adapter.",
+            hint: "Provide credentials for this adapter, or start login in the environment.",
           });
         }
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
         if (!hasHello) {
-          // The unexpected summary is untrusted probe output. Route it to the
-          // log-only boundary and keep the check text fixed.
-          logRedactedSandboxProbeDiagnostic(
+          // The unexpected summary is untrusted probe output. Log only the fixed
+          // context and the allowlisted classification. Keep the check text
+          // fixed.
+          logSandboxProbeDiagnostic(
             "Claude CLI hello probe returned unexpected output",
-            summary,
+            "unexpected_output",
           );
         }
         checks.push({
@@ -390,20 +461,12 @@ export async function testEnvironment(
               }),
         });
       } else {
-        // Compose the richest raw diagnostic for the log. The real error lives
-        // in the final `result` event (parsed) or, when the CLI dies before it
-        // emits one, the last non-init stdout line — never the first line that
-        // `summarizeProbeDetail` returns.
-        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
-        const failureDetail =
-          (parsed ? describeClaudeFailure(parsed) : null) ||
-          firstNonEmptyLine(probe.stderr) ||
-          stdoutFallback ||
-          summarizeProbeDetail(probe.stdout, probe.stderr) ||
-          "";
-        // The failure diagnostic is untrusted. Route it to the log-only
-        // boundary and return only a fixed public message and hint.
-        logRedactedSandboxProbeDiagnostic("Claude CLI hello probe failed", failureDetail);
+        // The failure diagnostic is untrusted. Log only the fixed context, the
+        // allowlisted classification, and the safe exit code. Return only a
+        // fixed public message and hint.
+        logSandboxProbeDiagnostic("Claude CLI hello probe failed", "nonzero_exit", {
+          exitCode: probe.exitCode ?? null,
+        });
         // Provider-quota exhaustion (usage/session limit) is classified
         // separately from generic transient upstream errors: auth works, the
         // subscription's usage window is just spent. Surface it as its own

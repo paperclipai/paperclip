@@ -17,7 +17,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { logRedactedSandboxProbeDiagnostic } from "./probe-diagnostics.js";
+import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -269,6 +269,7 @@ function isNonEmptyString(value: unknown): value is string {
  * the function keeps it and skips the managed materialization.
  */
 export async function prepareSandboxClaudeProbeRuntime(input: {
+  managedAiConnection?: boolean;
   runId: string;
   target: AdapterExecutionTarget | null;
   cwd: string;
@@ -295,12 +296,12 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
   if (
     input.targetIsRemote &&
     adapterExecutionTargetUsesManagedHome(input.target) &&
-    !hasExplicitClaudeConfigDir
+    (!hasExplicitClaudeConfigDir || input.managedAiConnection)
   ) {
     let tempWorkspaceDir: string | null = null;
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
-      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
+      const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
       const managedRemoteCwd =
         input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
       tempWorkspaceDir = await fs.mkdtemp(
@@ -345,20 +346,22 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
       checks.push({
         code: "claude_managed_config_dir",
         level: "info",
-        message: "Sandbox probe is using Paperclip-managed Claude config materialization.",
+        message: "The environment probe is using Paperclip-managed Claude config materialization.",
         detail: remoteClaudeConfigDir,
       });
     } catch (err) {
-      // Keep the raw error out of the Test-result check. Send the redacted
-      // diagnostic to the server log instead.
-      logRedactedSandboxProbeDiagnostic(
-        "Could not materialize Paperclip-managed Claude config for the sandbox probe",
-        err instanceof Error ? err.message : String(err),
+      // Keep the raw error out of the Test-result check and the server log. Log
+      // only the fixed context, the allowlisted classification, and a safe
+      // error class name.
+      logSandboxProbeDiagnostic(
+        "Could not materialize Paperclip-managed Claude config for the environment probe",
+        "spawn_error",
+        { errorClass: classifyThrownErrorClass(err) },
       );
       checks.push({
         code: "claude_managed_config_dir_failed",
         level: "error",
-        message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
+        message: "Could not materialize Paperclip-managed Claude config for the environment probe.",
         hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
       });
     } finally {

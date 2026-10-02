@@ -1,3 +1,4 @@
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,8 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -30,6 +33,7 @@ import {
   parseJson,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   joinPromptSections,
@@ -40,14 +44,14 @@ import {
   isPaperclipRuntimeEnvKey,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
-  renderPaperclipWakePrompt,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
-  selectPaperclipTaskMarkdown,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
-  stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessSandboxExtraPaths,
@@ -77,15 +81,20 @@ import {
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
-import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCommandLooksLike,
+  claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
+  readClaudeCommandVersion,
+} from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
-  formatClaudeAcpFallbackMessage,
   resolveClaudeExecutionEngineForRun,
 } from "./acp.js";
 
@@ -231,7 +240,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
   if (wakeTaskId) {
@@ -254,9 +262,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (linkedIssueIds.length > 0) {
     env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  }
-  if (wakePayloadJson) {
-    env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
@@ -392,21 +397,22 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeClaudeAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
-      );
-    }
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
   }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+  if (engineSelection.engine === "acp") {
+    return executeClaudeAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
@@ -419,9 +425,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -469,6 +476,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
@@ -480,6 +488,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
+  const model = resolveClaudeModel(config.model, modelEnv);
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
@@ -504,9 +514,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // Tell the model what the company library actually holds. Without this, an
+  // installed-but-not-enabled skill is indistinguishable from a nonexistent
+  // one from inside the sandbox, and agents tell users freshly installed
+  // skills "are not installed". Deterministic text appended to the
+  // instructions, so it participates in the prompt-bundle cache key and only
+  // busts the cache when the library really changes.
+  const skillLibraryManifest = buildSkillLibraryManifestMarkdown({
+    entries: claudeSkillEntries,
+    desiredSkillKeys: desiredSkillNames,
+  });
+  if (skillLibraryManifest) {
+    combinedInstructionsContents = combinedInstructionsContents
+      ? `${combinedInstructionsContents}\n\n${skillLibraryManifest}`
+      : skillLibraryManifest;
+  }
+  // Missing-source entries must never reach the bundle: their path does not
+  // exist, so the bundle hasher would throw and fail the whole run over one
+  // broken skill. Log each one instead so the cause lands in the run output.
+  const desiredSkillEntries = claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key));
+  const mountableSkillEntries = desiredSkillEntries.filter((entry) => !isPaperclipSkillSourceMissing(entry));
+  for (const entry of desiredSkillEntries) {
+    if (!isPaperclipSkillSourceMissing(entry)) continue;
+    await onLog(
+      "stderr",
+      `[paperclip] Warning: skill "${entry.key}" is enabled for this agent but its files are unavailable and it was not mounted${entry.missingDetail ? `: ${entry.missingDetail}` : "."}\n`,
+    );
+  }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
-    skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),
+    skills: mountableSkillEntries,
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
@@ -525,7 +562,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
-  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -563,9 +600,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
-    !hasExplicitClaudeConfigDir;
+    (!hasExplicitClaudeConfigDir || Boolean(config.managedAiConnection));
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
-    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+    ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
@@ -681,6 +718,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: runtimeExecutionTarget,
+      enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+      duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
       adapterKey: "claude",
       timeoutSec,
@@ -715,7 +754,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       effectiveEffort = "";
       await onLog(
         "stderr",
-        `[paperclip] Claude CLI in the sandbox does not advertise --effort; omitting configured effort "${effort}". Upgrade the sandbox CLI/image to restore reasoning-effort control.\n`,
+        `[paperclip] Claude CLI in the environment does not advertise --effort; omitting configured effort "${effort}". Upgrade the environment CLI/image to restore reasoning-effort control.\n`,
       );
     }
   }
@@ -799,43 +838,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedBootstrapPrompt =
-    !sessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-      : "";
-  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    resumedSession: Boolean(sessionId),
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: taskContextNote.length > 0,
-  });
-  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    renderedBootstrapPrompt,
-    wakePrompt,
-    sessionHandoffNote,
-    taskContextNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    taskContextChars: taskContextNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
+  const passesConfiguredModel = Boolean(
+    model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
+  );
 
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
+    if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
@@ -846,7 +858,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
     // on Bedrock, so skip them and let the CLI use its own configured model.
-    if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
+    if (passesConfiguredModel) {
       args.push("--model", model);
     }
     if (effectiveEffort) args.push("--effort", effectiveEffort);
@@ -882,6 +894,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const renderedBootstrapPrompt =
+      !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+        : "";
+    const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+      resumedSession: Boolean(resumeSessionId),
+    });
+    const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+      ? ""
+      : renderTemplate(promptTemplate, templateData);
+    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const prompt = joinPromptSections([
+      renderedBootstrapPrompt,
+      wakePrompt,
+      sessionHandoffNote,
+      taskContextNote,
+      renderedPrompt,
+    ]);
+    const promptMetrics = {
+      promptChars: prompt.length,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
+      heartbeatPromptChars: renderedPrompt.length,
+    };
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
     const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];
@@ -890,7 +929,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (dangerouslySkipPermissions && executionTargetIsRemote) {
       commandNotes.push(
-        "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
+        "Using full Claude permission bypass for remote execution, including connected tools.",
       );
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
@@ -918,6 +957,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+      onProcessStopped: providerStop.beginInvocation(),
       cwd,
       env,
       stdin: prompt,
@@ -927,6 +967,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
       runLogTail: paperclipBridge?.runLogTail,
+      settleRunDisposition: paperclipBridge?.settleRunDisposition,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
@@ -1001,7 +1042,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
-      const errorCode = loginMeta.requiresLogin
+      const errorCode = proc.errorCode
+        // Forward the transport-level error code from the run-disposition seam
+        // first, even on the unparsed path. A lost duplex control channel
+        // surfaces the typed `duplex_channel_lost` code before any provider
+        // classification, so the CLI lane and the ACP lane report it alike.
+        ? proc.errorCode
+        : loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1134,7 +1181,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin
+    const resolvedErrorCode = proc.errorCode
+      // Forward the transport-level error code from the run-disposition seam
+      // first. A lost duplex control channel surfaces the typed
+      // `duplex_channel_lost` code before any provider classification.
+      ? proc.errorCode
+      : loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
@@ -1205,6 +1257,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
+    const minimumCliVersion = passesConfiguredModel && claudeCommandLooksLike(command, "claude")
+      ? minimumClaudeCliVersionForModel(model)
+      : null;
+    if (minimumCliVersion) {
+      const detectedCliVersion = await readClaudeCommandVersion({
+        runId,
+        command,
+        target: runtimeExecutionTarget,
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+      });
+      if (
+        !detectedCliVersion ||
+        !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
+      ) {
+        const detected = detectedCliVersion
+          ? `detected ${detectedCliVersion}`
+          : "could not determine the installed version";
+        const errorMessage =
+          `${model} requires Claude Code ${minimumCliVersion} or newer on the CLI lane; ${detected}. ` +
+          "Upgrade Claude Code or restore the default ACP lane before retrying.";
+        await onLog("stderr", `[paperclip] ${errorMessage}\n`);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage,
+          errorCode: "claude_cli_version_incompatible",
+          provider: "anthropic",
+          biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+          model,
+          billingType,
+          resultJson: {
+            stopReason: "claude_cli_version_incompatible",
+            requiredClaudeCodeVersion: minimumCliVersion,
+            detectedClaudeCodeVersion: detectedCliVersion,
+          },
+        };
+      }
+    }
+
     const initial = await runAttempt(sessionId ?? null);
     const sessionErrorKind =
       sessionId &&
@@ -1257,15 +1352,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    if (paperclipBridge) {
-      await paperclipBridge.stop();
-    }
-    if (restoreRemoteWorkspace) {
-      await onLog(
-        "stdout",
-        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      await restoreRemoteWorkspace();
+    try {
+      await providerStop.collectBeforeRestore();
+    } finally {
+      if (paperclipBridge) {
+        await paperclipBridge.stop();
+      }
+      if (restoreRemoteWorkspace) {
+        await onLog(
+          "stdout",
+          `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+        );
+        await restoreRemoteWorkspace();
+      }
     }
   }
 }

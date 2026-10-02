@@ -21,6 +21,7 @@ import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { IssueGroupHeader } from "@/components/IssueGroupHeader";
 import { IssueLinkQuicklook, IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
+import { useLocation } from "@/lib/router";
 import { IssueProperties } from "@/components/IssueProperties";
 import { IssueRunLedgerContent } from "@/components/IssueRunLedger";
 import { IssuesList } from "@/components/IssuesList";
@@ -191,6 +192,7 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
+  queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), storybookProjects);
   queryClient.setQueryData(queryKeys.issues.list(companyId), storybookIssues);
   queryClient.setQueryData(queryKeys.issues.labels(companyId), storybookIssueLabels);
   queryClient.setQueryData(queryKeys.issues.documents(primaryIssue.id), storybookIssueDocuments);
@@ -282,6 +284,7 @@ function LongValueStorybookData({ children }: { children: React.ReactNode }) {
   const [ready] = useState(() => {
     hydrateStorybookQueries(queryClient);
     queryClient.setQueryData(queryKeys.projects.list(companyId), [longProject, ...storybookProjects]);
+    queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), [longProject, ...storybookProjects]);
     queryClient.setQueryData(queryKeys.issues.list(companyId), [
       longValueIssue,
       longParentIssue,
@@ -318,6 +321,62 @@ function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) 
               />
             </div>
           </ScrollArea>
+        </div>
+      </div>
+    </LongValueStorybookData>
+  );
+}
+
+const relationshipChildren: Issue[] = ["in_progress", "todo", "in_review", "done"].map((status, index) => ({
+  ...storybookIssues[0]!,
+  id: `relationship-child-${index}`,
+  identifier: `PAP-${18312 + index}`,
+  title: ["Implement task badges", "Review task relationships", "Verify keyboard navigation", "Ship task properties"][index]!,
+  status: status as Issue["status"],
+  parentId: "relationship-demo",
+}));
+const relationshipIssue: Issue = {
+  ...longValueIssue,
+  id: "relationship-demo",
+  projectId: primaryIssue.projectId,
+  project: primaryIssue.project,
+  identifier: "PAP-18311",
+  labels: [],
+  labelIds: [],
+  blockedBy: [relationshipChildren[1]!, relationshipChildren[2]!],
+  blocks: [relationshipChildren[3]!],
+};
+
+function IssuePropertiesRelationshipBadgesPane({ inline = false }: { inline?: boolean }) {
+  const [issue, setIssue] = useState(relationshipIssue);
+  const location = useLocation();
+  return (
+    <LongValueStorybookData>
+      <div className="paperclip-story flex flex-wrap items-start gap-6 p-6">
+        <div className="w-80 max-w-full border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={issue}
+              childIssues={relationshipChildren}
+              inline={inline}
+              sidePanelContentOnly
+              onUpdate={(patch) => setIssue((current) => ({
+                ...current,
+                ...patch,
+                blockedBy: patch.blockedByIssueIds
+                  ? [...relationshipChildren, ...storybookIssues, longParentIssue, longValueIssue].filter((child) => (patch.blockedByIssueIds as string[]).includes(child.id))
+                  : current.blockedBy,
+              }))}
+            />
+          </div>
+        </div>
+        <div className="max-w-sm space-y-3 text-sm">
+          <h2 className="font-semibold">Task relationship badges</h2>
+          <p className="text-muted-foreground">Click a status icon or task ID to navigate. Hover or focus a blocker to reveal its remove button. Only the X removes that blocker.</p>
+          <p className="text-muted-foreground">The arrow opens the relationship picker. Badge widths stay fixed on hover.</p>
+          <p>Current route: <code data-testid="relationship-route" className="font-mono text-xs">{location.pathname}</code></p>
+          <Button variant="outline" size="sm" onClick={() => setIssue(relationshipIssue)}>Reset blockers</Button>
         </div>
       </div>
     </LongValueStorybookData>
@@ -553,116 +612,6 @@ function OpenFiltersPopover() {
   );
 }
 
-const modelProfileLedgerRuns: RunForIssue[] = [
-  {
-    runId: "run-cheap-applied",
-    status: "succeeded",
-    agentId: "agent-codex",
-    adapterType: "codex_local",
-    startedAt: "2026-04-29T09:30:00.000Z",
-    finishedAt: "2026-04-29T09:32:14.000Z",
-    createdAt: "2026-04-29T09:29:55.000Z",
-    invocationSource: "manual",
-    usageJson: { costCents: 17, inputTokens: 6400, outputTokens: 480 },
-    resultJson: {
-      stopReason: "completed",
-      modelProfile: {
-        requested: "cheap",
-        applied: "cheap",
-        configSource: "agent_runtime_config",
-      },
-    },
-    livenessState: "advanced",
-    livenessReason: "Cheap-lane summary completed inside the planned scope.",
-    continuationAttempt: 0,
-    lastUsefulActionAt: "2026-04-29T09:32:10.000Z",
-    nextAction: "Hand the routine output back to the operator inbox.",
-  },
-  {
-    runId: "run-cheap-fallback",
-    status: "succeeded",
-    agentId: "agent-codex",
-    adapterType: "codex_local",
-    startedAt: "2026-04-29T08:10:00.000Z",
-    finishedAt: "2026-04-29T08:14:42.000Z",
-    createdAt: "2026-04-29T08:09:50.000Z",
-    invocationSource: "manual",
-    usageJson: { costCents: 91, inputTokens: 21800, outputTokens: 3200 },
-    resultJson: {
-      stopReason: "completed",
-      modelProfile: {
-        requested: "cheap",
-        applied: "primary",
-        configSource: "adapter_default",
-        fallbackReason: "Cheap profile not configured for this agent",
-      },
-    },
-    livenessState: "advanced",
-    livenessReason: "Routine fell back to the primary model after the cheap lookup missed.",
-    continuationAttempt: 0,
-    lastUsefulActionAt: "2026-04-29T08:14:36.000Z",
-    nextAction: "Configure agent-codex with a cheap profile to avoid the fallback.",
-  },
-  {
-    runId: "run-baseline",
-    status: "succeeded",
-    agentId: "agent-codex",
-    adapterType: "codex_local",
-    startedAt: "2026-04-28T18:05:00.000Z",
-    finishedAt: "2026-04-28T18:14:11.000Z",
-    createdAt: "2026-04-28T18:04:50.000Z",
-    invocationSource: "scheduler",
-    usageJson: { costCents: 142, inputTokens: 38400, outputTokens: 7200 },
-    resultJson: { stopReason: "completed" },
-    livenessState: "advanced",
-    livenessReason: "Standard primary-lane run with no profile metadata recorded.",
-    continuationAttempt: 0,
-    lastUsefulActionAt: "2026-04-28T18:13:58.000Z",
-    nextAction: "Continue with the next planned subtask.",
-  },
-];
-
-function ModelProfileBadgeLedger() {
-  return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <IssueRunLedgerContent
-        runs={modelProfileLedgerRuns}
-        activeRun={null}
-        liveRuns={[]}
-        issueStatus="in_progress"
-        childIssues={[]}
-        agentMap={storybookAgentMap}
-      />
-      <Card className="shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <GitBranch className="h-4 w-4" />
-            Model profile metadata
-          </CardTitle>
-          <CardDescription>
-            Profile badges read <code>resultJson.modelProfile</code> on each run. Applied matching the request renders
-            emerald; an applied fallback renders amber and surfaces the inline reason.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3 text-xs text-muted-foreground">
-          <div className="rounded-md border border-border bg-background/70 p-3">
-            <div className="font-mono text-emerald-600 dark:text-emerald-400">Profile: cheap</div>
-            <p className="mt-1">requested + applied both equal cheap → emerald badge.</p>
-          </div>
-          <div className="rounded-md border border-border bg-background/70 p-3">
-            <div className="font-mono text-amber-600 dark:text-amber-400">Profile: cheap → primary</div>
-            <p className="mt-1">cheap requested but primary applied → amber badge plus inline fallback reason.</p>
-          </div>
-          <div className="rounded-md border border-border bg-background/70 p-3">
-            <div className="font-mono text-muted-foreground">No profile badge</div>
-            <p className="mt-1">Run with no <code>modelProfile</code> metadata renders without a badge for visual contrast.</p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function RunLedgerWithCostColumns() {
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -891,10 +840,6 @@ function IssueManagementStories() {
             <RunLedgerWithCostColumns />
           </Section>
 
-          <Section eyebrow="IssueRunLedger" title="Model profile badges for cheap, fallback, and baseline runs">
-            <ModelProfileBadgeLedger />
-          </Section>
-
           <Section eyebrow="IssueWorkspaceCard" title="Workspace info card with branch, path, and runtime status">
             <WorkspaceCardWithRuntime />
           </Section>
@@ -964,42 +909,18 @@ export const IssuePropertiesModelOverride: Story = {
 export const IssuePropertiesMobileBlockerActions: Story = {
   name: "IssueProperties - mobile blocker actions open",
   render: () => <IssuePropertiesMobileBlockerActionsPane />,
-  parameters: { viewport: { defaultViewport: "mobile1" } },
+  globals: { viewport: { value: "mobile1" } },
 };
 
-function ModelProfileLedgerStandalone() {
-  return (
-    <StorybookData>
-      <div className="paperclip-story">
-        <main className="paperclip-story__inner space-y-6">
-          <section className="paperclip-story__frame p-6">
-            <div className="flex flex-wrap items-start justify-between gap-5">
-              <div>
-                <div className="paperclip-story__label">IssueRunLedger</div>
-                <h1 className="mt-2 text-3xl font-semibold tracking-tight">Model profile badges</h1>
-                <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-                  Run ledger isolated to the cheap-lane visual states: an emerald applied=cheap badge, an amber
-                  cheap-fell-back-to-primary badge with the inline fallback reason, and a baseline run without a
-                  modelProfile so the visual diff stays obvious.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">cheap applied</Badge>
-                <Badge variant="outline">cheap → primary</Badge>
-                <Badge variant="outline">no profile</Badge>
-              </div>
-            </div>
-          </section>
-          <Section eyebrow="IssueRunLedger" title="Cheap, fallback, and baseline runs">
-            <ModelProfileBadgeLedger />
-          </Section>
-        </main>
-      </div>
-    </StorybookData>
-  );
-}
+// Keep preview stories passive. Interaction coverage lives in
+// tests/storybook-visual/relationship-badges.spec.ts so switching stories never
+// automatically focuses, navigates, removes, or restores a visible badge.
+export const IssuePropertiesRelationshipBadges: Story = {
+  name: "IssueProperties - relationship badges",
+  render: () => <IssuePropertiesRelationshipBadgesPane />,
+};
 
-export const RunLedgerModelProfileBadges: Story = {
-  name: "Run ledger - Model profile badges",
-  render: () => <ModelProfileLedgerStandalone />,
+export const IssuePropertiesRelationshipBadgesInline: Story = {
+  name: "IssueProperties - relationship badges inline",
+  render: () => <IssuePropertiesRelationshipBadgesPane inline />,
 };

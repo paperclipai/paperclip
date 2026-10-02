@@ -27,22 +27,41 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
 } from "../lib/recovery-display";
+import {
+  formatRecoveryLineageSummary,
+  readRecoveryRetryLineage,
+} from "../lib/recovery-lineage";
 import { StatusGlyph } from "./StatusGlyph";
 
-function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
+function BlockerRecoveryIndicator({
+  action,
+  scheduledRetry,
+}: {
+  action: IssueRecoveryAction;
+  /** The blocker's own scheduled retry, used to verify that the stored attempt is in flight. */
+  scheduledRetry?: IssueScheduledRetry | null;
+}) {
+  const liveness = { scheduledRetry: scheduledRetry ?? null };
+  const state = deriveActiveRecoveryDisplayState(action, liveness);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
-  const label = recoveryChipLabel(state, action.kind);
+  // The blocker chip reads the same stored lineage as the source task's recovery card, so
+  // a parent view never contradicts the task it is waiting on.
+  const lineage = readRecoveryRetryLineage(action, liveness);
+  const label = recoveryChipLabel(state, action.kind, lineage);
+  const detail = lineage ? formatRecoveryLineageSummary(lineage) : null;
   return (
     <Badge variant="outline"
       data-testid="issue-blocked-notice-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
+      data-recovery-lane={lineage?.lane}
       role="status"
-      aria-label={label}
-      title={`${label} — open the source task to act.`}
+      aria-label={detail ? `${label} — ${detail}` : label}
+      title={detail
+        ? `${label} — ${detail}. Open the source task to act.`
+        : `${label} — open the source task to act.`}
       className={`[&>svg]:size-2.5 gap-0.5 px-1.5 text-(length:--text-nano) ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
@@ -538,7 +557,12 @@ export function IssueBlockedNotice({
         <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        {recoveryAction ? (
+          <BlockerRecoveryIndicator
+            action={recoveryAction}
+            scheduledRetry={blocker.scheduledRetry}
+          />
+        ) : null}
       </IssueLinkQuicklook>
     );
   };

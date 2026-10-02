@@ -18,8 +18,11 @@
     "test": "node scripts/build-native.mjs && vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.10"
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

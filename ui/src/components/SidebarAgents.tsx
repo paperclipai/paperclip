@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,7 +44,6 @@ import {
   type AgentSidebarSortMode,
   writeAgentSortMode,
 } from "../lib/agent-order";
-import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
@@ -166,7 +166,7 @@ function SidebarAgentItem({
     <SidebarNavItem
       to={href}
       label={agent.name}
-      iconNode={<AgentIcon icon={agent.icon} className="shrink-0 h-4 w-4" />}
+      iconNode={<AgentAvatar agent={agent} size={16} className="shrink-0 h-4 w-4"/>}
       active={isActive}
       liveCount={runCount}
       labelClassName={showBuiltInLifecycle ? "min-w-(--sz-4_5rem) flex-initial" : undefined}
@@ -663,7 +663,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
-            className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+            className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           >
             <Users className="shrink-0 h-4 w-4" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>

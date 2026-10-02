@@ -12,11 +12,50 @@ import {
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
   type SandboxSyncResult,
+  type WorkspaceDurableSeedPaths,
+  type WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+
+/**
+ * Input for a duplex channel open. The caller supplies only the command argument
+ * vector the sandbox runs as the channel child process. Element 0 is the program
+ * and the rest are its arguments. The runner adds the lease scope from its own
+ * closure. This type is separate from the worker manager's
+ * `DuplexChannelOpenInput`, which also carries the lease scope fields.
+ */
+export interface DuplexChannelOpenInput {
+  command: readonly string[];
+}
+
+/**
+ * A persistent bidirectional channel to one long-lived command in the sandbox.
+ * The caller writes raw input bytes, reads streamed output, and stops or closes
+ * the channel. This is the cross-layer channel type: the runner returns it, and
+ * the sandbox driver adapts the worker manager's host session to it.
+ */
+export interface CommandManagedDuplexChannel {
+  /** Writes raw input bytes to the channel. */
+  write(data: Uint8Array): void;
+  /** Registers the one data listener. The channel streams each raw byte chunk in order. */
+  onData(listener: (chunk: Uint8Array) => void): void;
+  /**
+   * Registers the one exit listener. The channel calls it one time with the exit.
+   * A numeric `exitCode` is a real process exit. `transportClosed` is true when the
+   * provider transport closed with no exit data, so a reader can tell a real
+   * process exit from a reason-less transport close.
+   */
+  onExit(listener: (exit: { exitCode: number | null; transportClosed?: boolean }) => void): void;
+  /** Stops the child process. Safe to call more than one time. */
+  stop(): void;
+  /** Closes the channel and releases the route. Safe to call more than one time. */
+  close(): Promise<void>;
+}
 
 export interface CommandManagedRuntimeRunner {
   /**
@@ -76,6 +115,16 @@ export interface CommandManagedRuntimeRunner {
   syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
   /** Optional native outbound file transfer. See {@link syncIn}. */
   syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only when the sandbox provider's
+   * effective capability grants `duplexCommandStream`. The runner opens one
+   * bidirectional channel to a long-lived command in the sandbox. The SSH runner
+   * and every provider without the capability omit the member, so a caller gates
+   * on its presence in the same style as {@link syncIn}/{@link syncOut}.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+   */
+  openDuplexChannel?(input: DuplexChannelOpenInput): Promise<CommandManagedDuplexChannel>;
 }
 
 export interface CommandManagedRuntimeSpec {
@@ -163,10 +212,6 @@ function buildSyncInExtractDirectoryCommand(input: { remoteTarPath: string; targ
 function buildSyncInChmodCommand(input: { mode: number; targetPath: string }): string {
   return `chmod ${(input.mode & 0o7777).toString(8)} ${shellQuote(input.targetPath)}`;
 }
-function buildSyncInRenameCommand(input: { sourcePath: string; targetPath: string }): string {
-  return "mv -f " + shellQuote(input.sourcePath) + " " + shellQuote(input.targetPath);
-}
-
 function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
   return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
@@ -293,7 +338,26 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      let sizeResult;
+      try {
+        sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      } catch (error) {
+        // Shell-backed sandbox reads need the same absent-file contract as fs.
+        // Confirm the parent is searchable so permission/transport failures are
+        // never silently converted into a missing optional credential file.
+        const parent = shellQuote(path.posix.dirname(remotePath));
+        const missing = await runShell(
+          `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${shellQuote(remotePath)} ]; ` +
+            `then printf 'missing'; fi`,
+        ).catch(() => null);
+        if (missing?.stdout === "missing") {
+          throw Object.assign(new Error(`No such file: ${remotePath}`), {
+            code: "ENOENT",
+            path: remotePath,
+          });
+        }
+        throw error;
+      }
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
@@ -399,18 +463,10 @@ export function createCommandManagedRuntimeClient(input: {
               bytesTransferred += tarBytes.byteLength;
             } else {
               const fileBytes = await fs.readFile(mapping.sourcePath);
-              const targetPathForWrite = mapping.mode != null
-                ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
-                : mapping.targetPath;
-              if (mapping.mode != null) cleanupPaths.push(targetPathForWrite);
-              await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
+              await client.writeFile(mapping.targetPath, bufferToArrayBuffer(fileBytes));
               if (mapping.mode != null) {
                 await client.run(
-                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs },
-                );
-                await client.run(
-                  buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
+                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: mapping.targetPath }),
                   { timeoutMs: input.timeoutMs },
                 );
               }
@@ -423,9 +479,9 @@ export function createCommandManagedRuntimeClient(input: {
           }
           filesTransferred += 1;
         }
-        // Ordered, fail-fast post-upload commands (C1 opaque / C4 fail-loud). Each
-        // command string is executed VERBATIM — never rewritten, concatenated, or
-        // appended to. First non-zero exit or timeout throws and stops the rest.
+        // Ordered, fail-fast post-upload commands. Each command string is
+        // executed VERBATIM — never rewritten, concatenated, or appended to.
+        // The first non-zero exit or timeout throws and stops the rest.
         for (const command of operation.postUploadCommands ?? []) {
           const result = await input.runner.execute({
             command: shellCommand,
@@ -483,7 +539,13 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
+  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
@@ -544,7 +606,12 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
           syncWorkspace: input.syncWorkspace,
+          workspaceInboundMode: input.workspaceInboundMode,
+          workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceBaseline: input.workspaceBaseline,
+          workspaceGitSnapshot: input.workspaceGitSnapshot,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+          workspaceFileMode: input.workspaceFileMode,
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
           additionalSources: input.additionalSources,
@@ -583,7 +650,12 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+    workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,

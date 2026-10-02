@@ -7,6 +7,7 @@ export function PropertySection({
   className,
   title,
   first,
+  streamlined,
 }: {
   children: ReactNode;
   className?: string;
@@ -14,13 +15,16 @@ export function PropertySection({
   title?: string;
   /** First section drops the top padding on its header. */
   first?: boolean;
+  streamlined?: boolean;
 }) {
   return (
-    <div className={className}>
+    <div className={className} data-property-section="true">
       {title ? (
         <div
           className={cn(
-            "text-xs font-semibold uppercase tracking-wide text-muted-foreground pb-1",
+            streamlined
+              ? "pb-1 font-mono text-(length:--text-nano) font-normal uppercase tracking-wide text-muted-foreground/70"
+              : "text-xs font-semibold uppercase tracking-wide text-muted-foreground pb-1",
             first ? "pt-0" : "pt-3",
           )}
         >
@@ -60,7 +64,15 @@ export function PropertyRow({
       >
         {label}
       </span>
-      <div className={cn("flex min-w-0 flex-1 items-center gap-1.5", wrap && "flex-wrap")}>{children}</div>
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-1.5",
+          wrap && "flex-col items-start",
+        )}
+        data-property-value="true"
+      >
+        {children}
+      </div>
     </div>
   );
 }

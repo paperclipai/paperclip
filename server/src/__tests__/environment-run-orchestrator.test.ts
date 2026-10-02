@@ -11,6 +11,7 @@ const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockLoggerInfo = vi.hoisted(() => vi.fn());
+const mockGetEnvironment = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -28,7 +29,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 vi.mock("../services/environments.js", () => ({
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
-    getById: vi.fn(),
+    getById: mockGetEnvironment,
     acquireLease: vi.fn(),
     releaseLease: vi.fn(),
     updateLeaseMetadata: mockUpdateLeaseMetadata,
@@ -253,6 +254,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     mockUpdateLeaseMetadata.mockResolvedValue(null);
     mockUpdateExecutionWorkspace.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it.each([false, true])("only requests active-work cancellation for explicit Stop: %s", async (cancelActiveWork) => {
+    const releaseRunLeases = vi.fn().mockResolvedValue([]);
+    const runtime = makeMockRuntime({ releaseRunLeases });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    await orchestrator.releaseForRun({
+      heartbeatRunId: "run-1", companyId: "company-1", agentId: "agent-1",
+      providerResourceDisposition: "stop_and_retain", cancelActiveWork,
+    });
+    expect(releaseRunLeases).toHaveBeenCalledWith(
+      "run-1", "released", expect.any(Function), "stop_and_retain",
+      ...(cancelActiveWork ? [true] : []),
+    );
   });
 
   it("happy path: returns lease, executionTarget, and remoteExecution on successful realization", async () => {
@@ -727,5 +742,76 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
 
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("native runner lifecycle changes before lease acquisition", () => {
+  it("requests a reusable lease when an existing task switches from per-turn to warm", async () => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({
+      environment: input.environment,
+      lease: makeLease({ leasePolicy: input.environment.config.reuseLease ? "reuse_by_environment" : "ephemeral" }),
+      leaseContext: { executionWorkspaceId: "existing-workspace", executionWorkspaceMode: "shared_workspace" },
+    }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    const input = {
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+      adapterType: "paperclip_runner", issueId: "existing-task", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: { id: "existing-workspace", mode: "shared_workspace" as const },
+      executionWorkspaceSettings: null,
+    };
+    const cold = await orchestrator.acquireForRun({ ...input, adapterConfig: { lifecycleMode: "per_turn" } });
+    expect(cold.lease.leasePolicy).toBe("ephemeral");
+    const warm = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-2", adapterConfig: { lifecycleMode: "warm", idleTimeoutMs: 60_000 } });
+    expect(warm.lease.leasePolicy).toBe("reuse_by_environment");
+    expect(warm.environment.config).toEqual({ provider: "daytona", reuseLease: true });
+    expect(acquireRunLease.mock.calls[1][0].persistedExecutionWorkspace).toEqual(input.persistedExecutionWorkspace);
+    // Run-scoped adaptation must not change the shared environment or other agents.
+    expect(environment.config).toEqual({ provider: "daytona", reuseLease: false });
+    const coldAgain = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-3", adapterConfig: { lifecycleMode: "per_turn" } });
+    expect(coldAgain.lease.leasePolicy).toBe("ephemeral");
+  });
+
+  it.each([
+    ["paperclip_runner", undefined, undefined, false],
+    ["paperclip_runner", "inherit", "per_turn", false],
+    ["paperclip_runner", "per_turn", "warm", false],
+    ["paperclip_runner", "warm", "per_turn", true],
+    ["paperclip_runner", "inherit", "warm", true],
+    ["codex_local", "inherit", "warm", false],
+  ])("respects environment precedence and adapter scope (%s, %s, %s)", async (adapterType, runnerLifecycleMode, lifecycleMode, expectedReuse) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType,
+      adapterConfig: { lifecycleMode }, issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(expectedReuse);
+  });
+});
+
+
+describe("admitted native lifecycle recovery", () => {
+  it.each([
+    ["warm", "per_turn", "per_turn", true],
+    ["per_turn", "warm", "warm", false],
+  ] as const)("preserves admitted %s over changed agent/environment settings", async (admittedLifecycleMode, lifecycleMode, runnerLifecycleMode, expectedReuse) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+      adapterType: "paperclip_runner", adapterConfig: { lifecycleMode }, admittedLifecycleMode,
+      issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(expectedReuse);
+    expect(environment.config.reuseLease).toBe(false);
   });
 });

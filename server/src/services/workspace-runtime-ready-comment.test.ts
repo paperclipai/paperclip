@@ -23,6 +23,7 @@ function workspace(
     worktreePath: "/repo/.paperclip/worktrees/PAP-16051",
     warnings: [],
     created: true,
+    branchCreatedByRuntime: true,
     ...overrides,
   };
 }

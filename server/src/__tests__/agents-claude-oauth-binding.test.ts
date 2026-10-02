@@ -27,6 +27,7 @@ import {
   assertClaudeOAuthBindingInvariant,
   CLAUDE_OAUTH_CLAIM_REJECTED,
   CLAUDE_OAUTH_CREDENTIAL_CONFLICT,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   isFixedClaudeOAuthBinding,
   secretService,
@@ -187,6 +188,22 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     const error = claudeOAuthClaimRejectedError();
     expect(error.status).toBe(409);
     expect(error.message).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
+  });
+
+  it("matches two fixed bindings only when their version selectors are exactly equal", () => {
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, FIXED_BINDING)).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 5 }),
+    ).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 2 }),
+    ).toBe(false);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: "latest" }),
+    ).toBe(false);
+    // Neither side needs the exact fixed shape only; both sides do.
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, { type: "plain", value: "x" })).toBe(false);
+    expect(claudeOAuthBindingsMatchExactly(null, FIXED_BINDING)).toBe(false);
   });
 });
 
@@ -795,6 +812,200 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(await countDeclarationsForAgent(created.id)).toBe(1);
     const definitions = await db.select().from(userSecretDefinitions);
     expect(JSON.stringify(definitions)).not.toContain("sk-secret-resolve");
+  });
+
+  // --- The hire-inheritance path (no login round trip, no stored owner value) -
+
+  async function seedParentAgent(
+    parentScope: Scope,
+    options: { adapterType?: string; holdsFixedBinding?: boolean; version?: number } = {},
+  ) {
+    const [row] = await db
+      .insert(agents)
+      .values({
+        companyId: parentScope.companyId,
+        name: `Parent ${randomUUID().slice(0, 8)}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: options.adapterType ?? "claude_local",
+        adapterConfig: {
+          env:
+            options.holdsFixedBinding === false
+              ? {}
+              // A binding written through the normal persistence path always
+              // carries a resolved version, "latest" by default. Match that
+              // shape here, so only `options.version` simulates a pinned
+              // version, or a version change since the child copied it.
+              : { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: options.version ?? "latest" } },
+        },
+        runtimeConfig: {},
+      })
+      .returning();
+    return row!;
+  }
+
+  async function countDeclarationsForCompany(companyId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.companyId, companyId));
+    return rows.length;
+  }
+
+  it("binds the inherited fixed reference from a named claude_local parent with no claim and no stored owner value", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope);
+
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { inheritedFromAgentId: parent.id },
+    });
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("binds the inherited reference when the child's copied version still matches the parent's current version", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const created = await agentService(db).create(
+      scope.companyId,
+      createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+      { claudeLogin: { inheritedFromAgentId: parent.id } },
+    );
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject({ ...FIXED_BINDING, version: 5 });
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("rejects an inherited claim when the parent's version moved after the route copied the child's reference", async () => {
+    const scope = await seedScope();
+    // The parent now holds version 5. The child's reference, copied before this
+    // transaction, still names version 2 — a concurrent parent rotation moved
+    // the parent's version between the copy and this write.
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    await expect(
+      agentService(db).create(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 2 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      ),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim when the named parent holds no fixed binding", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { holdsFixedBinding: false });
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a parent in another company", async () => {
+    const scope = await seedScope();
+    const foreignScope = await seedScope();
+    const parent = await seedParentAgent(foreignScope);
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+    expect(await countUserSecretDefinitions(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming an unknown or deleted parent", async () => {
+    const scope = await seedScope();
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: randomUUID() },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a non-claude_local parent that still holds the fixed binding shape", async () => {
+    const scope = await seedScope();
+    // The parent's stored env happens to carry the exact fixed-binding shape
+    // under a non-claude_local adapter type. Complete mediation requires the
+    // gate to check the adapter type itself, not only the binding shape.
+    const parent = await seedParentAgent(scope, { adapterType: "codex_local" });
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim when a concurrent parent rotation commits while this create waits on the parent row lock", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const lockDb = createDb(connectionString);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    // Simulate a credential rotation on the parent: it takes the row lock
+    // first, moves the bound version to 6, then holds the open transaction
+    // until the gate releases.
+    const rotationHeld = lockDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM agents WHERE id = ${parent.id} FOR UPDATE`);
+      await tx.execute(
+        sql`UPDATE agents SET adapter_config = jsonb_set(adapter_config, '{env,CLAUDE_CODE_OAUTH_TOKEN,version}', '6') WHERE id = ${parent.id}`,
+      );
+      signalLocked();
+      await gate;
+    });
+
+    await locked;
+    // The child's copied reference still names version 5, the version the
+    // route read before the rotation started. The create call must wait for
+    // the parent row lock, so it can only proceed once the rotation commits.
+    const createPromise = agentService(db)
+      .create(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      )
+      .then(() => "created")
+      .catch((error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    releaseGate();
+    await rotationHeld;
+
+    // The create call reads the parent's committed post-rotation version, so
+    // it detects the mismatch against the child's stale copy and rejects the
+    // claim. Without the row lock, the create call could read the parent's
+    // pre-rotation version and bind the child to a reference the parent no
+    // longer holds.
+    expect(await createPromise).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
+    expect(await countAgents(scope.companyId)).toBe(1);
+    await lockDb.$client.end();
   });
 
   // --- The atomic credential-claim writer (item 2) ---------------------------
