@@ -563,6 +563,37 @@ describe("New agent setup", () => {
     expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
   });
+  it("defaults to host sign-in for OpenCode without attaching an OpenRouter AI connection", async () => {
+    await render("opencode_local");
+    const model = "zai/GLM-5.1_F";
+    await fill("Model", model);
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toEqual(expect.objectContaining({
+      adapterType: "opencode_local",
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    expect(api.hire.mock.calls[0][1].runtimeConfig?.aiConnection).toBeUndefined();
+  });
+  it("drops the AI connection when OpenCode switches back to host sign-in", async () => {
+    managedApi.list.mockResolvedValueOnce({
+      currentUserId: "user-1",
+      connections: [{ id: "shared-openrouter", name: "Team OpenRouter", provider: "openrouter", method: "api_key", scope: "shared" }],
+    } as never);
+    await render("opencode_local");
+    await fill("Model", "zai/GLM-5.1_F");
+    const choose = async (label: string) => {
+      const button = container.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement | null;
+      expect(button, `Missing choice ${label}`).toBeTruthy();
+      await act(async () => button!.click());
+      await settle();
+    };
+    await choose("Responsible user’s connection");
+    expect(container.querySelector('button[aria-label="Responsible user’s connection"]')?.getAttribute("aria-pressed")).toBe("true");
+    await choose("Host authentication / No managed connection");
+    expect(container.querySelector('button[aria-label="Host authentication / No managed connection"]')?.getAttribute("aria-pressed")).toBe("true");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runtimeConfig?.aiConnection).toBeUndefined();
+  });
   it.each(["codex", "claude", "opencode"])(
     "uses the correct native %s runner",
     async (runner) => {

@@ -44,6 +44,7 @@ export function AiConnectionField({
   environmentId,
   legacy = false,
   readOnly = false,
+  allowNone = false,
 }: {
   companyId: string;
   agentId?: string;
@@ -51,10 +52,11 @@ export function AiConnectionField({
   adapterType: string;
   model?: string;
   value?: AiConnectionBinding;
-  onChange: (binding: AiConnectionBinding) => void;
+  onChange: (binding: AiConnectionBinding | undefined) => void;
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
+  allowNone?: boolean;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -62,8 +64,8 @@ export function AiConnectionField({
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiConnectionBinding>();
   const [connecting, setConnecting] = useState(false);
-  const changeBinding = (next: AiConnectionBinding) => {
-    if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
+  const changeBinding = (next: AiConnectionBinding | undefined) => {
+    if (legacy && !value && next) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
   };
   const client = useQueryClient();
@@ -99,10 +101,11 @@ export function AiConnectionField({
         agentId={agentId ?? ""}
         agentName={agentName}
         readOnly={readOnly}
+        allowNone={allowNone}
         loading={accounts.isPending}
         error={accounts.error?.message}
         onChange={(binding) =>
-          changeBinding(aiConnectionBindingSchema.parse(binding))
+          changeBinding(binding ? aiConnectionBindingSchema.parse(binding) : undefined)
         }
         onConnect={() => { returnFocus.current = document.activeElement as HTMLElement; setConnecting(true); }}
         onRetry={() => void accounts.refetch()}
