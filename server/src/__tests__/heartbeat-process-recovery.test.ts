@@ -6417,16 +6417,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await heartbeat.waitForRunExecutionDrain(runId);
 
+    // A legacy run that ends without a disposition is corrected through
+    // issue_disposition_repair; count the older handoff reason too so a
+    // watchdog-armed run cannot pass by switching paths.
     const handoffWakeups = await db
       .select()
       .from(agentWakeupRequests)
       .where(
         and(
           eq(agentWakeupRequests.agentId, agentId),
-          eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+          inArray(agentWakeupRequests.reason, [
+            "finish_successful_run_handoff",
+            "issue_disposition_repair",
+          ]),
         ),
       );
-    return { runId, issueId, handoffWakeups };
+    return { companyId, agentId, runId, issueId, handoffWakeups };
   }
 
   it("skips the finish-handoff wake when an armed watchdog owns the next wake", async () => {
@@ -6443,12 +6449,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("still queues the finish-handoff wake when the watchdog agent can never run", async () => {
-    const { issueId, runId, handoffWakeups } =
+    const { companyId, agentId, issueId, runId, handoffWakeups } =
       await runProductiveSuccessfulRunOnWatchedIssue("terminated");
 
     expect(handoffWakeups).toHaveLength(1);
     expect(handoffWakeups[0]?.idempotencyKey).toBe(
-      `finish_successful_run_handoff:${issueId}:${runId}:1`,
+      `issue_disposition_repair:${issueId}:${legacyDispositionFingerprint(companyId, issueId, agentId, runId)}:1`,
     );
   });
 
