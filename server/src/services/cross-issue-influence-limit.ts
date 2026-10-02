@@ -19,6 +19,15 @@ const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap
  */
 export type CrossIssueInfluenceKind = "comment" | "update" | "interaction_resolution";
 
+/**
+ * Which ownership admitted an unscoped run's write, recorded so an audit can tell a
+ * charged unscoped write from a scoped run's fan-out.
+ *
+ * Only `sole_checkout` is uncharged. A run holding several checkouts has no single
+ * subject issue, so `shared_checkout` is charged exactly like `assignment`.
+ */
+export type UnscopedOwnership = "sole_checkout" | "shared_checkout" | "assignment";
+
 export type CrossIssueInfluenceDecision = {
   allowed: boolean;
   mode: "log_only" | "enforce";
@@ -41,17 +50,24 @@ export function runIdHeaderWasSent(req: { header(name: string): string | undefin
 }
 
 export function crossIssueInfluenceRunContextError(
-  options: { runHeaderPresent?: boolean } = {},
+  options: { runHeaderPresent?: boolean; runResolved?: boolean } = {},
 ) {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
   //
-  // `runHeaderPresent` picks between "you never sent it", "it arrived but did not
-  // resolve", and — when omitted, because the request is not in hand — a hedge that
-  // covers both. Advising a header the caller demonstrably already sent is what sent
-  // the probe agent in #12118 hunting its own request instead of the transport.
+  // `runHeaderPresent` picks between "you never sent it", "it arrived", and — when
+  // omitted, because the request is not in hand — a hedge that covers both. Advising a
+  // header the caller demonstrably already sent is what sent the probe agent in #12118
+  // hunting its own request instead of the transport.
+  //
+  // `runResolved` then splits "it arrived" in two, because those two failures need
+  // opposite advice. A run that resolved but has no issue scope is an ownership
+  // problem, and the ownership path is the way out. A run id that resolved to nothing
+  // is not: the server never established a run, so it cannot have established who owns
+  // the target, and saying so sends the caller to audit permissions it never checked.
   const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
     runHeaderPresent: options.runHeaderPresent,
+    runResolved: options.runResolved,
   });
   return forbidden(body.error, body.details);
 }
@@ -104,7 +120,12 @@ export async function observeCrossIssueInfluence(
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
-  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
+  //
+  // `runResolved: false`, because no run was established: the copy must point at the
+  // run id itself and must not assert anything about who owns the target.
+  if (!isUuidLike(input.runId)) {
+    throw crossIssueInfluenceRunContextError({ runHeaderPresent: true, runResolved: false });
+  }
 
   return db.transaction(async (tx) => {
     const run = await tx
@@ -128,11 +149,13 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
+      // The id arrived and is well formed, but it matches no run of this agent in this
+      // company — stale, or another agent's. Still not an ownership failure.
+      throw crossIssueInfluenceRunContextError({ runHeaderPresent: true, runResolved: false });
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    let unscopedOwnership: "checkout" | "assignment" | null = null;
+    let unscopedOwnership: UnscopedOwnership | null = null;
     if (!sourceIssueId) {
       // An `on_demand` run has no issue in its snapshot, and nothing the caller sends
       // can supply one. Refusing outright denied an agent writes to its own assigned
@@ -151,22 +174,38 @@ export async function observeCrossIssueInfluence(
           eq(issues.companyId, input.companyId),
         ))
         .then((rows) => rows[0] ?? null);
-      if (target?.checkoutRunId && target.checkoutRunId === input.runId) {
-        unscopedOwnership = "checkout";
+      const holdsCheckout = Boolean(target?.checkoutRunId && target.checkoutRunId === input.runId);
+      if (holdsCheckout) {
+        // A checkout only stands in for the missing `contextSnapshot.issueId` while it
+        // is unambiguous. `POST /issues/:id/checkout` writes one row at a time and does
+        // not release the run's other checkouts, so a run can hold several at once — and
+        // "whichever one you are writing to is the subject" would hand back the same
+        // uncounted fan-out that charging assignment closed. A run has one subject, so
+        // the exemption is only for a *sole* checkout.
+        const heldCheckouts = await tx
+          .select({ count: count() })
+          .from(issues)
+          .where(and(
+            eq(issues.checkoutRunId, input.runId),
+            eq(issues.companyId, input.companyId),
+          ))
+          .then((rows) => Number(rows[0]?.count ?? 0));
+        unscopedOwnership = heldCheckouts === 1 ? "sole_checkout" : "shared_checkout";
       } else if (target?.assigneeAgentId && target.assigneeAgentId === input.agentId) {
+        // Assignment alone proves permission, not scope. An agent can hold any number of
+        // issues, so "the agent is assigned to all of them" bounds nothing.
         unscopedOwnership = "assignment";
       }
-      if (!unscopedOwnership) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
-      // A checkout is this run's declared subject, written by the server in
-      // `POST /issues/:id/checkout`. It stands in for the missing
-      // `contextSnapshot.issueId`, so writes to it get same-issue semantics —
-      // uncharged, exactly as a scoped run's writes to its own source issue are below.
-      if (unscopedOwnership === "checkout") return null;
-      // Assignment alone proves permission, not scope. An agent can hold many issues,
-      // so "the agent is assigned to all of them" bounds nothing, and leaving these
-      // writes uncharged would let one run fan out across every issue it holds without
-      // ever reaching the cap. Permission and accounting are separate questions: admit
-      // the write, then fall through and charge it like any other cross-issue write.
+      if (!unscopedOwnership) throw crossIssueInfluenceRunContextError({
+        runHeaderPresent: true,
+        runResolved: true,
+      });
+      // The run's sole checkout is its subject issue, so writes to it get the same-issue
+      // semantics a scoped run's writes to its own source issue get below: uncharged.
+      if (unscopedOwnership === "sole_checkout") return null;
+      // Every other proven ownership is permitted and charged. Permission and accounting
+      // are separate questions, and only permission is what this guard was wrong about:
+      // fall through and charge the write like any other cross-issue write.
     }
     if (
       sourceIssueId &&

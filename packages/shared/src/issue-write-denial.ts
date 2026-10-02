@@ -83,6 +83,20 @@ export interface IssueWriteDenialContext {
    * asserting a cause it cannot observe.
    */
   runHeaderPresent?: boolean | null;
+
+  /**
+   * Did the run id the caller sent resolve to a usable heartbeat run?
+   *
+   * Splits the "header arrived" case, because its two failures need opposite advice.
+   * `true` means a run was found and it simply has no issue scope and does not own the
+   * target — an ownership problem, so the ownership path is the way out. `false` means
+   * the id was malformed or matched no run of this agent: the server never established
+   * a run, so it has established nothing about who owns the target, and pointing at
+   * ownership sends the caller to audit a permission that was never checked.
+   *
+   * Leave unset alongside `runHeaderPresent` when the request is not in hand.
+   */
+  runResolved?: boolean | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -276,27 +290,39 @@ export function describeIssueWriteDenial(
 
       const headerArrived = context.runHeaderPresent === true;
       const headerMissing = context.runHeaderPresent === false;
+      // Only meaningful once the header arrived. `false` means the id resolved to no
+      // run, so nothing is known about ownership and the copy must not imply otherwise.
+      const runUnresolved = headerArrived && context.runResolved === false;
 
       const description =
         `Every agent comment and task update is attributed to a heartbeat run so the ` +
         `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-        (headerArrived
-          ? `The \`X-Paperclip-Run-Id\` header did reach the server on this request, but it ` +
-            `did not resolve to a run with issue scope, and ${issue} is not one this run ` +
-            `owns, so the write could not be contained.`
-          : headerMissing
-            ? `No \`X-Paperclip-Run-Id\` header reached the server at all, so there was no ` +
-              `run to attribute the write to and it could not be contained.`
-            : `Either this request carried no valid run, or its run has no issue scope and ` +
-              `${issue} is not one it owns, so the write could not be contained.`);
+        (runUnresolved
+          ? `The \`X-Paperclip-Run-Id\` header did reach the server on this request, but its ` +
+            `value matched no live run of yours, so there was no run to attribute the write ` +
+            `to. Nothing was checked about ${issue} itself.`
+          : headerArrived
+            ? `The \`X-Paperclip-Run-Id\` header did reach the server on this request, and it ` +
+              `resolved to a run with no issue scope, and ${issue} is not one this run ` +
+              `owns, so the write could not be contained.`
+            : headerMissing
+              ? `No \`X-Paperclip-Run-Id\` header reached the server at all, so there was no ` +
+                `run to attribute the write to and it could not be contained.`
+              : `Either this request carried no valid run, or its run has no issue scope and ` +
+                `${issue} is not one it owns, so the write could not be contained.`);
 
-      const sanctionedPath = headerArrived
-        ? // Never tell this caller to send the header: the server saw it arrive.
-          `The \`X-Paperclip-Run-Id\` header already arrived, so re-sending it cannot help. ` +
-          `${OWNERSHIP_PATH} If you believe your run *is* scoped, the value did not resolve — ` +
-          `check that it is your current run (\`$PAPERCLIP_RUN_ID\`, a UUID) and that the ` +
-          `sandbox-bridge header allowlist forwards \`x-paperclip-run-id\` unmodified. ` +
+      const sanctionedPath = runUnresolved
+        ? // Do not offer the ownership path here: the run never resolved, so ownership was
+          // never reached and sending the caller to audit it wastes the retry.
+          `The \`X-Paperclip-Run-Id\` header arrived, so re-sending the same value cannot ` +
+          `help — it resolved to no run of yours. Send your *current* run id ` +
+          `(\`$PAPERCLIP_RUN_ID\`, a UUID) rather than a stale or copied one, and check that ` +
+          `the sandbox-bridge header allowlist forwards \`x-paperclip-run-id\` unmodified. ` +
           `${OPEN_CHANNELS}`
+        : headerArrived
+        ? // Never tell this caller to send the header: the server saw it arrive.
+          `The \`X-Paperclip-Run-Id\` header already arrived and resolved, so re-sending it ` +
+          `cannot help. ${OWNERSHIP_PATH} ${OPEN_CHANNELS}`
         : headerMissing
           ? `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
             `and retry. The server received no such header, so if your client did send one, ` +

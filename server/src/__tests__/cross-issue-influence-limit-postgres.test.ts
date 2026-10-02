@@ -177,8 +177,9 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     };
 
-    // Assignment admits the write and charges it. A checkout is the run's declared
-    // subject, so it stands in for the absent `contextSnapshot.issueId` and is free.
+    // Assignment admits the write and charges it. The run's sole checkout is its
+    // declared subject, so it stands in for the absent `contextSnapshot.issueId`
+    // and is free.
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: ownedIssueId }))
       .resolves.toMatchObject({ count: 1, allowed: true });
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: checkedOutIssueId }))
@@ -201,6 +202,87 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     expect(recorded).toEqual([
       { action: "issue.cross_issue_influence_observed", entityId: ownedIssueId },
     ]);
+  });
+
+  // Second review finding: the sole-checkout exemption has to be *sole*. Checkout writes
+  // one issue row at a time and never releases the run's other checkouts, so a run can
+  // hold many. If each one counted as "the subject issue", a run could check out 21
+  // issues and fan out uncounted — the same hole as before, reached a different way.
+  // Real SQL, because the whole fix is a COUNT over `issues.checkout_run_id`.
+  it("charges checkout writes once the run holds more than one checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Multi Checkout",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "on_demand" },
+    });
+    // One checkout only: this run's unambiguous subject issue.
+    await db.insert(issues).values({
+      id: firstIssueId,
+      companyId,
+      title: "Checked out first",
+      checkoutRunId: runId,
+    });
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "comment" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: firstIssueId }))
+      .resolves.toBeNull();
+
+    // The run claims a second issue. Neither is now provably "the" subject, so both are
+    // charged — including the one that was free a moment ago.
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Checked out second",
+      checkoutRunId: runId,
+    });
+
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: secondIssueId }))
+      .resolves.toMatchObject({ count: 1, allowed: true });
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: firstIssueId }))
+      .resolves.toMatchObject({ count: 2, allowed: true });
+
+    const recorded = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(2);
+    for (const row of recorded) {
+      expect(row.action).toBe("issue.cross_issue_influence_observed");
+      expect((row.details as { unscopedOwnership: string }).unscopedOwnership)
+        .toBe("shared_checkout");
+    }
   });
 
   // Greptile's P1 on PR #14911: assignment admitted the write *and* skipped the
