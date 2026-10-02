@@ -1,4 +1,5 @@
 import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
+import { isSemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
   CODEX_BLOCK_TOOL_NAME,
@@ -147,6 +148,10 @@ async function handleServerRequestBody(
             );
             return dynamicToolResponse(result);
           } catch (error) {
+            // Preserve uncertain effects for the durable controller. A normal
+            // failed tool response would falsely settle this call and permit
+            // the provider to continue as if the write had not happened.
+            if (isSemanticToolOutcomeUnknownError(error)) throw error;
             const message = boundedText(
               error instanceof Error ? error.message : error,
             );

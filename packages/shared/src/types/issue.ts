@@ -774,6 +774,8 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  /** True only while the title is the provisional slice of the initial prompt. */
+  titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
   /** Server-owned Slack lifecycle projection; not writable through task updates. */
@@ -1357,8 +1359,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
 export interface ConnectionIntentPayload {
   version: 1;
   upstreamService?: { slug: string; name: string; selectionInteractionId?: string };
-  /** Runtime authentication requests cannot be satisfied by tool credentials. */
-  purpose?: "ai";
+  /** AI authentication and inbox setup cannot be satisfied by tool credentials. */
+  purpose?: "ai" | "channel";
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;

@@ -42,6 +42,7 @@ const state = vi.hoisted(() => ({
 const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+  setDefault: vi.fn(async () => ({})),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({ agentsApi: api }));
@@ -543,6 +544,7 @@ describe("New agent setup", () => {
     await act(async () => connectButton.click());
     await settle();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(managedApi.setDefault).toHaveBeenCalledWith("company-1", "managed-grant");
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
     }));

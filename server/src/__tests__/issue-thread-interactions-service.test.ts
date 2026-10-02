@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
+  authUsers,
+  companyMemberships,
+  instanceUserRoles,
+  issueQuestionResponseDeliveries,
   companies,
   createDb,
   documentRevisions,
@@ -48,6 +52,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issueComments);
@@ -64,7 +69,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
+    await db.delete(instanceUserRoles);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -204,6 +212,182 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     };
   }
+
+  async function seedQuestionUser(companyId: string, userId: string, role = "member", status = "active") {
+    await db.insert(authUsers).values({ id: userId, name: "Question recipient", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: role, status });
+  }
+
+  async function seedChatQuestion() {
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:question-owner";
+    await seedQuestionUser(fixture.companyId, userId);
+    await db.update(issues).set({
+      conversationAgentId: fixture.agentId, conversationUserId: userId, conversationState: "active",
+      assigneeAgentId: fixture.agentId,
+    }).where(eq(issues.id, fixture.issueId));
+    return { ...fixture, userId };
+  }
+
+  it("derives the exact Cloud chat owner, denies other responders, and saves one answer delivery", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const created = await interactionsSvc.create(scope, {
+      ...questionCreateInput(fixture.runId), resolverPolicy: "human_only",
+    }, { agentId: fixture.agentId });
+    expect(created.addresseeUserId).toBe(fixture.userId);
+    const answer = { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] };
+    for (const userId of ["question-owner", "paperclip-id:other-user"]) {
+      await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { userId }))
+        .rejects.toMatchObject({ status: 403, details: { code: "interaction_addressee_mismatch" } });
+    }
+    await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { agentId: fixture.agentId, runId: fixture.runId }))
+      .rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+    const answered = await interactionsSvc.answerQuestions(scope, created.id, answer, { userId: fixture.userId });
+    expect(answered).toMatchObject({ status: "answered", resolvedByUserId: fixture.userId, continuationPolicy: "wake_assignee" });
+    await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { userId: fixture.userId }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(1);
+  });
+
+  it("reuses concurrent omitted and explicit chat-owner requests and legacy omitted recipients", async () => {
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { ...questionCreateInput(fixture.runId), idempotencyKey: "chat-question" };
+    const actor = { agentId: fixture.agentId };
+    // Both callers must finish their optimistic lookup before either transaction
+    // inserts, forcing the unique-conflict recovery path instead of relying on timing.
+    const transaction = db.transaction.bind(db);
+    let arrivals = 0;
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    const gate = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      if (++arrivals === 2) release();
+      await ready;
+      return transaction(callback, config);
+    });
+    let omitted!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    let explicit!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    try {
+      [omitted, explicit] = await Promise.all([
+        interactionsSvc.create(scope, input, actor),
+        interactionsSvc.create(scope, { ...input, addresseeUserId: fixture.userId }, actor),
+      ]);
+    } finally { gate.mockRestore(); }
+    expect(explicit.id).toBe(omitted.id);
+    expect(explicit.addresseeUserId).toBe(fixture.userId);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
+    await db.update(issueThreadInteractions).set({ addresseeUserId: null }).where(eq(issueThreadInteractions.id, omitted.id));
+    expect((await interactionsSvc.create(scope, input, actor)).id).toBe(omitted.id);
+  });
+
+  it.each(["question-owner", "paperclip-id:another-member"])("rejects contradictory chat recipient %s before saving", async (addresseeUserId) => {
+    const fixture = await seedChatQuestion();
+    await seedQuestionUser(fixture.companyId, "paperclip-id:another-member");
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_chat_addressee_mismatch" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+  });
+
+  it("does not infer chat recipients for confirmations or replace their explicit owner", async () => {
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { kind: "request_confirmation" as const, payload: { version: 1 as const, prompt: "Proceed?" } };
+    const actor = { agentId: fixture.agentId };
+    expect(await interactionsSvc.create(scope, input, actor)).toMatchObject({ addresseeUserId: null });
+    const addresseeUserId = "paperclip-id:confirmation-reviewer";
+    await seedQuestionUser(fixture.companyId, addresseeUserId);
+    expect(await interactionsSvc.create(scope, { ...input, addresseeUserId }, actor)).toMatchObject({ addresseeUserId });
+  });
+
+  it("keeps ordinary task addressing optional and enforces valid explicit recipients", async () => {
+    const fixture = await seedSourceQuestionFixture({});
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { ...questionCreateInput(fixture.runId), resolverPolicy: "human_only" as const };
+    const actor = { agentId: fixture.agentId };
+    const open = await interactionsSvc.create(scope, input, actor);
+    expect(open.addresseeUserId).toBeNull();
+    const userId = "paperclip-id:task-recipient";
+    await seedQuestionUser(fixture.companyId, userId);
+    const addressed = await interactionsSvc.create(scope, { ...input, addresseeUserId: userId }, actor);
+    expect(addressed.addresseeUserId).toBe(userId);
+    const answer = { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] };
+    await expect(interactionsSvc.answerQuestions(scope, addressed.id, answer, { userId: "other-user" })).rejects.toMatchObject({ status: 403 });
+    expect(await interactionsSvc.answerQuestions(scope, addressed.id, answer, { userId })).toMatchObject({ status: "answered", resolvedByUserId: userId });
+  });
+
+  it.each(["unknown", "prefix-dropped", "cross-company", "inactive", "viewer"])("rejects %s explicit task recipients before saving", async (kind) => {
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:task-recipient";
+    if (kind !== "unknown") {
+      const companyId = kind === "cross-company" ? (await seedConfirmationIssue()).companyId : fixture.companyId;
+      await seedQuestionUser(companyId, userId, kind === "viewer" ? "viewer" : "member", kind === "inactive" ? "inactive" : "active");
+    }
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: kind === "prefix-dropped" ? "task-recipient" : userId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_addressee_user_unavailable" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+  });
+
+  it("preserves valid instance-admin recipients", async () => {
+    const userId = "instance-admin";
+    const fixture = await seedSourceQuestionFixture({});
+    await db.insert(authUsers).values({ id: userId, name: "Admin", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    expect(await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: userId,
+    }, { agentId: fixture.agentId })).toMatchObject({ addresseeUserId: userId });
+  });
+
+  it("lets the implicit local board answer chat questions without an auth row", async () => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", "local_trusted");
+    const fixture = await seedSourceQuestionFixture({});
+    await db.update(issues).set({
+      conversationAgentId: fixture.agentId, conversationUserId: "local-board", conversationState: "active",
+      assigneeAgentId: fixture.agentId,
+    }).where(eq(issues.id, fixture.issueId));
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const question = await interactionsSvc.create(scope, questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+    expect(question.addresseeUserId).toBe("local-board");
+    expect(await db.select().from(authUsers)).toHaveLength(0);
+    expect(await db.select().from(companyMemberships)).toHaveLength(0);
+    expect(await interactionsSvc.answerQuestions(scope, question.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+    }, { userId: "local-board" })).toMatchObject({ status: "answered", resolvedByUserId: "local-board" });
+  });
+
+  it.each(["authenticated", "cloud"])("does not infer local-board authority in %s mode", async (mode) => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", mode === "cloud" ? "local_trusted" : "authenticated");
+    if (mode === "cloud") vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedSourceQuestionFixture({});
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: "local-board",
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_addressee_user_unavailable" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
+
+  it("does not accept a stale Cloud instance-admin row as recipient authority", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:stale-admin";
+    await db.insert(authUsers).values({ id: userId, name: "Stale admin", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: userId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({ status: 422 });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
 
   it("rejects a source-run question when a newer human comment was not delivered", async () => {
     const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });

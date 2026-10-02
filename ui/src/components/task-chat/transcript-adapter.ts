@@ -1959,6 +1959,7 @@ export function coalesceSettledTurns(
         held &&
         meta &&
         heldMeta &&
+        Boolean(item.historical) === Boolean(held.historical) &&
         meta.agentKey &&
         meta.agentKey === heldMeta.agentKey
       ) {

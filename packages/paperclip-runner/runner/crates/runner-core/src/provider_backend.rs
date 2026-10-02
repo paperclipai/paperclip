@@ -3070,30 +3070,31 @@ impl CodexCommandExecutor {
                 "reason": reason,
             })));
         }
-        let has_pending_tools = self
+        let mut next_state = self
             .state
-            .as_ref()
-            .is_some_and(|state| state.tool_bridge.pending_calls().next().is_some());
-        if has_pending_tools {
-            let identity = self.event_identity()?;
-            let mut next_state = self
-                .state
-                .clone()
-                .expect("Codex state remains available during interruption");
-            let cancelled = next_state
-                .tool_bridge
-                .cancel_pending_calls("provider_turn_stopped")
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!(
-                        "failed to cancel pending semantic tools: {error}"
-                    ))
-                })?;
-            for result in cancelled {
-                next_state.push_terminal_event(semantic_result_event(&identity, &result))?;
-            }
-            self.persist_state(&next_state)?;
-            self.state = Some(next_state);
-        }
+            .clone()
+            .expect("Codex state remains available during interruption");
+        next_state
+            .tool_bridge
+            .cancel_pending_calls("provider_turn_stopped")
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to stop semantic tool admission: {error}"
+                ))
+            })?;
+        next_state.push_terminal_event(NormalizedProviderEvent {
+            event_type: "harness.diagnostic".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({
+                "code": "provider_interrupt_requested",
+                "reason": reason,
+                "providerTurnId": provider_turn_id,
+                "pendingCallIds": next_state.tool_bridge.pending_calls().map(|call| call.call_id.clone()).collect::<Vec<_>>(),
+            }),
+        })?;
+        // Record cause and pending identities before touching the provider.
+        self.persist_state(&next_state)?;
+        self.state = Some(next_state);
         self.ensure_provider()?.interrupt_turn().map_err(|error| {
             DurableRunnerError::invalid(format!("Codex turn interrupt failed: {error}"))
         })?;
@@ -3711,6 +3712,13 @@ impl CodexCommandExecutor {
         operation_id: String,
         input: Value,
     ) -> Result<(), DurableRunnerError> {
+        if let Err(error) = sanitize_semantic_tool_input(&operation_id, &input) {
+            return self.reject_tool_call(
+                call_id,
+                operation_id,
+                ProviderBridgeError::invalid(error.to_string()),
+            );
+        }
         let identity = self.event_identity()?;
         let admission = self
             .state
@@ -3763,6 +3771,7 @@ impl CodexCommandExecutor {
             .state
             .clone()
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is not prepared"))?;
+        let delivery_detached = next_state.tool_bridge.turn_closed();
         let terminal_tool_input = next_state
             .tool_bridge
             .pending_calls()
@@ -3772,13 +3781,24 @@ impl CodexCommandExecutor {
             .tool_bridge
             .apply_result(result.clone())
             .map_err(|error| {
-                DurableRunnerError::invalid(format!("semantic tool result was rejected: {error}"))
+                DurableRunnerError::invalid(format!(
+                    "semantic tool result was rejected for call {} operation {}: {error}",
+                    result.call_id, result.operation_id
+                ))
             })?;
         if was_completed {
-            return Ok(CommandExecution::result(json!({
-                "status": "duplicate",
-                "callId": result.call_id,
-            })));
+            return Ok(CommandExecution {
+                result: json!({ "status": "duplicate", "callId": result.call_id }),
+                events: vec![(
+                    "harness.diagnostic".to_owned(),
+                    EventPriority::P0,
+                    json!({
+                        "code": "semantic_tool_result_duplicate", "severity": "warning",
+                        "callId": result.call_id, "operationId": result.operation_id,
+                        "resultDigest": semantic_value_digest(&result.result),
+                    }),
+                )],
+            });
         }
         let terminal_tool_authoritative =
             terminal_tool_input
@@ -3796,6 +3816,12 @@ impl CodexCommandExecutor {
         next_state.push_event(semantic_result_event(&identity, &result))?;
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
+        if delivery_detached {
+            return Ok(CommandExecution::result(json!({
+                "status": "settled_after_turn",
+                "callId": result.call_id,
+            })));
+        }
         let provider = self.ensure_provider()?;
         if terminal_tool_authoritative {
             provider
@@ -4401,6 +4427,12 @@ impl CodexCommandExecutor {
 }
 
 impl CommandExecutor for CodexCommandExecutor {
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        // ProviderToolBridge persists the exact call/result and rejects changed
+        // receipts. Delivery cannot execute a server-side semantic operation.
+        Ok(true)
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.startup_command = Some(ProviderStartupCommand {
             command_id: command.command_id.clone(),
@@ -4457,7 +4489,13 @@ impl CommandExecutor for CodexCommandExecutor {
                 "session.goal.get" => self.get_goal(),
                 "session.goal.set" => self.set_goal(&command.payload),
                 "session.goal.clear" => self.clear_goal(&command.payload),
-                "turn.interrupt" | "run.cancel" => self.interrupt_turn(&command.command_type),
+                "turn.interrupt" | "run.cancel" => self.interrupt_turn(
+                    command
+                        .payload
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&command.command_type),
+                ),
                 "turn.stop" => self.stop_turn_for_suspension(&command.command_type),
                 "request.resolve" => self.resolve_request(&command.payload),
                 "semantic_tool.result" => self.deliver_semantic_result(&command.payload),
@@ -5474,7 +5512,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_input_digest_covers_the_transmitted_redacted_value() {
+    fn semantic_input_rejects_credential_material_before_dispatch() {
         let identity = ProviderEventIdentity {
             runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
@@ -5487,17 +5525,14 @@ mod tests {
             operation_id: "get_task_context".to_owned(),
             input: json!({"password": "do-not-persist", "safe": true}),
         };
-        let event = semantic_input_event(&identity, &call).unwrap();
-        let transmitted = &event.payload["semantic_tool"]["input"];
-        assert_eq!(transmitted["password"], "[REDACTED]");
-        assert_eq!(
-            event.payload["semantic_tool"]["content"]["digest"],
-            semantic_value_digest(transmitted)
-        );
+        assert!(semantic_input_event(&identity, &call)
+            .unwrap_err()
+            .to_string()
+            .contains("refusing to execute altered arguments"));
     }
 
     #[test]
-    fn semantic_finish_input_preserves_a_complete_long_redacted_summary() {
+    fn semantic_finish_input_preserves_a_complete_long_summary() {
         let identity = ProviderEventIdentity {
             runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
@@ -5506,7 +5541,7 @@ mod tests {
             item_id: "item-1".to_owned(),
         };
         let summary = format!(
-            "token=do-not-persist {} Authorization: Bearer late-provider-secret COMPLETE-LONG-SUMMARY",
+            "Answer: {} COMPLETE-LONG-SUMMARY",
             "A complete paragraph for the user. ".repeat(180)
         );
         assert!(summary.len() > 4_096);
@@ -5519,11 +5554,11 @@ mod tests {
         let event = semantic_input_event(&identity, &call).unwrap();
         let transmitted = &event.payload["semantic_tool"]["input"];
         let transmitted_summary = transmitted["summary"].as_str().unwrap();
-        assert!(transmitted_summary.starts_with("token=[REDACTED] "));
+        assert!(transmitted_summary.starts_with("Answer: "));
         assert!(transmitted_summary.ends_with(" COMPLETE-LONG-SUMMARY"));
         assert!(!transmitted_summary.contains("do-not-persist"));
         assert!(!transmitted_summary.contains("late-provider-secret"));
-        assert!(transmitted_summary.contains("Authorization: Bearer [REDACTED]"));
+        assert_eq!(transmitted, &call.input);
         assert!(!transmitted_summary.contains("…[truncated]"));
         assert_eq!(
             event.payload["semantic_tool"]["content"]["digest"],

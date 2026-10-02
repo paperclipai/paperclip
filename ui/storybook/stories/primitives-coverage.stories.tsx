@@ -84,6 +84,30 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+export const NativeSelects: Story = {
+  render: () => <StoryFrame>
+    <div className="grid max-w-3xl gap-6 md:grid-cols-2">
+      {(["Default", "Disabled", "Long value", "Right to left"] as const).map(label => <label key={label} className="space-y-2 text-sm" dir={label === "Right to left" ? "rtl" : undefined}>
+        <span className="block">{label}</span>
+        <select className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50" disabled={label === "Disabled"} defaultValue="live">
+          <option value="live">{label === "Long value" ? "A longer selected value beside the inset caret" : "Live connection"}</option>
+          <option value="webhook">Webhook</option>
+        </select>
+      </label>)}
+      <label className="space-y-2 text-sm"><span className="block">Multiple selection</span>
+        <select multiple className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" defaultValue={["live"]}>
+          <option value="live">Live connection</option><option value="webhook">Webhook</option>
+        </select>
+      </label>
+      <label className="space-y-2 text-sm"><span className="block">Listbox</span>
+        <select size={3} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" defaultValue="live">
+          <option value="live">Live connection</option><option value="webhook">Webhook</option>
+        </select>
+      </label>
+    </div>
+  </StoryFrame>,
+};
+
 function StoryFrame({ children }: { children: React.ReactNode }) {
   return (
     <div className="paperclip-story">

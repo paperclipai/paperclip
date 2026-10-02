@@ -1,11 +1,19 @@
+import { AgentMailApiKeyField } from "@/features/connections/AgentMailApiKeyField";
+import { TaskBrowserFooter } from "@/components/task-side-panel/TaskBrowserFooter";
+import { TaskBrowserActivity } from "@/components/task-side-panel/TaskBrowserActivity";
+import type { TaskBrowser } from "@paperclipai/shared";
 import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
 import { CloudSignIn } from "../components/CloudSignIn";
 import { CloudAccessError } from "../components/CloudAccessGate";
 import { SetupPrompt } from "./apps/chat/SetupPrompt";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
+
+import { SkillSourceTree } from "./skills/SkillSourceTree";
+import { SkillBinaryFile } from "../components/SkillBinaryFile";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
 import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
+import { AgentConversationSidebar } from "@/components/AgentConversationSidebar";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
@@ -487,6 +495,7 @@ function ComposerActionsExample() {
 }
 
 export function DesignGuide() {
+  const [agentmailDemoKey, setAgentmailDemoKey] = useState("");
   const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
@@ -1021,6 +1030,7 @@ export function DesignGuide() {
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
       <Section title="Select">
+        <p className="mb-4 text-sm text-muted-foreground">Native single-value dropdowns share an inset, theme-aware caret and reserve room for it in the base stylesheet. Multiple-selection lists and controls with a custom icon keep their own appearance.</p>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Default size">
             <Select value={selectValue} onValueChange={setSelectValue}>
@@ -1703,6 +1713,13 @@ export function DesignGuide() {
         </SubSection>
         <SubSection title="Agent chat picker">
           <AgentChatPickerExample />
+          <SubSection title="Agent conversation sidebar">
+            <div className="flex flex-wrap gap-4">
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} onSelect={() => {}} onBrowse={() => {}} /></div>
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} loading /></div>
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} error={new Error("Unavailable")} onRetry={() => {}} /></div>
+            </div>
+          </SubSection>
         </SubSection>
         <SubSection title="Sidebar nav items">
           <p className="text-sm text-muted-foreground">
@@ -2191,6 +2208,12 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="GitHub skill sources">
+        <p className="text-sm text-muted-foreground">The shared FileTree explorer layout puts disclosure controls beside selection, with compact folder chains, equal-height rows, inline skill descriptions, and trailing status badges. Folders select descendant packages; package checkboxes select only that package, independently of nested skills. Included files use aligned rows without individual checkboxes (`getCheckboxState` returns null); package rows use `renderNodeExtra` for file counts and inspection. Use arrow keys to navigate and Space to select.</p>
+        <SkillSourceTreeShowcase />
+        <SkillBinaryFile file={{ skillId: "example", path: "assets/example.bin", kind: "asset", content: "AAECAw==", encoding: "base64", language: null, markdown: false, editable: false }} />
+      </Section>
+
       <Section title="Source Repositories">
         <SubSection title="Empty and disconnected">
           <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
@@ -2266,7 +2289,7 @@ export function DesignGuide() {
       </Section>
 
       <Section title="Browser setup prompt">
-        <p className="text-sm text-muted-foreground">A shared copy action for provider setup instructions. Confirms success inline and offers selectable text if clipboard access fails.</p>
+        <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
         <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
       </Section>
 
@@ -2277,7 +2300,8 @@ export function DesignGuide() {
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
           Pending connections stay in the timeline beside a usable composer. The independently
           addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
-          layouts, completion, and historical outcomes.
+          layouts, completion, and historical outcomes. AgentMail uses an inline API-key field
+          with fixed access defaults; its field and direct key-page link are shared with Apps setup.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard
@@ -2292,6 +2316,14 @@ export function DesignGuide() {
             interaction={connectedConnectionIntentInteraction}
             currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
           />
+        </div>
+      </Section>
+
+      <Section title="AgentMail API key">
+        <p className="text-sm text-muted-foreground">AgentMail setup has two steps: pick an agent, then pick an email address. Ask for the API key alongside the agent only when needed. Keep address errors beside the field and additional settings under Advanced options.</p>
+        <p className="text-sm text-muted-foreground">Preview only. This field does not save or submit a credential.</p>
+        <div className="max-w-md">
+          <AgentMailApiKeyField value={agentmailDemoKey} onChange={setAgentmailDemoKey} />
         </div>
       </Section>
 
@@ -2396,6 +2428,40 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="Browser session footer">
+        <p className="text-sm text-muted-foreground">Fit to pane follows the visible panel. Fixed viewport presets and session actions live in the footer menu. Costs stay in task reporting. The idle countdown appears only in the final five minutes. Full panel, activity, and settings states are in Storybook under Browser Use.</p>
+        {(["running", "idle", "closing-soon", "closed"] as const).map((state) => (
+          <SubSection key={state} title={state === "closing-soon" ? "Closing soon" : state}>
+            <TaskBrowserFooter
+              browser={{
+                id: "design-browser", sessionId: "design-session", issueId: "design-task",
+                status: state === "closing-soon" ? "idle" : state,
+                runStatus: "completed", progress: null, error: null, costCents: 15,
+                idleDeadline: new Date(state === "closing-soon" ? 282000 : 600000).toISOString(),
+                expiresAt: null, createdAt: new Date(0).toISOString(),
+              } satisfies TaskBrowser}
+              now={0}
+              onControl={() => {}}
+              onReconnect={() => {}}
+              onResize={() => {}}
+            />
+          </SubSection>
+        ))}
+      </Section>
+
+      <Section title="Browser activity in the task feed">
+        <p className="text-sm text-muted-foreground">Each browser appears once at its opening time among the task messages. Its status updates in place; the action opens its side-panel tab.</p>
+        {(["starting", "running", "idle", "closed", "failed"] as const).map((status) => (
+          <SubSection key={status} title={status}>
+            <TaskBrowserActivity browser={{
+              id: `design-${status}`, sessionId: `design-${status}`, issueId: "design-task", status,
+              runStatus: "completed", progress: null, error: null, costCents: 0,
+              idleDeadline: null, expiresAt: null, createdAt: new Date(0).toISOString(),
+            }} onOpen={() => {}} />
+          </SubSection>
+        ))}
+      </Section>
+
       <Section title="Media artifacts">
         <p className="text-sm text-muted-foreground">Images and videos use gallery tiles. The whole tile opens the task gallery; files and links keep compact, fully clickable rows. Task/Artifact Gallery in Storybook covers playable videos, mixed files, narrow panels, and unavailable previews.</p>
         <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
@@ -2428,4 +2494,18 @@ export function DesignGuide() {
       </Section>
     </div>
   );
+}
+
+function SkillSourceTreeShowcase() {
+  const candidates = [
+    { path: ".agents/review/SKILL.md", name: "Review", description: "Review changes before release.", error: null, inspection: { requirements: null, references: [], warnings: [], files: [
+      { path: "SKILL.md", kind: "skill", sizeBytes: 120, encoding: "utf8" as const, executable: false },
+      { path: "scripts/check.sh", kind: "script", sizeBytes: 45, encoding: "utf8" as const, executable: true },
+    ] } },
+    { path: ".agents/review/nested/SKILL.md", name: "Nested skill", description: "An independently selected package.", error: null, note: "New skill" },
+    { path: "broken/SKILL.md", name: "Needs attention", description: null, error: "Missing required description." },
+  ];
+  const [selected, setSelected] = useState(new Set(candidates.map(skill => skill.path)));
+  const [excluded, setExcluded] = useState<string[]>([]);
+  return <SkillSourceTree candidates={candidates} selected={selected} excludedFolders={excluded} onChange={(paths, folders) => { setSelected(paths); setExcluded(folders); }} />;
 }

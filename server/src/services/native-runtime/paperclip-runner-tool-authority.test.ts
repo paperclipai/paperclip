@@ -5,8 +5,10 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  authUsers,
   approvals,
   companies,
+  companyMemberships,
   createDb,
   documents,
   heartbeatRuns,
@@ -99,10 +101,12 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(34);
+    expect(authority.definitions()).toHaveLength(35);
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
-    expect(questions.description).toContain("Never infer answers");
+    expect(questions.description).toContain("Never fabricate answers");
+    expect(questions.description).toContain("resolve-from-comment");
+    expect(questions.description).toContain("Existing resolver permissions still apply");
     expect(questions.description).toContain("Do not fabricate answer links");
     expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
     expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");
@@ -1278,6 +1282,10 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("captures delegation and approval origins before steering and preserves replay identity", async () => {
     const issueId = "00000000-0000-4000-8000-000000000120";
     const runId = "00000000-0000-4000-8000-000000000121";
+    for (const userId of ["person-a", "person-b"]) {
+      await db.insert(authUsers).values({ id: userId, name: userId, email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    }
     await db.insert(issues).values({ id: issueId, companyId, title: "Identity delegation",
       status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,

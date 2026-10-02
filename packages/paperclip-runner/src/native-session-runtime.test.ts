@@ -3901,7 +3901,7 @@ describe("executeNativeSession recovery", () => {
     { typed: false, closeFails: true },
     { typed: true, closeFails: true, startupRace: true },
   ])(
-    "preserves a permanent integrity failure through required cleanup (%j)",
+    "preserves the primary execution failure through required cleanup (%j)",
     async ({ typed, closeFails, startupRace = false }) => {
       const failure = typed
         ? new NativeSessionProtocolIntegrityError(
@@ -3996,8 +3996,9 @@ describe("executeNativeSession recovery", () => {
         timeoutMs: 900_000,
       };
       await expect(executeNativeSession(options)).rejects.toBe(
-        typed ? failure : closeFailure,
+        failure,
       );
+      if (closeFails) expect(failure).toHaveProperty("cleanupError", closeFailure);
       expect(close).toHaveBeenCalledOnce();
       expect(onSession).toHaveBeenLastCalledWith(null);
       expect(port.completeRun).not.toHaveBeenCalled();
@@ -4065,6 +4066,8 @@ describe("executeNativeSession recovery", () => {
       async *events() { throw new Error("cancelled remote transport"); },
       startTurn: async () => ({ turnId: "remote-turn" }),
       result: async () => null,
+      async snapshot() { return { backendKind: "mock", sessionId: "stop-session", identity: this.identity(),
+        providerSessionId: "stop-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
       close: vi.fn(async () => { throw failure; }),
     };
     const backend: NativeSessionBackend = {
@@ -4080,7 +4083,7 @@ describe("executeNativeSession recovery", () => {
     const options = { input: scopedInput, backend, controlPlane, runnerInstanceId: "remote-runner",
       controlPlaneInstanceId: "control", requireSessionCloseBeforeReturn: true,
       remoteCleanupScope: binding.remoteCleanupScope };
-    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    await expect(executeNativeSession(options)).rejects.toMatchObject({ message: "cancelled remote transport", cleanupError: failure });
     expect(completeTerminatedRemoteNativeSessionCleanup({ ...binding, runId: "other-run" })).toBe(true);
     expect(completeTerminatedRemoteNativeSessionCleanup({ ...binding, companyId: "other-company" })).toBe(true);
     await expect(executeNativeSession(options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
@@ -4091,7 +4094,7 @@ describe("executeNativeSession recovery", () => {
     const independentBackend = { ...backend, openSession: vi.fn(async () => independentSession) };
     await expect(executeNativeSession({ ...options, remoteCleanupScope: "other-sandbox",
       input: { ...scopedInput, binding: { ...scopedInput.binding, runId: independent.runId } },
-      backend: independentBackend })).rejects.toBe(failure);
+      backend: independentBackend })).rejects.toMatchObject({ message: "cancelled remote transport", cleanupError: failure });
     expect(independentBackend.openSession).toHaveBeenCalledOnce();
     expect(completeTerminatedRemoteNativeSessionCleanup(binding)).toBe(true);
     // Same company/run, different sandbox: its quarantine must remain intact.
@@ -4099,7 +4102,7 @@ describe("executeNativeSession recovery", () => {
       backend: independentBackend })).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
     expect(independentBackend.openSession).toHaveBeenCalledOnce();
     // Reopening is now possible; the old failure/result was never rewritten.
-    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    await expect(executeNativeSession(options)).rejects.toMatchObject({ message: "cancelled remote transport", cleanupError: failure });
     expect(backend.openSession).toHaveBeenCalledTimes(2);
     expect(controlPlane.completeRun).not.toHaveBeenCalled();
     completeTerminatedRemoteNativeSessionCleanup(binding);
@@ -4116,6 +4119,8 @@ describe("executeNativeSession recovery", () => {
       identity: () => scopedIdentity, capabilities: async () => capabilities,
       async *events() { throw new Error("local transport stopped"); },
       startTurn: async () => ({ turnId: "local-turn" }), result: async () => null,
+      async snapshot() { return { backendKind: "mock", sessionId: "stop-session", identity: this.identity(),
+        providerSessionId: "stop-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
       close: vi.fn(async () => { throw failure; }),
     };
     const backend: NativeSessionBackend = {
@@ -4129,14 +4134,14 @@ describe("executeNativeSession recovery", () => {
     };
     const options = { input: scopedInput, backend, controlPlane, runnerInstanceId: binding.runnerInstanceId,
       controlPlaneInstanceId: "control", requireSessionCloseBeforeReturn: true };
-    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    await expect(executeNativeSession(options)).rejects.toMatchObject({ message: "local transport stopped", cleanupError: failure });
     completeTerminatedLocalNativeSessionCleanup({ ...binding, companyId: "other-company" });
     completeTerminatedLocalNativeSessionCleanup({ ...binding, runId: "other-run" });
     expect(completeTerminatedLocalNativeSessionCleanup({ ...binding, runnerInstanceId: "other-runner" })).toBe(false);
     await expect(executeNativeSession(options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
     expect(backend.openSession).toHaveBeenCalledOnce();
     expect(completeTerminatedLocalNativeSessionCleanup(binding)).toBe(true);
-    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    await expect(executeNativeSession(options)).rejects.toMatchObject({ message: "local transport stopped", cleanupError: failure });
     expect(backend.openSession).toHaveBeenCalledTimes(2);
     expect(controlPlane.completeRun).not.toHaveBeenCalled();
     completeTerminatedLocalNativeSessionCleanup(binding);

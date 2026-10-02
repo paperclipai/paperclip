@@ -13,6 +13,7 @@ Operator guide for Paperclip's MCP tool access surface. Audience: board users an
 - [Managed connections](#managed-connections)
 - [Catalog and risk classification](#catalog-and-risk-classification)
 - [Profiles and bindings](#profiles-and-bindings)
+- [Scoped tool grants](#scoped-tool-grants)
 - [Policies](#policies)
 - [Approval flow and trust rules](#approval-flow-and-trust-rules)
 - [Runtime slots](#runtime-slots)
@@ -242,6 +243,28 @@ curl -fsS -H "Authorization: Bearer $BOARD_API_KEY" \
   "$PAPERCLIP_URL/api/companies/$COMPANY_ID/tools/profiles/effective/agents/$AGENT_ID" \
   | jq '{profileIds, allowedToolNames}'
 ```
+
+## Scoped tool grants
+
+A stored tool grant can restrict access with `scope.allow` and tool selectors.
+An explicit `allow` must contain a matching `tool:<name>`, `connection:<id>`, or
+`application:<id>`. Tool names can use the gateway name or the upstream name.
+If the scope also includes selectors, those selectors must match as well.
+
+For example, `{"allow":["tool:read_item"],"connectionId":"<connection-id>"}`
+allows that tool only on the selected connection. A matching allow entry does
+not override a mismatched connection selector.
+
+Unknown selector names, malformed values, empty restrictions, and non-object
+scopes deny access. Singular selectors require a nonempty string. Plural
+selectors require a nonempty array of nonempty strings. The supported selector
+names are `actorType`, `agentId`, `projectId`, `routineId`, `issueId`, `gatewayId`,
+`applicationId`, `connectionId`, `catalogEntryId`, `applicationKey`,
+`providerType`, `toolName`, and `riskLevel`, plus their plural forms.
+
+A null scope or an empty object preserves the existing unrestricted grant
+behavior. Discovery and execution evaluate the current grant. A revoked grant
+cannot authorize a later call merely because discovery previously listed it.
 
 ## Policies
 

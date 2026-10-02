@@ -4,6 +4,7 @@ import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -21,17 +22,8 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     return () => { mounted.current = false; };
   }, []);
   const [message, setMessage] = useState("");
-  const [prompt, setPrompt] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState(false);
-  async function copy(value: string) {
-    try {
-      await copyTextToClipboard(value);
-      if (mounted.current) { setCopied(true); setCopyError(false); }
-    } catch {
-      if (mounted.current) setCopyError(true);
-    }
-  }
+  const [result, setResult] = useState<{ prompt: string; copyStatus: "idle" | "copied" | "failed" } | null>(null);
+  const prompt = result?.prompt;
   const createInvite = useMutation({
     mutationFn: async () => {
       const invite = await accessApi.createCompanyInvite(companyId, {
@@ -51,8 +43,15 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     },
     onSuccess: async (value) => {
       if (!mounted.current) return;
-      setPrompt(value);
-      await copy(value);
+      // Keep the invitation readable while a browser clipboard request is pending.
+      setResult({ prompt: value, copyStatus: "idle" });
+      let copyStatus: "copied" | "failed" = "copied";
+      try {
+        await copyTextToClipboard(value);
+      } catch {
+        copyStatus = "failed";
+      }
+      if (mounted.current) setResult((current) => current?.copyStatus === "idle" ? { ...current, copyStatus } : current);
     },
   });
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -64,10 +63,17 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
       </DialogDescription>
       {prompt ? <>
         <Textarea aria-label="Agent onboarding prompt" readOnly value={prompt} className="min-h-64 font-mono text-xs" />
-        {copyError && <p role="alert" className="text-sm text-muted-foreground">Clipboard unavailable. Copy the prompt manually from the field above.</p>}
-        <div className="flex justify-between gap-4">
+        {result?.copyStatus === "failed" && <p role="alert" className="text-sm text-muted-foreground">Clipboard unavailable. Copy the prompt manually from the field above, or use the button below to try again.</p>}
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <Button variant="ghost" onClick={onClose}>Done</Button>
-          <Button variant="outline" onClick={() => void copy(prompt)}>{copied ? "Copied prompt" : "Copy prompt"}</Button>
+          <AgentSetupPrompt
+            prompt={prompt}
+            label="Copy onboarding prompt"
+            title="Invite your agent"
+            description="Paste this into your external agent to request access to your organization."
+            initialCopyStatus={result?.copyStatus}
+            onCopied={() => setResult((current) => current && { ...current, copyStatus: "copied" })}
+          />
         </div>
       </> : <>
         <label className="space-y-2 text-sm">

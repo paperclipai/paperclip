@@ -48,6 +48,7 @@ import type {
 } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
+  SemanticToolNotDispatchedError,
   durableRecoveryInternals,
   inspectWarmRunTransition,
   spawnRunner,
@@ -150,13 +151,15 @@ export function withCodexCollaborationRuntimeInstructions(
   return `${base}\n\n${CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS}`;
 }
 
+const CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
+
 function readControlPlaneState(directory: string): Record<string, unknown> {
   const path = resolve(directory, "control-plane-state.json");
   const metadata = lstatSync(path);
   if (
     metadata.isSymbolicLink() ||
     !metadata.isFile() ||
-    metadata.size > 64 * 1024 * 1024
+    metadata.size > CONTROL_PLANE_STATE_MAX_BYTES
   ) {
     throw new Error("native_runner_control_plane_state_unsafe");
   }
@@ -4353,7 +4356,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#controlPlaneRelease = null;
     }
     if (suspensionRequired && !runnerSettled) {
-      throw new NativeSessionCloseUnrecoverableError();
+      const settlement = {
+        runnerSuspended,
+        providerDrained,
+        semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
+        finalProviderState,
+      };
+      try {
+        this.options.onDiagnostic?.(`native_session_settlement_incomplete ${JSON.stringify(settlement)}`);
+      } catch {
+        // Keep the settlement failure authoritative if its observer fails.
+      }
+      throw new NativeSessionCloseUnrecoverableError(settlement);
     }
     if (this.#ownsRoot && !adoptedRunner) {
       rmSync(this.#root, { recursive: true, force: true });
@@ -4530,7 +4544,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       provider === "codex" &&
       record(params.config).include_collaboration_mode_instructions !== false;
     const unboundBaseInstructions = String(
-      params.baseInstructions ?? "You are a Paperclip agent.",
+      params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent.",
     );
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
@@ -5495,7 +5509,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>
     >[0],
   ) {
-    this.#throwIfFailed();
+    try {
+      this.#throwIfFailed();
+    } catch {
+      throw new SemanticToolNotDispatchedError();
+    }
     const core = this.#core;
     const threadId = this.#threadId;
     const epoch = this.#turnStartResponseEpoch;
@@ -5506,8 +5524,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const accepted =
       admission === null
         ? true
-        : await Promise.race([admission.settled, this.#failureSignal]);
-    this.#throwIfFailed();
+        : await Promise.race([admission.settled, this.#failureSignal]).catch(() => {
+            throw new SemanticToolNotDispatchedError();
+          });
+    try {
+      this.#throwIfFailed();
+    } catch {
+      throw new SemanticToolNotDispatchedError();
+    }
     if (
       !accepted ||
       this.#closed ||
@@ -5520,9 +5544,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         core.store.state.identity.normalizedSessionId ||
       call.correlation.turnId !== core.store.state.identity.turnId
     ) {
-      throw new Error(
-        "PRP semantic tool call no longer belongs to an admitted turn",
-      );
+      throw new SemanticToolNotDispatchedError();
     }
     const outcome = unwrapToolResponse(
       await this.#handler({
@@ -6741,6 +6763,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 export const runnerdRecoveryInternals = Object.freeze({
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
+  readControlPlaneState,
   awaitProviderDrainBarrier,
   awaitAdoptedRunnerAuthentication,
   awaitRunnerSuspensionBarrier,

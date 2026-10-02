@@ -31,9 +31,11 @@ describe("published hiring and human-input examples", () => {
 
   it("includes a complete valid text-field recipe in the skill itself", () => {
     const skill = readFileSync(new URL("../../../skills/paperclip/SKILL.md", import.meta.url), "utf8");
-    const section = skill.split("**Asking a free-text question.**")[1]!;
+    const section = skill.split('<a id="asking-for-human-input"></a>')[1]!;
     const body = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)![1]);
     expect(createIssueThreadInteractionSchema.safeParse(substituteIds(body))).toMatchObject({ success: true });
+    expect(body).toMatchObject({ resolverPolicy: "human_only", continuationPolicy: "wake_assignee" });
+    expect(body).not.toHaveProperty("addresseeUserId");
     expect(body.payload.questionSet.questions[0]).toMatchObject({ answerMode: "text" });
     expect(body.payload.questions[0].id).toBe(body.payload.questionSet.questions[0].id);
   });

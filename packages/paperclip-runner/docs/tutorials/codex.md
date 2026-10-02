@@ -73,6 +73,17 @@ test "$(cat "$codex_workspace/hello.txt")" = "hello from Codex runner"
 
 ## Step 3: Inspect the exact model boundary
 
+Paperclip sends its runtime instructions as additive `developerInstructions`
+on Codex thread start and resume. Codex retains its stock base instructions.
+The historical `context.baseInstructions` trace field contains the Paperclip
+fragment, not the full Codex base prompt. The driver option with the same name
+also supplies this additive fragment.
+
+Threads created before this change retain their saved replacement base prompt
+when resumed. Reset those provider sessions to apply the stock base instructions;
+adding developer instructions does not repair an already saved base prompt.
+This change does not alter session recovery or reset active sessions automatically.
+
 ```sh
 jq '.context | {
   protocolVersion,

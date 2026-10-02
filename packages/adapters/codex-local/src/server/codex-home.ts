@@ -383,7 +383,8 @@ function isResolvedPathInside(candidate: string, root: string): boolean {
  * Recursively copies one skill subtree — rooted at its real directory
  * `containmentRoot` — into `targetDir`, dereferencing symlinks to bytes (so the
  * sandbox receives real file content, not host-relative links) and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ * regular files to owner-only access (`0700` for executables, `0600` otherwise).
+ * Created directories get mode `0700`.
  *
  * Two containment guards protect the staged upload:
  *
@@ -438,8 +439,9 @@ async function stageContainedSubtree(
       activePath.delete(resolved);
     } else if (entryStat.isFile()) {
       const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
+      const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
+      await fs.writeFile(entryTarget, bytes, { mode });
+      await fs.chmod(entryTarget, mode);
     }
     // Other types (sockets, devices) are silently skipped.
   }
@@ -448,11 +450,12 @@ async function stageContainedSubtree(
 /**
  * Recursively copies `sourceDir` (a directory allowlist entry — currently only
  * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ * regular files to owner-only access (`0700` for executables, `0600` otherwise).
+ * Created directories get mode `0700`.
  *
  * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
  * leaving `0644` documents and `0755` scripts group/other-readable in the staged
- * asset; here all regular files are normalized to `0600` regardless of source mode.
+ * asset; here skill files retain only their executable flag, with owner-only access.
  *
  * `sourceDir`'s *direct* children are the Paperclip-injected skill symlinks that
  * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
@@ -463,7 +466,7 @@ async function stageContainedSubtree(
  * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
  * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
  * skipped rather than used as a root, so it can never drag the wider home into
- * the staged skills asset. The `0700` staged directory and per-file `0600` mode
+ * the staged skills asset. The `0700` staged directory and per-file owner-only mode
  * together ensure even externally-sourced skill content is not group/world-readable.
  */
 async function stageDirectorySecure(
@@ -498,8 +501,9 @@ async function stageDirectorySecure(
       await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
     } else if (entryStat.isFile()) {
       const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
+      const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
+      await fs.writeFile(entryTarget, bytes, { mode });
+      await fs.chmod(entryTarget, mode);
     }
     // Other types (sockets, devices) are silently skipped.
   }

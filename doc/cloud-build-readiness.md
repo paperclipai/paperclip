@@ -158,10 +158,13 @@ shared infrastructure ownership separately before removing those resources.
 Source verification's typecheck job builds the native Runner binary through the
 server's `prepare:runner-vendor` command. It restores and saves compiled Rust
 dependencies only for canonical master pushes that verify the event's exact SHA.
-The `release-typecheck-v1` cache is separate from Runner verification because
+The `release-typecheck-v2` cache is separate from Runner verification because
 those jobs compile different profiles. The pinned toolchain is selected before
-cache lookup. Workspace crates and installed cargo binaries are excluded, and
-all typechecks still execute. A missing or invalidated cache triggers compilation.
+cache lookup, and the cache action receives the Runner crate through the same
+checkout-independent `$HOME/paperclip-runner-rust` path as the Runner lanes
+(see `RELEASE-AUTOMATION-SETUP.md`). Workspace crates and installed cargo
+binaries are excluded, and all typechecks still execute. A missing or
+invalidated cache triggers compilation.
 
 ### pnpm dependency store cache
 

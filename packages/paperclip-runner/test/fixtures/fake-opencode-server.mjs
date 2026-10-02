@@ -484,6 +484,32 @@ const server = createServer(async (request, response) => {
           return;
         }
         if (
+          String(parsedPrompt.message ?? "").includes(
+            "pending-request-then-turn-fails",
+          )
+        ) {
+          pendingQuestion = nativeQuestion();
+          emit({
+            type: "question.asked",
+            id: "event-question-pending-then-fail",
+            properties: pendingQuestion,
+          });
+          setTimeout(() => {
+            emit({
+              type: "session.error",
+              id: "event-session-failed-with-pending-request",
+              properties: {
+                sessionID: session.id,
+                error: {
+                  name: "ProviderError",
+                  message: "The fake provider failed with a request still pending.",
+                },
+              },
+            });
+          }, 10);
+          return;
+        }
+        if (
           String(parsedPrompt.message ?? "").includes("late-straggler-source")
         ) {
           emit({
