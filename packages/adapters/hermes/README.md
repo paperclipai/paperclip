@@ -340,3 +340,55 @@ MIT — see [LICENSE](LICENSE)
 - [Paperclip](https://github.com/paperclipai/paperclip) — The orchestration platform
 - [Nous Research](https://nousresearch.com) — The team behind Hermes
 - [Paperclip Docs](https://docs.paperclip.ing) — Paperclip documentation
+
+### Gateway cancellation and event acceptance
+
+The adapter awaits the host's `onCancellationReady` registration before dispatch
+and observes operator cancellation during registration, create and observation.
+Readiness is bounded by cancellation, the run deadline, and a 30-second ceiling
+even when the run deadline is disabled. No dispatch occurs when readiness loses
+that race. The host registration barrier refuses to publish a finished executor,
+including when an earlier Stop settles after readiness has timed out.
+Ambiguous create recovery uses `POST /v1/run-reservations/stop` with the original body,
+session header and idempotency key. A compatible gateway must durably reserve a
+cancelled key before acknowledging an absent run, preventing a delayed create
+from invoking inference. No ambiguous create is automatically re-dispatched.
+Native gateways without this extension return an explicit unknown outcome after
+bounded recovery; a late create ID still triggers stop within the transport's
+60-second lifetime. Unknown outcomes require reconciliation before another run.
+
+A stop endpoint acknowledgment is not proof of termination. The host-facing
+`resultJson.executionCancellation.state` is `acknowledged` only after proven no
+dispatch or a terminal status read; ambiguous creates and unconfirmed termination
+remain `requested`. A Stop racing final reconciliation follows the same rule.
+For a dispatched run, final polling must observe a terminal run before
+`stop_confirmed` is true. Queue `timeout` is terminal even
+when the overall adapter timeout is disabled. Terminal SSE is reconciled with a
+bounded final status read to retain output and usage. A missing final status
+returns `hermes_gateway_final_status_unconfirmed`.
+
+Authoritative `event_gap: true`, SSE `compatibility.gap`, cursor rejection, or
+completed polling without terminal event delivery returns a nonzero result.
+Polling output and usage are retained, but polling-only completion does not
+satisfy reconnect acceptance. Temporary disconnects can still reconnect using
+the last event cursor, including ID-only updates and empty-ID resets; cursor-only
+blocks do not emit application events. The box shim owns replay retention and
+native gaps. Unknown termination takes diagnostic priority over a gap; once
+termination is verified, a gap takes priority over timeout. The secondary
+timeout evidence remains in `resultJson.timed_out`. Gap-primary and
+unconfirmed outcomes set `timedOut: false` so the host does not replace their
+error code with generic timeout.
+
+The optional `src/gateway/server/shim-contract.test.ts` tests the real adapter
+against the separately maintained `hexorx/mindi` shim and a fake native backend.
+Set `HERMES_COMPAT_SOURCE` to `apps/agent-box-hermes` in that checkout and install
+its `requirements-test.txt` in the selected Python environment before running
+this package's tests. No model or production endpoint is contacted. Without the
+variable, the four cross-repository contract tests are explicitly skipped.
+
+The always-on `test/host-cancellation.test.ts` uses the production host Stop
+ownership and registration barriers with in-memory persistence and fake HTTP.
+It covers Stop before create, registration races, stalled create headers/body,
+observation, and terminal reconciliation. It checks the host acknowledgment
+contract for both proven termination and outcomes that remain unconfirmed.
+It is an offline contract test, not a board UI or database integration test.

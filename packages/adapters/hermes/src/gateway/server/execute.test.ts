@@ -81,6 +81,125 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("does not dispatch an already-cancelled run", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.signal = controller.signal;
+    ctx.onDispatch = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await execute(ctx)).toMatchObject({
+      errorCode: "hermes_gateway_cancelled", signal: "SIGTERM", timedOut: false,
+    });
+    expect(ctx.onDispatch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["create", "events"])("stops exactly once when cancelled during %s and preserves final results", async (phase) => {
+    const controller = new AbortController();
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.signal = controller.signal;
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        if (phase === "create") controller.abort();
+        await Promise.resolve(); // The remote ID arrives after cancellation.
+        expect(init?.signal?.aborted).not.toBe(true);
+        return Response.json({ run_id: "cancel-run" });
+      }
+      if (url.endsWith("/events")) {
+        if (phase === "events") controller.abort();
+        return new Response(sseStream(":"));
+      }
+      if (url.endsWith("/stop")) {
+        expect(init?.signal).toBeDefined();
+        expect(init?.signal?.aborted).toBe(false);
+        return Response.json({ status: "stopping" });
+      }
+      return Response.json({ status: "cancelled", output: "partial secret-key", usage: { input_tokens: 3, output_tokens: 2 } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(result).toMatchObject({
+      errorCode: "hermes_gateway_cancelled", timedOut: false, signal: "SIGTERM",
+      usage: { inputTokens: 3, outputTokens: 2 },
+    });
+    expect(result.summary).toContain("partial");
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/stop"))).toHaveLength(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("cleans up the cancellation listener after a failed create", async () => {
+    const controller = new AbortController();
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.signal = controller.signal;
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline secret-key"); }));
+    const result = await execute(ctx);
+    expect(result.errorCode).toBe("hermes_gateway_create_outcome_unknown");
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("resumes event delivery with the last processed SSE cursor", async () => {
+    let connections = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return Response.json({ run_id: "reconnect-run" });
+      if (url.endsWith("/events")) {
+        connections++;
+        if (connections === 1) return new Response(sseStream('id: 1\nevent: message.delta\ndata: {"delta":"a"}\n\n'));
+        expect(init?.headers).toMatchObject({ "Last-Event-ID": "1" });
+        return new Response(sseStream('id: 2\nevent: run.completed\ndata: {"status":"completed","output":"ab"}\n\n'));
+      }
+      return Response.json({ status: "running" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", eventReconnectMs: 250 }));
+    expect(result.summary).toBe("ab");
+    expect(connections).toBe(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/runs"))).toHaveLength(1);
+  });
+
+  it("bounds a stalled stop, keeps cancellation distinct from timeout, and final-polls", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const timeout = new AbortController();
+        setTimeout(() => timeout.abort(), ms);
+        return timeout.signal;
+      });
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 1 });
+      ctx.signal = controller.signal;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return Response.json({ run_id: "stalled-stop" });
+        if (url.endsWith("/events")) {
+          controller.abort();
+          return new Response(sseStream(":"));
+        }
+        if (url.endsWith("/stop")) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("stop stalled secret-key")), { once: true });
+          });
+        }
+        return Response.json({ status: "cancelled", output: "saved" });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const execution = execute(ctx);
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(await execution).toMatchObject({ errorCode: "hermes_gateway_cancelled", timedOut: false, summary: "saved" });
+      expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/stop"))).toHaveLength(1);
+      expect(JSON.stringify(vi.mocked(ctx.onLog).mock.calls)).not.toContain("secret-key");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -549,7 +668,7 @@ describe("execute", () => {
     expect(logText).not.toContain(agentSessionKey);
   });
 
-  it("falls back to polling when SSE is unavailable", async () => {
+  it("preserves polling results but rejects polling-only success when SSE is unavailable", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
@@ -573,7 +692,8 @@ describe("execute", () => {
       pollIntervalMs: 250,
     }));
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_event_gap");
     expect(result.summary).toBe("polled done");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-hermes-1"))).toBe(true);
   });
@@ -602,7 +722,7 @@ describe("execute", () => {
     }));
 
     expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorCode).toBe("hermes_gateway_create_outcome_unknown");
     expect(result.errorMessage).toContain("ENOTFOUND");
     expect(result.errorMessage).toContain("host.docker.internal");
   });
@@ -854,5 +974,231 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("review contract regressions", () => {
+  it("maps queued timeout as terminal with run deadline disabled", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'queued' });
+      if (String(url).endsWith('/events')) return new Response(sseStream(':'));
+      return Response.json({ status: 'timeout', error: 'queue_timeout', event_gap: false });
+    }));
+    expect(await execute(makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key', timeoutSec: 0, pollIntervalMs: 250 })))
+      .toMatchObject({ exitCode: 1, timedOut: true, errorCode: 'hermes_gateway_timeout' });
+  });
+
+  it.each(['sse', 'poll', 'cursor'])("preserves event gap when %s wins", async (source) => {
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'gap' });
+      if (String(url).endsWith('/events')) {
+        if (source === 'cursor') return new Response('{}', { status: 409 });
+        return new Response(sseStream(source === 'sse' ? 'event: compatibility.gap\ndata: {"error":"upstream_event_gap"}\n\nevent: run.completed\ndata: {"status":"completed"}\n\n' : ':'));
+      }
+      return Response.json({ status: 'completed', output: 'saved secret-key', usage: { input_tokens: 5 }, event_gap: source === 'poll' });
+    }));
+    const result = await execute(makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key', pollIntervalMs: 250 }));
+    expect(result).toMatchObject({ exitCode: 1, errorCode: 'hermes_gateway_event_gap', usage: { inputTokens: 5 }, resultJson: { event_gap: true } });
+    expect(JSON.stringify(result)).not.toContain('secret-key');
+  });
+
+  it("reconciles sparse terminal SSE with authoritative output and usage", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'sparse' });
+      if (String(url).endsWith('/events')) return new Response(sseStream('event: run.completed\ndata: {"status":"completed"}\n\n'));
+      return Response.json({ status: 'completed', output: 'final', usage: { input_tokens: 7, output_tokens: 3 }, cost_usd: .02 });
+    }));
+    expect(await execute(makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key' })))
+      .toMatchObject({ exitCode: 0, summary: 'final', usage: { inputTokens: 7, outputTokens: 3 }, costUsd: .02 });
+  });
+
+  it.each(['headers', 'body'])("bounds cancellation and deadline during stalled create %s", async (phase) => {
+    vi.useFakeTimers();
+    try {
+      for (const cause of ['cancel', 'deadline']) {
+        const controller = new AbortController();
+        const ctx = makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key', timeoutSec: 1 });
+        ctx.signal = controller.signal;
+        const fetchMock = vi.fn(async (url, init) => {
+          if (String(url).endsWith('/v1/runs')) {
+            if (cause === 'cancel') controller.abort();
+            return phase === 'headers' ? new Promise<Response>(() => {}) : new Response(new ReadableStream());
+          }
+          if (String(url).endsWith('/v1/run-reservations/stop')) {
+            expect(init.headers['Idempotency-Key']).toBe('pc-run-1');
+            return Response.json({ run_id: 'recovered', status: 'cancelled', reservation_cancelled: true });
+          }
+          if (String(url).endsWith('/events')) return new Response(sseStream(':'));
+          return Response.json({ status: 'cancelled', output: 'saved' });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        const execution = execute(ctx);
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(await execution).toMatchObject({ errorCode: cause === 'cancel' ? 'hermes_gateway_cancelled' : 'hermes_gateway_timeout', resultJson: { stop_confirmed: true } });
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/v1/runs'))).toHaveLength(1);
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("fails closed after bounded recovery failure and still stops a late ID", async () => {
+    vi.useFakeTimers();
+    try {
+      let late!: (value: Response) => void;
+      const ctx = makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key', timeoutSec: 1 });
+      const fetchMock = vi.fn(async (url) => {
+        if (String(url).endsWith('/v1/runs')) return new Promise<Response>((resolve) => { late = resolve; });
+        if (String(url).endsWith('/v1/run-reservations/stop')) return new Response('{}', { status: 404 });
+        return Response.json({ status: 'stopping' });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const execution = execute(ctx);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await execution).toMatchObject({ exitCode: 1, errorCode: 'hermes_gateway_create_outcome_unknown', resultJson: { stop_confirmed: false } });
+      late(Response.json({ run_id: 'late' }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/v1/runs/late/stop'))).toBe(true);
+      expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/v1/runs'))).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('completion and cleanup bounds', () => {
+  it('does not claim an unconfirmed remote stop', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'running' });
+        if (String(url).endsWith('/events')) return new Response(sseStream(':'));
+        return Response.json({ status: 'running' });
+      }));
+      const execution = execute(makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key', timeoutSec: .01 }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await execution).toMatchObject({ exitCode: 1, errorCode: 'hermes_gateway_stop_unconfirmed', resultJson: { stop_confirmed: false } });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('bounds stalled final status body without silently accepting terminal SSE', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'sparse' });
+        if (String(url).endsWith('/events')) return new Response(sseStream('event: run.completed\ndata: {"output":"saved"}\n\n'));
+        return new Response(new ReadableStream());
+      }));
+      const execution = execute(makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key' }));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await execution).toMatchObject({ exitCode: 1, summary: 'saved', errorCode: 'hermes_gateway_final_status_unconfirmed' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('preserves final output and usage when cancellation races completed status', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).endsWith('/v1/runs')) return Response.json({ run_id: 'race' });
+      if (String(url).endsWith('/events')) {
+        controller.abort();
+        return new Response(sseStream('event: run.completed\ndata: {"status":"completed"}\n\n'));
+      }
+      return Response.json({ status: 'completed', output: 'finished', usage: { input_tokens: 9 } });
+    }));
+    const ctx = makeCtx({ apiBaseUrl: 'http://127.0.0.1:8642', apiKey: 'secret-key' });
+    ctx.signal = controller.signal;
+    expect(await execute(ctx)).toMatchObject({ errorCode: 'hermes_gateway_cancelled', summary: 'finished', usage: { inputTokens: 9 }, resultJson: { status: 'completed', stop_confirmed: true } });
+  });
+});
+
+
+describe("review regressions", () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it("preserves cursor-only updates and resets across chunk boundaries, ignoring NUL IDs", () => {
+    const first = parseSseFramesForTest("id: B\n\nid:");
+    expect(first.frames).toEqual([{ event: null, id: "B" }]);
+    const second = parseSseFramesForTest(first.rest + "\n\nid: bad\0id\n\n");
+    expect(second.frames).toEqual([{ event: null, id: "" }]);
+  });
+
+  it.each([
+    ["id: B", "B", "id:"],
+    ["id: B", "B", "id"],
+    ["id: B:C", "B:C", "id:"],
+  ])("reconnects with exact cursor %j and resets with %j (%j)", async (cursorLine, cursor, resetLine) => {
+    vi.useFakeTimers();
+    let connections = 0;
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 0, eventReconnectMs: 250 });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return Response.json({ run_id: "cursor-run" });
+      if (url.endsWith("/events")) {
+        connections++;
+        if (connections === 1) return new Response(sseStream('id: A\ndata: {"delta":"a"}\n\n' + cursorLine + "\n\n"));
+        if (connections === 2) {
+          expect(new Headers(init?.headers).get("Last-Event-ID")).toBe(cursor);
+          return new Response(sseStream(resetLine + "\n\n"));
+        }
+        expect(init?.headers).not.toHaveProperty("Last-Event-ID");
+        return new Response(sseStream('event: run.completed\ndata: {"status":"completed"}\n\n'));
+      }
+      return Response.json({ status: connections >= 3 ? "completed" : "running" });
+    }));
+    const execution = execute(ctx);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await execution).exitCode).toBe(0);
+    expect(connections).toBe(3);
+    const eventLogs = vi.mocked(ctx.onLog).mock.calls.filter(([, line]) => line.includes("[hermes-gateway:event]"));
+    expect(eventLogs).toHaveLength(2);
+  });
+
+  it.each([" B", "\tB", "B:C ", "B\rC", "雪"])("fails closed before reconnecting with unrepresentable cursor %j", async (cursor) => {
+    vi.useFakeTimers();
+    // Exercise the real Fetch header boundary, not just a raw init object.
+    try {
+      expect(new Request("http://127.0.0.1/events", { headers: { "Last-Event-ID": cursor } }).headers.get("Last-Event-ID")).not.toBe(cursor);
+    } catch (err) { expect(err).toBeInstanceOf(TypeError); }
+    let connections = 0;
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 0, eventReconnectMs: 250 });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/runs")) return Response.json({ run_id: "cursor-gap" });
+      if (request.url.endsWith("/events")) {
+        connections++;
+        return new Response(sseStream("id: " + cursor + "\n\n"));
+      }
+      return Response.json({ status: "completed", output: "retained" });
+    }));
+    const execution = execute(ctx);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await execution).toMatchObject({ exitCode: 1, errorCode: "hermes_gateway_event_gap", summary: "retained", resultJson: { event_gap: true } });
+    expect(connections).toBe(1);
+    expect(vi.mocked(ctx.onLog).mock.calls.some(([, line]) => line.includes("cannot survive HTTP header transport unchanged"))).toBe(true);
+  });
+
+  it("keeps a gateway terminal timeout secondary to an event gap", () => {
+    expect(mapFinalResultForTest({
+      terminal: { runId: "gap", status: "timeout", payload: { event_gap: true } },
+      outputChunks: [], sessionKey: null, strategy: "none",
+    })).toMatchObject({
+      errorCode: "hermes_gateway_event_gap", timedOut: false,
+      resultJson: { event_gap: true, timed_out: true },
+    });
+  });
+
+  it.each([true, false])("prioritizes gap after deadline only with verified termination (%s)", async (confirmed) => {
+    vi.useFakeTimers();
+    let stopped = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return Response.json({ run_id: "gap-run" });
+      if (url.endsWith("/events")) return new Response(sseStream('event: compatibility.gap\ndata: {"event_gap":true}\n\n'));
+      if (url.endsWith("/stop")) { stopped = true; return Response.json({ status: "stopping" }); }
+      return Response.json({ status: stopped && confirmed ? "cancelled" : "running", output: "retained" });
+    }));
+    const execution = execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 0.01 }));
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(await execution).toMatchObject({
+      timedOut: false,
+      errorCode: confirmed ? "hermes_gateway_event_gap" : "hermes_gateway_stop_unconfirmed",
+      resultJson: { event_gap: true, timed_out: true, stop_confirmed: confirmed },
+    });
   });
 });
