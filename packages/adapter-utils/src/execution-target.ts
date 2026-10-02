@@ -372,13 +372,9 @@ export interface AdapterExecutionTargetProcessSessionBridgeHandle {
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
-// 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
-// last-resort kill switch, not the primary hang detector: genuinely hung runs
-// are caught much earlier by the adapters' output-inactivity monitors (e.g.
-// codex-local's 7-minute monitor). The value intentionally matches the
-// recovery watchdog's ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS (4h) in
-// server/src/services/recovery/service.ts so healthy long runs are never
-// killed by the adapter before the watchdog would even consider them stuck.
+// Four-hour wall-clock backstop for sandbox-backed adapter runs. Keep this
+// execution limit independent of the earlier informational silence warnings
+// and the short deadlines for bridge control operations.
 export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 14_400;
 
 function parseObject(value: unknown): Record<string, unknown> {

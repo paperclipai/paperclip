@@ -527,10 +527,7 @@ import {
   type StrandedRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
 import { withRecoveryContext } from "./recovery/status-only-context.js";
-import {
-  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
-  recoveryService,
-} from "./recovery/service.js";
+import { recoveryService } from "./recovery/service.js";
 import {
   createRunDispatch,
   type PostCommitEffect,
@@ -914,16 +911,10 @@ export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
-// A running run stops counting as a shared-workspace holder once it has been
-// silent this long. This is recovery's own "suspicious silence" bar for active
-// runs (scanSilentActiveRuns escalates such runs), so a zombie holder cannot
-// park other work on the workspace forever: it stops blocking here at the same
-// moment the recovery machinery starts treating it as stuck. A LIVE holder, in
-// contrast, never gets overtaken — a deferred run keeps rescheduling until the
-// workspace frees, because dispatching alongside a live holder is exactly the
-// concurrent-mutation failure this gate exists to prevent.
-export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS =
-  RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+// Preserve the one-hour shared-workspace holder cutoff independently of the
+// informational output-silence warnings. Warning sooner must not let another
+// run overtake a quiet holder and mutate its shared workspace.
+export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
 // Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
 // issue's runs out of the shared project workspace, and therefore out of
 // shared-workspace serialization ("isolated" is the legacy alias
@@ -16277,8 +16268,8 @@ export function heartbeatService(
   // issue shares the same project workspace, i.e. the run that currently
   // "holds" the shared working tree. Runs that have been silent past
   // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS do not count — a zombie holder must
-  // not park other work forever, and recovery's silent-run escalation is
-  // already reaping it. When isolated workspaces are enabled, holders whose
+  // not park other work forever. This cutoff is independent of informational
+  // silence warnings. When isolated workspaces are enabled, holders whose
   // issue explicitly opted into an isolated workspace never touch the shared
   // tree, so they are excluded; a NULL/agent_default mode may resolve to the
   // shared tree and counts as a holder (over-serializing is the safe

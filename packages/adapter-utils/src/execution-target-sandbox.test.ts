@@ -1896,9 +1896,8 @@ describe("sandbox adapter execution targets", () => {
       runner: createLocalSandboxRunner(),
     };
 
-    // The sandbox default is a 4h wall-clock backstop matching the recovery
-    // watchdog critical threshold (ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS);
-    // the output-inactivity monitor remains the primary hang detector.
+    // The sandbox default stays at four hours independently of the earlier
+    // informational output-silence warnings and bridge control deadlines.
     expect(DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC).toBe(4 * 60 * 60);
     expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 0)).toBe(
       DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
