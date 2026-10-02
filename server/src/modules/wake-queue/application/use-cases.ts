@@ -340,10 +340,19 @@ async function promoteDeferredWake(
       finishingRunId: run.id,
       commentIds: workingCandidate.deferredCommentIds,
     });
+    // A wake tagged `issue_reopened_via_comment` was already classified as a
+    // reopen by the route handler that created it (`server/src/routes/issues.ts`),
+    // which unconditionally wrote the issue back to `todo` in the same request
+    // before this wake was ever enqueued. Re-deriving `shouldReopen` from that
+    // stale tag here would blindly redo that write, clobbering any legitimate
+    // status transition the assignee made since (e.g. the same run closing the
+    // issue again after reading the triggering comment on its own). Leave such
+    // wakes out of this re-derivation; the terminal-task cancellation below then
+    // retires them instead of forcing a second, redundant reopen.
     shouldReopen =
+      workingCandidate.wakeReason !== "issue_reopened_via_comment" &&
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
-        workingCandidate.wakeReason === "issue_reopened_via_comment" ||
         (currentIssue.status === "done" &&
           workingCandidate.agentId === currentIssue.assigneeAgentId &&
           workingCandidate.requestedByActorType === "agent" &&

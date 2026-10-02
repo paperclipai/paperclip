@@ -572,6 +572,40 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("promoted");
   });
 
+  it("does not re-reopen a task whose comment already reopened it synchronously (AUR-2767)", async () => {
+    // The route handler that creates an `issue_reopened_via_comment` wake
+    // (server/src/routes/issues.ts) always writes the issue back to `todo`
+    // itself before enqueueing the wake. By the time this wake drains here,
+    // the issue may legitimately be `done` again - e.g. the same assignee run
+    // read the triggering comment on its own and closed the issue a second
+    // time. Re-deriving a reopen from the stale `issue_reopened_via_comment`
+    // tag must not undo that later, informed closure.
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "user",
+      wakeReason: "issue_reopened_via_comment",
+      deferredCommentIds: ["already-reopened-comment"],
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done" }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+      wakeId: "wake-1",
+      reason: "Deferred execution wake no longer applies to a terminal task",
+    }));
+    expect(result.outcome.kind).toBe("released");
+  });
+
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
     const commentIds = ["accepted-agent-feedback"];
     const queue = [wakeCandidate({
