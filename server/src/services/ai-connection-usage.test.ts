@@ -108,6 +108,33 @@ describe("connection usage probes", () => {
     expect(result.limits[1]).toMatchObject({ usedPercent: 25, used: 12.5, limit: 50, unit: "USD" });
   });
 
+  it("keeps exhausted Claude groups separate from account-wide limits and preserves group identity across ordering", async () => {
+    const structured = [
+      { kind: "session", group: "chat", percent: 100, scope: null },
+      { kind: "session", group: "code", percent: 25, scope: null },
+      { kind: "weekly_all", group: "chat", percent: 105, scope: null },
+      { kind: "weekly_all", group: "code", percent: 50, scope: null },
+      { kind: "weekly_scoped", group: "code", percent: 60, scope: { model: { id: "sonnet" } } },
+    ];
+    const probe = (limits: unknown[]) => probeAiConnectionUsage({ provider: "anthropic", method: "subscription" }, "token", {
+      request: fixture({ five_hour: { utilization: 10 }, seven_day: { utilization: 20 }, seven_day_sonnet: { utilization: 30 }, limits }),
+    });
+    const result = await probe(structured);
+    expect(result.status).toBe("ok");
+    expect(result.limits).toHaveLength(8);
+    expect(result.limits[0]).toMatchObject({ id: "five_hour", scope: null, usedPercent: 10, limitReached: false });
+    expect(result.limits[1]).toMatchObject({ id: "seven_day", scope: null, usedPercent: 20, limitReached: false });
+    expect(result.limits[2]).toMatchObject({ id: "seven_day_sonnet", scope: "seven_day_sonnet", usedPercent: 30 });
+    expect(result.limits[3]).toMatchObject({ scope: "group:chat", usedPercent: 100, limitReached: true });
+    expect(result.limits[4]).toMatchObject({ scope: "group:code", usedPercent: 25, limitReached: false });
+    expect(result.limits[7]).toMatchObject({ scope: "group:code · model:sonnet", usedPercent: 60 });
+    expect(result.limits[3].label).toContain("chat");
+    expect(new Set(result.limits.map((entry) => entry.id)).size).toBe(8);
+    const reversed = await probe([...structured].reverse());
+    expect(Object.fromEntries(reversed.limits.map((entry) => [entry.id, entry.scope])))
+      .toEqual(Object.fromEntries(result.limits.map((entry) => [entry.id, entry.scope])));
+  });
+
   it("reports a zero extra-usage cap as exhausted without dividing by zero", async () => {
     const result = await probeAiConnectionUsage({ provider: "anthropic", method: "subscription" }, "token", {
       request: fixture({ five_hour: { utilization: 10 }, extra_usage: { is_enabled: true, monthly_limit: 0, used_credits: 0 } }),

@@ -194,20 +194,25 @@ async function claude(credential: string, request: typeof fetch): Promise<Observ
       const kind = string(window.kind);
       if (!kind || !("percent" in window || "resets_at" in window)) return;
       const rawScope = object(window.scope);
+      const group = string(window.group);
       const model = object(rawScope.model);
       const modelName = string(model.id) ?? string(model.display_name);
       const surface = string(rawScope.surface) ?? string(object(rawScope.surface).id)
         ?? string(object(rawScope.surface).display_name);
       const knownModel = !surface && modelName?.match(/\b(sonnet|opus)\b/i)?.[1].toLowerCase();
-      const baseId = kind === "session" ? "five_hour" : kind === "weekly_all" ? "seven_day"
+      const legacyId = kind === "session" ? "five_hour" : kind === "weekly_all" ? "seven_day"
         : kind === "weekly_scoped" && knownModel ? `seven_day_${knownModel}` : `${kind}.${index}`;
+      const scopeParts = [group && `group:${group}`, modelName && `model:${modelName}`, surface && `surface:${surface}`].filter(Boolean);
+      // A named group is its own allowance, even for session/weekly_all kinds.
+      // Merge a legacy alias only when the structured window has the same scope.
+      const baseId = group || ((kind === "session" || kind === "weekly_all") && scopeParts.length)
+        ? `${legacyId}.scope.${encodeURIComponent(scopeParts.join("|"))}` : legacyId;
       const id = seen.has(baseId) ? `${baseId}.${index}` : baseId;
       seen.add(baseId);
-      const scope = kind === "session" || kind === "weekly_all" ? null
-        : [modelName && `model:${modelName}`, surface && `surface:${surface}`].filter(Boolean).join(" · ") || id;
+      const scope = scopeParts.join(" · ") || (kind === "session" || kind === "weekly_all" ? null : id);
       const previousIndex = limits.findIndex((entry) => entry.id === id);
       const previous = limits[previousIndex];
-      const entry = limit({ id, label: labels[id] ?? `${kind.replaceAll("_", " ")}${modelName ? ` · ${modelName}` : ""}${surface ? ` · ${surface}` : ""}${id !== baseId && string(window.group) ? ` · ${window.group}` : ""}`,
+      const entry = limit({ id, label: `${labels[legacyId] ?? kind.replaceAll("_", " ")}${group ? ` · ${group}` : ""}${modelName && (!labels[legacyId] || legacyId === "five_hour" || legacyId === "seven_day") ? ` · ${modelName}` : ""}${surface ? ` · ${surface}` : ""}`,
         scope, windowDurationSeconds: kind === "session" ? 18000 : kind.startsWith("weekly_") ? 604800 : null,
         usedPercent: number(window.percent) ?? previous?.usedPercent,
         resetsAt: timestamp(window.resets_at) ?? previous?.resetsAt ?? null, unit: "percent",

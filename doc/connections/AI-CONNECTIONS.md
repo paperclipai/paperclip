@@ -172,7 +172,9 @@ OpenRouter documents its
 Unknown values are `null`, never assumed zero. A present Grok `Cent` message `{}`
 means zero under its documented proto3 encoding; an absent message or omitted
 included-usage percentage remains unknown. Claude's `is_active` dashboard flag
-does not establish whether requests are allowed. An enabled extra-usage switch or remaining
+does not establish whether requests are allowed. Named Claude limit groups keep
+their own identities and scopes, including `session` and `weekly_all` groups.
+They do not replace the legacy account-wide windows. An enabled extra-usage switch or remaining
 spend allowance does not establish a funded usable balance; overage `available`
 stays unknown unless the provider confirms it or reports it disabled/exhausted.
 An unlimited OpenRouter key does not establish account balance. A Grok reset
