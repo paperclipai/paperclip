@@ -45,6 +45,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -662,6 +663,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const runAttempt = async (sessionFile: string) => {
       const attemptResumedSession = canResumeSession && sessionFile === sessionPath;
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: attemptResumedSession });
       const attemptSections = selectPaperclipPromptSections(context, {
         resumedSession: attemptResumedSession,
         includeCommunicationGuidance: false,

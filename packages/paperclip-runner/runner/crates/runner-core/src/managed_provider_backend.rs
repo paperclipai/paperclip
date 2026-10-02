@@ -255,6 +255,13 @@ impl ManagedProviderDescriptor {
         }
     }
 
+    fn budget(&self) -> f64 {
+        match self {
+            Self::ClaudeManaged(config) => config.max_session_list_cost_usd,
+            Self::AwsAgentcore(config) => config.max_estimated_session_cost_usd,
+        }
+    }
+
     fn immutable_profile(&self) -> Value {
         let mut value = serde_json::to_value(self).expect("managed descriptor is serializable");
         if let Some(context) = value
@@ -975,11 +982,14 @@ impl ManagedProviderCommandExecutor {
         if self.state.is_none() {
             self.prepare(payload)?;
         } else if payload.get("provider").is_some() {
-            let descriptor = ManagedProviderDescriptor::parse(payload["provider"].clone())?;
+            let mut descriptor = ManagedProviderDescriptor::parse(payload["provider"].clone())?;
             descriptor.validate()?;
             let tool_set = authorized_tool_set(payload)?;
             let contract = completion_contract(payload)?;
             let state = self.state.as_ref().expect("managed state exists");
+            // Only provider.budget.raise changes the durable session ceiling.
+            // Run attachment may carry the original configured value.
+            descriptor.set_budget(state.descriptor.budget());
             if state.descriptor.immutable_profile() != descriptor.immutable_profile() {
                 return Err(DurableRunnerError::invalid(
                     "managed provider immutable profile changed across run attachment",
@@ -2975,6 +2985,13 @@ mod tests {
         assert_eq!(
             raised_observed.lock().unwrap().as_slice(),
             &[Some(persisted["providerUsage"].clone())]
+        );
+        let session_id = raised.state.as_ref().unwrap().provider_session_id.clone();
+        raised.attach(&agentcore_prepare_payload()).unwrap();
+        assert_eq!(raised.state.as_ref().unwrap().descriptor.budget(), 2.0);
+        assert_eq!(
+            raised.state.as_ref().unwrap().provider_session_id,
+            session_id
         );
         raised
             .execute(&test_command(

@@ -45,6 +45,8 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
+  hydrateFreshSessionHandoff,
+  selectInitialCommunicationGuidance,
   selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -1124,12 +1126,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : "";
     const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const renderedBootstrapPrompt =
         !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
           ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
           : "";
       const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
         resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
       });
       const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
       const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
@@ -1199,6 +1203,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const prompt = joinPromptSections([
         promptInstructionsPrefix,
         renderedBootstrapPrompt,
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
         wakePrompt,
         codexFallbackHandoffNote,
         sessionHandoffNote,

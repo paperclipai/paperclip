@@ -23,13 +23,14 @@ and skill compatibility still gate recovery. An MCP-only assignment change can
 resume only when the selected harness explicitly supports refreshing tools.
 
 When recovery needs a fresh conversation, the server supplies a deterministic
-handoff through the existing fresh-only `initialCommunicationGuidance` field.
+handoff through a lazy history loader at the fresh attempt boundary.
 It includes the original request, recent messages, resolved interaction
 summaries, agent replies, and document excerpts, with source identities and
 retrieval instructions. Reads and excerpts are bounded; the handoff has a
 24,000-byte ceiling and explicit truncation/omission markers. Conversation
 reset boundaries, deleted messages, source quarantine, and secret redaction
-apply before model submission. Successful recovery never replays the handoff.
+apply before model submission. Successful recovery does not fetch or replay the
+handoff.
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each

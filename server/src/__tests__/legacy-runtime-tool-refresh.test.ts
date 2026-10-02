@@ -46,7 +46,9 @@ describe("legacy environment tool access on resumed conversations", () => {
       invocations.push({ args, env: options.env ?? {} });
       return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "", pid: null, startedAt: null };
     });
+    const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF_ONLY");
     const ctx: AdapterExecutionContext = {
+      getFreshSessionHandoff,
       runId: "refresh", agent: { id: "agent", companyId: "company", name: "Agent", adapterType: type, adapterConfig: {} },
       runtime: { sessionId, sessionParams: { sessionId, cwd: root }, sessionDisplayId: sessionId, taskKey: null },
       config: { command, cwd: root, model: "openai/gpt-5", engine: "cli", env: { HOME: root, XDG_CONFIG_HOME: root, OPENCODE_ALLOW_ALL_MODELS: "1" } },
@@ -66,5 +68,6 @@ describe("legacy environment tool access on resumed conversations", () => {
     // Revocation likewise gets the current environment on the same session.
     await execute({ ...ctx, runtimeTools: undefined });
     expect(invocations.at(-1)!.env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL).toBeUndefined();
+    expect(getFreshSessionHandoff).not.toHaveBeenCalled();
   });
 });

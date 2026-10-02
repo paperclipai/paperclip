@@ -1,13 +1,19 @@
 import { and, asc, desc, eq, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import { documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
-import { redactQuarantinedBodyForHigherTrust, resolveActorSourceTrustForIssue, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
+import { buildLowTrustSourceTrust, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
+import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 
 export const NATIVE_HANDOFF_MAX_BYTES = 24_000;
 const ENTRY_MAX_CHARS = 4_000;
 const LIMIT = 10;
 
 export type HandoffEntry = { kind: string; id: string; body: string; truncated?: boolean; [key: string]: unknown };
+
+export function createNativeSessionHandoffLoader(input: Parameters<typeof buildNativeSessionHandoff>[0]): () => Promise<string | null> {
+  let packet: Promise<string | null> | undefined;
+  return () => packet ??= buildNativeSessionHandoff(input);
+}
 
 /** Deterministic background, never a substitute for the current authorized wake. */
 export function renderNativeSessionHandoff(input: {
@@ -96,6 +102,7 @@ export async function buildNativeSessionHandoff(input: {
       cutoff ? and(lte(issueThreadInteractions.createdAt, cutoff.createdAt), lte(issueThreadInteractions.resolvedAt, cutoff.createdAt)) : undefined,
     )).orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.id)).limit(9),
     db.select({ id: sql<string>`${heartbeatRunEvents.id}::text`, runId: heartbeatRuns.id,
+      executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'`,
       body: excerpt(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}'`),
       truncated: sql<boolean>`length(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}') > ${ENTRY_MAX_CHARS}`,
     }).from(heartbeatRunEvents).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, heartbeatRunEvents.runId), eq(heartbeatRuns.companyId, companyId)))
@@ -115,6 +122,7 @@ export async function buildNativeSessionHandoff(input: {
         cutoff ? lte(documents.updatedAt, cutoff.createdAt) : undefined))
       .orderBy(sql`case when ${issueDocuments.key} = 'plan' then 0 else 1 end`, desc(documents.updatedAt)).limit(4),
     db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status,
+      executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'`,
       body: excerpt(runSummaryBody),
       truncated: sql<boolean>`length(${runSummaryBody}) > ${ENTRY_MAX_CHARS}`,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), runIssueScope,
@@ -124,6 +132,12 @@ export async function buildNativeSessionHandoff(input: {
     )).orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id)).limit(3),
   ]);
   const entries: HandoffEntry[] = [];
+  // Historical output inherits its dispatch policy. Later agent/project/task
+  // edits cannot promote it. Invalid retained policy also stays quarantined.
+  const historicalTrust = (runId: string, executionPolicy: unknown) => {
+    const trust = resolveCoreTrustPreset({ companyId, run: { companyId, executionPolicy } });
+    return trust.kind === "standard" ? null : buildLowTrustSourceTrust({ issueId, agentId, runId });
+  };
   const addComment = (row: typeof recent[number], kind: string) => {
     if (entries.some(entry => entry.id === row.id)) return;
     entries.push({ ...sanitizeQuarantinedCommentForHigherTrust(row), kind, author: row.authorAgentId ? "agent" : "user" });
@@ -132,14 +146,16 @@ export async function buildNativeSessionHandoff(input: {
   recent.slice(0, LIMIT).forEach(row => addComment(row, "message"));
   decisions.slice(0, 8).forEach(row => entries.push({ ...row, kind: "resolved_interaction", interactionKind: row.kind }));
   for (const row of replies.slice(0, 4)) {
-    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor: { actorType: "agent", actorId: agentId, agentId, runId: row.runId } });
-    entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...row, sourceTrust }), kind: "agent_reply" });
+    const { executionPolicy, ...entry } = row;
+    const sourceTrust = historicalTrust(row.runId, executionPolicy);
+    entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...entry, sourceTrust }), kind: "agent_reply" });
   }
   savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(row), kind: "document" }));
   for (const row of runSummaries.slice(0, 2)) {
     if (!row.body) continue;
-    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor: { actorType: "agent", actorId: agentId, agentId, runId: row.id } });
-    entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...row, sourceTrust }), kind: "run_summary" });
+    const { executionPolicy, ...entry } = row;
+    const sourceTrust = historicalTrust(row.id, executionPolicy);
+    entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...entry, sourceTrust }), kind: "run_summary" });
   }
   if (!entries.length) return null;
   const omittedEntriesAtLeast = Number(recent.length > LIMIT) + Number(decisions.length > 8) + Number(replies.length > 4) + Number(savedDocuments.length > 3) + Number(runSummaries.length > 2);

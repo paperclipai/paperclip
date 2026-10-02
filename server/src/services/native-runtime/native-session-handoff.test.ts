@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { buildNativeSessionHandoff, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
+import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -121,5 +121,35 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).not.toContain("LATER CUTOFF REPLY");
     expect(result).not.toContain("LATER CUTOFF RUN SUMMARY");
     expect(await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000), throughCommentId: randomUUID() })).toBeNull();
+  });
+
+  it("loads and redacts history once only when a fresh attempt requests it", async () => {
+    const select = vi.spyOn(db, "select");
+    try {
+      const load = createNativeSessionHandoffLoader({ db, companyId, issueId, agentId, before: new Date(20_000) });
+      expect(select).not.toHaveBeenCalled();
+      const first = await load();
+      const reads = select.mock.calls.length;
+      expect(reads).toBeGreaterThan(0);
+      expect(await load()).toBe(first);
+      expect(select).toHaveBeenCalledTimes(reads);
+    } finally { select.mockRestore(); }
+  });
+
+  it("retains a prior run's quarantine after the current agent and task use standard policy", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", nativeIssueId: issueId,
+      contextSnapshot: { issueId, conversationSessionGeneration: 2, executionPolicy: {
+        trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+          trustBoundary: { mode: "low_trust_review", companyId, issueIds: [issueId] } },
+      } }, createdAt: new Date(16_000), finishedAt: new Date(18_000),
+      runnerProfileJson: { sessionCheckpoint: { semanticResult: { summary: "QUARANTINED RUN SUMMARY" } } } });
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 1, eventType: "item.completed", createdAt: new Date(17_000),
+      payload: { prpEvent: { payload: { kind: "agentMessage", channel: "final", text: "QUARANTINED RUN REPLY" } } } });
+    const result = await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000) });
+    expect(result).not.toContain("QUARANTINED RUN REPLY");
+    expect(result).not.toContain("QUARANTINED RUN SUMMARY");
+    expect(result).toContain("Quarantined low-trust output omitted");
+    expect(result).toContain(runId);
   });
 });

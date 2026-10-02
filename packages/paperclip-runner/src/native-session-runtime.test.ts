@@ -6022,9 +6022,11 @@ describe("executeNativeSession recovery", () => {
         async completeRun() {},
       };
 
+      const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF_ONLY");
       await expect(
         executeNativeSession({
           input,
+          getFreshSessionHandoff,
           backend,
           controlPlane: port,
           runnerInstanceId: "runner-recovery",
@@ -6032,6 +6034,7 @@ describe("executeNativeSession recovery", () => {
         }),
       ).resolves.toMatchObject({ turnId: "turn-recovery" });
 
+      expect(getFreshSessionHandoff).not.toHaveBeenCalled();
       expect(recoverSession).toHaveBeenCalledOnce();
       expect(
         runnerEvents.some((event) => event.sourceSeq === terminalSequence),
@@ -6267,7 +6270,6 @@ describe("executeNativeSession recovery", () => {
             aggregateDigest: canonicalNativeRuntimeContextDigest(context),
           },
           continuationPrompt: "ONLY_NEW_COMMENT",
-          initialCommunicationGuidance: "FRESH_HANDOFF: original goal, prior answers, and next step",
         } as const
       : {
           ...input,
@@ -6281,7 +6283,6 @@ describe("executeNativeSession recovery", () => {
             aggregateDigest: canonicalNativeRuntimeContextDigest(legacyContext),
           },
           continuationPrompt: "ONLY_NEW_COMMENT",
-          initialCommunicationGuidance: "FRESH_HANDOFF: original goal, prior answers, and next step",
         } as const;
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
@@ -6382,9 +6383,11 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
+    const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF: original goal, prior answers, and next step");
     await expect(
       executeNativeSession({
         input: executionInput,
+        getFreshSessionHandoff,
         backend,
         controlPlane: port,
         runnerInstanceId: "runner-replacement",
@@ -6393,6 +6396,7 @@ describe("executeNativeSession recovery", () => {
       }),
     ).resolves.toMatchObject({ providerSessionId: "provider-replacement" });
 
+    expect(getFreshSessionHandoff).toHaveBeenCalledOnce();
     expect(recoverSession).not.toHaveBeenCalled();
     expect(openReplacementSession).toHaveBeenCalledOnce();
     const replacementEnvelope = JSON.parse(

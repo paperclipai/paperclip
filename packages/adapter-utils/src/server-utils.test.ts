@@ -27,6 +27,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   selectInitialCommunicationGuidance,
+  hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -3099,6 +3100,20 @@ describe("selectPaperclipTaskMarkdown", () => {
     context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(fullMarkdown);
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: false }).match(/Saved initial guidance/g)).toHaveLength(1);
+  });
+
+  it("reads history only at a fresh provider attempt, including resume fallback", async () => {
+    let reads = 0;
+    const ctx = { context: {} as Record<string, unknown>, getFreshSessionHandoff: async () => {
+      reads += 1;
+      return "Original goal and prior answer";
+    } };
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: true });
+    expect(reads).toBe(0);
+    expect(ctx.context.paperclipFreshSessionHandoffMarkdown).toBeUndefined();
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: false });
+    expect(reads).toBe(1);
+    expect(selectInitialCommunicationGuidance(ctx.context)).toContain("Original goal and prior answer");
   });
 
   it("falls back to the full markdown when no compact variant exists", () => {
