@@ -1719,15 +1719,24 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+The selected AI connection supports an on-demand usage probe through the common
+connection service, independent of legacy/native execution. The board usage
+endpoint rechecks company membership and the credential's human audience before
+reading its stored token. Report all returned allowance windows, model/feature
+scope, reset times, exhaustion and overage observations; missing values remain
+unknown and unsupported methods/provider failures are explicit. The account
+detail's Check usage action triggers the probe. No automatic detection, routing,
+budget enforcement, credential refresh or credit purchase follows from it.
+
 Provider login failures create a provider-specific Connections card on the task
 when the run fails, before generic recovery retries. Reconnect preserves account
 identity and permissions. Compatible legacy agents may explicitly adopt a
 validated connection inline; late failures must not invalidate newer credentials.
 
-### Experimental task-bound email
+### Task-bound email
 
-AgentMail channel connections extend the experimental conversation/task pipeline
-with explicit email publication. Each owned inbox/provider thread binds one task;
+AgentMail is a default connection and does not require the experimental chat
+setting. It extends the conversation/task pipeline with explicit email publication. Each owned inbox/provider thread binds one task;
 external email senders do not gain board authority. Incoming correspondence uses
 the assigned agent's normal execution controls. Internal task activity never
 implicitly sends email. New outgoing conversations create child tasks and durable

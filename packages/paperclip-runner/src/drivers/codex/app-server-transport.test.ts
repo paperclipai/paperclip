@@ -59,6 +59,14 @@ describe("Codex app-server transport limits", () => {
       .toBe("Basic API foundation");
   });
 
+  it.each(["PAPERCLIP_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "CUSTOM_API_KEY"])(
+    "redacts the complete %s environment value through the shared text helper",
+    (key) => {
+      expect(redactCodexDiagnostic(`${key}=private;still-private`))
+        .toBe(`${key}=[REDACTED]`);
+    },
+  );
+
   it("reports restart-safe process-group ownership", async () => {
     const transport = nodeTransport("process.stdin.resume()", { processGroup: true });
     const info = transport.processInfo();

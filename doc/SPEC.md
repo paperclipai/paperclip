@@ -39,6 +39,11 @@ on the task immediately after failure. Users can reconnect inline and resume;
 legacy agents keep their authentication until an explicit, validated adoption.
 See [AI Connections](connections/AI-CONNECTIONS.md).
 
+AI connections also expose an on-demand, credential-scoped usage probe. It
+reports provider windows, scoped exhaustion, reset times and overage observations
+for downstream decisions, with explicit unknown/unsupported/error states.
+Probing does not change runner routing or enforce provider limits automatically.
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:

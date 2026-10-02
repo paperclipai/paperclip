@@ -28,7 +28,7 @@ export interface ConnectionSearchResultItem {
     key: string;
     label: string;
     auth: "oauth" | "api_key" | "none";
-    /** Discovery is open across purposes; connection_request creates tool cards. */
+    /** AgentMail channel setup and tool methods support connection_request cards. */
     purpose?: "tool" | "channel" | "ai";
     /** Company-scoped setup destination for methods with a separate setup flow. */
     setupPath?: string;
@@ -60,6 +60,8 @@ export interface ConnectionRequestResult {
 export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled">;
 
 export interface ConnectionIntentSetupOptions {
+  /** Resume this request's saved AgentMail account after a partial setup. */
+  emailSetup?: { credentialConnectionId: string | null; readyConnectionId: string | null };
   aiConnection?: import("../ai-connections.js").AiConnectionBinding;
   /** Legacy authentication stays unchanged until the normal validated agent update succeeds. */
   aiConnectionRequiresAdoption?: boolean;

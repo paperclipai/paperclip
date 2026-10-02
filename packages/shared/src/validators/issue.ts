@@ -1111,7 +1111,7 @@ const connectionIntentBrandAssetSchema = z
 export const connectionIntentPayloadSchema = z
   .object({
     upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
-    purpose: z.literal("ai").optional(),
+    purpose: z.enum(["ai", "channel"]).optional(),
     version: z.literal(1),
     serviceSlug: z.string().trim().min(1).max(120),
     serviceName: z.string().trim().min(1).max(160),

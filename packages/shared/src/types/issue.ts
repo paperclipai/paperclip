@@ -1359,8 +1359,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
 export interface ConnectionIntentPayload {
   version: 1;
   upstreamService?: { slug: string; name: string; selectionInteractionId?: string };
-  /** Runtime authentication requests cannot be satisfied by tool credentials. */
-  purpose?: "ai";
+  /** AI authentication and inbox setup cannot be satisfied by tool credentials. */
+  purpose?: "ai" | "channel";
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;

@@ -143,7 +143,7 @@ jobs:
           name: ${{ needs.build.outputs.artifact_name }}
           path: storybook-static
       - name: Assume the Storybook-only uploader role
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: ${{ vars.STORYBOOK_AWS_ROLE_ARN }}
           aws-region: ${{ vars.STORYBOOK_AWS_REGION }}

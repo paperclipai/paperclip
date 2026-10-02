@@ -21,6 +21,7 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "./tool-gateway.js";
+import { runContextSnapshotString } from "./tool-access-policy.js";
 
 const objectSchema = (
   properties: Record<string, unknown>,
@@ -304,7 +305,7 @@ export async function githubBotConnectionIdsForRun(
   const [run] = await db
     .select({
       issueId: heartbeatRuns.nativeIssueId,
-      context: heartbeatRuns.contextSnapshot,
+      snapshotIssueId: runContextSnapshotString("issueId"),
     })
     .from(heartbeatRuns)
     .where(
@@ -314,7 +315,7 @@ export async function githubBotConnectionIdsForRun(
         eq(heartbeatRuns.id, runId),
       ),
     );
-  const issueId = run?.issueId ?? run?.context?.issueId;
+  const issueId = run?.issueId ?? run?.snapshotIssueId;
   if (typeof issueId !== "string") return new Set();
   const rows = await db
     .select({
@@ -356,7 +357,7 @@ export async function githubGuestBotConnectionForSession(
 ): Promise<string | null> {
   if (!session.runId || !session.agentId || !session.issueId) return null;
   const [run] = await db
-    .select()
+    .select({ wakeCommentId: runContextSnapshotString("wakeCommentId") })
     .from(heartbeatRuns)
     .where(
       and(
@@ -365,7 +366,7 @@ export async function githubGuestBotConnectionForSession(
         eq(heartbeatRuns.id, session.runId),
       ),
     );
-  const commentId = run?.contextSnapshot?.wakeCommentId;
+  const commentId = run?.wakeCommentId;
   if (typeof commentId !== "string") return null;
   const [source] = await db
     .select({

@@ -241,6 +241,13 @@ section in the Observability contract.
 
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
 
+Ignored unrelated Codex notifications use `harness.diagnostic` with code
+`codex_unrelated_information`. The payload retains only the bounded provider
+method and expected/received thread and turn identifiers. Account updates, skill
+changes, and unrelated thread information do not create a provider notice in
+chat. Chat also omits the matching notice stored by older runners. Real provider
+warnings and errors remain visible.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
 If execution-continuation setup finds that a task no longer exists, is closed,

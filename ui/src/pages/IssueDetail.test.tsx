@@ -172,6 +172,10 @@ vi.mock("../api/issues", async (importOriginal) => {
   return { ...actual, issuesApi: Object.assign(actual.issuesApi, mockIssuesApi) };
 });
 
+vi.mock("../api/email", () => ({
+  emailApi: { thread: vi.fn().mockResolvedValue(null) },
+}));
+
 vi.mock("../api/activity", () => ({
   activityApi: mockActivityApi,
 }));

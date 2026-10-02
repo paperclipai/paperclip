@@ -8,7 +8,7 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -46,6 +46,80 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
+    const userId = `custom-manager-${manager}`;
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    if (manager) await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "tools:manage_connections" });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    const response = await request(app).get(`/api/companies/${companyId}/ai-connections`);
+    expect(response.status).toBe(200);
+    expect(response.body.canManageConnections).toBe(manager);
+  });
+
+  it("probes only the requested authorized grant using its vaulted subscription token", async () => {
+    const owner = "usage-probe-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Usage probe account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "usage-selected-secret");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 42 }, seven_day: { utilization: 15 } })));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = req.header("x-agent")
+        ? { type: "agent", agentId, companyId, companyIds: [companyId], onBehalfOfUserId: owner }
+        : { type: "board", userId: req.header("x-test-user") ?? owner, companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const url = `/api/companies/${companyId}/ai-connections/${account.connectionId}/usage?grantId=${account.grantId}`;
+    try {
+      const result = await request(app).get(url);
+      expect(result.status).toBe(200);
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.body).toMatchObject({ ...account, status: "ok", provider: "anthropic", limits: [{ usedPercent: 42 }, { usedPercent: 15 }] });
+      expect(fetchSpy).toHaveBeenLastCalledWith("https://api.anthropic.com/api/oauth/usage", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer usage-selected-secret" }) }));
+      expect(JSON.stringify(result.body)).not.toContain("usage-selected-secret");
+      fetchSpy.mockClear();
+      expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
+      expect((await request(app).get(url.replace(companyId, otherCompanyId))).status).toBe(403);
+      expect((await request(app).get(url.replace(account.grantId, randomUUID()))).status).toBe(404);
+      expect((await request(app).get(url).set("x-agent", "yes")).status).toBe(403);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      const revoked = await request(app).get(url);
+      expect(revoked.body).toMatchObject({ status: "unavailable", errorCode: "connection_unavailable", limits: [] });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("uses the same usage probe for shared accounts across legacy and native runner selections", async () => {
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "shared", name: "Shared usage account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "shared-usage-secret");
+    const selected = { provider: "anthropic", method: "subscription", mode: "shared", ...account } as const;
+    const tools = toolAccessService(db);
+    await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["alice"], { userId: "alice" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 100 }, extra_usage: { is_enabled: false } })));
+    try {
+      await expect(service.probeUsage(companyId, "bob", account.connectionId)).rejects.toThrow("not found");
+      expect(fetchSpy).not.toHaveBeenCalled();
+      await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["bob"], { userId: "alice" });
+      for (const config of [{ adapterType: "claude_local" }, { adapterType: "paperclip_runner", runnerProvider: "acpx", acpxAgent: "claude" }]) {
+        const row = await service.select({ companyId, userId: "bob", agentId, binding: selected, ...config });
+        expect(await service.probeUsage(companyId, "bob", row.connection.id, row.grant.id)).toMatchObject({ status: "ok", overage: { available: false }, limits: [{ limitReached: true }, { allowed: false }] });
+      }
+      // Unsupported methods do not resolve or send secrets.
+      const owner = "usage-api-owner";
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const apiAccount = await create(owner, "Unsupported usage method");
+      fetchSpy.mockClear();
+      expect(await service.probeUsage(companyId, owner, apiAccount.connectionId)).toMatchObject({ status: "unsupported" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
   it.each([
     ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
   ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {

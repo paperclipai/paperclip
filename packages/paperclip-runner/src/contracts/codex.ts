@@ -50,6 +50,8 @@ export interface CodexModelContextSnapshot {
   collaborationMode: "default" | "plan";
   sandbox: unknown;
   approvalPolicy: unknown;
+  /** Historical trace field for the Paperclip instruction fragment, supplied
+   * to Codex as developerInstructions rather than replacing its stock base. */
   baseInstructions: string;
   instructionSources: string[];
   instructionPolicy: {
