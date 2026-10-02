@@ -2974,6 +2974,9 @@ describe("gemini ACP flag selection", () => {
     expect(explicitZero.runtimeOptions[0]?.timeoutMs).toBe(
       DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000,
     );
+    expect(explicitZero.result.resultJson?.adapterExecutionTimeout).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC, source: "sandbox_default",
+    });
 
     // A negative timeoutSec is the documented opt-out from any adapter
     // wall-clock timeout, sandbox targets included.
@@ -2982,6 +2985,7 @@ describe("gemini ACP flag selection", () => {
       sandboxContext,
     );
     expect(negativeOptOut.runtimeOptions[0]?.timeoutMs).toBeUndefined();
+    expect(negativeOptOut.result.resultJson?.adapterExecutionTimeout).toEqual({ timeoutSec: 0, source: "configured" });
     const startLine = negativeOptOut.logs.find(
       (entry) => entry.stream === "stderr" && entry.text.includes("Adapter execution timeout:"),
     );
@@ -3047,6 +3051,7 @@ describe("gemini ACP flag selection", () => {
       "Set adapterConfig.timeoutSec to raise it.";
     expect(result.timedOut).toBe(true);
     expect(result.errorCode).toBe("acpx_timeout");
+    expect(result.resultJson?.adapterExecutionTimeout).toEqual({ timeoutSec: 1, source: "configured" });
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
     expect(result.resultJson).toMatchObject({ acpObservedEventCount: 0, acpPendingToolCount: 0, acpToolInventoryComplete: true });

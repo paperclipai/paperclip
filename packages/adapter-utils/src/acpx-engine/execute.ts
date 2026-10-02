@@ -5483,6 +5483,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               } },
             };
           }
+          // Preserve the policy resolved for this execution target. The server
+          // cannot reconstruct sandbox defaults from the stored agent config.
+          capturedResult = {
+            ...capturedResult,
+            resultJson: {
+              ...capturedResult.resultJson,
+              adapterExecutionTimeout: { ...prepared.timeoutResolution },
+            },
+          };
           // The sync-back settlement step runs before this reproduces the result
           // (settlement precedes reproduction), so a failed workspace restore is
           // already recorded by the time we get here. Merge it into `resultJson`
