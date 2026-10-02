@@ -1599,6 +1599,42 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it.each(["start", "stop"])("bounds a hung callback bridge %s while preserving its launch environment", async (stage) => {
+    vi.useFakeTimers();
+    try {
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[]; env?: Record<string, string> }) => {
+          const script = input.args?.[1] ?? "";
+          if ((stage === "start" && script.includes("nohup")) ||
+              (stage === "stop" && script.includes('kill "$pid"'))) {
+            return new Promise<RunProcessResult>(() => {});
+          }
+          return {
+            exitCode: 0, signal: null, timedOut: false, stderr: "", pid: null,
+            startedAt: new Date().toISOString(), stdout: JSON.stringify({ port: 3101 }),
+          };
+        }),
+      };
+      let error: unknown;
+      const operation = startSandboxCallbackBridgeServer({
+        runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+        queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 4 * 60 * 60 * 1000,
+      }).then(async (bridge) => { if (stage === "stop") await bridge.stop(); })
+        .catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await operation;
+      expect(runner.execute.mock.calls[0]?.[0].env).toMatchObject({
+        PAPERCLIP_BRIDGE_TOKEN: "private-bridge-token",
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      });
+      expect(runner.execute).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks command-managed bridge operations with the bridge execution channel", async () => {
     const runner = {
       execute: vi.fn(async () => ({

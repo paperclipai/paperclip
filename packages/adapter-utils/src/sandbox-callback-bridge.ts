@@ -351,6 +351,22 @@ function buildRunnerFailureMessage(action: string, result: RunProcessResult): st
   return `${action} failed with exit code ${result.exitCode ?? "null"}${detail ? `: ${detail}` : ""}`;
 }
 
+export function runSandboxBridgeControlCommand(
+  runner: CommandManagedRuntimeRunner,
+  input: Parameters<CommandManagedRuntimeRunner["execute"]>[0],
+): Promise<RunProcessResult> {
+  // These short file/control operations must not inherit an hours-long agent
+  // lifetime. Enforce the deadline on the host too: a provider may never settle
+  // its promise even when it receives timeoutMs. This does not prove the remote
+  // operation stopped; callers must not replay an uncertain write on timeout.
+  const controlTimeoutMs = Math.min(
+    normalizeTimeoutMs(input.timeoutMs, MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS),
+    MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS,
+  );
+  return withTimeout(runner.execute({ ...input, timeoutMs: controlTimeoutMs }),
+    controlTimeoutMs, "Sandbox bridge control command");
+}
+
 async function runShell(
   runner: CommandManagedRuntimeRunner,
   cwd: string,
@@ -359,19 +375,14 @@ async function runShell(
   shellCommand: "bash" | "sh" = "sh",
   stdin?: string,
 ): Promise<RunProcessResult> {
-  // These short file/control operations must not inherit an hours-long agent
-  // lifetime. Enforce the deadline on the host too: a provider may never settle
-  // its promise even when it receives timeoutMs. This does not prove the remote
-  // operation stopped; callers must not replay an uncertain write on timeout.
-  const controlTimeoutMs = Math.min(timeoutMs, MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS);
-  return await withTimeout(runner.execute({
+  return await runSandboxBridgeControlCommand(runner, {
     command: shellCommand,
     args: shellCommandArgs(script),
     cwd,
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
     },
-    timeoutMs: controlTimeoutMs,
+    timeoutMs,
     stdin,
     // Every command that rides this helper is bridge control-plane plumbing:
     // input delivery, output read, callback relay, and queue/setup bookkeeping.
@@ -380,7 +391,7 @@ async function runShell(
     // for the whole run; a control write on the same session queues behind the
     // agent command that never returns — a permanent deadlock.
     bypassSession: true,
-  }), controlTimeoutMs, "Sandbox bridge control command");
+  });
 }
 
 function requireSuccessfulResult(action: string, result: RunProcessResult): RunProcessResult {
@@ -1839,7 +1850,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxBodyBytes: input.maxBodyBytes,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
-  const startResult = await input.runner.execute({
+  const startResult = await runSandboxBridgeControlCommand(input.runner, {
     command: shellCommand,
     args: shellCommandArgs(
       [
@@ -1915,7 +1926,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
     directories,
     stop: async () => {
-      const stopResult = await input.runner.execute({
+      const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(
           [

@@ -50,7 +50,7 @@ import {
   type StartupTracer,
 } from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory, type SandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
-import { runChildProcess } from "./server-utils.js";
+import { runChildProcess, type RunProcessResult } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
@@ -1815,7 +1815,7 @@ describe("sandbox adapter execution targets", () => {
       );
 
       const delegate = createLocalSandboxRunner();
-      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; script: string }> = [];
+      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; timeoutMs?: number; script: string }> = [];
       const runner = {
         execute: vi.fn(
           async (
@@ -1827,6 +1827,7 @@ describe("sandbox adapter execution targets", () => {
             execs.push({
               useSession: input.useSession,
               bypassSession: input.bypassSession,
+              timeoutMs: input.timeoutMs,
               script: input.args?.[1] ?? "",
             });
             return delegate.execute(input);
@@ -1851,7 +1852,7 @@ describe("sandbox adapter execution targets", () => {
         args: [childPath],
         cwd: rootDir,
         env: {},
-        timeoutSec: 5,
+        timeoutSec: 4 * 60 * 60,
         onLog: async () => {},
         streamOutputViaSession: true,
       });
@@ -1872,6 +1873,7 @@ describe("sandbox adapter execution targets", () => {
         const sessionExecs = execs.filter((exec) => exec.useSession === true);
         expect(sessionExecs).toHaveLength(1);
         expect(sessionExecs[0]!.bypassSession).not.toBe(true);
+        expect(sessionExecs[0]!.timeoutMs).toBe(4 * 60 * 60 * 1000);
         expect(sessionExecs[0]!.script).toContain("node ");
 
         // Every other exec is bridge control-plane plumbing. Each must force
@@ -1881,11 +1883,49 @@ describe("sandbox adapter execution targets", () => {
         expect(controlExecs.length).toBeGreaterThan(0);
         for (const exec of controlExecs) {
           expect(exec.bypassSession).toBe(true);
+          expect(exec.timeoutMs).toBe(30_000);
         }
       } finally {
         await bridge?.stop();
       }
     });
+  });
+
+  it.each(["launch", "payload setup"])("bounds a hung process-session %s", async (stage) => {
+    vi.useFakeTimers();
+    try {
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[] }) => {
+          const script = input.args?.[1] ?? "";
+          if ((stage === "launch" && script.includes("nohup")) ||
+              (stage === "payload setup" && script.startsWith("chmod 600"))) {
+            return new Promise<RunProcessResult>(() => {});
+          }
+          return {
+            exitCode: 0, signal: null, timedOut: false, stdout: '{"uploaded":true}', stderr: "",
+            pid: null, startedAt: new Date().toISOString(),
+          };
+        }),
+      };
+      let error: unknown;
+      const operation = startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-hung-setup",
+        runtimeRootDir: "/workspace/runtime",
+        target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner },
+        adapterKey: "acpx", command: "cat", args: [], cwd: "/workspace",
+        env: stage === "payload setup" ? { LARGE_VALUE: "x".repeat(70_000) } : {},
+        timeoutSec: 4 * 60 * 60,
+      }).catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await operation;
+      expect(runner.execute.mock.calls.filter(([input]) => input.args?.[1]?.includes("nohup")))
+        .toHaveLength(stage === "launch" ? 1 : 0);
+      expect(runner.execute).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
@@ -2696,7 +2736,7 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  it("uses the effective adapter timeout when starting the sandbox callback bridge", async () => {
+  it("bounds callback bridge operations independently of the adapter run timeout", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-timeout-"));
     cleanupDirs.push(rootDir);
     const remoteCwd = path.join(rootDir, "workspace");
@@ -2743,9 +2783,10 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge).not.toBeNull();
       expect(runner.execute).toHaveBeenCalled();
-      expect(
-        runner.execute.mock.calls.some(([input]) => input.timeoutMs === DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000),
-      ).toBe(true);
+      for (const [input] of runner.execute.mock.calls) {
+        expect(input.timeoutMs).toBeGreaterThan(0);
+        expect(input.timeoutMs).toBeLessThanOrEqual(30_000);
+      }
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

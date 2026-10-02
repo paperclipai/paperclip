@@ -38,6 +38,7 @@ import {
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
   HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  runSandboxBridgeControlCommand,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
@@ -2064,7 +2065,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   } else {
     const payloadPath = path.posix.join(sessionDir, "command.b64");
     const runPayloadSetup = async (script: string) => {
-      const result = await runner.execute({
+      const result = await runSandboxBridgeControlCommand(runner, {
         command: shellCommand,
         args: shellCommandArgs(script),
         cwd: target.remoteCwd,
@@ -2093,7 +2094,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // as one foreground session command further down instead, so skip this.
   if (!streamOutput) {
     await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
-    const startResult = await runner.execute({
+    const startResult = await runSandboxBridgeControlCommand(runner, {
       command: shellCommand,
       args: shellCommandArgs(
         [
