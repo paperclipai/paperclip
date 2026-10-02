@@ -1,6 +1,7 @@
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { createHash, randomUUID } from "node:crypto";
+import { getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -185,6 +186,11 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
+  const pluginToolNames = (await getAssignedMcpGateway(input.db, { required: false })?.listPluginToolsForAgent({
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    runId: input.runId,
+  }) ?? []).map((tool) => tool.name).sort();
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
   const hasGitHubConnection = effective.installedConnections.some((connection) => {
@@ -236,9 +242,10 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       .filter((tool) => availableConnectionIds.has(tool.connectionId))
       .map((tool) => tool.id)
       .sort(),
+    ...(pluginToolNames.length ? { pluginTools: pluginToolNames } : {}),
   };
   const assignmentDigest = sha256(JSON.stringify(assignment));
-  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
+  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length || pluginToolNames.length ? `native-mcp:${input.runId}` : null };
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {

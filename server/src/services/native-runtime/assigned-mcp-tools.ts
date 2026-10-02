@@ -58,9 +58,11 @@ export function registerAssignedMcpGateway(db: Db, gateway: ToolGatewayService):
   assignedMcpGateways.set(db, gateway);
 }
 
-export function getAssignedMcpGateway(db: Db): ToolGatewayService {
+export function getAssignedMcpGateway(db: Db): ToolGatewayService;
+export function getAssignedMcpGateway(db: Db, options: { required: false }): ToolGatewayService | undefined;
+export function getAssignedMcpGateway(db: Db, options?: { required: false }): ToolGatewayService | undefined {
   const gateway = assignedMcpGateways.get(db);
-  if (!gateway) throw new Error("assigned_mcp_gateway_unavailable");
+  if (!gateway && options?.required !== false) throw new Error("assigned_mcp_gateway_unavailable");
   return gateway;
 }
 
@@ -91,7 +93,8 @@ export async function createAssignedMcpTools(input: {
     if (tools.has(name)) throw new Error("assigned_mcp_tool_name_collision");
     tools.set(name, descriptor);
   }
-  const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
+  const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") =>
+    mode === "standard" || (tool.risk === "read" && tool.providerType !== "paperclip_plugin");
 
   async function search(argumentsValue: unknown, currentWorkMode?: WorkMode) {
     const args = object(argumentsValue);

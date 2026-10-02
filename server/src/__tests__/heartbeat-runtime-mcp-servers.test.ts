@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   activityLog,
@@ -9,6 +9,11 @@ import {
   connectionGrants,
   createDb,
   heartbeatRuns,
+  projects,
+  issues,
+  toolInvocations,
+  toolActionRequests,
+  issueThreadInteractions,
   toolAccessAuditEvents,
   toolApplications,
   toolConnectionInstalls,
@@ -19,6 +24,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolPolicies,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -27,9 +33,33 @@ import {
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
 
 import { toolAccessService } from "../services/tool-access.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
+import { registerAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function pluginDispatcher(names: string[], onExecute: () => void = () => {}): PluginToolDispatcher {
+  return {
+    initialize: async () => {},
+    teardown: () => {},
+    listToolsForAgent: () => names.map((name) => ({
+      name, displayName: name, description: "Read a status.", pluginId: "fixture",
+      parametersSchema: { type: "object" },
+    })),
+    getTool: () => null,
+    executeTool: async () => {
+      onExecute();
+      return { pluginId: "fixture", toolName: "read_status", result: { content: "ready" } };
+    },
+    registerPluginTools: () => {},
+    unregisterPluginTools: () => {},
+    toolCount: () => names.length,
+    getRegistry: () => { throw new Error("unused"); },
+  };
+}
 
 describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   let db!: ReturnType<typeof createDb>;
@@ -41,19 +71,29 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(() => {
+    registerAssignedMcpGateway(db, createToolGatewayService(db));
+  });
+
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = originalApiUrl;
     await db.delete(toolMcpGatewayTokens);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
+    await db.delete(toolActionRequests);
+    await db.delete(issueThreadInteractions);
+    await db.delete(toolInvocations);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(projects);
     await db.delete(toolMcpGateways);
     await db.delete(connectionGrants);
     await db.delete(toolConnectionInstalls);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
+    await db.delete(toolPolicies);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(agents);
@@ -63,6 +103,128 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("delivers only governed plugin tools without a remote connection and fences assignment changes", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({ name: "Plugin delivery", issuePrefix: "PLUG" }).returning();
+    const [agent, otherAgent] = await db.insert(agents).values([
+      { companyId: company!.id, name: "Reader", role: "engineer", adapterType: "claude_local" },
+      { companyId: company!.id, name: "Other reader", role: "engineer", adapterType: "codex_local" },
+    ]).returning();
+    const [project] = await db.insert(projects).values({ companyId: company!.id, name: "Plugin project" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company!.id, projectId: project!.id, title: "Read status", status: "in_progress", assigneeAgentId: agent!.id }).returning();
+    const [run, otherRun] = await db.insert(heartbeatRuns).values([
+      { companyId: company!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id, projectId: project!.id } },
+      { companyId: company!.id, agentId: otherAgent!.id, invocationSource: "assignment", status: "running", contextSnapshot: {} },
+    ]).returning();
+    const names = ["fixture:read_status", "fixture:read_private", "fixture:read_blocked"];
+    let dispatchCount = 0;
+    const dispatcher = pluginDispatcher(names, () => { dispatchCount += 1; });
+    const gateway = createToolGatewayService(db, { pluginToolDispatcher: dispatcher, toolActionSigningSecret: "plugin-delivery-test-secret" });
+    registerAssignedMcpGateway(db, gateway);
+    await db.insert(toolPolicies).values([
+      { companyId: company!.id, name: "Reader grant", policyType: "allow", selectors: { agentIds: [agent!.id], toolNames: [names[0]!, names[2]!] } },
+      { companyId: company!.id, name: "Other grant", policyType: "allow", selectors: { agentIds: [otherAgent!.id], toolNames: [names[1]!] } },
+      { companyId: company!.id, name: "Explicit block", policyType: "block", priority: -100, selectors: { toolNames: [names[2]!] } },
+    ]);
+    const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: run!.id });
+    expect(snapshot.bindingId).not.toBeNull();
+    const first = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id, expectedAssignmentDigest: snapshot.digest });
+    expect(first).toHaveLength(1);
+    const locator = { gatewayPublicId: first[0]!.url.split("/").at(-1)!, bearerToken: first[0]!.token };
+    expect((await gateway.listToolsForNamedGateway(locator)).map((tool) => tool.name)).toEqual([names[0]]);
+    await expect(gateway.executeTool({ gatewayPublicId: locator.gatewayPublicId, sessionToken: first[0]!.token, tool: names[0]!, parameters: {} })).resolves.toBeDefined();
+    const [profile] = await db.select().from(toolProfiles);
+    const entries = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile!.id));
+    expect(entries.map(({ selectorType, effect, toolName }) => ({ selectorType, effect, toolName }))).toEqual([
+      { selectorType: "tool_name", effect: "include", toolName: names[0] },
+    ]);
+    expect(await db.select().from(toolConnections)).toEqual([]);
+    const repeat = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+    expect(repeat[0]!.connectionId).toBe(first[0]!.connectionId);
+    const other = await buildPaperclipRuntimeMcpServers({ db, agent: otherAgent!, runId: otherRun!.id });
+    expect(other[0]!.connectionId).not.toBe(first[0]!.connectionId);
+
+    await db.update(toolPolicies).set({ selectors: { agentIds: [agent!.id], toolNames: [names[1]!] } })
+      .where(eq(toolPolicies.name, "Reader grant"));
+    expect(await gateway.listToolsForNamedGateway(locator)).toEqual([]);
+    for (const tool of [names[0]!, names[1]!]) {
+      await expect(gateway.executeTool({ gatewayPublicId: locator.gatewayPublicId, sessionToken: first[0]!.token, tool, parameters: {} }))
+        .rejects.toMatchObject({ reasonCode: "deny_default" });
+    }
+    expect(await buildPaperclipRuntimeMcpServers({
+      db, agent: agent!, runId: run!.id,
+      expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
+    })).toEqual([]);
+    const changed = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+    expect(changed[0]!.connectionId).not.toBe(first[0]!.connectionId);
+    await db.delete(toolPolicies);
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id })).toEqual([]);
+
+    const [sourceProfile] = await db.insert(toolProfiles).values({ companyId: company!.id, profileKey: "reader", name: "Reader", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileEntries).values({ companyId: company!.id, profileId: sourceProfile!.id, selectorType: "tool_name", effect: "include", toolName: names[0]! });
+    await db.insert(toolProfileBindings).values({ companyId: company!.id, profileId: sourceProfile!.id, targetType: "agent", targetId: agent!.id });
+    const [profileMcp] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+    const profileLocator = { gatewayPublicId: profileMcp!.url.split("/").at(-1)!, bearerToken: profileMcp!.token };
+    expect((await gateway.listToolsForNamedGateway(profileLocator)).map((tool) => tool.name)).toEqual([names[0]]);
+    await db.insert(toolPolicies).values({ companyId: company!.id, name: "Review plugin call", policyType: "require_approval", selectors: { toolNames: [names[0]!] } });
+    await expect(gateway.executeTool({ gatewayPublicId: profileLocator.gatewayPublicId, sessionToken: profileMcp!.token, tool: names[0]!, parameters: { reviewed: true } }))
+      .rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, actionRequest!.interactionId!));
+    await db.update(toolActionRequests).set({ status: "approved", resolvedByUserId: "board-user", decidedAt: new Date(), resolvedAt: new Date() })
+      .where(eq(toolActionRequests.id, actionRequest!.id));
+    await db.delete(toolPolicies);
+    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, sourceProfile!.id));
+    expect(await gateway.listToolsForNamedGateway(profileLocator)).toEqual([]);
+    await expect(gateway.executeTool({ gatewayPublicId: profileLocator.gatewayPublicId, sessionToken: profileMcp!.token, tool: names[0]!, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "deny_default" });
+    const callsBeforeRetry = dispatchCount;
+    await expect(gateway.executeTool({ gatewayPublicId: profileLocator.gatewayPublicId, sessionToken: profileMcp!.token, tool: names[0]!, parameters: {}, approvedActionRequestId: actionRequest!.id }))
+      .rejects.toMatchObject({ reasonCode: "deny_default" });
+    expect(dispatchCount).toBe(callsBeforeRetry);
+    expect((await db.select().from(toolActionRequests))[0]!.status).toBe("approved");
+    await db.insert(toolProfileBindings).values({ companyId: company!.id, profileId: sourceProfile!.id, targetType: "agent", targetId: agent!.id });
+    await db.update(toolProfileEntries).set({ toolName: names[1]! }).where(eq(toolProfileEntries.profileId, sourceProfile!.id));
+    const [differentAssignment] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+    await db.update(toolProfileEntries).set({ toolName: names[0]! }).where(eq(toolProfileEntries.profileId, sourceProfile!.id));
+    await expect(gateway.executeTool({ gatewayPublicId: differentAssignment!.url.split("/").at(-1)!, sessionToken: differentAssignment!.token, tool: names[0]!, parameters: {}, approvedActionRequestId: actionRequest!.id }))
+      .rejects.toMatchObject({ reasonCode: "deny_default" });
+    expect(dispatchCount).toBe(callsBeforeRetry);
+    await db.insert(toolPolicies).values({ companyId: company!.id, name: "Review plugin retry", policyType: "require_approval", selectors: { toolNames: [names[0]!] } });
+    await expect(gateway.executeTool({ gatewayPublicId: profileLocator.gatewayPublicId, sessionToken: profileMcp!.token, tool: names[0]!, parameters: {}, approvedActionRequestId: actionRequest!.id })).resolves.toBeDefined();
+    expect(dispatchCount).toBe(callsBeforeRetry + 1);
+  });
+
+  it("delivers a plugin tool granted only for the run's project", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({ name: "Scoped plugin delivery", issuePrefix: "SCOP" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Reader", role: "engineer", adapterType: "claude_local" }).returning();
+    const [grantedProject, otherProject] = await db.insert(projects).values([
+      { companyId: company!.id, name: "Granted project" },
+      { companyId: company!.id, name: "Other project" },
+    ]).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company!.id, projectId: grantedProject!.id, title: "Read status", status: "in_progress", assigneeAgentId: agent!.id }).returning();
+    const [grantedRun, otherRun] = await db.insert(heartbeatRuns).values([
+      { companyId: company!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } },
+      { companyId: company!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { projectId: otherProject!.id } },
+    ]).returning();
+    const name = "fixture:read_status";
+    const gateway = createToolGatewayService(db, { pluginToolDispatcher: pluginDispatcher([name]) });
+    registerAssignedMcpGateway(db, gateway);
+    await db.insert(toolPolicies).values({ companyId: company!.id, name: "Project grant", policyType: "allow", selectors: { agentIds: [agent!.id], projectIds: [grantedProject!.id], toolNames: [name] } });
+
+    const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: grantedRun!.id });
+    expect(snapshot.bindingId).not.toBeNull();
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: grantedRun!.id, expectedAssignmentDigest: snapshot.digest });
+    const locator = { gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token };
+    expect((await gateway.listToolsForNamedGateway(locator)).map((tool) => tool.name)).toEqual([name]);
+    await expect(gateway.executeTool({ gatewayPublicId: locator.gatewayPublicId, sessionToken: server!.token, tool: name, parameters: {} })).resolves.toBeDefined();
+
+    expect((await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: otherRun!.id })).bindingId).toBeNull();
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: otherRun!.id })).toEqual([]);
   });
 
   it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {

@@ -1181,7 +1181,29 @@ export function toolAccessPolicyService(db: Db) {
     const loaded = await loadContext(input);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
-    const profileState = await effectiveProfiles(ctx);
+    const [runtimeGateway] = ctx.providerType === "paperclip_plugin" && ctx.gatewayId
+      ? await db.select({ profileId: toolMcpGateways.profileId, metadata: toolMcpGateways.metadata })
+          .from(toolMcpGateways)
+          .where(and(eq(toolMcpGateways.companyId, ctx.companyId), eq(toolMcpGateways.id, ctx.gatewayId)))
+          .limit(1)
+      : [];
+    const isRuntimePlugin = typeof runtimeGateway?.metadata?.nativeRuntimeAssignmentDigest === "string";
+    if (isRuntimePlugin) {
+      const entries = await db.select({ effect: toolProfileEntries.effect })
+        .from(toolProfileEntries)
+        .innerJoin(toolProfiles, eq(toolProfiles.id, toolProfileEntries.profileId))
+        .where(and(
+          eq(toolProfileEntries.companyId, ctx.companyId),
+          eq(toolProfileEntries.profileId, runtimeGateway!.profileId),
+          eq(toolProfiles.status, "active"),
+          eq(toolProfileEntries.selectorType, "tool_name"),
+          eq(toolProfileEntries.toolName, ctx.toolName),
+        ));
+      if (!entries.some((entry) => entry.effect === "include") || entries.some((entry) => entry.effect === "exclude")) {
+        return decision("deny", "deny_default", "Plugin tool is outside this run's MCP assignment.", [], [], { redactionPlan: redaction.redactionPlan });
+      }
+    }
+    const profileState = await effectiveProfiles(isRuntimePlugin ? { ...ctx, gatewayId: null } : ctx);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const permittedByProfile = profileState.profiles.some((profile) => {
       const matchingEntries = profileState.entries.filter((entry) => entry.profileId === profile.id && profileEntryMatches(entry, ctx));

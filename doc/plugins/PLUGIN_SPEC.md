@@ -431,7 +431,9 @@ The worker executes the tool logic and returns a typed result. The host enforces
 
 ### 11.3 Tool Availability
 
-By default, plugin tools are available to all agents. The operator may restrict tool availability per agent or per project through plugin configuration.
+Tool profiles, grants and policies govern plugin tool availability. Registration alone does not grant access. Managed runs include the permitted plugin tools in their existing `paperclip-assigned` MCP gateway, even when the agent has no remote MCP connection. No placeholder connection or persistent gateway token is required.
+
+The run assignment pins exact plugin tool names. It evaluates grants in the run's context, so grants scoped to the run's project, issue or routine apply. Later grants do not add tools to an existing assignment. Each discovery and call also checks current authorization, so removing a source grant revokes access through an existing run token. Explicit blocks and approval requirements still apply. Plugin tools declare no risk level, so native planning and ask modes withhold them. Adapters must consume the runtime MCP configuration to expose these tools.
 
 Plugin tools appear in the agent's tool list alongside core tools but are visually distinguished in the UI as plugin-contributed.
 

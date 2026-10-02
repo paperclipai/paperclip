@@ -217,6 +217,20 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).toHaveBeenCalledOnce();
   });
 
+  it.each(["planning", "ask"] as const)("withholds plugin tools with a name-inferred read risk in %s mode", async workMode => {
+    const plugin: ToolGatewayDescriptor = { ...descriptor("wiki:wiki_append_log"), providerType: "paperclip_plugin" };
+    const f = fixture([descriptor("read"), plugin]);
+    const standard = await createAssignedMcpTools(f);
+    const restricted = await createAssignedMcpTools({ ...f, workMode });
+    expect(restricted.definitions()).toEqual([standard.definitions()[0]]);
+    const call = { tool: standard.definitions()[1]!.name as string, arguments: {} };
+    await expect(restricted.execute(call)).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    await expect(standard.execute(call, workMode)).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    expect(f.executeTool).not.toHaveBeenCalled();
+    await standard.execute(call);
+    expect(f.executeTool).toHaveBeenCalledOnce();
+  });
+
   it("uses the gateway for write and destructive tools under standard mode without approval overrides", async () => {
     const f = fixture([descriptor("remember", "write"), descriptor("forget", "destructive")]);
     const assigned = await createAssignedMcpTools(f);
