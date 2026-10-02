@@ -15,6 +15,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "blocker_guidance"
   | "everyday_workflow"
   | "context_integrity"
 

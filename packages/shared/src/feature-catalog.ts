@@ -111,7 +111,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableChatConnectors: {
     title: "Chat connectors",
     description:
-      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; AgentMail, GitHub tools, and other tool connectors are unaffected.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

@@ -5,7 +5,6 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
-import { withTransientWriteRetry } from "./transient-write-retry.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -273,10 +272,11 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
-  // The registry keeps the real client (teardown must end the actual pool);
-  // drizzle gets the retrying face so a pooler-recycled socket replays the
-  // query instead of failing the request that happened to draw it.
-  const db = drizzlePg(withTransientWriteRetry(sql), { schema });
+  // A disconnect can lose the response after a statement has committed.
+  // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
+  // message cannot establish that replay is safe. Leave retries to callers
+  // that know the complete operation is idempotent.
+  const db = drizzlePg(sql, { schema });
   dedicatedDbFactories.set(db, () => createDb(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }));

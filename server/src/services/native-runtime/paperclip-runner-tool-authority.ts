@@ -1,9 +1,17 @@
+import { setIssueTitle } from "../issue-title.js";
+import { externalObjectService } from "../external-objects.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { setIssueTitleSchema } from "@paperclipai/shared";
+import { authorizeInstructionCommit } from "../agent-instruction-authorization.js";
 import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { authorizationService } from "../authorization.js";
+import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
+import { normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
+import { buildLowTrustSourceTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
@@ -12,7 +20,7 @@ import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
 import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
 import {
   isPaperclipExternalChatContractTurn,
@@ -26,7 +34,7 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { assetService } from "../assets.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden } from "../../errors.js";
+import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
@@ -46,9 +54,10 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -86,7 +95,7 @@ import {
 const IMPLEMENTED_OPERATIONS = new Set([
   "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
-  "get_task_context", "get_task_history", "search_tasks", "report_progress",
+  "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title",
   "request_human_input",
   "create_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
@@ -119,6 +128,7 @@ type Binding = {
   readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
   currentWakeComments?: CurrentWakeCommentsBinding;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   enqueueWakeup?: (agentId: string, options: {
     source: "assignment";
@@ -138,6 +148,25 @@ type ToolReceipt = {
   input: unknown;
   result: unknown;
 };
+
+// Coalesce live callers, but never use this process-local lock as crash proof.
+// The database attempt record below is the authority after process loss.
+const instructionCallLocks = new WeakMap<Db, Map<string, Promise<void>>>();
+const instructionPreWriteFailureStatuses = new Set([400, 401, 403, 404, 409, 422]);
+async function withInstructionCallLock<T>(db: Db, key: string, work: () => Promise<T>): Promise<T> {
+  let locks = instructionCallLocks.get(db);
+  if (!locks) instructionCallLocks.set(db, locks = new Map());
+  const previous = locks.get(key);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  locks.set(key, pending);
+  await previous;
+  try { return await work(); }
+  finally {
+    release();
+    if (locks.get(key) === pending) locks.delete(key);
+  }
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -371,12 +400,14 @@ export class PaperclipRunnerToolAuthority {
     }
     switch (call.tool) {
       case "read_agent_instructions":
-      case "update_agent_instructions":
       case "get_agent_instruction_history":
-      case "restore_agent_instructions":
         return executeAgentInstructionTool({ db: this.db, binding: {
           companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
         }, tool: call.tool, arguments: call.arguments });
+      case "update_agent_instructions":
+      case "restore_agent_instructions": {
+        return this.#withInstructionMutationReceipt(call.tool, call.callId, input);
+      }
       case "create_skill": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
@@ -525,6 +556,7 @@ export class PaperclipRunnerToolAuthority {
       case "create_task": return this.#createTask(input,
         (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
       case "reassign_task": return this.#reassignTask(input);
+      case "set_task_title": return this.#setTaskTitle(input);
       case "set_dependencies": return this.#setDependencies(input);
       case "register_deliverable": return this.#registerDeliverable(input);
       default: throw new Error("paperclip_runner_tool_not_bound");
@@ -924,8 +956,36 @@ export class PaperclipRunnerToolAuthority {
     const inputFingerprint = createHash("sha256")
       .update(canonicalJson(input))
       .digest("hex");
+    const authorizeCreate = async (tx: Db, context: {
+      run: typeof heartbeatRuns.$inferSelect;
+      issue: typeof issues.$inferSelect;
+      actor: typeof agents.$inferSelect;
+    }) => {
+      const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      const projectId = nullableProviderId(input.projectId) ?? (parentIssueId ? context.issue.projectId : null);
+      const scope = { projectId, parentIssueId, assigneeAgentId, assigneeUserId: null };
+      const decision = await authorizationService(tx).decide({
+        actor: { type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+          agentId: this.binding.agentId, runId: this.binding.runId, onBehalfOfUserId: context.run.responsibleUserId },
+        action: "tasks:assign",
+        resource: { type: "issue", companyId: this.binding.companyId, ...scope },
+        scope,
+      });
+      if (!decision.allowed) throw forbidden(decision.explanation);
+      await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
+      const project = projectId
+        ? await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, this.binding.companyId))).then(rows => rows[0] ?? null)
+        : null;
+      const trust = resolveCoreTrustPreset({
+        companyId: this.binding.companyId, agent: context.actor, project,
+        run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
+      });
+      if (trust.kind === "denied") throw forbidden(trust.detail);
+      return { projectId, trust };
+    };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
+      const { projectId, trust } = await authorizeCreate(tx, context);
       const conversation = Boolean(context.issue.conversationAgentId);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
@@ -951,8 +1011,14 @@ export class PaperclipRunnerToolAuthority {
         };
       }
       let deduplicated = false;
+      const issueId = randomUUID();
       const createInput = {
-        projectId: nullableProviderId(input.projectId),
+        id: issueId,
+        projectId,
+        ...(trust.kind === "low_trust_review" ? {
+          executionPolicy: { ...normalizeIssueExecutionPolicy({ authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } }) },
+          sourceTrust: buildLowTrustSourceTrust({ issueId, runId: this.binding.runId, agentId: this.binding.agentId }),
+        } : {}),
         initialPlan: nullableProviderId(input.initialPlan),
         title: requiredString(input.title),
         description: input.description === null || input.description === undefined
@@ -1025,7 +1091,7 @@ export class PaperclipRunnerToolAuthority {
           assigneeActorId: child.assigneeAgentId,
         },
       };
-    }) as Record<string, unknown>;
+    }, { beforeReceiptReplay: async (tx, context) => { await authorizeCreate(tx, context); } }) as Record<string, unknown>;
 
     if (publication) publishActivity(publication);
     const task = record(result.task);
@@ -1221,6 +1287,25 @@ export class PaperclipRunnerToolAuthority {
         issueStateGuard: { statuses: ["todo"], assigneeAgentId, statusVersion: result.stateRevision },
       });
     }
+    return result;
+  }
+
+  async #setTaskTitle(input: Record<string, unknown>): Promise<unknown> {
+    const titleInput = setIssueTitleSchema.parse(input);
+    requiredString(titleInput.idempotencyKey);
+    // Use the shared title receipt so native and HTTP retries have the same
+    // identity and cannot overwrite a later user edit when switching surfaces.
+    const { result, publication } = await this.db.transaction(async (tx) => {
+      await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+      return setIssueTitle(tx as unknown as Db, this.binding.companyId, this.binding.issueId, titleInput, {
+        actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId,
+      });
+    });
+    if (publication) publishActivity(publication);
+    const syncExternalObjects = this.binding.syncIssueExternalObjects ?? externalObjectService(this.db, {
+      enabled: async () => (await instanceSettingsService(this.db).getExperimental()).enableExternalObjects === true,
+    }).syncIssueSafely;
+    await syncExternalObjects(this.binding.issueId);
     return result;
   }
 
@@ -1474,6 +1559,109 @@ export class PaperclipRunnerToolAuthority {
       ) return target.revisionId;
     }
     return null;
+  }
+
+  async #withInstructionMutationReceipt(
+    tool: "update_agent_instructions" | "restore_agent_instructions",
+    callId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
+    const key = `instruction:${callId}`;
+    const digest = createHash("sha256").update(canonicalJson(input)).digest("hex");
+    const targetAgentId = typeof input.targetAgentId === "string" ? input.targetAgentId : this.binding.agentId;
+    const authorize = async (tx: Db) => {
+      const [target] = await tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
+        .where(and(eq(agents.id, targetAgentId), eq(agents.companyId, this.binding.companyId)));
+      if (!target) throw notFound("Agent not found");
+      return authorizeInstructionCommit(tx, {
+        type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+        agentId: this.binding.agentId, runId: this.binding.runId,
+      }, target);
+    };
+    return withInstructionCallLock(this.db, `${this.binding.companyId}:${this.binding.runId}:${key}`, async () => {
+      // A filesystem rename cannot roll back with PostgreSQL. Commit proof of
+      // the attempt *before* permitting that effect. If the effect transaction
+      // or its acknowledgement is lost, a missing result is unknown, not a
+      // license to run the instruction write a second time.
+      const reserved = await this.db.transaction(async (tx) => {
+        const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const bound = await authorize(tx as unknown as Db);
+        const resultJson = record(context.run.resultJson);
+        if (record(resultJson.semanticToolReceipts)[key] !== undefined) return false;
+        const attempts = record(resultJson.instructionToolAttempts);
+        const prior = record(attempts[key]);
+        if (attempts[key] !== undefined) {
+          if (prior.operationId !== tool || prior.inputDigest !== digest) {
+            throw new Error("paperclip_runner_tool_idempotency_conflict");
+          }
+          const failure = record(prior.failure);
+          if (typeof failure.status === "number" && instructionPreWriteFailureStatuses.has(failure.status)
+            && typeof failure.message === "string") {
+            throw new HttpError(failure.status, failure.message, failure.details);
+          }
+          throw new SemanticToolOutcomeUnknownError(`paperclip_runner_instruction_outcome_unknown call_id=${callId} operation_id=${tool} input_digest=${digest}`);
+        }
+        if (Object.keys(attempts).length >= 512) throw badRequest("Run instruction mutation limit reached");
+        attempts[key] = { operationId: tool, inputDigest: digest, targetAgentId };
+        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+          .where(eq(heartbeatRuns.id, this.binding.runId));
+        await tx.insert(activityLog).values({
+          companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId,
+          agentId: this.binding.agentId, runId: this.binding.runId,
+          responsibleUserId: bound.type === "agent" ? bound.onBehalfOfUserId : null,
+          action: "agent.instruction_write_attempted", entityType: "agent", entityId: targetAgentId,
+          details: { callId, operationId: tool, inputDigest: digest },
+        });
+        return true;
+      });
+      try {
+        return await this.#withMutationReceipt(tool, key, input, (tx) =>
+          executeAgentInstructionTool({ db: tx, binding: {
+            companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+          }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+      } catch (error) {
+        // Instruction validation, authorization and CAS errors precede the
+        // file write. Storage errors and lost commit acknowledgements do not
+        // prove that a reserved filesystem effect rolled back.
+        if (!reserved) throw error;
+        if (error instanceof HttpError && instructionPreWriteFailureStatuses.has(error.status)) {
+          const failure = { status: error.status, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) };
+          try {
+            // Save the definite failure before exposing it as a final answer.
+            // This is evidence of the admitted call, not another mutation, so
+            // retain it even if the run stopped after the effect rolled back.
+            await this.db.transaction(async (tx) => {
+              const [run] = await tx.select().from(heartbeatRuns).where(and(
+                eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId),
+                eq(heartbeatRuns.agentId, this.binding.agentId),
+              )).for("update");
+              if (!run) throw new Error("instruction_failure_run_missing");
+              const resultJson = record(run.resultJson);
+              const attempts = record(resultJson.instructionToolAttempts);
+              const prior = record(attempts[key]);
+              if (prior.operationId !== tool || prior.inputDigest !== digest
+                || record(resultJson.semanticToolReceipts)[key] !== undefined) {
+                throw new Error("instruction_failure_receipt_conflict");
+              }
+              attempts[key] = { ...prior, failure };
+              await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, instructionToolAttempts: attempts } })
+                .where(eq(heartbeatRuns.id, this.binding.runId));
+            });
+          } catch (persistenceError) {
+            throw new SemanticToolOutcomeUnknownError(
+              `paperclip_runner_instruction_failure_receipt_unavailable call_id=${callId}`,
+              { cause: new AggregateError([error, persistenceError], "Definite instruction failure could not be saved") },
+            );
+          }
+          throw error;
+        }
+        throw new SemanticToolOutcomeUnknownError(
+          `paperclip_runner_instruction_outcome_unknown call_id=${callId}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+    });
   }
 
   async #withMutationReceipt(
@@ -1801,6 +1989,7 @@ function redactedTask(task: typeof issues.$inferSelect) {
     companyId: task.companyId,
     identifier: task.identifier,
     title: task.title,
+    titleNeedsGeneration: task.titleNeedsGeneration,
     description: task.description,
     status: task.status,
     statusVersion: task.statusVersion,

@@ -212,9 +212,13 @@ export async function admitExplicitNativeContinuation(input: {
           sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
         )).limit(1)
       : [];
+    // A terminal failure may retain a result accepted before checkpoint or
+    // cleanup failed. That immutable result is history, not an active commit.
+    // Keep it intact and require the same controller/process/lease stop proofs
+    // before admitting new user input; never apply or replay the old result.
     if (!cancelledStartup && coordinator && (
         (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
-        (coordinator.resultId && !committedFailure) || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+        coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
             : "Waiting for the previous run to finish recovery. Your message will start automatically.");

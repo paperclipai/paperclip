@@ -93,11 +93,26 @@ export interface NativeSessionSnapshotOptions {
   signal: AbortSignal;
 }
 
+/** A dispatched operation may have taken effect, but has no proven result. */
+export class SemanticToolOutcomeUnknownError extends Error {
+  readonly code = "semantic_tool_outcome_unknown";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SemanticToolOutcomeUnknownError";
+  }
+}
+
+export function isSemanticToolOutcomeUnknownError(error: unknown): error is SemanticToolOutcomeUnknownError {
+  // Match across the server's vendored and source-mode runtime boundaries.
+  return error instanceof Error && "code" in error && error.code === "semantic_tool_outcome_unknown";
+}
+
 /** The exact close owner has torn down its controller without proving suspension. */
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor() {
+  constructor(readonly settlement?: Record<string, unknown>) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
     );

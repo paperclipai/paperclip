@@ -16,6 +16,7 @@ import {
   runnerSuites,
   runnerTasks,
   daytonaWarmContinuityTask,
+  daytonaLargeJournalTask,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
   pendingContextIntegrityProfiles,
@@ -31,6 +32,29 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it.each(["daytona-journal-continuity"])(
+    "%s retains native processes with fixed external instructions",
+    (suiteId) => {
+      const suite = runnerSuites.find(suite => suite.id === suiteId)!;
+      const input = {
+        executionId: "warm-instructions", environmentId: "env-1",
+        environmentFixtureId: "daytona" as const, workspacePath: "/workspace",
+        secretRefs: { OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const } },
+      };
+      const profile = suite.profiles.find(profile => profile.id === "runner-codex")!;
+      const config = profile.buildAgent(input).adapterConfig as Record<string, unknown>;
+      expect(config).toMatchObject({
+        instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md", idleTimeoutMs: 300_000,
+      });
+      expect(readFileSync(String(config.instructionsFilePath), "utf8")).toContain("Preserve the workspace files across turns");
+      expect(suite.definitionMetadata).toMatchObject({ nativeInstructions: "fixed-external" });
+      expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(input).adapterConfig)
+        .not.toHaveProperty("instructionsBundleMode", "external");
+      const legacy = suite.profiles.find(profile => profile.id === "legacy-codex");
+      if (legacy) expect(legacy.buildAgent(input).adapterConfig).not.toHaveProperty("instructionsBundleMode", "external");
+    },
+  );
+
   it("keeps the large Git filename workload explicit-only with three real turns", () => {
     const suite = runnerSuites.find(suite => suite.id === "daytona-git-streaming")!;
     expect(suite.manualOnly).toBe(true);
@@ -112,10 +136,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      30, 3, 16, 16, 2, 8, 46, 23, 47, 20, 52, 28, 18, 6, 6, 10, 48, 16, 10, 2, 1,
+      6, 30, 3, 16, 16, 2, 6, 8, 46, 23, 50, 20, 52, 28, 18, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(408);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(408);
+    expect(validateRunnerCatalog()).toHaveLength(436);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(436);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
@@ -225,6 +249,20 @@ describe("runner E2E catalog", () => {
         ],
       }),
     ).not.toBe(suiteDefinitionHash(suite));
+  });
+
+  it("keeps large-journal stress explicit-only and uses the ordinary warm workflow", () => {
+    const suite = runnerSuites.find((candidate) => candidate.id === "daytona-journal-continuity")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(suite.expectedMatrixSize).toBe(1);
+    expect(suite.profiles.map((profile) => profile.id)).toEqual(["runner-codex"]);
+    expect(daytonaLargeJournalTask.flow).toBe("warm_three_turn");
+    expect(daytonaLargeJournalTask.buildPrompt("nonce")).toContain("240 separate execution-tool calls");
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce")).toHaveLength(2);
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce").join("\n")).not.toContain("notes/warm-memory.txt");
+    expect(daytonaWarmContinuityTask.buildPrompt("nonce")).toContain("notes/warm-memory.txt");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"]))
+      .some((cell) => cell.suite.id === suite.id)).toBe(false);
   });
 
   it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {

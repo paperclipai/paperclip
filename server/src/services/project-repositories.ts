@@ -18,11 +18,13 @@ export function mergeProjectRepository(
   repositories: Map<string, ProjectRepository>,
   repo: { id: string; fullName: string; private?: boolean },
   connectionName: string,
+  connectionId?: string,
 ) {
   const previous = repositories.get(repo.id);
   repositories.set(repo.id, {
     ...repo, url: `https://github.com/${repo.fullName}`,
     connections: [...new Set([...(previous?.connections ?? []), connectionName])],
+    ...(connectionId ? { connectionIds: [...new Set([...(previous?.connectionIds ?? []), connectionId])] } : {}),
   });
 }
 

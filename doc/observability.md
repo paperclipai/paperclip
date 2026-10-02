@@ -22,7 +22,8 @@ alternative peer dependencies — install exactly **one**, matching
 `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
-packages are imported and there is zero runtime overhead.
+packages are imported and there is no SDK or exporter overhead. Local request
+timings still use the performance clock.
 
 `server/package.json` declares each optional package at the exact version the
 server tests against; install that exact version. Our Dependabot cannot bump
@@ -33,6 +34,33 @@ decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
 maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
+
+## Task detail loading
+
+`GET /api/issues/:id` returns `Server-Timing` with `paperclip_issue` for the
+whole handler and `issue_<phase>` for its reads. The total includes the final
+execution-blocker read after recovery revalidation. Concurrent phases overlap;
+do not sum them to obtain request duration.
+
+With the existing operator-configured OTLP endpoint, the same reads produce
+`issue.read.<phase>` child spans through the `paperclip.issue-read` tracer.
+There are no custom attributes, identifiers, content, or exception messages.
+The closed phase names in `server/src/services/issue-read-timing.ts` are:
+`lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
+`relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
+`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+Without an OTLP endpoint, spans remain no-ops. This adds no first-party
+Telemetry events or run-log events.
+
+The browser's `issue-detail:navigate→content-paint` User Timing measure ends
+after the redesigned conversation is revealed and painted, rather than when
+the comments request completes while the conversation is still hidden. Durable
+messages can paint before run history and plan enrichment. Runtime-only threads
+wait for initial output; late history retains the existing scroll-anchor behavior.
+Use Chrome's request waterfall and this mark together to distinguish API wait,
+request dependencies, and rendering time. A hard-load trace also includes auth,
+company selection, and JavaScript startup before the task navigation mark.
 
 ## Enabling tracing
 
@@ -429,12 +457,46 @@ The shared reporter also attaches bounded diagnostic contexts for both legacy
 and native runs:
 
 - `run_execution`: runtime mode, execution stage/native phase, driver and version,
-  duration, failure phase, stop reason, error family, and timeout settings when available.
+  duration, ACP activity, failure phase, stop reason, error family,
+  and timeout settings when available.
 - `adapter_failure`: selected adapter error fields such as phase, category,
   protocol code, retryability, cause message, stack preview, HTTP status, and request ID.
 - `provider_failure`: the saved provider failure category, title, and details.
 - `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
   statuses, and request IDs for a caught exception and up to three causes.
+
+ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
+`acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before
+usage reads, error logging, and cleanup. The age measures time since the last
+runtime event and is omitted if no event was observed or the clock is invalid.
+Timeout and cleanup log messages do not reset this age. The pending count uses
+known tool statuses; an incomplete inventory cannot establish that no work is
+pending. Recent events do not prove useful progress. These fields contain only
+numbers and a boolean, never tool names, IDs, arguments, or event content, and
+do not change the execution timeout, cancellation, or recovery policy.
+
+When settlement records a workspace restore failure, `run_execution` also
+includes `workspaceRestoreFailure` with one of the shared, path-free codes:
+`restore_permission_denied`, `restore_lock_timeout`, `restore_unsafe_archive`,
+or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
+pre-restore result data are not included. A later successful run does not, by
+itself, establish that an earlier failed restore recovered the workspace files.
+
+A caught directory-merge lock timeout also records `restoreLockOwnerState`
+(`alive`, `dead`, `unknown`, `missing`, or `invalid`), `restoreLockKnownLocalHolder`,
+and, when available, `restoreLockOwnerSameProcess`, `restoreLockOwnerPredatesProcess`,
+`restoreLockOwnerAgeMs`, and `restoreLockWaitMs` in `run_execution`. Ages are capped
+at seven days. These fields omit paths, PIDs, owner records, and absolute timestamps.
+The local-holder flag covers this module's active acquisitions only. Process-age
+comparison uses the wall clock and a one-second margin; it is a clue to PID reuse,
+not proof of ownership or permission to remove a lock. Diagnostic reads can race
+with release. The extra diagnostic owner read has a 100 ms budget; a stalled or
+unreadable read leaves the owner state `unknown`, while malformed JSON is `invalid`.
+These fields do not change lock acquisition, reclamation, or retries.
+Agent-directory callers also supply `restoreLockOperation`: `agent_directory_release`,
+`agent_directory_collect`, `agent_directory_checkpoint`, or `agent_directory_handoff`.
+This identifies the operation waiting for the lock, including cleanup after a
+completed adapter turn when the recorded execution stage has not advanced.
 
 The execution and setup catch paths pass the original exception to the reporter.
 It snapshots and rebuilds only these selected fields and the original message and

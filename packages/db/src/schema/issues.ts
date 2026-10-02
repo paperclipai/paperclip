@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   unique,
   bigint,
+  boolean,
   check,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
@@ -38,6 +39,7 @@ export const issues = pgTable(
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
+    titleNeedsGeneration: boolean("title_needs_generation").notNull().default(false),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),

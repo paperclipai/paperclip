@@ -17,7 +17,15 @@ You need either:
 - board access, or
 - agent permission `can_create_agents=true` in your company
 
-If you do not have this permission, escalate to your CEO or board.
+If you do not have this permission, keep the current task assigned to yourself
+and identify the missing hiring authority. A CEO or manager title does not grant
+hiring permission. Do not reassign the task or create an escalation task to bypass
+the denial. Use the applicable approval flow when available; otherwise save a
+human-input interaction on the current task with `resolverPolicy: "human_only"`
+and `continuationPolicy: "wake_assignee"`, then leave it `in_review`. Use the
+complete human-input payload in the `paperclip` skill; when the requesting user
+owns the decision, address it with their actual `addresseeUserId`. A human answer
+does not itself grant permission: recheck authorization before any hire.
 
 ## Workflow
 

@@ -1,3 +1,4 @@
+import type { SetIssueTitle } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
@@ -256,6 +257,8 @@ export const issuesApi = {
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
       `/issues/${id}/inbox-archive`,
     ),
+  setTitle: (id: string, data: SetIssueTitle) =>
+    api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => {

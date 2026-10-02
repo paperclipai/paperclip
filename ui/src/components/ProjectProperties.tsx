@@ -108,8 +108,11 @@ function FieldLabel({
   label: string;
   state: ProjectFieldSaveState;
 }) {
+  // The label column is a fixed 80px wide, so the indicator stacks below the
+  // label instead of sitting beside it; otherwise "Description" + "Saving"
+  // overflows into the value column and overlaps the field content.
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-col items-start gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
       <SaveIndicator state={state} />
     </div>

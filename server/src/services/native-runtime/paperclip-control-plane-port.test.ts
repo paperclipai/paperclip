@@ -7,7 +7,9 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   completionContracts,
   createDb,
   heartbeatRunEvents,
@@ -290,7 +292,9 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(completionContracts);
       await db.delete(issues);
       await db.delete(agents);
+      await db.delete(companyMemberships);
       await db.delete(companies);
+      await db.delete(authUsers);
       await temporary.cleanup();
     }
   });
@@ -1041,6 +1045,14 @@ describe("PaperclipControlPlanePort conformance", () => {
     const runId = "32000000-0000-4000-8000-000000000024";
     const runnerInstanceId = "33000000-0000-4000-8000-000000000024";
     const reviewerAgentId = "34000000-0000-4000-8000-000000000024";
+    await db.insert(authUsers).values({
+      id: "reviewer-24", name: "Human reviewer", email: "reviewer-24@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId: identity.companyId, principalType: "user", principalId: "reviewer-24",
+      status: "active", membershipRole: "member",
+    });
     await db.insert(agents).values({
       id: reviewerAgentId, companyId: identity.companyId, name: "Review lead",
       adapterType: "codex_local", status: "idle",

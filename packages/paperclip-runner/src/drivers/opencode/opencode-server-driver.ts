@@ -864,20 +864,46 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#abort.abort();
-    for (const { request } of this.#pendingRuntimeRequests.values()) {
-      this.#emit(
-        request.input === undefined
-          ? "runtime_request.cancelled"
-          : "runtime_request.expired",
-        request.input === undefined
-          ? harnessRuntimeRequestOutcome(request, { reason: "session_closed" })
-          : harnessRuntimeInputExpiredOutcome(request, "provider_process_lost"),
-        { turnId: request.turnId, itemId: request.itemId },
-      );
-    }
-    this.#pendingRuntimeRequests.clear();
+    // Settle whatever is still pending, including a request whose turn
+    // already went terminal without the driver observing it (see
+    // `#settlePendingRuntimeRequestsForTurn`). Bypass the terminal-turn
+    // gate so each settlement event still reaches the consumer instead of
+    // getting dropped as a late frame.
+    for (const requestId of [...this.#pendingRuntimeRequests.keys()])
+      this.#settlePendingRuntimeRequest(requestId);
     this.#events.close();
     await this.#runtime.close();
+  }
+
+  // A request can outlive its own turn: the turn can fail or get cancelled
+  // while the request is still pending, which clears `#activeTurnId`
+  // without settling the request. Settle any such request the moment its
+  // owning turn goes terminal, before emitting the terminal turn event
+  // itself, so the settlement event reaches the consumer within the same
+  // turn it belongs to instead of waiting for a later, separate close.
+  #settlePendingRuntimeRequestsForTurn(turnId: string): void {
+    const requestIds = [...this.#pendingRuntimeRequests]
+      .filter(([, pending]) => pending.request.turnId === turnId)
+      .map(([requestId]) => requestId);
+    for (const requestId of requestIds)
+      this.#settlePendingRuntimeRequest(requestId);
+  }
+
+  #settlePendingRuntimeRequest(requestId: string): void {
+    const pending = this.#pendingRuntimeRequests.get(requestId);
+    if (!pending) return;
+    this.#pendingRuntimeRequests.delete(requestId);
+    const { request } = pending;
+    this.#emit(
+      request.input === undefined
+        ? "runtime_request.cancelled"
+        : "runtime_request.expired",
+      request.input === undefined
+        ? harnessRuntimeRequestOutcome(request, { reason: "session_closed" })
+        : harnessRuntimeInputExpiredOutcome(request, "provider_process_lost"),
+      { turnId: request.turnId, itemId: request.itemId },
+      { bypassTerminalTurnGate: true },
+    );
   }
 
   async dispatchTool(call: {
@@ -1508,6 +1534,10 @@ class OpenCodeHarnessSession implements HarnessSession {
           { ...workspace, complete: true },
           { turnId, itemId: `${turnId}:workspace` },
         );
+      // Settle any request this turn never answered before the terminal
+      // event, so a consumer that stops reading at that terminal event still
+      // observes the settlement.
+      this.#settlePendingRuntimeRequestsForTurn(turnId);
       // Emit while this turn is still `#activeTurnId`; the gate in `#emit`
       // drops any frame whose turnId is not the active turn, so nulling it
       // first would make `#emit` drop this very event.
@@ -1530,6 +1560,10 @@ class OpenCodeHarnessSession implements HarnessSession {
         // card. Preserve the provider fact as a cancelled terminal event; the
         // native session loop independently commits the authoritative yielded
         // result when this abort followed a governed wait.
+        // Settle any request this turn never answered before the terminal
+        // event, so a consumer that stops reading at that terminal event
+        // still observes the settlement.
+        this.#settlePendingRuntimeRequestsForTurn(turnId);
         this.#emit(
           "turn.cancelled",
           {
@@ -1559,6 +1593,10 @@ class OpenCodeHarnessSession implements HarnessSession {
         },
         { turnId, itemId: `${turnId}:session-error` },
       );
+      // Settle any request this turn never answered before the terminal
+      // event, so a consumer that stops reading at that terminal event still
+      // observes the settlement.
+      this.#settlePendingRuntimeRequestsForTurn(turnId);
       this.#emit(
         "turn.failed",
         { status: "failed", error: bounded(properties.error ?? properties) },
@@ -1829,8 +1867,10 @@ class OpenCodeHarnessSession implements HarnessSession {
     eventType: PrpEvent["eventType"],
     payload: Record<string, unknown>,
     refs: { turnId?: string; itemId?: string } = {},
+    options?: { bypassTerminalTurnGate?: boolean },
   ): void {
     if (
+      !options?.bypassTerminalTurnGate &&
       eventType !== "harness.diagnostic" &&
       refs.turnId !== undefined &&
       refs.turnId !== this.#activeTurnId

@@ -10,6 +10,7 @@ import {
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
   getAppDefinitionForUrl,
+  getConnectableAppDefinition,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -71,7 +72,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [googleScope("drive.readonly"), googleScope("documents.readonly")],
+    scopes: [googleScope("documents.readonly")],
     writeTools: [],
   },
   {
@@ -80,11 +81,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("documents"),
-    ],
+    scopes: [googleScope("documents")],
     writeTools: ["update_doc"],
   },
   {
@@ -93,10 +90,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("spreadsheets.readonly"),
-    ],
+    scopes: [googleScope("spreadsheets.readonly")],
     writeTools: [],
   },
   {
@@ -105,11 +99,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("spreadsheets"),
-    ],
+    scopes: [googleScope("spreadsheets")],
     writeTools: [
       "update_spreadsheet",
       "update_values",
@@ -123,10 +113,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("presentations.readonly"),
-    ],
+    scopes: [googleScope("presentations.readonly")],
     writeTools: [],
   },
   {
@@ -135,11 +122,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("presentations"),
-    ],
+    scopes: [googleScope("presentations")],
     writeTools: ["update_presentation"],
   },
   {
@@ -163,7 +146,6 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [
       googleScope("calendar.calendarlist.readonly"),
-      googleScope("calendar.events.freebusy"),
       googleScope("calendar.events"),
     ],
     writeTools: [
@@ -235,6 +217,12 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   writeTools: readonly string[];
 }>;
 describe("AppDefinition catalog", () => {
+  it("namespaces Browser Use's hosted service as browser-use-cloud", () => {
+    expect(CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === "browser-use-cloud"))
+      .toMatchObject({ name: "Browser Use Cloud", methods: [{ key: "cloud-v4", transport: "rest_api" }] });
+    expect(APP_DEFINITIONS.some(app => app.slug === "browser-use")).toBe(false);
+    expect(getAppDefinitionForUrl("https://cloud.browser-use.com/agents")?.slug).toBe("browser-use-cloud");
+  });
   it("offers Anthropic runtime authentication without the unsupported REST tool method", () => {
     const anthropic = APP_DEFINITIONS.find((app) => app.slug === "anthropic")!;
     expect(anthropic.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
@@ -274,7 +262,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(48);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(49);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -297,6 +285,17 @@ describe("AppDefinition catalog", () => {
     for (const entry of BLOCKED_MCP_PROVIDERS)
       expect(connectableSlugs.has(entry.slug)).toBe(false);
   });
+  it("separates GitHub tools from the review bot without changing the provider identity", () => {
+    const github = getConnectableAppDefinition("github")!;
+    const bot = getConnectableAppDefinition("github-code-review-bot")!;
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
+    expect(bot.name).toBe("GitHub Code Review Bot");
+    expect(bot.methods).toHaveLength(1);
+    expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
+    expect(bot.branding).toEqual(github.branding);
+    expect(bot.urlPatterns).toEqual([]);
+  });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
       slack: {
@@ -305,11 +304,11 @@ describe("AppDefinition catalog", () => {
         resources: ["workspace", "channel"],
         tool: true,
       },
-      github: {
+      "github-code-review-bot": {
         credentials: ["appId", "privateKey"],
         publicFields: ["appId"],
         resources: ["organization", "repository"],
-        tool: true,
+        tool: false,
       },
       discord: {
         credentials: ["botToken", "applicationId", "guildId"],
@@ -342,7 +341,7 @@ describe("AppDefinition catalog", () => {
         key: "chat-agent",
         label: "Chat with an agent",
         purpose: "channel",
-        provider: slug,
+        provider: slug === "github-code-review-bot" ? "github" : slug,
         transport: "chat_sdk",
         auth: "api_key",
         ownershipModes: ["customer"],
@@ -387,20 +386,20 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
         (method) => method.purpose === "channel",
       );
-    expect(channel("github")?.guidanceMd).toContain("issue_comment");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("issue_comment");
     expect(channel("discord")?.guidanceMd).toContain("Message Content intent");
     expect(channel("discord")?.guidanceMd).toContain("Discord thread");
-    expect(channel("github")?.guidanceMd).toContain("pull_request");
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("pull_request");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "pull_request_review_comment",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "installation_repositories",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "Generate the webhook secret in Paperclip",
     );
-    expect(channel("github")?.guidanceMd).toContain("SSL-verified");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("SSL-verified");
     expect(channel("microsoft-teams")?.guidanceMd).toContain(
       "resource-specific",
     );
@@ -427,15 +426,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 51 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 52 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(51);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(52);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 51);
+    ).toHaveProperty("size", 52);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -573,7 +572,16 @@ describe("AppDefinition catalog", () => {
         (field) => field.key === "readOnly",
       )?.defaultValue,
     ).toBe(false);
-    expect(method("asana")?.ownershipModes).toEqual(["customer"]);
+    expect(method("asana")).toMatchObject({
+      key: "managed", ownershipModes: ["platform_shared"], connectorProfile: "asana.mcp",
+      defaults: { serverUrl: "https://mcp.asana.com/v2/mcp", scopesHint: ["default"] },
+    });
+    expect(APP_DEFINITIONS.find((app) => app.slug === "asana")?.methods[1]).toMatchObject({
+      key: "mcp-own-oauth", ownershipModes: ["customer"], oauthClientSecretRequired: true,
+      defaults: { discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2" },
+      consoleLinks: { register: "https://app.asana.com/0/my-apps" },
+    });
+    expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",
@@ -605,6 +613,7 @@ describe("AppDefinition catalog", () => {
     expect(notion?.redirectConstraints).toBe("https-or-loopback-http");
     expect(notion?.methods[0]?.defaults).toEqual({
       serverUrl: "https://mcp.notion.com/mcp",
+      scopesHint: ["default"],
     });
   });
   it("preserves required Linear OAuth scopes", () =>
@@ -612,12 +621,12 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("requests only Hugging Face's MCP read scope", () =>
+  it("requests Hugging Face MCP read, contribution and job scopes", () =>
     expect(
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
-    ).toEqual(["read-mcp"]));
-  it("defaults every new connection action to allowed", () => {
+    ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
+  it("defaults every action, reads and writes, to allowed", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods)
         expect(recommendedDefaultsForApp(app, method.key)).toEqual({
@@ -651,7 +660,7 @@ describe("AppDefinition catalog", () => {
           ].includes(candidate.key),
         ),
       )?.key,
-    ).toBe("paperclip-read");
+    ).toBe("customer-draft-oauth");
     expect(
       getRecommendedConnectionMethod(
         gmail.methods.filter(
@@ -719,7 +728,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1017,5 +1026,41 @@ describe("Railway provider", () => {
     expect(app.methods).toHaveLength(1);
     expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
     expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
+  });
+});
+
+
+describe("tool method permission review", () => {
+  const audit = JSON.parse(fs.readFileSync(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8")) as {
+    methods: { app: string; method: string; auth: string; policy: string; requestedScopes: string[]; providerDefaultReason?: string; supportedActions: string; evidence: string[]; reviewedAt: string }[];
+  };
+  const methods = APP_DEFINITIONS.flatMap((app) => app.methods
+    .filter((method) => method.purpose !== "channel" && method.purpose !== "ai")
+    .map((method) => ({ app, method })));
+  it("requires an explicit review for every tool method, including documented scope omissions", () => {
+    expect(new Set(audit.methods.map((review) => `${review.app}/${review.method}`)).size).toBe(audit.methods.length);
+    expect(audit.methods).toHaveLength(methods.length);
+    for (const { app, method } of methods) {
+      const review = audit.methods.find((entry) => entry.app === app.slug && entry.method === method.key);
+      expect(review, `${app.slug}/${method.key}`).toBeDefined();
+      expect(review!.auth).toBe(method.auth);
+      expect(review!.supportedActions.length).toBeGreaterThan(15);
+      expect(review!.evidence.length).toBeGreaterThan(0);
+      if (method.auth === "oauth") {
+        expect(method.defaults?.scopesHint ?? []).toEqual(review!.requestedScopes);
+        if (!review!.requestedScopes.length) {
+          expect(review!.policy).toBe("provider-default");
+          expect(review!.providerDefaultReason!.length).toBeGreaterThan(30);
+        } else expect(review!.policy).toBe("explicit");
+      }
+    }
+  });
+  it("requests Airtable record, schema and comment writes, and Hugging Face repository/job actions", () => {
+    expect(APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods[0]!.defaults!.scopesHint).toEqual([
+      "data.records:read", "data.records:write", "schema.bases:read", "schema.bases:write",
+      "data.recordComments:read", "data.recordComments:write", "workspacesAndBases:read",
+    ]);
+    expect(APP_DEFINITIONS.find((app) => app.slug === "hugging-face")!.methods[0]!.defaults!.scopesHint)
+      .toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]);
   });
 });

@@ -1,3 +1,4 @@
+import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
   createHash,
@@ -33,8 +34,8 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
-export type PaperclipCloudConnectorProvider = "google" | "github";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -754,6 +755,9 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (isAsanaConnectorProfileId(profile)) {
+    return { provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
+  }
   if (isGitHubConnectorProfileId(profile)) {
     return { provider: "github", scopes: GITHUB_CONNECTOR_PROFILES[profile].scopes };
   }
@@ -764,6 +768,9 @@ function isExpectedProviderAuthorizationUrl(
   profile: PaperclipCloudConnectorProfileId,
   url: URL,
 ): boolean {
+  if (isAsanaConnectorProfileId(profile)) {
+    return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
+  }
   if (isGitHubConnectorProfileId(profile)) {
     return url.origin === "https://github.com" && url.pathname === "/login/oauth/authorize";
   }
@@ -771,7 +778,7 @@ function isExpectedProviderAuthorizationUrl(
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value);
+  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

@@ -668,7 +668,7 @@ When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
 2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. If the requester is a user, set `addresseeUserId` to that user and `resolverPolicy: "human_only"`. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. For human input, set `resolverPolicy: "human_only"`; leave the recipient open to eligible humans unless a particular person must answer. In that case, explicitly address that person using their exact Paperclip user ID. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 
@@ -678,8 +678,8 @@ If you are stuck or blocked:
 
 - Record the exact missing capability or authority on the current task.
 - Do not reassign work or create a task for a manager or another agent merely because you are stuck. Reporting lines and titles do not grant access or authority.
-- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save a human-input interaction on the current task and leave it `in_review`; a comment alone is not a waiting path.
-- Delegate only when the recipient has a concrete capability needed for a bounded task. Never delegate to bypass a permission denial.
+- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save an interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"` on the current task and leave it `in_review` with yourself assigned; a comment alone is not a waiting path. Omitting the resolver policy defaults to `anyone`.
+- Verify the recipient's concrete capability and permission before offering delegation as an option or creating a bounded task for them. Never delegate to bypass a permission denial. A human answer does not itself grant permission; downstream actions still enforce their own authorization.
 - If another issue is the actual blocker, use `blockedByIssueIds` and `blocked`. Do not create an extra handoff that cannot resolve the blocker.
 
 ---
@@ -924,6 +924,10 @@ Ask only when missing input materially blocks the request. A direct request or s
 
 Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
 
+Omit `addresseeUserId` for ordinary questions.
+Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user.
+Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
+
 **Text answer (copy this complete payload)**
 
 For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
@@ -999,6 +1003,12 @@ PATCH /api/issues/{issueId}
 
 The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
 
+On resumption, read the saved result and resolver identity. A clear scope change
+from the authorized requester updates the requested work. Carry it out without
+another confirmation solely because it differs from the original task; ask
+again only for a remaining material ambiguity or missing authority. The response
+does not grant permissions for downstream operations.
+
 For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
 
 ```json
@@ -1066,12 +1076,18 @@ Resolver governance:
 
 Rules:
 
-- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- `continuationPolicy: "wake_assignee"` resumes the assignee when a confirmation is accepted or rejected. A saved rejection reason can carry the revised direction; do not duplicate it in a second comment solely to wake the agent again.
+- `wake_assignee_on_accept` resumes only on acceptance. If a card has no reason field, the board/user can add a normal comment with revised direction.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Conversational confirmation answers
+
+To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: `human_only`, independent-review restrictions, named addressees, and governed-action controls still apply. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
+
+Read current cards and comments before interpreting the reply. Resolve the specific proposal before performing the approved work. Ask for clarification when a reply is ambiguous among multiple proposals or checkbox choices; do not approve all of them. Requested revisions are not acceptance. If the write is interrupted, retry the same card/message/decision: matching retries return `deduplicated: true` without another wake. Conflicting, stale, deleted, superseded, wrong-user, and previous-session answers fail. Do not ask the user to clear a card after their decision is saved.
 
 ### Checkbox confirmations
 
@@ -1410,6 +1426,7 @@ Terminal states: `done`, `cancelled`
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
+| POST | `/api/issues/:issueId/interactions/:interactionId/resolve-from-comment` | Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |

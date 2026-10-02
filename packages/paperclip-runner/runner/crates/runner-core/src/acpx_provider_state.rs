@@ -365,7 +365,8 @@ impl AcpxProviderState {
                     .to_owned();
                 self.scope.clear_turn(&turn_id)?;
                 let mut events = self.end_pending_runtime_requests(status);
-                self.clear_pending_requests();
+                // Dispatched semantic effects outlive the provider turn. Their
+                // authority results, not this terminal event, retire them.
                 if status == AcpxTurnStatus::Completed && !self.assistant_text.is_empty() {
                     events.push(AcpxProviderStateEvent::AssistantMessage {
                         turn_id: turn_id.clone(),
@@ -646,12 +647,8 @@ impl AcpxProviderState {
         events
     }
 
-    fn clear_pending_requests(&mut self) {
-        self.pending_tools.clear();
-        self.pending_tool_input_bytes = 0;
-        self.pending_permissions.clear();
-        self.pending_inputs.clear();
-        self.pending_runtime_request_bytes = 0;
+    pub(crate) fn pending_tool_count(&self) -> usize {
+        self.pending_tools.len()
     }
 }
 

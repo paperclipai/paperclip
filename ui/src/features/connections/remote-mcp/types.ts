@@ -15,7 +15,6 @@ export interface RemoteMcpSetupState {
   auth: "auto" | "bearer" | "headers" | "none";
   token: string;
   headers: { id: string; name: string; value: string }[];
-  advanced: boolean;
   connectStatus: ConnectStatus;
   connected: boolean;
   identity: string | null;

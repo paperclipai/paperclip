@@ -34,6 +34,47 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Semantic Settlement Diagnostics and Retry Logs
+
+Before interrupting a Codex turn, the runner durably records a
+`harness.diagnostic` event with code `provider_interrupt_requested`, the stop
+reason, provider turn ID, and pending tool call IDs. A harmless identical result
+replay records `semantic_tool_result_duplicate` with warning severity, call ID,
+operation ID, and result digest. It does not fail the task or create a user
+attention request. A true conflict includes the call and operation IDs and both
+result digests in its error; full arguments belong to the canonical semantic
+input record, not the error message.
+
+Incomplete close emits the bounded `native_session_settlement_incomplete`
+runner diagnostic. Its evidence includes runner suspension, provider drain,
+final provider state, pending call/operation/source-event IDs and input digests,
+and incomplete result-delivery command IDs and statuses. If execution and
+cleanup both fail, execution retains its original error identity and cleanup is
+attached as `cleanupError`.
+
+Instruction writes also commit an `agent.instruction_write_attempted` activity
+row and a run-scoped `instructionToolAttempts` entry before permitting the
+filesystem effect. They retain the call ID, operation ID, and input digest, not
+instruction text. A later transaction rollback cannot erase this attempt proof.
+A missing success or definite pre-write failure receipt means the outcome is
+unknown, even if the current file contains the requested text. Known validation
+and stale-base failures are saved under the attempt's `failure` entry and replay
+their original status, message, and details without a new write. Unknown
+outcomes remain blocked until reconciled; a
+committed receipt with a lost acknowledgement can replay its exact result.
+
+The NDJSON output log appends across repeated `begin` calls for one run. Each
+new handle adds an `attemptId` to its lines. If the local file is absent and a
+durable S3 mirror exists, `begin` restores that prefix before appending. A
+failed restore must not replace the mirror with an empty or partial attempt.
+Publishing a restored prefix uses an atomic create-if-absent operation, so a
+concurrent restore cannot overwrite lines another attempt has already appended.
+Earlier attempts therefore remain available for incident diagnosis. Existing
+records without `attemptId` remain readable.
+
+These records use the instance run log and its configured storage. They add no
+Paperclip Telemetry or OpenTelemetry export.
+
 ## Omitted Unsafe Workspace Export
 
 `workspace_export_omitted` is an informational system event in the local run log.
@@ -200,6 +241,13 @@ section in the Observability contract.
 
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
 
+Ignored unrelated Codex notifications use `harness.diagnostic` with code
+`codex_unrelated_information`. The payload retains only the bounded provider
+method and expected/received thread and turn identifiers. Account updates, skill
+changes, and unrelated thread information do not create a provider notice in
+chat. Chat also omits the matching notice stored by older runners. Real provider
+warnings and errors remain visible.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
 If execution-continuation setup finds that a task no longer exists, is closed,
@@ -277,3 +325,20 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Managed Agent File Save Receipts
+
+The server writes `instruction_save` after managed file collection or a warm
+turn checkpoint. The payload includes the save state, instruction entry path,
+storage warning, and error code/message. Agent-directory receipts identify
+`contract: "agent_files"` and the applied candidate hash. Legacy instruction
+receipts instead identify the saved revision.
+
+A validated warm checkpoint reports `saved` or `unchanged`, even though its
+working directory remains owned by the live session. An unstable checkpoint
+reports `pending_collection` until stopped collection produces a final receipt.
+Successful checkpoints can include `checkpointStats`: `scannedEntries`,
+`hashedBytes`, `copiedFiles`, and `copiedBytes`. These counts describe that
+capture, not cumulative traffic or an atomic snapshot of background writers.
+They contain no file contents. The receipt remains in the instance run log;
+it adds no Paperclip Telemetry or OpenTelemetry export.

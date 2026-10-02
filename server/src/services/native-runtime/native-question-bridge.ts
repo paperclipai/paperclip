@@ -336,7 +336,10 @@ export async function deliverNativeQuestionResponse(
     return "not_native";
   }
   const run = await authorizedNativeRun(db, interaction);
-  if (!run) return "not_native";
+  // A historical question can be answered after its provider turn has ended.
+  // Fall through to durable fresh-wake delivery instead of waiting forever for
+  // a command target that cannot return for this terminal run.
+  if (!run || ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) return "not_native";
   const response = canonicalResponse(interaction.payload.questionSet, interaction.result.answers);
   const target = activeTargets.get(run.id);
   if (
