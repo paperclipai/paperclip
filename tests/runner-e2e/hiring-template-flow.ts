@@ -56,10 +56,10 @@ export async function readHiringTemplateSources(api: Pick<RunnerApi, "get">, com
     executionContractHash: hiringTemplateHash(await readFile(new URL("../../server/src/onboarding-assets/default/AGENTS.md", import.meta.url), "utf8")) };
 }
 
-export function renderHiringCoderExample(reference: string, agentName: string, companyName: string, managerTitle: string) {
+export function renderHiringCoderExample(reference: string, agentName: string, companyName: string, managerTitle: string, issuePrefix: string) {
   const example = reference.match(/```md\s*\n([\s\S]*?)\n```/)?.[1];
   if (!example?.trim()) throw new Error("Production coder reference has no AGENTS.md example");
-  return example.replaceAll("{{agentName}}", agentName).replaceAll("{{companyName}}", companyName).replaceAll("{{managerTitle}}", managerTitle);
+  return example.replaceAll("{{agentName}}", agentName).replaceAll("{{companyName}}", companyName).replaceAll("{{managerTitle}}", managerTitle).replaceAll("{{issuePrefix}}", issuePrefix);
 }
 
 export async function runHiringTemplateFlow(context: {
@@ -71,6 +71,8 @@ export async function runHiringTemplateFlow(context: {
   const company = `/api/companies/${f.company.id}`;
   const account = f.aiConnection;
   if (!account) throw new Error("Hiring-template fixture requires a managed execution account");
+  const issuePrefix = f.company.issuePrefix;
+  if (!issuePrefix) throw new Error("Hiring-template fixture requires the actual company issue prefix");
   const evidence: HiringTemplateEvidence = {
     leadId: f.agent.id, chatIssueId: "", hireName: "", marker: "", projectId: "", inputs: [], expectedCeoFiles: {},
     expectedSourceHashes: {}, servedSourceHashes: {}, assignedSkills: [], coderExample: "",
@@ -102,7 +104,7 @@ export async function runHiringTemplateFlow(context: {
     });
     scenario = hiringTemplateScenario(input.nonce, project.name);
     Object.assign(evidence, { hireName: scenario.hireName, marker: scenario.marker, inputs: scenario.inputs, projectId: project.id,
-      coderExample: renderHiringCoderExample(source.coderReference, scenario.hireName, f.company.name, String((await api.get<{ title: string }>(`/api/agents/${f.agent.id}`)).title)) });
+      coderExample: renderHiringCoderExample(source.coderReference, scenario.hireName, f.company.name, String((await api.get<{ title: string }>(`/api/agents/${f.agent.id}`)).title), issuePrefix) });
     await turn(scenario.initialPrompt, 2);
     evidence.chatIssueId = context.issue().id;
     const initial = await tasks();

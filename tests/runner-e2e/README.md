@@ -1499,7 +1499,8 @@ The fixture creates a CEO through the public API without an instructions bundle
 override, using production permission defaults and a personal managed AI
 connection. Chromium sends the same user request on candidate and baseline:
 use `paperclip-create-agent`, read its skill, drafting guide, review checklist
-and coder example, hire one permanent coder with that example, and delegate a
+and coder example, fill its name/company/manager/issue-prefix placeholders,
+hire one permanent coder with that example, and delegate a
 saved JSON label-normalization fixture. Reading the optional references is an
 explicit fixture user request. It is not an additional production requirement.
 A follow-up delegates a second fixture to the same coder with underscore
@@ -1542,7 +1543,9 @@ pair, not presented as a workflow behavior regression or template equivalence.
 The new marked screenshot shows only the synthetic chat/task state; private
 snapshots follow the existing publication boundary.
 
-Read receipt support deliberately recognizes bounded direct shell reads and
+Read receipt support deliberately recognizes direct `cat`, positive-count
+`head`/`tail`, and printing-only `sed -n` argument forms. Help, version, zero-count,
+editing and unknown arguments do not count. It also recognizes
 canonical file-read events with a preserved relative skill path and completed
 output. ACPX redacts absolute file locations from canonical events; a read whose
 path no longer survives is unprovable and remains uncomparable. Echoing or

@@ -81,13 +81,21 @@ describe("production hiring template oracle", () => {
     fails({ ...e, firstAfterReuse: { ...e.first!, latestRevisionId: "modified" } }, "original-preserved");
   });
 
-  it("compares each revision's bundle and example without imposing candidate length on baseline", () => {
+  it("compares each revision's bundle and example without imposing candidate length on baseline", async () => {
     const historical = validEvidence();
     const oldFiles = { "AGENTS.md": "A long historical CEO role.\n".repeat(40), "HEARTBEAT.md": "Heartbeat", "SOUL.md": "Identity", "TOOLS.md": "Tools" };
     historical.expectedCeoFiles = oldFiles;
     historical.leadInstructions!.files = oldFiles;
     for (const file of Object.keys(oldFiles)) historical.expectedSourceHashes[`server/src/onboarding-assets/ceo/${file}`] = historical.servedSourceHashes[`server/src/onboarding-assets/ceo/${file}`] = hiringTemplateHash(oldFiles[file as keyof typeof oldFiles]);
-    historical.coderExample = "A long historical coder role.\n".repeat(60);
+    // Exact baseline source: skills/paperclip-create-agent/references/agents/coder.md
+    // at d7bdfc422cadcc407f2945e211833a8382b80117. Its SHA-256 below
+    // preserves the actual historical text and all four placeholder kinds.
+    const historicalReference = await readFile(new URL("./fixtures/hiring-templates/coder.d7bdfc4.md", import.meta.url), "utf8");
+    expect(hiringTemplateHash(historicalReference)).toBe("766c6f5db907f3dc2e317d540feb80e77358202c59d759449228a32450fa6202");
+    historical.coderExample = renderHiringCoderExample(historicalReference, "Casey", "Fixture Company", "CEO", "FIX");
+    expect(historical.coderExample).not.toMatch(/\{\{[^}]+\}\}/);
+    expect(historical.coderExample).toContain("You report to CEO.");
+    expect(historical.coderExample.match(/\/FIX\/agents\//g)).toHaveLength(3);
     historical.hiredInstructions!.files["AGENTS.md"] = historical.hiredInstructionsAfterReuse!.files["AGENTS.md"] = historical.coderExample;
     const result = gradeHiringTemplate(historical);
     expect(result).toMatchObject({ outcomePassed: true, comparisonStatus: "comparable" });
@@ -114,11 +122,13 @@ describe("production hiring template oracle", () => {
   it("requires a completed pre-hire lead read rather than an echoed path, failed read or listing", () => {
     const e = validEvidence(), good = e.readRuns[0]!;
     for (const command of ["echo /workspace/.agents/skills/paperclip-create-agent/SKILL.md", "ls /workspace/.agents/skills/paperclip-create-agent/SKILL.md",
-      "cat /workspace/.agents/skills/wrong-skill/SKILL.md", "cat $SKILL/SKILL.md", "cat /workspace/.agents/skills/paperclip-create-agent/SKILL.md > /dev/null"]) {
+      "cat /workspace/.agents/skills/wrong-skill/SKILL.md", "cat $SKILL/SKILL.md", "cat /workspace/.agents/skills/paperclip-create-agent/SKILL.md > /dev/null",
+      ...["cat --help", "cat --version", "head --help", "tail --version", "head -n 0", "tail -c 0", "sed -n ''", "sed -n '1q'", "sed -n 'q'", "sed --help", "sed -n '1,200w /tmp/other'", "cat -n"].map(prefix => `${prefix} /workspace/.agents/skills/paperclip-create-agent/SKILL.md`),
+      'cat "/workspace/.agents/skills/paperclip-create-agent/SKILL.md""suffix"' ]) {
       const events = commandEvents("SKILL.md");
       const payload = events[0]!.payload.prpEvent.payload as Record<string, unknown>;
       payload.name = command;
-      expect(hiringTemplateReadReceipts([{ ...good, events }], "lead")).toHaveLength(0);
+      expect(hiringTemplateReadReceipts([{ ...good, events }], "lead"), command).toHaveLength(0);
     }
     fails({ ...e, readRuns: [{ ...good, agentId: "coder" }] }, "production-source-reads");
     fails({ ...e, readRuns: [{ ...good, events: good.events.slice(1) }] }, "production-source-reads");
@@ -130,6 +140,19 @@ describe("production hiring template oracle", () => {
     const noOutput = commandEvents("SKILL.md");
     (noOutput[0]!.payload.prpEvent.payload as Record<string, unknown>).outputBytes = 0;
     expect(hiringTemplateReadReceipts([{ ...good, events: noOutput }], "lead")).toHaveLength(0);
+  });
+
+  it("accepts only supported direct read arguments and does not trust process read hints", () => {
+    const path = "/workspace/.agents/skills/paperclip-create-agent/SKILL.md";
+    for (const command of [`cat ${path}`, `cat -- '${path}'`, `head -n 200 ${path}`, `head -n200 ${path}`, `tail -c 200 ${path}`,
+      `sed -n '1,200p' ${path}`, `sed -n -e 'p' ${path}`]) {
+      const events = commandEvents("SKILL.md");
+      (events[0]!.payload.prpEvent.payload as Record<string, unknown>).name = command;
+      expect(hiringTemplateReadReceipts([{ runId: "lead-1", agentId: "lead", events }], "lead"), command).toHaveLength(1);
+    }
+    const events = commandEvents("SKILL.md");
+    Object.assign(events[0]!.payload.prpEvent.payload, { name: `cat --help ${path}`, operation: "read", readOnly: true, target: ".agents/skills/paperclip-create-agent/SKILL.md" });
+    expect(hiringTemplateReadReceipts([{ runId: "lead-1", agentId: "lead", events }], "lead")).toHaveLength(0);
   });
 
   it("uses the production ACPX event mapper and leaves redacted absolute read paths uncomparable", () => {
@@ -183,7 +206,7 @@ describe("production hiring fixture wiring and source observations", () => {
     expect(source.servedSourceHashes).toEqual(source.expectedSourceHashes);
     expect(source.assignedSkills).toContain(HIRING_TEMPLATE_SKILL_KEY);
     expect(source.loaderHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(renderHiringCoderExample(source.coderReference, "Casey", "Company", "CEO")).not.toContain("{{");
+    expect(renderHiringCoderExample(source.coderReference, "Casey", "Company", "CEO", "FIX")).not.toContain("{{");
     const wrongApi = { get: async (path: string) => path.includes("/files?") ? { content: "different revision" } : get(path) } as Pick<RunnerApi, "get">;
     const wrongSource = await readHiringTemplateSources(wrongApi, "company", "lead");
     expect(wrongSource.servedSourceHashes).not.toEqual(wrongSource.expectedSourceHashes);
@@ -194,8 +217,8 @@ describe("production hiring fixture wiring and source observations", () => {
       ? { mode: "managed", entryFile: "AGENTS.md", files: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md", "notes/today.md"].map(path => ({ path, binary: false })).concat([{ path: "image.png", binary: true }]) }
       : { content: new URL(path, "http://fixture").searchParams.get("path") } } as Pick<RunnerApi, "get">;
     expect(Object.keys((await readHiringInstructions(api, "lead")).files)).toEqual(["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"]);
-    expect(renderHiringCoderExample("Historical example\n```md\nYou are {{agentName}} at {{companyName}}. Report to {{managerTitle}}.\nLarge manual content.\n```", "Casey", "Company", "CEO"))
+    expect(renderHiringCoderExample("Historical example\n```md\nYou are {{agentName}} at {{companyName}}. Report to {{managerTitle}}.\nLarge manual content.\n```", "Casey", "Company", "CEO", "FIX"))
       .toBe("You are Casey at Company. Report to CEO.\nLarge manual content.");
-    expect(() => renderHiringCoderExample("No example", "Casey", "Company", "CEO")).toThrow();
+    expect(() => renderHiringCoderExample("No example", "Casey", "Company", "CEO", "FIX")).toThrow();
   });
 });

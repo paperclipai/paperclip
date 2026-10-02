@@ -50,13 +50,35 @@ function matchingReadPath(value: unknown, file: string) {
   return typeof value === "string" && value.replace(/\\/g, "/").endsWith(`/paperclip-create-agent/${file}`);
 }
 function commandReads(command: unknown, file: string) {
-  if (typeof command !== "string") return false;
-  // Recognize bounded, direct read commands. Echoed paths, searches, writes,
-  // arbitrary scripts and unresolved shell variables are not read evidence.
-  const tokens = command.match(/"[^"]*"|'[^']*'|[^\s]+/g)?.map(s => s.replace(/^['"]|['"]$/g, "")) ?? [];
-  return tokens.some((token, i) => matchingReadPath(token, file)
-    && (/^(?:cat|head|tail|sed)$/.test(tokens[0] ?? "")) && i > 0
-    && !tokens.some(t => /[|;&><]|\$/.test(t)));
+  if (typeof command !== "string" || /[|;&><`$\\\r\n]/.test(command)) return false;
+  // Admit only direct reads with explicit arguments. Unknown options, scripts,
+  // expansions and help/version output leave source coverage uncomparable.
+  const matches = [...command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s"']+/g)];
+  if (!matches.length || command.slice(0, matches[0]!.index).trim()) return false;
+  for (let i = 1; i < matches.length; i++) {
+    if (!/^\s+$/.test(command.slice(matches[i - 1]!.index! + matches[i - 1]![0].length, matches[i]!.index))) return false;
+  }
+  const last = matches.at(-1)!;
+  if (command.slice(last.index! + last[0].length).trim()) return false;
+  const tokens = matches.map(match => match[0].replace(/^['"]|['"]$/g, ""));
+  const program = tokens.shift();
+  if (program === "head" || program === "tail") {
+    if (tokens[0] === "-n" || tokens[0] === "-c") {
+      tokens.shift();
+      const count = tokens.shift();
+      if (!count || !/^[1-9]\d*$/.test(count)) return false;
+    } else if (/^-[nc][1-9]\d*$/.test(tokens[0] ?? "")) tokens.shift();
+  } else if (program === "sed") {
+    if (tokens.shift() !== "-n") return false;
+    if (tokens[0] === "-e") tokens.shift();
+    const script = tokens.shift() ?? "";
+    // Only printing from the beginning is supported, without editing or shell
+    // execution. Other valid sed programs still require different evidence.
+    if (!/^(?:p|1p|1,[1-9]\d*p)$/.test(script)) return false;
+  } else if (program !== "cat") return false;
+  if (tokens[0] === "--") tokens.shift();
+  return tokens.length > 0 && tokens.every(token => token.length > 0 && !token.startsWith("-") && !/["'*?\[\]]/.test(token))
+    && tokens.some(token => matchingReadPath(token, file));
 }
 
 /** Only completed provider read operations count; prose and discovery listings do not. */
@@ -79,7 +101,7 @@ export function hiringTemplateReadReceipts(readRuns: HiringReadRun[], leadId: st
       const commandRead = item.type === "commandExecution" && item.exitCode === 0 && item.status === "completed"
         && typeof item.aggregatedOutput === "string" && item.aggregatedOutput.length > 0;
       const executionRead = event.eventType === "tool.execution.completed" && p.status === "completed";
-      const canonicalFileRead = executionRead && p.operation === "read" && p.readOnly === true
+      const canonicalFileRead = executionRead && p.transport === "builtin" && p.operation === "read" && p.readOnly === true
         && typeof p.outputBytes === "number" && p.outputBytes > 0;
       for (const file of HIRING_TEMPLATE_READ_FILES) {
         if ((toolRead && [input.file_path, input.path, input.filePath].some(path => matchingReadPath(path, file)))
