@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { expect, request as pwRequest, test, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
+import { closeRegisteredClients, createDb, heartbeatRuns, principalPermissionGrants } from "../../packages/db/src/index.ts";
+import { eq } from "../../server/node_modules/drizzle-orm/index.js";
 import { createLocalAgentJwt } from "../../server/src/agent-auth-jwt";
 
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
@@ -107,10 +111,31 @@ async function createPipelineWriterAgentKey(board: APIRequestContext, companyId:
   await expectOk(approveResponse, "approve pipeline-writer join");
   const approved = await approveResponse.json() as { createdAgentId: string };
 
-  const runId = randomUUID();
-  const token = createLocalAgentJwt(approved.createdAgentId, companyId, "process", runId);
-  if (!token) throw new Error("PAPERCLIP_AGENT_JWT_SECRET is required for pipeline writer JWT setup");
-  return { agentId: approved.createdAgentId, runId, token };
+  // Exercise the persistent, non-run client contract rather than minting a
+  // signed run JWT whose random run_id has no matching ledger row.
+  const keyResponse = await board.post(`/api/agents/${approved.createdAgentId}/keys`, {
+    data: { name: "Pipeline non-run fixture" },
+  });
+  await expectOk(keyResponse, "create persistent pipeline writer key");
+  const key = await keyResponse.json() as { token: string };
+
+  // Persistent-key permissions intersect the agent and responsible human.
+  // Seed only this throwaway company's local-board grant; the membership API
+  // intentionally refuses self-editing even for the implicit local board.
+  const config = JSON.parse(await readFile(process.env.PAPERCLIP_E2E_SERVER_CONFIG!, "utf8"));
+  const pid = await readFile(path.join(config.database.embeddedPostgresDataDir, "postmaster.pid"), "utf8");
+  const url = `postgres://paperclip:paperclip@127.0.0.1:${pid.split("\n")[3]}/paperclip`;
+  const db = createDb(url);
+  try {
+    await db.insert(principalPermissionGrants).values({
+      companyId, principalType: "user", principalId: "local-board",
+      permissionKey: "pipelines:write", scope: null,
+    }).onConflictDoNothing();
+  } finally {
+    await closeRegisteredClients(url);
+  }
+  // This unverified header is audit metadata, not a signed execution identity.
+  return { agentId: approved.createdAgentId, runId: randomUUID(), token: key.token };
 }
 
 async function createPipeline(board: APIRequestContext, companyId: string) {
@@ -277,6 +302,76 @@ function reviewQueueRow(page: Page, title: string): Locator {
 
 test.describe("Pipelines tutorial UI flow", () => {
   test.setTimeout(240_000);
+
+  test("enforces read-only ledger identity before pipeline writes with real database isolation", async () => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const company = await createCompany(board);
+    const otherCompany = await createCompany(board);
+    const pipeline = await createPrimitivePipeline(board, company.id);
+    const key = await createPipelineWriterAgentKey(board, company.id);
+    const otherAgent = await createCompanyAgent(board, company.id, { name: "Other reader", role: "engineer" });
+    const issueResponse = await board.post(`/api/companies/${company.id}/issues`, {
+      data: { title: "Read-only ledger fixture", status: "backlog", workMode: "read_only" },
+    });
+    await expectOk(issueResponse, "create read-only source");
+    const issue = await issueResponse.json() as { id: string };
+    const foreignResponse = await board.post(`/api/companies/${otherCompany.id}/issues`, {
+      data: { title: "Foreign read-only source", status: "backlog", workMode: "read_only" },
+    });
+    await expectOk(foreignResponse, "create foreign source");
+    const foreignIssue = await foreignResponse.json() as { id: string };
+    const config = JSON.parse(await readFile(process.env.PAPERCLIP_E2E_SERVER_CONFIG!, "utf8"));
+    const pid = await readFile(path.join(config.database.embeddedPostgresDataDir, "postmaster.pid"), "utf8");
+    const url = `postgres://paperclip:paperclip@127.0.0.1:${pid.split("\n")[3]}/paperclip`;
+    const db = createDb(url);
+    const agentApi = await pwRequest.newContext({
+      baseURL: BASE_URL, extraHTTPHeaders: {
+        Authorization: `Bearer ${key.token}`, "X-Paperclip-Run-Id": key.runId,
+      },
+    });
+    const runId = randomUUID();
+    try {
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id,
+        agentId: otherAgent.id, status: "running", startedAt: new Date(),
+        contextSnapshot: { issueId: issue.id },
+      });
+      // A different agent's active read-only run must not block this key.
+      await createItem(agentApi, pipeline.id, { title: "Other agent is isolated" });
+      await db.update(heartbeatRuns).set({ agentId: key.agentId }).where(eq(heartbeatRuns.id, runId));
+      const before = await listItems(board, pipeline.id);
+      const signedToken = createLocalAgentJwt(key.agentId, company.id, "process", runId);
+      if (!signedToken) throw new Error("Test run signing is unavailable");
+      const attempts = [
+        { Authorization: `Bearer ${key.token}` },
+        { Authorization: `Bearer ${key.token}`, "X-Paperclip-Run-Id": randomUUID() },
+        { Authorization: `Bearer ${signedToken}`, "X-Paperclip-Run-Id": runId },
+      ];
+      for (const headers of attempts) {
+        const denied = await board.post(`/api/pipelines/${pipeline.id}/cases`, {
+          headers, data: { title: "Must never be saved", fields: {} },
+        });
+        expect(denied.status()).toBe(403);
+        expect((await denied.json()).details.code).toBe("issue_write_read_only_run");
+      }
+      expect(await listItems(board, pipeline.id)).toEqual(before);
+      await expectOk(await agentApi.get(`/api/pipelines/${pipeline.id}/cases`), "read-only GET");
+      // Even an inconsistent cross-company snapshot cannot leak work mode.
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: foreignIssue.id } })
+        .where(eq(heartbeatRuns.id, runId));
+      await createItem(agentApi, pipeline.id, { title: "Foreign company is isolated" });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(),
+        contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, runId));
+      await createItem(agentApi, pipeline.id, { title: "Finished reader no longer blocks" });
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+      await closeRegisteredClients(url);
+      await agentApi.dispose();
+      await board.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+      await board.patch(`/api/companies/${otherCompany.id}`, { data: { status: "archived" } });
+      await board.dispose();
+    }
+  });
 
   test("covers agent fan-out, drift acknowledgement gates, child-terminal gates, and stale approvals", async () => {
     const board = await pwRequest.newContext({ baseURL: BASE_URL });
