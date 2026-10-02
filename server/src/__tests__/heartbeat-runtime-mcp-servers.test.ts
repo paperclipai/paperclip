@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -346,6 +346,49 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       .rejects.toMatchObject({ reasonCode: "gateway_token_run_context_invalid" });
   });
 
+  it("rejects a legacy native gateway with cleared metadata and omits it from managed discovery", async () => {
+    const [owner, other] = await seedAssignedAgents(2);
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
+    const [gateway] = await db.select().from(toolMcpGateways);
+    await db.update(toolMcpGateways).set({ agentId: null, contextScopeType: "none", contextScopeId: null, metadata: {} })
+      .where(eq(toolMcpGateways.id, gateway!.id));
+    const service = createToolGatewayService(db);
+    const token = await service.createNamedGatewayToken({
+      companyId: owner!.agent.companyId, gatewayId: gateway!.id,
+      body: { name: "Other run", subjectType: "heartbeat_run", subjectId: other!.run.id,
+        allowedActions: ["tools/list"], expiresAt: new Date(Date.now() + 60_000) },
+      actor: { agentId: other!.agent.id },
+    });
+    for (const bearerToken of [token.token, server!.token]) {
+      await expect(service.initializeNamedGatewayProtocol({ gatewayId: gateway!.id, bearerToken }))
+        .rejects.toMatchObject({ reasonCode: "gateway_token_run_context_invalid" });
+    }
+    for (const { agent, run } of [owner!, other!]) {
+      await expect(createManagedMcpRunConfig({ db, agent, runId: run.id, config: {}, projectId: null, issueId: null }))
+        .resolves.toBeNull();
+    }
+    // The immutable profile key still identifies the assignment if its metadata
+    // is also damaged. Neither authentication nor managed delivery can widen it.
+    await db.update(toolProfiles).set({ metadata: {} }).where(eq(toolProfiles.id, gateway!.profileId));
+    await expect(service.initializeNamedGatewayProtocol({ gatewayId: gateway!.id, bearerToken: token.token }))
+      .rejects.toMatchObject({ reasonCode: "gateway_token_run_context_invalid" });
+    await expect(createManagedMcpRunConfig({ db, agent: other!.agent, runId: other!.run.id,
+      config: {}, projectId: null, issueId: null })).resolves.toBeNull();
+  });
+
+  it("rejects JSON null profile metadata with an HTTP authentication response", async () => {
+    const [owner] = await seedAssignedAgents(1);
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
+    const [gateway] = await db.select().from(toolMcpGateways);
+    await db.update(toolProfiles).set({ metadata: sql`'null'::jsonb` }).where(eq(toolProfiles.id, gateway!.profileId));
+    const service = createToolGatewayService(db);
+    await expect(service.initializeNamedGatewayProtocol({ gatewayId: gateway!.id, bearerToken: server!.token }))
+      .rejects.toMatchObject({ reasonCode: "gateway_token_run_context_invalid" });
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(service));
+    await request(app).post(`/mcp/gateways/${gateway!.gatewayPublicId}`)
+      .set("Authorization", `Bearer ${server!.token}`).send({ jsonrpc: "2.0", id: 1, method: "initialize" }).expect(401);
+  });
+
   it("delivers native assignments once and preserves explicit shared gateways", async () => {
     const [owner, other] = await seedAssignedAgents(2);
     const native = await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
@@ -358,15 +401,33 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       await expect(createManagedMcpRunConfig({ db, agent, runId: owner!.run.id, config: {}, projectId: null, issueId: null }))
         .resolves.toBeNull();
     }
-    const shared = await createToolGatewayService(db).createNamedGateway({
+    const [sharedProfile] = await db.insert(toolProfiles).values({
+      companyId: owner!.agent.companyId, profileKey: `shared:${randomUUID()}`,
+      name: "Explicit shared profile", defaultAction: "deny",
+    }).returning();
+    const [nativeEntry] = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, gateway!.profileId));
+    await db.insert(toolProfileEntries).values({
+      companyId: owner!.agent.companyId, profileId: sharedProfile!.id, selectorType: "connection", effect: "include",
+      applicationId: nativeEntry!.applicationId, connectionId: nativeEntry!.connectionId,
+    });
+    const service = createToolGatewayService(db);
+    const shared = await service.createNamedGateway({
       companyId: owner!.agent.companyId,
-      body: { name: "Explicit company gateway", slug: `shared-${randomUUID()}`, profileId: gateway!.profileId!,
+      body: { name: "Explicit company gateway", slug: `shared-${randomUUID()}`, profileId: sharedProfile!.id,
         defaultProfileMode: "gateway_only" },
       actor: { agentId: owner!.agent.id },
     });
     const managed = await createManagedMcpRunConfig({ db, agent: other!.agent, runId: other!.run.id,
       config: {}, projectId: null, issueId: null });
     expect(managed?.gateways.map((entry) => entry.id)).toEqual([shared.id]);
+    const token = await service.createNamedGatewayToken({
+      companyId: owner!.agent.companyId, gatewayId: shared.id,
+      body: { name: "Shared run", subjectType: "heartbeat_run", subjectId: other!.run.id,
+        allowedActions: ["tools/list"], expiresAt: new Date(Date.now() + 60_000) },
+      actor: { agentId: other!.agent.id },
+    });
+    await expect(service.initializeNamedGatewayProtocol({ gatewayId: shared.id, bearerToken: token.token }))
+      .resolves.toMatchObject({ agentId: other!.agent.id });
   });
 
   it("does not repair a gateway with conflicting ownership metadata", async () => {

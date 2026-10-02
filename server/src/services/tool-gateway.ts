@@ -6993,7 +6993,20 @@ export function createToolGatewayService(
       });
     }
     const nativeMetadata = row.gateway.metadata;
-    const nativeAssignment = Object.hasOwn(nativeMetadata ?? {}, "nativeRuntimeAssignmentDigest");
+    const [profile] = await db.select({
+      profileKey: toolProfiles.profileKey,
+      status: toolProfiles.status,
+      source: sql<string | null>`${toolProfiles.metadata}->>'source'`,
+      agentId: sql<string | null>`${toolProfiles.metadata}->>'agentId'`,
+      assignmentDigest: sql<string | null>`${toolProfiles.metadata}->>'assignmentDigest'`,
+    }).from(toolProfiles).where(and(
+      eq(toolProfiles.id, row.gateway.profileId),
+      eq(toolProfiles.companyId, row.gateway.companyId),
+    )).limit(1);
+    // The immutable native profile also identifies legacy assignments when an
+    // update has cleared the gateway metadata. Missing metadata must fail closed.
+    const nativeAssignment = Object.hasOwn(nativeMetadata ?? {}, "nativeRuntimeAssignmentDigest") ||
+      profile?.profileKey.startsWith("native:") || profile?.source === "paperclip_runner";
     const nativeOwner = nativeMetadata?.agentId;
     if (nativeAssignment && (
       typeof nativeOwner !== "string" || !uuidPattern.test(nativeOwner) ||
@@ -7008,11 +7021,9 @@ export function createToolGatewayService(
       });
     }
     if (nativeAssignment) {
-      const [profile] = await db.select({ metadata: toolProfiles.metadata, status: toolProfiles.status })
-        .from(toolProfiles).where(and(eq(toolProfiles.id, row.gateway.profileId), eq(toolProfiles.companyId, row.gateway.companyId))).limit(1);
-      if (profile?.status !== "active" || profile.metadata.source !== "paperclip_runner" ||
-          profile.metadata.agentId !== nativeOwner ||
-          profile.metadata.assignmentDigest !== nativeMetadata!.nativeRuntimeAssignmentDigest) {
+      if (profile?.status !== "active" || profile.source !== "paperclip_runner" ||
+          profile.agentId !== nativeOwner ||
+          profile.assignmentDigest !== nativeMetadata!.nativeRuntimeAssignmentDigest) {
         return recordNamedGatewayAuthFailure({
           gatewayId: input.gatewayId, gatewayPublicId: input.gatewayPublicId,
           bearerToken, reasonCode: "gateway_token_run_context_invalid", clientMetadata,

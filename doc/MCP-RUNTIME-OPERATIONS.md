@@ -21,6 +21,11 @@ that the run belongs to that owner and that the gateway and profile metadata
 refer to the same assignment. Invalid ownership or assignment metadata rejects
 the token with `gateway_token_run_context_invalid`.
 
+The reserved `native:` profile key also identifies a native assignment if its
+gateway metadata is cleared. Clearing metadata cannot turn the assignment into
+a shared gateway. Invalid JSON metadata, including JSON `null`, returns the same
+authentication rejection. Use an ordinary profile for an explicit shared gateway.
+
 Older native gateways can have a null `agentId`. Authentication still checks
 their metadata owner. When the owner reuses the assignment, Paperclip validates
 the gateway and profile before it binds the gateway to that agent. A conflicting
