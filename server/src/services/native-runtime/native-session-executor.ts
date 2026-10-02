@@ -7562,7 +7562,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    ["pi", "cursor", "copilot"].includes(input.execution.provider.agent) &&
+    ["cursor", "copilot"].includes(input.execution.provider.agent) &&
     !resolveAcpxQualification(input.execution.provider, process.env)
   ) {
     throw new Error(
@@ -9579,7 +9579,7 @@ type RemoteProviderPackManifest = {
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
     candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
-      version: string; profileDigest: string; closureDigest: string; qualification: "pending";
+      version: string; profileDigest: string; closureDigest: string; qualification: "pending" | "qualified";
       path: string; sha256: string;
     }>>;
     artifacts: {
@@ -9755,7 +9755,10 @@ export function readRemoteProviderPackManifest(
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
       if (!["cursor", "copilot", "pi"].includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== "pending" || candidate.path !== expectedPath
+        // Inventory metadata never grants admission; local profile declarations do.
+        // Preserve shared packs built before Pi promotion for other qualified providers.
+        || (candidate.qualification !== "pending" && !(provider === "pi" && candidate.qualification === "qualified"))
+        || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
@@ -12633,7 +12636,9 @@ async function createRunnerdBackendWithinSessionClaim(
           ? {
               acpxAgent: input.execution.provider.agent,
               // Read only the server operator environment, never agent/runtime env.
-              acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
+              acpxCandidateProfile: input.execution.provider.agent === "pi"
+                ? undefined
+                : resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxCursorMode: input.execution.provider.cursorMode,
               acpxPermissionModePinned:

@@ -25,6 +25,7 @@ export const QUALIFIED_ACPX_RUNNER_MODELS = {
   grok: "grok-4.7",
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
+  pi: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
@@ -462,14 +463,14 @@ export function resolvePaperclipRunnerProviderProfile(
     }
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting local and Daytona qualification. Its profile is not enabled for production runs.`);
   }
-  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "pi") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires a qualified agent profile.",
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (acpxAgent === "codex" && model !== qualifiedModel) {
+  if ((acpxAgent === "codex" || acpxAgent === "pi") && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,

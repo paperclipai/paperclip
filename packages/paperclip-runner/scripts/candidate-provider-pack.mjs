@@ -2,6 +2,17 @@ import { materializePiDistribution } from "./materialize-pi-distribution.mjs";
 import { materializePinnedCursorDistribution } from "./materialize-cursor-distribution.mjs";
 const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
 
+/** Pi ships by default; the diagnostic option remains compatible with old callers. */
+export function providerPackSelections(candidates) {
+  if (candidates.some(provider => !CANDIDATES.has(provider)) || new Set(candidates).size !== candidates.length) {
+    throw new Error("Unknown or duplicate candidate provider");
+  }
+  return [
+    { provider: "pi", qualification: "qualified" },
+    ...candidates.filter(provider => provider !== "pi").map(provider => ({ provider, qualification: "pending" })),
+  ];
+}
+
 export function parseProviderPackArguments(args) {
   let output;
   const candidates = [];

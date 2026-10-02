@@ -109,6 +109,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   if (provider === "acpx" && ["cursor", "copilot", "pi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
     throw new Error(`${acpxAgent} requires an explicit provider model`);
   }
+  if (provider === "acpx" && acpxAgent === "pi"
+    && (configuredModel || schemaModel) !== "openrouter/deepseek/deepseek-v4-flash-0731") {
+    throw new Error("Pi requires exact model openrouter/deepseek/deepseek-v4-flash-0731");
+  }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"
     ? schemaValues.managedProfileId.trim()
     : "";

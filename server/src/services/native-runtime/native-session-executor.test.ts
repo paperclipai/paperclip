@@ -1163,21 +1163,31 @@ describe("remote provider pack manifest", () => {
     const candidatePath = "provider-assets/pi/linux-x64";
     await mkdir(join(root, candidatePath), { recursive: true });
     await writeFile(join(root, candidatePath, "runtime"), "pinned runtime");
-    const candidates = { pi: { version: "0.0.33", profileDigest: digest("profile"),
-      closureDigest: digest("closure"), qualification: "pending", path: candidatePath,
+    const candidates = { pi: { version: "1.0.0", profileDigest: digest("profile"),
+      closureDigest: digest("closure"), qualification: "qualified", path: candidatePath,
       sha256: sha256DirectoryTree(join(root, candidatePath)) } };
     Object.assign(payload, { candidateProviders: candidates });
     await writeManifest();
-    expect(readRemoteProviderPackManifest(root).payload.candidateProviders?.pi?.qualification).toBe("pending");
+    expect(readRemoteProviderPackManifest(root).payload.candidateProviders?.pi?.qualification).toBe("qualified");
     await writeFile(join(root, candidatePath, "runtime"), "substitute runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("candidate asset tree digest mismatch");
     await writeFile(join(root, candidatePath, "runtime"), "pinned runtime");
-    for (const invalid of [{ path: "../outside" }, { qualification: "qualified" }]) {
+    candidates.pi.qualification = "pending";
+    await writeManifest();
+    expect(readRemoteProviderPackManifest(root).payload.candidateProviders?.pi?.qualification).toBe("pending");
+    candidates.pi.qualification = "qualified";
+    for (const invalid of [{ path: "../outside" }, { qualification: "unknown" }]) {
       const original = { ...candidates.pi };
       Object.assign(candidates.pi, invalid);
       await writeManifest();
       expect(() => readRemoteProviderPackManifest(root)).toThrow("invalid candidate identity");
       candidates.pi = original;
+    }
+    for (const provider of ["cursor", "copilot"]) {
+      Object.assign(candidates, { [provider]: { ...candidates.pi, path: `provider-assets/${provider}/linux-x64` } });
+      await writeManifest();
+      expect(() => readRemoteProviderPackManifest(root)).toThrow("invalid candidate identity");
+      delete (candidates as Record<string, unknown>)[provider];
     }
     await writeManifest();
     for (const [artifactName, substituteName] of [
@@ -8769,6 +8779,11 @@ describe("native process ownership", () => {
       },
       "acpx_runtime",
     ],
+    [
+      "Pi ACPX without candidate authorization",
+      { kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "approve-reads" },
+      "acpx_runtime",
+    ],
   ])(
     "admits the qualified %s provider",
     async (_name, provider, driverKind) => {
@@ -8807,7 +8822,7 @@ describe("native process ownership", () => {
     },
   );
 
-  it.each(["pi", "cursor", "copilot"])("rejects ACPX candidate %s without host authorization before constructing a backend", async (agent) => {
+  it.each(["cursor", "copilot"])("rejects ACPX candidate %s without host authorization before constructing a backend", async (agent) => {
     const piExecution = {
       ...execution,
       binding: { ...execution.binding, runId: "run-acpx-pi-rejected" },

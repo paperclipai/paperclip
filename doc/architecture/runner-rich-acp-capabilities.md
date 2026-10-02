@@ -741,7 +741,7 @@ configuration defaults to full auto; it never overrides read-only task policy.
 ## Distribution and isolation
 
 Cursor pins `2026.09.26-dd393fe`; Copilot pins `1.0.88`; Pi pins wrapper `0.0.33`,
-runtime `1.0.0` (Pi profile v11), portable Node and its full npm lock. Native distribution hashes
+runtime `1.0.0` (Pi profile v12), portable Node and its full npm lock. Native distribution hashes
 cover macOS ARM64, macOS x64 and Linux x64. Source-owned closure pins remain
 separate from profile declaration digests. Native admission reads held files,
 verifies every admitted byte, creates a private immutable snapshot and retains

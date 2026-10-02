@@ -10,7 +10,41 @@ writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "fixture-sessio
 let assistantActive = false;
 let messageTimestamp = 0;
 const nativeMessage = (stopReason = "stop", usage = {}) => ({ role: "assistant", timestamp: messageTimestamp, content: [], stopReason, usage });
-const output = (value) => process.stdout.write(JSON.stringify(value.type === "message_update" && !value.message ? { ...value, message: nativeMessage() } : value) + "\n");
+// Protocol fixture emits Pi 1's serialized delta form. Actual SDK serialization
+// and the owned extension are exercised separately by the local-only package test.
+const streamBlocks = new Map();
+const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
+const output = value => {
+  if (value.type === "message_start" && value.message?.role === "assistant") streamBlocks.clear();
+  if (value.type === "message_update") {
+    const original = value.assistantMessageEvent;
+    const kind = original.type.split("_")[0];
+    const index = original.contentIndex ?? (kind === "thinking" ? 1 : 0);
+    if (original.type === "toolcall_start") {
+      const call = original.toolCall ?? original.partial?.content?.[index];
+      streamBlocks.set(index, { kind, call });
+      emit({ type: "message_update", usage: {}, assistantMessageEvent: { type: "toolcall_start", contentIndex: index, id: call.id, toolName: call.name } });
+      return;
+    }
+    if (!streamBlocks.has(index)) {
+      streamBlocks.set(index, { kind, text: "" });
+      emit({ type: "message_update", usage: {}, assistantMessageEvent: { type: `${kind}_start`, contentIndex: index } });
+    }
+    if (typeof original.delta === "string") streamBlocks.get(index).text += original.delta;
+    const { partial: _partial, ...delta } = original;
+    emit({ type: "message_update", usage: {}, assistantMessageEvent: { ...delta, contentIndex: index } }); return;
+  }
+  if (value.type === "message_end" && value.message?.role === "assistant") {
+    const content = [];
+    for (const [index, block] of streamBlocks) {
+      content[index] = block.call ?? { type: block.kind, [block.kind === "text" ? "text" : "thinking"]: block.text };
+      emit({ type: "message_update", usage: {}, assistantMessageEvent: { type: `${block.kind}_end`, contentIndex: index, ...(block.call ? { toolCall: block.call } : { content: block.text }) } });
+    }
+    value = { ...value, message: { ...value.message, content } };
+    streamBlocks.clear();
+  }
+  emit(value);
+};
 const endMessage = (stopReason = "stop", usage = { input: 11, output: 3, cacheRead: 2, cacheWrite: 0, cost: { total: 0.01 } }) => {
   output({ type: "message_end", message: nativeMessage(stopReason, usage) }); assistantActive = false;
 };

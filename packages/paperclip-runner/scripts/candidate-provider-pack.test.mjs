@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseProviderPackArguments, materializeCandidateProviderPack } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackSelections } from "./candidate-provider-pack.mjs";
 
-test("candidate builds are explicit and leave qualified-only builds unchanged", () => {
+test("candidate options stay explicit and Pi is the only default qualified native asset", () => {
   assert.deepEqual(parseProviderPackArguments(["--", "/pack"]), { output: "/pack", candidates: [] });
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=pi,cursor"]), { output: "/pack", candidates: ["pi", "cursor"] });
+  assert.deepEqual(providerPackSelections([]), [{ provider: "pi", qualification: "qualified" }]);
+  assert.deepEqual(providerPackSelections(["pi", "cursor", "copilot"]), [
+    { provider: "pi", qualification: "qualified" },
+    { provider: "cursor", qualification: "pending" },
+    { provider: "copilot", qualification: "pending" },
+  ]);
+  assert.throws(() => providerPackSelections(["other"]), /Unknown/);
+  assert.throws(() => providerPackSelections(["pi", "pi"]), /duplicate/);
 });
 test("candidate builder cannot admit unknown providers, options or duplicate assets", async () => {
   for (const args of [["--candidate-providers=cursor,cursor"], ["--candidate-providers=other"], ["--executable=/tmp/x"], ["/one", "/two"]]) {

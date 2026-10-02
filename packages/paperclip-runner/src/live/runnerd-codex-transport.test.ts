@@ -2016,6 +2016,21 @@ it.each(["opencode", "acpx"] as const)(
   },
 );
 
+it("admits Pi runnerd transport without candidate opt-in and keeps siblings gated", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-pi-production-admission-"));
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", stateDirectory: root });
+  try {
+    await expect(transport.request("collaborationMode/list", {})).resolves.toMatchObject({ data: [{ mode: "plan" }] });
+    for (const acpxAgent of ["cursor", "copilot"] as const) {
+      expect(() => createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent, stateDirectory: root }))
+        .toThrow("explicit evaluation opt-in");
+    }
+  } finally {
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("allows trusted package-manager runtime roots without exposing HOME paths", () => {
   expect(
     trustedRuntimeReadOnlyRoots({

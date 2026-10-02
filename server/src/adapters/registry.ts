@@ -404,7 +404,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
-      if (["cursor", "copilot", "pi"].includes(profile.acpxAgent)) {
+      if (["cursor", "copilot"].includes(profile.acpxAgent)) {
         // The profile resolver already validated the isolated host's exact
         // qualification pair. Do not report a production readiness pass.
         return {
@@ -414,7 +414,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         };
       }
       try {
-        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "pi") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
@@ -432,8 +432,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
           };
         }
-        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } = await import("@paperclipai/paperclip-runner/live");
-        await (profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : probeAcpxClaudeInstallation)(profile.model);
+        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxPiInstallation } = await import("@paperclipai/paperclip-runner/live");
+        await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation
+          : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : probeAcpxClaudeInstallation)(profile.model);
         return {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
@@ -519,7 +520,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.156.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi requires the exact openrouter/deepseek/deepseek-v4-flash-0731 model and a bound OPENROUTER_API_KEY. Cursor and GitHub Copilot are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {

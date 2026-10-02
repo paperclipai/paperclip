@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
-import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, createRemoteTargetWatch, isRemoteRunRoot, parseRemoteProcStat, remoteNativeFixtureDiagnostics, type RemoteNativeFixtureOptions, type RemoteNativeSnapshot } from "./remote-native-fixtures.js";
+import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, validatePiProviderDeathReceipt, createRemoteTargetWatch, isRemoteRunRoot, parseRemoteProcStat, remoteNativeFixtureDiagnostics, type RemoteNativeFixtureOptions, type RemoteNativeSnapshot } from "./remote-native-fixtures.js";
 
+import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
 import { createRemoteNativeBootstrap } from "./remote-native-bootstrap.js";
 
 const hash = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
@@ -418,8 +419,9 @@ describe("actual generated observer state machine", () => {
       close: vi.fn(() => listeners.clear()),
     };
     const net = { createServer(fn: (socket: any) => void) { handlers.push(fn); return server; } };
+    const faultSpawn = vi.fn(() => ({ status: 0, stdout: JSON.stringify(piFaultReceipt()) }));
     const context = {
-      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
+      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
       process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn() },
       Buffer, __filename: `${config.root}/observer.cjs`,
       setInterval(fn: () => void) { intervals.push(fn); return 1; }, clearInterval: vi.fn(),
@@ -431,8 +433,28 @@ describe("actual generated observer state machine", () => {
       const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
       handlers[0]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ op, nonce: config.nonce, ...args }) + "\n")); return replies;
     }
-    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, symbolicLinks, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
+    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
   }
+  it("executes the actual observer fault phase once with a closed environment and exact identity", async () => {
+    for (const published of [false, true]) {
+      const rejected = await observerHarness();
+      if (published) rejected.request("publish", { path: "action.txt", text: "ask native input" });
+      expect(rejected.request("pi-provider-death", { runtimeEnvironmentLeaseId: published ? "foreign" : "workspace-id" })[0].ok).toBe(false);
+      expect(rejected.faultSpawn).not.toHaveBeenCalled();
+    }
+    const o = await observerHarness();
+    expect(o.request("snapshot")[0].ok).toBe(true);
+    expect(o.request("publish", { path: "action.txt", text: "ask native input" })[0].ok).toBe(true);
+    expect(o.request("pi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id" })[0]).toEqual({ ok: true, result: piFaultReceipt() });
+    expect(o.faultSpawn).toHaveBeenCalledTimes(1);
+    const [program, args, options] = o.faultSpawn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    expect(program).toBe("/usr/bin/python3"); expect(args.slice(0, 2)).toEqual(["-I", "-c"]);
+    expect(args[2]).toContain("signal.pidfd_send_signal");
+    expect(JSON.parse(Buffer.from(args[3]!, "base64").toString())).toEqual({ root, binding, runtimeEnvironmentLeaseId: "workspace-id", runnerdSha256: hash("runnerd"), closureSha256: PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"] });
+    expect(options).toMatchObject({ env: { PATH: "/usr/bin:/bin" }, timeout: 8000, maxBuffer: 32768 });
+    expect(o.request("pi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id" })[0].ok).toBe(false);
+    expect(o.faultSpawn).toHaveBeenCalledTimes(1);
+  });
   async function generatedRpc(o: Awaited<ReturnType<typeof observerHarness>>, request: Record<string, unknown>, mutateSource = (source: string) => source) {
     const quoted = o.install.command.match(/ -e (.+) '[A-Za-z0-9+/=]+'$/su)![1]!;
     const source = quoted.slice(1, -1).replaceAll("'\\''", "'");
@@ -690,5 +712,43 @@ describe("actual generated observer state machine", () => {
     o.proc.set(22, { ...p, group: 22, ticks: "200" }); expect(o.request("snapshot")[0].result.complete).toBe(false);
     const other = await observerHarness(); other.proc.get(21)!.argv[4] = "bad value with spaces";
     expect(other.request("snapshot")[0].ok).toBe(false);
+  });
+});
+
+function piFaultReceipt() {
+  const parent = { pid: 22, ppid: 21, startTicks: "101", bootId }, target = { pid: 23, ppid: 22, startTicks: "102", bootId };
+  return { schema: "paperclip.e2e.pi-provider-death.v1", binding, runtimeEnvironmentLeaseId: "workspace-id", target, ancestry: [target, parent, root],
+    nodeSha256: hash("node"), entrypointSha256: hash("entry"), closureSha256: PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"],
+    entrypointAttribution: "pinned_wrapper_parent", originalChildArgvAvailable: false, observedChildTitle: "pi", signalled: true, signal: "SIGKILL", targetKind: "pi_native_child", workerSignalled: false };
+}
+describe("exact Pi-child fault capability", () => {
+  it("validates ancestry and honest parent-attested entrypoint identity", () => {
+    const receipt = piFaultReceipt();
+    expect(validatePiProviderDeathReceipt(receipt, binding, root, "workspace-id")).toEqual(receipt);
+    for (const patch of [{ workerSignalled: true }, { target: root }, { originalChildArgvAvailable: true }, { entrypointAttribution: "process_title" },
+      { binding: { ...binding, runId: "foreign" } }, { runtimeEnvironmentLeaseId: "foreign" }, { closureSha256: "0".repeat(64) },
+      { ancestry: [receipt.target, { ...receipt.ancestry[1], startTicks: "" }, root] }, { ancestry: [receipt.target, root] },
+      { ancestry: [receipt.target, { ...receipt.ancestry[1], ppid: 999 }, root] }, { ancestry: [receipt.target, receipt.ancestry[1], { ...root, startTicks: "999" }] }]) {
+      expect(() => validatePiProviderDeathReceipt({ ...receipt, ...patch }, binding, root, "workspace-id")).toThrow();
+    }
+  });
+  it("requires published action and consumes the one-shot capability even on RPC failure", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    await fixture.publishAction("action.txt", "Ask the native question");
+    h.override(request => request.op === "pi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, error: "pi_provider_identity_or_signal_failed" }) } : undefined);
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
+    await fixture.close();
+  });
+  it("returns only the exact reviewed fault receipt and never signals the worker", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await fixture.publishAction("action.txt", "Ask the native question");
+    h.override(request => request.op === "pi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: piFaultReceipt() }) } : undefined);
+    expect(await fixture.terminatePiProvider!("workspace-id")).toEqual(piFaultReceipt());
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
+    await fixture.close();
   });
 });

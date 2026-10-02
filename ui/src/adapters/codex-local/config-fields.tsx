@@ -34,6 +34,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
 const defaultOpenCodeRunnerModel = "openrouter/deepseek/deepseek-v4-flash-0731";
 const defaultAcpxClaudeModel = "claude-sonnet-5";
+const defaultAcpxPiModel = "openrouter/deepseek/deepseek-v4-flash-0731";
 const defaultClaudeManagedModel = "claude-sonnet-5";
 const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
 
@@ -242,16 +243,17 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") !== "grok" && (
-        <Field configSection="adapter" label="ACP agent" hint="Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification.">
+        <Field configSection="adapter" label="ACP agent" hint="Pi uses DeepSeek V4 Flash 0731 through OpenRouter. Cursor and GitHub Copilot are awaiting local and Daytona qualification.">
           <select className={inputClass}
             value={String(isCreate ? values!.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude"))}
             onChange={(event) => {
               const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === event.target.value);
               const acpxSessionMode = profile?.value === "cursor" ? "agent" : undefined;
               if (!profile?.qualified) return;
-              if (isCreate) set!({ model: profile.value === "claude" ? defaultAcpxClaudeModel : "",
+              const model = profile.value === "pi" ? defaultAcpxPiModel : profile.value === "claude" ? defaultAcpxClaudeModel : "";
+              if (isCreate) set!({ model,
                 adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value, acpxSessionMode } });
-              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "model", profile.value === "claude" ? defaultAcpxClaudeModel : ""); }
+              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "model", model); }
             }}>
             {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => <option key={profile.value} value={profile.value} disabled={!profile.qualified}>
               {profile.label}{profile.qualified ? "" : " — qualification pending"}

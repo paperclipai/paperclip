@@ -19,8 +19,8 @@ const patchPath = join(workspaceRoot, "patches/pi-acp@0.0.33.patch");
 const supportedTargets = new Set(["darwin-arm64", "darwin-x64", "linux-x64"]);
 export const PI_DISTRIBUTION_PINS = Object.freeze({
   wrapper: "0.0.33", runtime: "1.0.0", sdk: "0.26.0", zod: "3.25.76", nodeVersion: PI_NODE_VERSION, undici: "8.10.2", nodeBundledUndici: "7.29.1",
-  wrapperSha256: "f881b0461d706780953919b791aeb9614921c3be2d7cc41477f2a9afa2cbfb69",
-  helperSha256: "a9f9d489ca0f14765ac1c4ab80c6bd0bd3fef46a8f41b8899ed2d9e78c115aba",
+  wrapperSha256: "c41750802680543d72a5a43e21eaf91c31ca8cec833bbf5f27330614936810fe",
+  helperSha256: "2191b1e5f281d24508ec7eaff39011ee863a8a70bf54f4aa0490ad0172b323da",
 });
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 

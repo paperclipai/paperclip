@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "./pi-closure-pins.js";
 import { PI_NODE_VERSION } from "./pi-node-pins.js";
-import { verifyPiRuntimeManifest, type PiRuntimeManifest } from "./pi-verified-runtime.js";
+import { verifyPiRuntimeLayoutForNativeSnapshot, type PiRuntimeManifest } from "./pi-verified-runtime.js";
+import { readNativeAcpxDistributionEntries } from "./native-distribution-integrity.js";
 import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
 import { QUALIFIED_ACPX_PROFILES, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 
@@ -24,7 +25,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Candidate identity is build-owned; model selection cannot substitute a CLI. */
 export function assertPiInstallationProfile(profile: QualifiedAcpxProfile): void {
   const trusted = QUALIFIED_ACPX_PROFILES.pi;
-  if (profile.agentProfileVersion !== 11) throw new Error("Pi rich ACP requires profile version 11; reopen the previous session");
+  if (profile.agentProfileVersion !== 12) throw new Error("Pi rich ACP requires profile version 12; reopen the previous session");
   if (profile.agent !== "pi" || profile.driverKind !== trusted.driverKind || profile.protocolVersion !== trusted.protocolVersion || profile.acpxVersion !== trusted.acpxVersion || profile.agentServerPackage !== "pi-acp" || profile.agentServerVersion !== "0.0.33" || profile.agentRuntimePackage !== "@earendil-works/pi-coding-agent" || profile.agentRuntimeVersion !== "1.0.0" || profile.commandDigest !== trusted.commandDigest || profile.permissionPolicy !== "interactive" || profile.qualificationModel !== PI_MODEL || profile.reportedModelId !== PI_MODEL) throw new Error("Pi distribution profile differs from its trusted declaration");
 }
 
@@ -69,16 +70,20 @@ export async function verifyPiInstallation(profile: QualifiedAcpxProfile): Promi
   for (const [key, value] of Object.entries(FIXED_PATHS)) {
     if (manifest[key as keyof typeof FIXED_PATHS] !== value) throw new Error("Pi distribution changed a fixed launch path");
   }
-  const verified = await verifyPiRuntimeManifest(runtimeRoot, manifest);
-  if (verified.manifestDigest !== metadata.manifestDigest) throw new Error("Pi runtime manifest digest does not match its distribution");
-  const native = await verifyNativeAcpxInstallation({
+  const declaration = {
     distributionRoot: runtimeRoot,
     manifestPath: join(assets, "native-closure.json"),
     expectedClosureSha256: expectedClosure,
     executable: FIXED_PATHS.node,
     entrypoint: "pi-entry.cjs",
     fixedArguments: [],
-  });
+  };
+  // Both declarations must name exactly the same source-pinned bytes. Actual
+  // content admission remains the descriptor-bound immutable snapshot below.
+  const entries = await readNativeAcpxDistributionEntries(declaration);
+  const layout = await verifyPiRuntimeLayoutForNativeSnapshot(runtimeRoot, manifest, { entries }, expectedClosure);
+  if (layout.manifestDigest !== metadata.manifestDigest) throw new Error("Pi runtime manifest digest does not match its distribution");
+  const native = await verifyNativeAcpxInstallation(declaration);
   return Object.freeze({
     commandDigest: profile.commandDigest,
     agentServerPackageJsonPath: join(runtimeRoot, "node_modules/pi-acp/package.json"),

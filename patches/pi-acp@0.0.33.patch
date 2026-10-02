@@ -13,11 +13,11 @@
  // src/pi-rpc/process.ts
  import { spawn } from "child_process";
 -import * as readline from "readline";
-+import { PI_ACP_FEATURES, PiAssistantMessages, piAssistantChunk, piHistoricalAssistantChunk, PiToolIdentities, piHistoricalToolIdentity, PiRpcFrames, PiUiBridge, PiTurnUsage, createPiLaunchSpec, snapshotPiWorkspaceFile } from "./paperclip-runtime.js";
++import { PI_ACP_FEATURES, PiRpcMessageDeltas, piNativeFailure, PiAssistantMessages, piAssistantChunk, piHistoricalAssistantChunk, PiToolIdentities, piHistoricalToolIdentity, PiRpcFrames, PiUiBridge, PiTurnUsage, createPiLaunchSpec, snapshotPiWorkspaceFile } from "./paperclip-runtime.js";
 
  // src/pi-rpc/command.ts
  import { platform } from "os";
-@@ -94,51 +95,43 @@
+@@ -94,51 +95,44 @@
    pending = /* @__PURE__ */ new Map();
    eventHandlers = [];
    preludeLines = [];
@@ -25,6 +25,7 @@
 +  constructor(child, invocationNamespace) {
 +    this.toolIdentities = new PiToolIdentities(invocationNamespace);
 +    this.assistantMessages = new PiAssistantMessages(invocationNamespace);
++    this.rpcMessages = new PiRpcMessageDeltas();
      this.child = child;
 -    const rl = readline.createInterface({ input: child.stdout });
 -    rl.on("line", (line) => {
@@ -41,7 +42,7 @@
 +      this.exited = error;
 +      for (const [, pending] of this.pending) pending.reject(error);
 +      this.pending.clear();
-+      for (const handler of this.eventHandlers) handler({ type: "paperclip_process_exit" });
++      for (const handler of this.eventHandlers) handler({ type: "paperclip_process_exit", failure: piNativeFailure(error) });
 +    };
 +    const frames = new PiRpcFrames((msg) => {
 +      if (msg.type === "response") {
@@ -60,7 +61,7 @@
 -        }
 -      }
 -      for (const h of this.eventHandlers) h(msg);
-+      const event = this.toolIdentities.normalize(this.assistantMessages.normalize(msg));
++      const event = this.toolIdentities.normalize(this.assistantMessages.normalize(this.rpcMessages.normalize(msg)));
 +      for (const handler of this.eventHandlers) handler(event);
      });
 -    child.on("exit", (code, signal) => {
@@ -96,7 +97,7 @@
      });
      try {
        await new Promise((resolve4, reject) => {
-@@ -172,7 +165,7 @@
+@@ -172,7 +166,7 @@
      }
      child.stderr.on("data", () => {
      });
@@ -105,7 +106,7 @@
      try {
        const state = await proc.getState();
        const sessionFile = typeof state?.sessionFile === "string" ? state.sessionFile : null;
-@@ -181,21 +174,30 @@
+@@ -181,21 +175,30 @@
          const { dirname: dirname3 } = await import("path");
          mkdirSync2(dirname3(sessionFile), { recursive: true });
        }
@@ -120,7 +121,7 @@
    }
    onEvent(handler) {
      this.eventHandlers.push(handler);
-+    if (this.exited) queueMicrotask(() => handler({ type: "paperclip_process_exit" }));
++    if (this.exited) queueMicrotask(() => handler({ type: "paperclip_process_exit", failure: piNativeFailure(this.exited) }));
      return () => {
        this.eventHandlers = this.eventHandlers.filter((h) => h !== handler);
      };
@@ -141,7 +142,7 @@
      }
    }
    /**
-@@ -242,7 +244,7 @@
+@@ -242,7 +245,7 @@
      if (!res.success) throw new Error(`pi set_steering_mode failed: ${res.error ?? JSON.stringify(res.data)}`);
    }
    async compact(customInstructions) {
@@ -150,7 +151,7 @@
      if (!res.success) throw new Error(`pi compact failed: ${res.error ?? JSON.stringify(res.data)}`);
      return res.data;
    }
-@@ -283,17 +285,23 @@
+@@ -283,17 +286,23 @@
      await this.writeLine(`${JSON.stringify({ type: "extension_ui_response", ...response })}
  `);
    }
@@ -180,7 +181,7 @@
      });
    }
    writeLine(line) {
-@@ -337,7 +345,7 @@
+@@ -337,7 +346,7 @@
      {
        authMethods: getAuthMethods()
      },
@@ -189,7 +190,7 @@
    );
  }
 
-@@ -534,6 +542,14 @@
+@@ -534,6 +543,14 @@
    const record = value;
    const command = record?.command ?? record?.cmd ?? record?.args?.command ?? record?.args?.cmd ?? record?.input?.command ?? record?.input?.cmd ?? record?.rawInput?.command ?? record?.rawInput?.cmd ?? record?.toolInput?.command ?? record?.toolInput?.cmd ?? record?.details?.command ?? record?.details?.cmd;
    return typeof command === "string" && command.trim() ? command : void 0;
@@ -204,7 +205,7 @@
  }
  function bashResultText(result) {
    const record = result;
-@@ -714,6 +730,7 @@
+@@ -714,6 +731,7 @@
      try {
        proc = await PiRpcProcess.spawn({
          cwd: params.cwd,
@@ -212,7 +213,7 @@
          piCommand: params.piCommand
        });
      } catch (e) {
-@@ -808,6 +825,9 @@
+@@ -808,6 +826,9 @@
      this.proc = opts.proc;
      this.conn = opts.conn;
      this.fileCommands = opts.fileCommands ?? [];
@@ -222,7 +223,7 @@
      this.proc.onEvent((ev) => this.handlePiEvent(ev));
    }
    setStartupInfo(text) {
-@@ -822,10 +842,7 @@
+@@ -822,10 +843,7 @@
    sendStartupInfoIfPending() {
      if (this.startupInfoSent || !this.startupInfo) return;
      this.startupInfoSent = true;
@@ -234,7 +235,7 @@
    }
    async prompt(message, images = []) {
      const expandedMessage = expandSlashCommand(message, this.fileCommands);
-@@ -852,6 +869,7 @@
+@@ -852,6 +870,7 @@
    }
    async cancel() {
      this.cancelRequested = true;
@@ -242,7 +243,7 @@
      if (this.turnQueue.length) {
        const queued = this.turnQueue.splice(0, this.turnQueue.length);
        for (const t of queued) t.resolve("cancelled");
-@@ -870,6 +888,8 @@
+@@ -870,6 +889,8 @@
      return this.cancelRequested;
    }
    emit(update) {
@@ -251,7 +252,7 @@
      this.lastEmit = this.lastEmit.then(
        () => this.conn.sessionUpdate({
          sessionId: this.sessionId,
-@@ -877,6 +897,12 @@
+@@ -877,6 +898,12 @@
        })
      ).catch(() => {
      });
@@ -264,7 +265,7 @@
    }
    async flushEmits() {
      await this.lastEmit;
-@@ -890,6 +916,7 @@
+@@ -890,6 +917,7 @@
        kind: "execute",
        status: params.status,
        locations: params.locations,
@@ -272,7 +273,7 @@
        ...params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {},
        ...params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {}
      });
-@@ -903,6 +930,7 @@
+@@ -903,6 +931,7 @@
        sessionUpdate: "tool_call_update",
        toolCallId: params.toolCallId,
        status: params.status,
@@ -280,7 +281,7 @@
        _meta: {
          ...delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {},
          ...params.status === "completed" || params.status === "failed" ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {}
-@@ -920,12 +948,16 @@
+@@ -920,18 +949,24 @@
      this.cancelRequested = false;
      this.inAgentLoop = false;
      this.pendingTurn = { resolve: t.resolve, reject: t.reject };
@@ -291,22 +292,36 @@
        _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
      });
      this.proc.prompt(t.message, t.images).catch((err) => {
++      const failure = piNativeFailure(err);
++      if (!this.cancelRequested) this.emitNotice("runtime_failure", failure.summary, "error", { reason: failure.reason });
        void this.flushEmits().finally(() => {
 +        if (epoch !== this.turnEpoch || !this.pendingTurn) return;
 +        this.uiBridge.cancelAll();
          const authErr = maybeAuthRequiredError(err);
          if (authErr) {
            this.pendingTurn?.reject(authErr);
-@@ -946,20 +978,36 @@
+         } else {
+-          const reason = this.cancelRequested ? "cancelled" : "error";
+-          this.pendingTurn?.resolve(reason);
++          if (this.cancelRequested) this.pendingTurn?.resolve("cancelled");
++          else this.pendingTurn?.reject(RequestError3.internalError({ paperclipPi: failure }, failure.summary));
+         }
+         this.pendingTurn = null;
+         this.inAgentLoop = false;
+@@ -946,20 +981,47 @@
    handlePiEvent(ev) {
      const type = String(ev.type ?? "");
      switch (type) {
 +      case "paperclip_process_exit": {
 +        this.uiBridge.cancelAll();
-+        this.pendingTurn?.reject(new Error("Pi provider process exited"));
++        const failure = piNativeFailure(ev.failure?.summary);
++        this.emitNotice("runtime_failure", failure.summary, "error", { reason: failure.reason });
++        const turns = [...(this.pendingTurn ? [this.pendingTurn] : []), ...this.turnQueue.splice(0)];
 +        this.pendingTurn = null;
-+        for (const turn of this.turnQueue.splice(0)) turn.reject(new Error("Pi provider process exited"));
 +        this.turnEpoch += 1;
++        void this.flushEmits().finally(() => {
++          for (const turn of turns) turn.reject(RequestError3.internalError({ paperclipPi: failure }, failure.summary));
++        });
 +        break;
 +      }
 +      case "message_start": {
@@ -314,10 +329,17 @@
 +        break;
 +      }
 +      case "message_end": {
++        if (ev.message?.role === "assistant" && ev.message.stopReason === "error") {
++          const failure = piNativeFailure(ev.message.errorMessage);
++          this.emitNotice("runtime_failure", failure.summary, "error", { reason: failure.reason });
++        }
 +        if (ev.paperclipAssistantMessage) this.emit(piAssistantChunk(ev.paperclipAssistantMessage));
 +        try { this.turnUsage.accept(ev.message); } catch {
-+          this.pendingTurn?.reject(new Error("Pi usage receipt is invalid"));
++          const failure = piNativeFailure("Pi usage receipt is invalid");
++          this.emitNotice("runtime_failure", failure.summary, "error", { reason: failure.reason });
++          const pending = this.pendingTurn;
 +          this.pendingTurn = null;
++          void this.flushEmits().finally(() => pending?.reject(RequestError3.internalError({ paperclipPi: failure }, failure.summary)));
 +          this.uiBridge.cancelAll();
 +          this.proc.dispose("SIGKILL");
 +        }
@@ -342,7 +364,7 @@
            break;
          }
          if (ame?.type === "toolcall_start" || ame?.type === "toolcall_delta" || ame?.type === "toolcall_end") {
-@@ -1047,7 +1095,7 @@
+@@ -1047,7 +1109,7 @@
            if (p) {
              try {
                const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
@@ -351,7 +373,7 @@
                this.fileSnapshots.set(toolCallId, { path: p, oldText: snapshotOldText });
                if (toolName === "edit") {
                  for (const needle of getEditOldTexts(args)) {
-@@ -1125,7 +1173,7 @@
+@@ -1125,7 +1187,7 @@
          if (!isError && snapshot) {
            try {
              const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
@@ -360,7 +382,7 @@
              if (snapshot.oldText === null || newText !== snapshot.oldText) {
                hasStructuredDiff = true;
                content = [
-@@ -1154,48 +1202,41 @@
+@@ -1154,48 +1216,41 @@
          break;
        }
        case "extension_ui_request": {
@@ -433,7 +455,7 @@
          break;
        }
        case "agent_start": {
-@@ -1210,9 +1251,12 @@
+@@ -1210,9 +1265,12 @@
          break;
        }
        case "agent_settled": {
@@ -447,7 +469,7 @@
            this.pendingTurn = null;
            this.inAgentLoop = false;
            const next = this.turnQueue.shift();
-@@ -1725,6 +1769,7 @@
+@@ -1725,6 +1783,7 @@
    return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join4(homedir4(), ".pi", "agent");
  }
  function getEnableSkillCommands(cwd) {
@@ -455,7 +477,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.enableSkillCommands;
    if (typeof direct === "boolean") return direct;
-@@ -1733,6 +1778,7 @@
+@@ -1733,6 +1792,7 @@
    return true;
  }
  function getQuietStartup(cwd) {
@@ -463,7 +485,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.quietStartup;
    if (typeof direct === "boolean") return direct;
-@@ -1824,6 +1870,7 @@
+@@ -1824,6 +1884,7 @@
    const out = [];
    const seen = /* @__PURE__ */ new Set();
    for (const c of [...a, ...b]) {
@@ -471,7 +493,7 @@
      if (seen.has(c.name)) continue;
      seen.add(c.name);
      out.push(c);
-@@ -1884,11 +1931,13 @@
+@@ -1884,11 +1945,13 @@
          throw RequestError3.invalidParams(`Unknown sessionId: ${sessionId}`);
        }
        const cwd = opts?.cwd ?? stored.cwd;
@@ -485,7 +507,7 @@
            piCommand: process.env.PI_ACP_PI_COMMAND
          });
        } catch (e) {
-@@ -1897,7 +1946,7 @@
+@@ -1897,7 +1960,7 @@
          }
          throw e;
        }
@@ -494,7 +516,7 @@
        const session = this.sessions.getOrCreate(sessionId, {
          cwd,
          mcpServers: opts?.mcpServers ?? [],
-@@ -1917,6 +1966,7 @@
+@@ -1917,6 +1980,7 @@
      }
    }
    async initialize(params) {
@@ -502,7 +524,7 @@
      const supportedVersion = 1;
      const requested = params.protocolVersion;
      return {
-@@ -1933,7 +1983,8 @@
+@@ -1933,7 +1997,8 @@
        }),
        agentCapabilities: {
          loadSession: true,
@@ -512,7 +534,7 @@
          promptCapabilities: {
            image: true,
            audio: false,
-@@ -1942,8 +1993,7 @@
+@@ -1942,8 +2007,7 @@
          sessionCapabilities: {
            // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
            // Enables a native session picker in clients that support it.
@@ -522,7 +544,7 @@
          }
        }
      };
-@@ -1953,7 +2003,7 @@
+@@ -1953,7 +2017,7 @@
        throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
      }
      this.lastSessionCwd = params.cwd;
@@ -531,7 +553,7 @@
      const enableSkillCommands = getEnableSkillCommands(params.cwd);
      const session = await this.sessions.create({
        cwd: params.cwd,
-@@ -1994,14 +2044,14 @@
+@@ -1994,14 +2058,14 @@
        this.cleanupFailedNewSession(session.sessionId, state);
        throw RequestError3.authRequired(
          { authMethods: getAuthMethods() },
@@ -548,7 +570,7 @@
        );
      }
      const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
-@@ -2064,34 +2114,27 @@
+@@ -2064,34 +2128,27 @@
    }
    async prompt(params) {
      const session = await this.restoreSession(params.sessionId);
@@ -595,7 +617,7 @@
        }
        if (cmd === "session") {
          const stats = await session.proc.getSessionStats();
-@@ -2112,13 +2155,8 @@
+@@ -2112,13 +2169,8 @@
          }
          const text = lines.length ? lines.join("\n") : `Session stats:
  ${JSON.stringify(stats, null, 2)}`;
@@ -611,7 +633,7 @@
          return { stopReason: "end_turn" };
        }
        if (cmd === "name") {
-@@ -2418,22 +2456,24 @@
+@@ -2418,22 +2470,24 @@
            enabled = !current;
          }
          await session.proc.setAutoCompaction(enabled);
@@ -648,7 +670,7 @@
    }
    async cancel(params) {
      const session = this.sessions.maybeGet(params.sessionId);
-@@ -2473,7 +2513,7 @@
+@@ -2473,7 +2527,7 @@
        mcpServers: params.mcpServers
      });
      const proc = session.proc;
@@ -657,7 +679,7 @@
      this.sessions.closeAllExcept?.(session.sessionId);
      this.store.upsert({
        sessionId: params.sessionId,
-@@ -2482,7 +2522,7 @@
+@@ -2482,7 +2536,7 @@
      });
      const data = await proc.getMessages();
      const messages = Array.isArray(data?.messages) ? data.messages : [];
@@ -666,7 +688,7 @@
        const role = String(m?.role ?? "");
        if (role === "user") {
          const text = normalizePiMessageText(m?.content);
-@@ -2501,16 +2541,14 @@
+@@ -2501,16 +2555,14 @@
          if (text) {
            await this.conn.sessionUpdate({
              sessionId: session.sessionId,
@@ -686,7 +708,7 @@
          const isError = Boolean(m?.isError);
          const isBash = isBashTool(toolName);
          if (isBash) {
-@@ -2524,7 +2562,7 @@
+@@ -2524,7 +2576,7 @@
                kind: "execute",
                status: "completed",
                content: bashTerminalContent(toolCallId),
@@ -695,7 +717,7 @@
              }
            });
            await this.conn.sessionUpdate({
-@@ -2535,7 +2573,8 @@
+@@ -2535,7 +2587,8 @@
                status: isError ? "failed" : "completed",
                _meta: {
                  ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
@@ -705,7 +727,7 @@
                }
              }
            });
-@@ -2549,6 +2588,7 @@
+@@ -2549,6 +2602,7 @@
              title: toolName,
              kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
              status: "completed",
@@ -713,7 +735,7 @@
              rawInput: null,
              rawOutput: m
            }
-@@ -2560,6 +2600,7 @@
+@@ -2560,6 +2614,7 @@
              sessionUpdate: "tool_call_update",
              toolCallId,
              status: isError ? "failed" : "completed",
@@ -721,7 +743,7 @@
              content: text ? [{ type: "content", content: { type: "text", text } }] : null,
              rawOutput: m
            }
-@@ -2607,6 +2648,7 @@
+@@ -2607,6 +2662,7 @@
      return response;
    }
    async deleteSession(params) {
@@ -729,7 +751,7 @@
      const stored = this.store.get(params.sessionId);
      const piSession = findPiSession(params.sessionId);
      if (!stored && !piSession) {
-@@ -2828,6 +2870,7 @@
+@@ -2828,6 +2884,7 @@
    return 0;
  }
  function buildUpdateNotice() {
@@ -737,7 +759,7 @@
    try {
      const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
      const installed = (String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()).replace(
-@@ -2848,6 +2891,7 @@
+@@ -2848,6 +2905,7 @@
    }
  }
  function buildStartupInfo(opts) {
@@ -745,7 +767,7 @@
    void opts.fileCommands;
    const md = [];
    try {
-@@ -2980,6 +3024,7 @@
+@@ -2980,6 +3038,7 @@
 
  // src/index.ts
  if (process.argv.includes("--terminal-login")) {
@@ -753,7 +775,7 @@
    const { spawnSync: spawnSync2 } = await import("child_process");
    const cmd = getPiCommand(process.env.PI_ACP_PI_COMMAND);
    const res = spawnSync2(cmd, [], {
-@@ -3019,11 +3064,12 @@
+@@ -3019,11 +3078,12 @@
    }
  });
  var stream = ndJsonStream(input, output);
@@ -770,7 +792,7 @@
    try {
 --- /dev/null
 +++ b/dist/paperclip-runtime.js
-@@ -0,0 +1,471 @@
+@@ -0,0 +1,577 @@
 +/** Source for the helper embedded in patches/pi-acp@0.0.33.patch. */
 +import { createHash, randomUUID } from "node:crypto";
 +import { StringDecoder } from "node:string_decoder";
@@ -805,6 +827,111 @@
 +
 +
 +
++
++/** Pi 1 RPC serializes message_update without message/partial. Reconstruct only
++ * the streaming view, anchored to the actual message_start; message_end remains
++ * the native authoritative receipt. Never infer an executable tool from text. */
++export class PiRpcMessageDeltas {
++          active                     = null;
++          blocks = new Map                                                                                                    ();
++          streamedBytes = 0;
++          failed = false;
++          fail()        { this.failed = true; throw new Error("Pi RPC message delta boundary is invalid"); }
++  normalize(event             )              {
++    if (this.failed) return this.fail();
++    if (event.type === "message_start" && event.message && typeof event.message === "object" && (event.message               ).role === "assistant") {
++      if (this.active) return this.fail();
++      this.active = event.message               ; this.blocks.clear(); this.streamedBytes = 0;
++      return event;
++    }
++    if (event.type === "message_end" && event.message && typeof event.message === "object" && (event.message               ).role === "assistant") {
++      const message = event.message               ;
++      if (!this.active || message.timestamp !== this.active.timestamp) return this.fail();
++      if (!["error", "aborted"].includes(String(message.stopReason)) && [...this.blocks.values()].some(block => !block.ended)) return this.fail();
++      for (const [index, block] of this.blocks) if (block.ended) {
++        const final = Array.isArray(message.content) ? message.content[index] : undefined;
++        if (!final || typeof final !== "object") return this.fail();
++        if (block.kind === "toolcall") {
++          if (final.type !== "toolCall" || toolSignature(final.id, final.name, final.arguments) !== block.final) return this.fail();
++        } else if (final.type !== block.kind || final[block.kind === "text" ? "text" : "thinking"] !== block.json) return this.fail();
++      }
++      this.active = null; this.blocks.clear(); return event;
++    }
++    if (event.type !== "message_update") return event;
++    if (!this.active || event.message !== undefined || !event.assistantMessageEvent || typeof event.assistantMessageEvent !== "object" || Array.isArray(event.assistantMessageEvent)) return this.fail();
++    const update = event.assistantMessageEvent               ;
++    if (update.partial !== undefined || typeof update.type !== "string") return this.fail();
++    const match = /^(text|thinking|toolcall)_(start|delta|end)$/.exec(update.type);
++    const index = update.contentIndex;
++    if (!match || !Number.isSafeInteger(index) || (index          ) < 0 || (index          ) >= 4096) return this.fail();
++    const [, kind, phase] = match;
++    let block = this.blocks.get(index          );
++    if (phase === "start") {
++      if (block) return this.fail();
++      block = { kind: kind , ended: false, json: "" };
++      if (kind === "toolcall") {
++        if (typeof update.id !== "string" || Buffer.byteLength(update.id) > 256 || typeof update.toolName !== "string" || Buffer.byteLength(update.toolName) > 256) return this.fail();
++        if (update.id && [...this.blocks.values()].some(other => other.id === update.id)) return this.fail();
++        block.id = update.id; block.name = update.toolName;
++      }
++      this.blocks.set(index          , block);
++    } else if (!block || block.ended || block.kind !== kind) return this.fail();
++    if (phase === "delta") {
++      if (typeof update.delta !== "string" || Buffer.byteLength(update.delta) > 262_144) return this.fail();
++      this.streamedBytes += Buffer.byteLength(update.delta);
++      if (this.streamedBytes > 4 * 1024 * 1024) return this.fail();
++      block .json += update.delta;
++      if (kind === "toolcall" && Buffer.byteLength(block .json) > 1_048_576) return this.fail();
++    }
++    let toolCall                         ;
++    if (kind === "toolcall") {
++      if (phase === "end") {
++        if (!update.toolCall || typeof update.toolCall !== "object" || Array.isArray(update.toolCall)) return this.fail();
++        const final = update.toolCall               ;
++        if (final.type !== "toolCall" || typeof final.id !== "string" || !final.id || Buffer.byteLength(final.id) > 256 || typeof final.name !== "string" || !final.name || Buffer.byteLength(final.name) > 256
++          || block .id && block .id !== final.id || block .name && block .name !== final.name
++          || [...this.blocks.entries()].some(([otherIndex, other]) => otherIndex !== index && other.id === final.id)
++          || !final.arguments || typeof final.arguments !== "object" || Array.isArray(final.arguments) || Buffer.byteLength(JSON.stringify(final.arguments)) > 1_048_576) return this.fail();
++        block .id = final.id; block .name = final.name; block .final = toolSignature(final.id, final.name, final.arguments); toolCall = final;
++      } else toolCall = { type: "toolCall", id: block .id, name: block .name, partialArgs: block .json };
++    }
++    if (phase === "end") {
++      if (kind !== "toolcall" && (typeof update.content !== "string" || update.content !== block .json)) return this.fail();
++      block .ended = true;
++    }
++    return { ...event, message: { ...this.active, content: [] }, assistantMessageEvent: { ...update, ...(toolCall ? { toolCall } : {}) } };
++  }
++}
++
++function toolSignature(id         , name         , args         )         {
++  const canonical = (value         )          => Array.isArray(value) ? value.map(canonical)
++    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
++  return JSON.stringify([id, name, canonical(args)]);
++}
++
++/** A closed diagnostic vocabulary: raw exception text, paths, provider bodies
++ * and credentials never cross the wrapper boundary. Unknown failures stay
++ * generic rather than masquerading as a known local or provider condition. */
++export function piNativeFailure(value         )                                      {
++  const message = value instanceof Error ? value.message : typeof value === "string" ? value : "";
++  const known                         = {
++    "Pi RPC message delta boundary is invalid": "rpc_delta_boundary_invalid",
++    "Pi native assistant message boundary is invalid": "assistant_boundary_invalid",
++    "Pi native tool invocation identity conflict": "tool_identity_conflict",
++    "Pi model iteration identity is ambiguous": "model_iteration_ambiguous",
++    "Pi model iteration identity is unavailable": "model_iteration_unavailable",
++    "Pi tool invocation has no active model iteration": "tool_iteration_missing",
++    "Pi tool identity is outside its iteration bound": "tool_iteration_bound",
++    "Pi RPC frame exceeds its bound": "rpc_frame_oversized",
++    "Pi RPC stream ended inside a frame": "rpc_frame_incomplete",
++    "Pi usage receipt is invalid": "usage_receipt_invalid",
++    "Pi process exited before its next request": "provider_process_exited",
++  };
++  if (Object.hasOwn(known, message)) return { reason: known[message] , summary: message };
++  const status = /^(?:pi prompt failed: )?(401|403|429|500|502|503|504)(?::|\b)/.exec(message.slice(0, 128))?.[1];
++  if (status) return { reason: `provider_http_${status}`, summary: `Pi provider request failed (HTTP ${status})` };
++  return { reason: "unknown_native_failure", summary: "Pi native runtime failed; diagnostic details were withheld" };
++}
 +
 +/** IDs are allocated only at actual SDK assistant message_start events. Tool
 + * iterations, retries, notices and ACP prompts cannot create assistant IDs. */
@@ -943,7 +1070,8 @@
 +        const block = record(value);
 +        // Empty IDs during initial streaming do not identify an executable call.
 +        return (direct || block.type === "toolCall") && typeof block.id === "string" && block.id
-+          ? { ...block, id: this.identity(block.id) } : value;
++          ? { ...block, id: direct && update.type === "toolcall_end"
++            ? this.bind(block.id, text(block.name, 256), block.arguments) : this.identity(block.id) } : value;
 +      };
 +      const partial = update.partial && typeof update.partial === "object" ? record(update.partial) : undefined;
 +      return { ...event, assistantMessageEvent: { ...update,

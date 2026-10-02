@@ -93,9 +93,15 @@ describe("ACPX driver profile", () => {
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).toMatchObject({
-      ok: false,
-      issues: [{ path: "agent", code: "qualification_pending" }],
+      ok: true,
+      config: { agent: "pi", permissionMode: "approve-all" },
     });
+    for (const agent of ["cursor", "copilot"]) {
+      expect(validateAcpxDriverConfig({ agent, model: "explicit-model" }))
+        .toMatchObject({ ok: false, issues: [{ path: "agent", code: "qualification_pending" }] });
+    }
+    expect(validateAcpxDriverConfig({ agent: "pi", model: "another-model" }))
+      .toMatchObject({ ok: false, issues: [{ path: "model", code: "invalid_model" }] });
     expect(
       validateAcpxDriverConfig({
         agent: "claude",

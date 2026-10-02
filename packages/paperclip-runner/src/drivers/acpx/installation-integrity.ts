@@ -2098,3 +2098,10 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {
   await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
 }
+
+/** Verify the pinned Pi closure and snapshot lease without launching a provider. */
+export async function probeAcpxPiInstallation(model: string): Promise<void> {
+  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("pi", model));
+  const lease = await installation.openCommand();
+  await lease.close();
+}

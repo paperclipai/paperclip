@@ -33,6 +33,111 @@ export interface PiAssistantBoundary {
   stopReason?: "stop" | "length" | "toolUse" | "error" | "aborted";
 }
 
+/** Pi 1 RPC serializes message_update without message/partial. Reconstruct only
+ * the streaming view, anchored to the actual message_start; message_end remains
+ * the native authoritative receipt. Never infer an executable tool from text. */
+export class PiRpcMessageDeltas {
+  private active: RecordValue | null = null;
+  private blocks = new Map<number, { kind: string; ended: boolean; id?: string; name?: string; json: string; final?: string }>();
+  private streamedBytes = 0;
+  private failed = false;
+  private fail(): never { this.failed = true; throw new Error("Pi RPC message delta boundary is invalid"); }
+  normalize(event: RecordValue): RecordValue {
+    if (this.failed) return this.fail();
+    if (event.type === "message_start" && event.message && typeof event.message === "object" && (event.message as RecordValue).role === "assistant") {
+      if (this.active) return this.fail();
+      this.active = event.message as RecordValue; this.blocks.clear(); this.streamedBytes = 0;
+      return event;
+    }
+    if (event.type === "message_end" && event.message && typeof event.message === "object" && (event.message as RecordValue).role === "assistant") {
+      const message = event.message as RecordValue;
+      if (!this.active || message.timestamp !== this.active.timestamp) return this.fail();
+      if (!["error", "aborted"].includes(String(message.stopReason)) && [...this.blocks.values()].some(block => !block.ended)) return this.fail();
+      for (const [index, block] of this.blocks) if (block.ended) {
+        const final = Array.isArray(message.content) ? message.content[index] : undefined;
+        if (!final || typeof final !== "object") return this.fail();
+        if (block.kind === "toolcall") {
+          if (final.type !== "toolCall" || toolSignature(final.id, final.name, final.arguments) !== block.final) return this.fail();
+        } else if (final.type !== block.kind || final[block.kind === "text" ? "text" : "thinking"] !== block.json) return this.fail();
+      }
+      this.active = null; this.blocks.clear(); return event;
+    }
+    if (event.type !== "message_update") return event;
+    if (!this.active || event.message !== undefined || !event.assistantMessageEvent || typeof event.assistantMessageEvent !== "object" || Array.isArray(event.assistantMessageEvent)) return this.fail();
+    const update = event.assistantMessageEvent as RecordValue;
+    if (update.partial !== undefined || typeof update.type !== "string") return this.fail();
+    const match = /^(text|thinking|toolcall)_(start|delta|end)$/.exec(update.type);
+    const index = update.contentIndex;
+    if (!match || !Number.isSafeInteger(index) || (index as number) < 0 || (index as number) >= 4096) return this.fail();
+    const [, kind, phase] = match;
+    let block = this.blocks.get(index as number);
+    if (phase === "start") {
+      if (block) return this.fail();
+      block = { kind: kind!, ended: false, json: "" };
+      if (kind === "toolcall") {
+        if (typeof update.id !== "string" || Buffer.byteLength(update.id) > 256 || typeof update.toolName !== "string" || Buffer.byteLength(update.toolName) > 256) return this.fail();
+        if (update.id && [...this.blocks.values()].some(other => other.id === update.id)) return this.fail();
+        block.id = update.id; block.name = update.toolName;
+      }
+      this.blocks.set(index as number, block);
+    } else if (!block || block.ended || block.kind !== kind) return this.fail();
+    if (phase === "delta") {
+      if (typeof update.delta !== "string" || Buffer.byteLength(update.delta) > 262_144) return this.fail();
+      this.streamedBytes += Buffer.byteLength(update.delta);
+      if (this.streamedBytes > 4 * 1024 * 1024) return this.fail();
+      block!.json += update.delta;
+      if (kind === "toolcall" && Buffer.byteLength(block!.json) > 1_048_576) return this.fail();
+    }
+    let toolCall: RecordValue | undefined;
+    if (kind === "toolcall") {
+      if (phase === "end") {
+        if (!update.toolCall || typeof update.toolCall !== "object" || Array.isArray(update.toolCall)) return this.fail();
+        const final = update.toolCall as RecordValue;
+        if (final.type !== "toolCall" || typeof final.id !== "string" || !final.id || Buffer.byteLength(final.id) > 256 || typeof final.name !== "string" || !final.name || Buffer.byteLength(final.name) > 256
+          || block!.id && block!.id !== final.id || block!.name && block!.name !== final.name
+          || [...this.blocks.entries()].some(([otherIndex, other]) => otherIndex !== index && other.id === final.id)
+          || !final.arguments || typeof final.arguments !== "object" || Array.isArray(final.arguments) || Buffer.byteLength(JSON.stringify(final.arguments)) > 1_048_576) return this.fail();
+        block!.id = final.id; block!.name = final.name; block!.final = toolSignature(final.id, final.name, final.arguments); toolCall = final;
+      } else toolCall = { type: "toolCall", id: block!.id, name: block!.name, partialArgs: block!.json };
+    }
+    if (phase === "end") {
+      if (kind !== "toolcall" && (typeof update.content !== "string" || update.content !== block!.json)) return this.fail();
+      block!.ended = true;
+    }
+    return { ...event, message: { ...this.active, content: [] }, assistantMessageEvent: { ...update, ...(toolCall ? { toolCall } : {}) } };
+  }
+}
+
+function toolSignature(id: unknown, name: unknown, args: unknown): string {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+  return JSON.stringify([id, name, canonical(args)]);
+}
+
+/** A closed diagnostic vocabulary: raw exception text, paths, provider bodies
+ * and credentials never cross the wrapper boundary. Unknown failures stay
+ * generic rather than masquerading as a known local or provider condition. */
+export function piNativeFailure(value: unknown): { reason: string; summary: string } {
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  const known: Record<string, string> = {
+    "Pi RPC message delta boundary is invalid": "rpc_delta_boundary_invalid",
+    "Pi native assistant message boundary is invalid": "assistant_boundary_invalid",
+    "Pi native tool invocation identity conflict": "tool_identity_conflict",
+    "Pi model iteration identity is ambiguous": "model_iteration_ambiguous",
+    "Pi model iteration identity is unavailable": "model_iteration_unavailable",
+    "Pi tool invocation has no active model iteration": "tool_iteration_missing",
+    "Pi tool identity is outside its iteration bound": "tool_iteration_bound",
+    "Pi RPC frame exceeds its bound": "rpc_frame_oversized",
+    "Pi RPC stream ended inside a frame": "rpc_frame_incomplete",
+    "Pi usage receipt is invalid": "usage_receipt_invalid",
+    "Pi process exited before its next request": "provider_process_exited",
+  };
+  if (Object.hasOwn(known, message)) return { reason: known[message]!, summary: message };
+  const status = /^(?:pi prompt failed: )?(401|403|429|500|502|503|504)(?::|\b)/.exec(message.slice(0, 128))?.[1];
+  if (status) return { reason: `provider_http_${status}`, summary: `Pi provider request failed (HTTP ${status})` };
+  return { reason: "unknown_native_failure", summary: "Pi native runtime failed; diagnostic details were withheld" };
+}
+
 /** IDs are allocated only at actual SDK assistant message_start events. Tool
  * iterations, retries, notices and ACP prompts cannot create assistant IDs. */
 export class PiAssistantMessages {
@@ -170,7 +275,8 @@ export class PiToolIdentities {
         const block = record(value);
         // Empty IDs during initial streaming do not identify an executable call.
         return (direct || block.type === "toolCall") && typeof block.id === "string" && block.id
-          ? { ...block, id: this.identity(block.id) } : value;
+          ? { ...block, id: direct && update.type === "toolcall_end"
+            ? this.bind(block.id, text(block.name, 256), block.arguments) : this.identity(block.id) } : value;
       };
       const partial = update.partial && typeof update.partial === "object" ? record(update.partial) : undefined;
       return { ...event, assistantMessageEvent: { ...update,

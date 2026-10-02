@@ -546,10 +546,19 @@ describe("native backend factory", () => {
     },
   );
 
-  it.each(["pi", "cursor", "copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+  it("constructs the qualified Pi backend without a diagnostic opt-in or provider launch", async () => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
-    const model = agent === "pi" ? QUALIFIED_ACPX_PROFILES.pi.qualificationModel : "explicit-fixture-model";
+    const profile = resolveQualifiedAcpxProfile("pi", QUALIFIED_ACPX_PROFILES.pi.qualificationModel);
+    Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, profile });
+    const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+  });
+
+  it.each(["cursor", "copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const model = "explicit-fixture-model";
     const profile = resolveQualifiedAcpxProfile(agent, model);
     Object.assign(input.provider, { agent, model, profile });
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime",

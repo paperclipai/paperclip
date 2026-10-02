@@ -230,9 +230,16 @@ describe("buildPaperclipRunnerConfig", () => {
     expect(() => buildPaperclipRunnerConfig(makeValues({
       model: "", adapterSchemaValues: { provider: "acpx", acpxAgent },
     }))).toThrow("requires an explicit provider model");
+    const model = acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-provider-model";
     expect(buildPaperclipRunnerConfig(makeValues({
-      model: "exact-provider-model", adapterSchemaValues: { provider: "acpx", acpxAgent },
-    }))).toMatchObject({ provider: "acpx", acpxAgent, model: "exact-provider-model" });
+      model, adapterSchemaValues: { provider: "acpx", acpxAgent },
+    }))).toMatchObject({ provider: "acpx", acpxAgent, model });
+  });
+
+  it("rejects a different model when Pi is selected", () => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      model: "claude-sonnet-5", adapterSchemaValues: { provider: "acpx", acpxAgent: "pi" },
+    }))).toThrow("Pi requires exact model");
   });
 
   it.each([undefined, "agent", "plan", "ask"])("preserves Cursor session mode %s for server admission", acpxSessionMode => {

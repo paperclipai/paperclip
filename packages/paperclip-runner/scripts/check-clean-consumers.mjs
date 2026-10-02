@@ -43,7 +43,8 @@ try {
     "--bin",
     "paperclip-runnerd",
   ], runnerRoot);
-  const runnerTarball = await pack(runnerRoot, artifactsRoot);
+  run(process.execPath, ["scripts/stage-runner-binary.mjs"], runnerRoot);
+  const runnerTarball = await pack(runnerRoot, artifactsRoot, { runner: true });
   const runtimeDependencyTarballs = await packRunnerRuntimeDependencies(artifactsRoot);
   const runnerdArtifact = await stageRunnerdArtifact(artifactsRoot);
   const conformanceRecord = resolve(artifactsRoot, "paperclip-runner-consumer-conformance.json");
@@ -77,12 +78,19 @@ try {
   }
 }
 
-async function pack(packageRoot, destination) {
+async function pack(packageRoot, destination, { runner = false } = {}) {
   const before = new Set(await readdir(destination));
   // These installed dependencies are pack inputs, not our development cwd.
   // Keep their publisher devEngines intact without adopting their toolchain;
   // normal tarball contents and clean-consumer runtime engine checks still apply.
-  run("npm", ["pack", resolve(packageRoot), "--ignore-scripts", "--pack-destination", destination], destination, { quiet: true });
+  if (runner) {
+    // Exercise the pinned release packer, including executableFiles normalization.
+    run("pnpm", ["pack", "--pack-destination", destination], packageRoot, {
+      quiet: true, env: { npm_config_ignore_scripts: "true" },
+    });
+  } else {
+    run("npm", ["pack", resolve(packageRoot), "--ignore-scripts", "--pack-destination", destination], destination, { quiet: true });
+  }
   const created = (await readdir(destination))
     .filter((entry) => entry.endsWith(".tgz") && !before.has(entry))
     .sort();
@@ -159,7 +167,7 @@ async function resolveInstalledDependencyRoot(packageRoot, dependencyName) {
 
 async function stageRunnerdArtifact(destination) {
   const suffix = process.platform === "win32" ? ".exe" : "";
-  const source = resolve(runnerRoot, `runner/target/release/paperclip-runnerd${suffix}`);
+  const source = resolve(runnerRoot, `dist/bin/paperclip-runnerd${suffix}`);
   const executablePath = resolve(destination, `paperclip-runnerd-${process.platform}-${process.arch}${suffix}`);
   await copyFile(source, executablePath);
   if (process.platform !== "win32") await chmod(executablePath, 0o755);
@@ -197,6 +205,40 @@ async function verifyRunnerConsumer({
     },
     pnpm: { overrides: localOverrides(runtimeDependencyTarballs) },
   }, null, 2)}\n`);
+  await writeFile(resolve(consumerRoot, "verify-default-runnerd.mjs"), `
+import { execFileSync } from "node:child_process";
+import { constants } from "node:fs";
+import { access, readFile, realpath, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defaultCapabilityRunnerdBinary } from "@paperclipai/paperclip-runner";
+import { parsePaperclipRunnerdBuildMetadata, PAPERCLIP_RUNNER_BUILD_METADATA } from "@paperclipai/paperclip-runner/evals";
+// This is the installed package's default lookup. The separate eval artifact
+// below must not hide an unusable bundled daemon or repair its permissions.
+const bundledRunnerd = defaultCapabilityRunnerdBinary();
+const installedEntry = fileURLToPath(import.meta.resolve("@paperclipai/paperclip-runner"));
+const expectedBundledRunnerd = resolve(dirname(installedEntry), "bin",
+  "paperclip-runnerd" + (process.platform === "win32" ? ".exe" : ""));
+if (await realpath(bundledRunnerd) !== await realpath(expectedBundledRunnerd)) {
+  throw new Error("default runnerd escaped the installed package");
+}
+await access(bundledRunnerd, constants.X_OK);
+const bundledRunnerdDigest = "sha256:" + createHash("sha256")
+  .update(await readFile(bundledRunnerd)).digest("hex");
+if (bundledRunnerdDigest !== process.env.EXPECTED_RUNNERD_SHA256) {
+  throw new Error("installed default runnerd differs from the built binary");
+}
+const bundledMetadata = JSON.parse(execFileSync(bundledRunnerd, ["--build-metadata"], {
+  encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
+  env: { PATH: process.env.PATH, HOME: process.cwd() },
+}));
+if (parsePaperclipRunnerdBuildMetadata(bundledMetadata).binaryContractVersion !== PAPERCLIP_RUNNER_BUILD_METADATA.contracts.runnerdArtifact) {
+  throw new Error("installed default runnerd did not start with the expected contract");
+}
+
+await writeFile("bundled-runnerd-proof.json", JSON.stringify({ executable: true, started: true, binaryOverride: false, sha256: bundledRunnerdDigest }) + "\\n");
+`);
   await writeFile(resolve(consumerRoot, "verify.mjs"), `
 import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
@@ -349,6 +391,7 @@ await writeFile(process.env.PAPERCLIP_CONFORMANCE_RECORD, JSON.stringify({
     mockControlPlaneConformance: report,
     harnessDriverConformance: driverConformance,
     runnerdDigest: true,
+    bundledDefaultRunnerd: JSON.parse(await readFile("bundled-runnerd-proof.json", "utf8")),
     semanticConformance: {
       schema: semanticConformance.schema,
       rowCount: semanticConformance.rows.length,
@@ -393,17 +436,21 @@ function installAndRun(consumerRoot, extraEnv = {}) {
     "--config.auto-install-peers=false",
     "--reporter=append-only",
   ], consumerRoot, { env: { NODE_ENV: "development" } });
+  run(process.execPath, ["verify-default-runnerd.mjs"], consumerRoot, {
+    inheritEnv: false,
+    env: { PATH: process.env.PATH, HOME: consumerRoot, EXPECTED_RUNNERD_SHA256: extraEnv.PAPERCLIP_RUNNERD_SHA256 },
+  });
   run(process.execPath, ["verify.mjs"], consumerRoot, { env: extraEnv });
 }
 
-function run(command, args, cwd, { quiet = false, env = {} } = {}) {
+function run(command, args, cwd, { quiet = false, env = {}, inheritEnv = true } = {}) {
   const usesPnpm = command === "pnpm";
   const executable = usesPnpm ? pnpmInvocation.executable : command;
   const effectiveArgs = usesPnpm ? [...pnpmInvocation.prefixArgs, ...args] : args;
   const result = spawnSync(executable, effectiveArgs, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, CI: "true", ...env },
+    env: { ...(inheritEnv ? process.env : {}), CI: "true", ...env },
     stdio: quiet ? ["ignore", "pipe", "pipe"] : ["ignore", "inherit", "inherit"],
     ...(quiet ? { maxBuffer: 32 * 1024 * 1024 } : {}),
   });

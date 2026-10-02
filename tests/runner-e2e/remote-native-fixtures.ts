@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { watch, lstatSync } from "node:fs";
+import { watch, lstatSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
+
+import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
+const PI_FAULT_SOURCE = readFileSync(new URL("./pi-provider-fault.py", import.meta.url), "utf8");
 
 export const REMOTE_FIXTURE_DAYTONA_SDK_VERSION = "0.203.0";
 const NODE = "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node";
@@ -30,8 +33,8 @@ function relative(value: string): string {
 }
 // Only closed diagnostic enums cross the remote boundary; SDK errors and output
 // are never retained. These diagnostics explain failed evidence, not qualification.
-const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "read"] as const;
-const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline"] as const;
+const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "read", "pi-provider-death"] as const;
+const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline", "pi_provider_identity_or_signal_failed"] as const;
 type RpcPhase = typeof RPC_PHASES[number];
 type RpcCode = typeof RPC_CODES[number];
 interface RpcDiagnostic { phase: RpcPhase; code: RpcCode }
@@ -121,13 +124,13 @@ export function createRemoteTargetWatch(directory: string, name: string, io = { 
 const OBSERVER = String.raw`
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),net=require('node:net'),cp=require('node:child_process');
 const config=JSON.parse(Buffer.from(process.argv[2],'base64').toString());
-const parseStat=PARSE_STAT;const runRoot=RUN_ROOT;const watchTarget=WATCH_TARGET;
+const parseStat=PARSE_STAT;const runRoot=RUN_ROOT;const watchTarget=WATCH_TARGET;const PI_FAULT_SOURCE=PI_FAULT_PROGRAM,PI_CLOSURE_PIN=PI_CLOSURE_DIGEST;
 const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
 const cwdStat=fs.lstatSync(config.binding.remoteCwd,{bigint:true}),rootStat=fs.lstatSync(config.root,{bigint:true}),scriptStat=fs.lstatSync(__filename,{bigint:true}),scriptHash=hash(fs.readFileSync(__filename));
 const runtimeRoot=path.join(config.binding.remoteCwd,config.runtimeRelative),runtimeStat=fs.lstatSync(runtimeRoot,{bigint:true});if(!runtimeStat.isDirectory()||runtimeStat.isSymbolicLink()||fs.realpathSync(runtimeRoot)!==runtimeRoot)throw Error('runtime_root_identity');let observedPrpEnvironmentLeaseId=null;
 const boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
 const targets=new Map();let complete=true,sealed=false,root=null,attached=null,child=null,client=null,childTimer=null;
-const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false;
+const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false,piFaultAttempted=false;
 function identity(pid){return parseStat(pid,fs.readFileSync('/proc/'+pid+'/stat','utf8'),boot)}
 function table(){const ids=fs.readdirSync('/proc').filter(x=>/^\d+$/.test(x)&&Number(x)>1);if(ids.length>4096)throw Error('process_bound');return ids.flatMap(x=>{try{return [identity(Number(x))]}catch(e){if(e.code==='ENOENT'||e.code==='ESRCH')return [];throw e}})}
 function sample(){
@@ -166,6 +169,13 @@ const server=net.createServer(socket=>{sockets.add(socket);socket.on('close',()=
  else if(r.op==='arm'){if(waiters.size)result={armed:true,sealed};else{armWaiters.add(socket);socket.on('close',()=>armWaiters.delete(socket));return}}
  else if(r.op==='publish'){if(sealed||publishedHash||r.path!==config.actionFile||typeof r.text!=='string'||Buffer.byteLength(r.text)>16384)throw Error('publish_bound');const p=path.join(config.binding.remoteCwd,config.actionFile);if(fs.realpathSync(path.dirname(p))!==path.dirname(p))throw Error('publish_parent');publishedHash=hash(r.text);try{fs.writeFileSync(p,r.text,{flag:'wx',mode:0o600})}catch(e){publishedHash=null;throw e}result={path:r.path,sha256:publishedHash,published:true};}
  else if(r.op==='read'){const p=r.path==='@cross-root'&&config.crossRoot?path.join(config.root,'cross-root-target'):path.join(config.binding.remoteCwd,r.path);if(r.path!=='@cross-root'&&!config.targets.includes(r.path))throw Error('unregistered_read');const status=file(p);if(status.absent)throw Error('file_missing');result={...status,base64:readSafe(p).toString('base64')};}
+ else if(r.op==='pi-provider-death'){
+  if(piFaultAttempted||sealed||!publishedHash||!root||!complete||typeof r.runtimeEnvironmentLeaseId!=='string'||r.runtimeEnvironmentLeaseId!==observedPrpEnvironmentLeaseId)throw Error('pi_provider_identity_or_signal_failed');
+  piFaultAttempted=true;const before=sample();if(!before.captured||!before.live.includes(root.pid))throw Error('pi_provider_identity_or_signal_failed');
+  const request={root:{pid:root.pid,ppid:root.ppid,startTicks:root.startTicks,bootId:root.bootId},binding:config.binding,runtimeEnvironmentLeaseId:r.runtimeEnvironmentLeaseId,runnerdSha256:config.runnerdSha256,closureSha256:PI_CLOSURE_PIN};
+  const childResult=cp.spawnSync('/usr/bin/python3',['-I','-c',PI_FAULT_SOURCE,Buffer.from(JSON.stringify(request)).toString('base64')],{env:{PATH:'/usr/bin:/bin'},timeout:8000,maxBuffer:32768,encoding:'utf8'});
+  if(childResult.status!==0||childResult.error)throw Error('pi_provider_identity_or_signal_failed');result=JSON.parse(childResult.stdout);
+ }
  else if(r.op==='attached'){if(attached||sealed)throw Error('attached_already_configured');if(!config.targets.includes(r.marker)||!Number.isInteger(r.delayMs)||r.delayMs<100||r.delayMs>8000)throw Error('attached_bounds');
   attached={connections:0,failure:null,commandExit:null,markerWrittenAtMs:null,markerWrittenMonotonicNs:null,clientExitedAtMs:null,clientExitedMonotonicNs:null};
   const clientScript=path.join(config.root,'client.cjs'),clientSocket=path.join(config.root,'attached.sock');
@@ -186,7 +196,7 @@ server.listen(path.join(config.root,'control.sock'));setTimeout(()=>{complete=fa
 `;
 const ATTACHED_CLIENT = String.raw`const net=require('node:net');const s=net.connect(process.argv[2]);let b='';s.setTimeout(15000,()=>process.exit(3));s.on('error',()=>process.exit(4));s.on('connect',()=>s.write(JSON.stringify({nonce:process.argv[3],pid:process.pid})+'\n'));s.on('data',x=>{b+=x;if(b.length>1024)process.exit(6);if(b.includes('\n')){const r=JSON.parse(b);s.end();process.exit(r.code===0?0:5)}});`;
 function observerSource() {
-  return OBSERVER.replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
+  return OBSERVER.replace("PI_FAULT_PROGRAM", () => JSON.stringify(PI_FAULT_SOURCE)).replace("PI_CLOSURE_DIGEST", () => JSON.stringify(PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"])).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
     .replace("WATCH_TARGET", () => createRemoteTargetWatch.toString()).replace("ATTACHED_CLIENT", () => JSON.stringify(ATTACHED_CLIENT));
 }
 const RPC = String.raw`const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process'),crypto=require('node:crypto');const r=JSON.parse(Buffer.from(process.argv[1],'base64').toString());const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
@@ -204,6 +214,26 @@ function rpcSource() {
   return RPC.replace("RPC_CODES", () => JSON.stringify(RPC_CODES)).replace("RPC_PHASES", () => JSON.stringify(RPC_PHASES)).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString());
 }
 
+export interface PiProviderDeathReceipt {
+  schema: "paperclip.e2e.pi-provider-death.v1"; binding: RemoteNativeBinding; runtimeEnvironmentLeaseId: string;
+  target: RemoteProcessIdentity; ancestry: RemoteProcessIdentity[]; nodeSha256: string; entrypointSha256: string; closureSha256: string;
+  entrypointAttribution: "pinned_wrapper_parent"; originalChildArgvAvailable: false; observedChildTitle: "pi";
+  signalled: true; signal: "SIGKILL"; targetKind: "pi_native_child"; workerSignalled: false;
+}
+export function validatePiProviderDeathReceipt(value: unknown, binding: RemoteNativeBinding, root: RemoteProcessIdentity, lease: string): PiProviderDeathReceipt {
+  const r = record(value), target = record(r.target), ancestry = Array.isArray(r.ancestry) ? r.ancestry.map(record) : [];
+  fail(r.schema === "paperclip.e2e.pi-provider-death.v1" && JSON.stringify(r.binding) === JSON.stringify(binding)
+    && r.entrypointAttribution === "pinned_wrapper_parent" && r.originalChildArgvAvailable === false && r.observedChildTitle === "pi"
+    && r.runtimeEnvironmentLeaseId === lease && r.signalled === true && r.signal === "SIGKILL" && r.targetKind === "pi_native_child" && r.workerSignalled === false
+    && sha(r.nodeSha256) && sha(r.entrypointSha256) && r.closureSha256 === PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"], "pi_fault_receipt");
+  fail(ancestry.length >= 3 && ancestry.length <= 64 && new Set(ancestry.map(p => p.pid)).size === ancestry.length
+    && ancestry.every(p => Number.isSafeInteger(p.pid) && Number(p.pid) > 1 && Number.isSafeInteger(p.ppid) && Number(p.ppid) > 0
+      && typeof p.startTicks === "string" && /^\d+$/u.test(p.startTicks) && p.bootId === root.bootId)
+    && ["pid", "ppid", "startTicks", "bootId"].every(k => ancestry[0]?.[k] === target[k] && ancestry.at(-1)?.[k] === record(root)[k])
+    && ancestry.slice(0, -1).every((p, i) => p.ppid === ancestry[i + 1]?.pid) && target.pid !== root.pid, "pi_fault_ancestry");
+  return value as PiProviderDeathReceipt;
+}
+
 export interface RemoteNativeFixture {
   readonly binding: RemoteNativeBinding;
   readonly remoteCwd: string;
@@ -212,6 +242,8 @@ export interface RemoteNativeFixture {
   /** Watchers and exact run-root identity are already armed at return from bind. */
   readonly baseline: RemoteNativeSnapshot;
   snapshot(label: string): Promise<RemoteNativeSnapshot>;
+  /** One-shot fault against the exact admitted Pi child; never a worker kill. */
+  terminatePiProvider?(runtimeEnvironmentLeaseId: string): Promise<PiProviderDeathReceipt>;
   readFile(path: string): Promise<Buffer>;
   publishAction(path: string, text: string): Promise<void>;
   setupAttachedCommand(input: { marker: string; markerText: string; delayMs: number }): Promise<{ command: string; commandSha256: string }>;
@@ -424,6 +456,7 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
     stopReceipt();
     throw error;
   }
+  let piFaultAttempted = false;
   let closed = false, published = false, finished: RemoteNativeSnapshot | undefined;
   const retainedFiles = new Map<string, Buffer>();
   return {
@@ -432,6 +465,12 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       fail(typeof label === "string" && /^[a-zA-Z0-9_-]{1,80}$/u.test(label), "snapshot_label");
       fail(!closed && !finished, "fixture_closed");
       return readSnapshot(await rpc({ op: "snapshot" }), binding!, names, actionFile, options.runnerdSha256);
+    },
+    async terminatePiProvider(runtimeEnvironmentLeaseId) {
+      fail(!closed && !finished && published && !piFaultAttempted && /^[A-Za-z0-9._:-]{1,240}$/u.test(runtimeEnvironmentLeaseId), "pi_fault_admission");
+      piFaultAttempted = true; // Uncertain delivery never retries the signal.
+      const receipt = await rpc({ op: "pi-provider-death", runtimeEnvironmentLeaseId });
+      return validatePiProviderDeathReceipt(receipt, binding!, baseline.processes.root!, runtimeEnvironmentLeaseId);
     },
     async readFile(path) {
       fail(!closed && names.includes(path), "unregistered_read");

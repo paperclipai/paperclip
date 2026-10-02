@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseProviderPackArguments, materializeCandidateProviderPack } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackSelections } from "./candidate-provider-pack.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -173,14 +173,14 @@ try {
   }
 
   const candidateProviders = {};
-  for (const provider of candidates) {
+  for (const { provider, qualification } of providerPackSelections(candidates)) {
     const assetPath = `provider-assets/${provider}/${process.platform}-${process.arch}`;
     const metadata = await materializeCandidateProviderPack({ provider, outputRoot: join(temporaryRoot, assetPath) });
     if (typeof metadata?.version !== "string" || !metadata.version || metadata.version.length > 120
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification, path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -334,7 +334,7 @@ try {
       codex:
         "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
     },
-    ...(candidates.length ? { candidateProviders } : {}),
+    candidateProviders,
     artifacts: {
       grokLauncher: {
         path: "dist/providers/grok/launcher.cjs",

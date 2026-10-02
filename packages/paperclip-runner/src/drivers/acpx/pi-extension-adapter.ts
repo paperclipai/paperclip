@@ -3,7 +3,7 @@ import { redactPaperclipSemanticValue } from "../../semantic-tools/redaction.js"
 import type { AcpxProfileExtensionAdapter, AcpxProfileExtensionContext } from "./profile-extensions.js";
 
 export const PI_NOTICE_METHOD = "paperclip/pi_notice";
-const CATEGORIES = new Set(["startup", "extension_notify", "invalid_question", "auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end", "summarization_retry_scheduled", "session_stats", "auto_compaction_policy"]);
+const CATEGORIES = new Set(["startup", "extension_notify", "invalid_question", "auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end", "summarization_retry_scheduled", "session_stats", "auto_compaction_policy", "runtime_failure"]);
 const safeText = (value: string, limit = 4000) => String(redactPaperclipSemanticValue(value)).slice(0, limit);
 
 /** Notices are display-only session evidence. They carry neither assistant

@@ -286,7 +286,7 @@ is explicit-only. No private control-plane hooks or direct database writes are u
 
 ## Pi native boundaries
 
-The explicit-only `pi-native` suite has four local and three Daytona candidate
+The explicit-only `pi-native` suite has five local and four Daytona candidate
 cells, with no automatic retries. The remote suite excludes automatic deny-all
 because its initial native file read is itself denied. `native-questions` answers the real runner-owned Pi select, confirm, input
 and editor tool through four durable browser cards, reloading before every answer.
@@ -304,12 +304,88 @@ is reconnect evidence only; these cases do not establish provider-death recovery
 They use public product APIs, real browser answers, and ordinary isolated files;
 no database writes, private hooks, or fabricated provider results are allowed.
 
+### Pending native controller restart
+
+`native-pending-controller-restart` restarts the public controller while one Pi
+input callback remains unanswered. It requires the same durable interaction,
+request, live run, native session, turn and producer before and after restart.
+Only then does the browser submit previously undisclosed text. One durable
+resolution, one original successful turn and independently read exact workspace
+JSON prove delivery. A replacement run, replay, cancellation, expiry, rewritten
+request or merely reloaded browser cannot pass. Full states and PRP identities
+stay in private snapshots under the existing publication allowlist.
+
+### Pi file editing and registered artifacts
+
+Pi's `extended-harnesses/file-edit-validate` seeds exact bytes before startup and
+requires one native edit lifecycle followed by a successful native bash execution
+with the exact nonce-bound byte-validation command as its projected title and a
+validation marker. A marker-only echo cannot pass. Independent final bytes must
+match the fixture. The
+real `register_deliverable` receipt, attachment metadata, publication activity,
+visible task attachment and authenticated public download must all agree on the
+file's bytes, hash, company, issue, agent and originating run. A file on disk or a
+model completion claim cannot substitute for publication. Daytona additionally
+requires the public run's finalized `nativeWorkspaceSync` descriptor, baseline and
+final-host hashes, bound workspace and public environment lease to match this
+run/company/environment/provider lease and remote root. The checked host bytes
+come through production stage-in/copy-back; this is explicitly `product_copyback`
+provenance, not a sealed guest observation or an independently recomputed whole
+host-workspace snapshot. Downloaded artifact bytes remain independently checked.
+
+Private `pi-file-seed.json`, `pi-file-observation.json` and `pi-file-evidence.json`
+retain the seed, downloaded/workspace bytes, public publication receipts, checked hashes,
+correlated tool identities and a before/after diff computed from independently
+checked workspace bytes. This is not native diff presentation. The current
+common tool projection omits raw arguments and reports typed `exitCode: null`;
+the oracle checks the command title and completed lifecycle, without claiming raw
+invocation arguments or a typed exit code. The sidecar converts Pi absolute file
+locations into bounded workspace-relative display targets; the oracle requires
+the exact relative filename, but that display value is not file-access authority.
+Restoring raw arguments, typed exit code and native diff presentation remains a
+capability follow-up.
+
+Wrong or missing lifecycle, byte, registration, download or recovery evidence is
+a candidate failure; transport/infrastructure failures retain the existing
+harness classification. Positive and plausible-wrong/missing-evidence unit
+calibrations do not count as paid qualification. All automatic retries stay zero.
+
+`native-pending-provider-death` adds one real Daytona-only Product journey.
+After the native input is publicly durable and still unanswered, the existing
+owned remote observer admits the exact Pi child through its verified wrapper
+parent, source-pinned closure files, executable inode, workspace, run/lease/session
+ancestry and fresh PID/start-time checks. Pi overwrites Linux argv via
+`process.title`, so the private receipt explicitly uses pinned-parent entrypoint
+attribution and never claims original child argv. A pidfd targets only that child;
+worker death, broad process-name matching and controller Stop cannot substitute.
+
+The runtime itself must emit `runtime_request.expired` for the original callback
+with `provider_process_lost` and `replayAllowed:false`, followed by native turn
+failure. The permanent failed-terminal recovery projection must put the owned
+issue in Blocked, proved through API and browser and retained through cleanup.
+The original durable card must expire, retain zero answers and lose its browser
+answer controls; any supersession must name the separate fallback card.
+Both public stale-response APIs must reject the old answer. Any production-created
+`wake_assignee` fallback is separately identified and remains unanswered; it is not
+a restored native callback. The sealed observer proves no continuation marker was
+created and all owned processes retired before public lease deletion. The company
+must retain exactly the original run through cleanup.
+
+Local provider-death remains excluded. The Python admission tests include a
+real pidfd calibration against a synthetic title-changing child on native Linux;
+the normal E2E unit wrapper invokes it with no provider credentials or network.
+macOS runs metadata negatives and explicitly skips this Linux-only calibration.
+That calibration and the earlier fake-Pi wrapper/bridge tests do not count as the
+real paid Product lifecycle proof. This new candidate cell remains unqualified.
+
 ## Pi active controls
 
 The explicit-only `pi-controls` suite adds `pending-permission-stop` and
 `same-turn-steering` on local and Daytona, each with one provider run, a
-120-second active-turn timeout and a 300-second attempt budget. The existing
-19 Pi cells and their suite fingerprints are unchanged. Catalog presence and
+120-second active-turn timeout and a 300-second attempt budget. These four
+control cases retain their behavior; the current matrix totals 26 Pi cells.
+Pi 1/profile 12 and coverage revisions intentionally change the affected suite
+fingerprints, so older qualification receipts cannot be reused. Catalog presence and
 deterministic calibration do not constitute paid qualification.
 
 Both cases create a task through the browser and select `approve-reads` and

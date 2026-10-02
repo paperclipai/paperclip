@@ -5,6 +5,7 @@ import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote
 import { runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
 import { runPiNativeFlow } from "./pi-native-flow.js";
+import { seedPiFile, collectPiFileEvidence } from "./pi-file-evidence.js";
 import { warmManagedFileEvidence } from "./warm-managed-files.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
@@ -574,6 +575,7 @@ for (const execution of executions) {
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
+    let piFileSeed: Awaited<ReturnType<typeof seedPiFile>> | undefined;
     const completionQuality: CompletionQualityRecord[] = [];
     const completionEvidence = async (name: string, data: unknown) => {
       await writeSanitizedJson(snapshotsDir, name, data, secrets);
@@ -844,6 +846,11 @@ for (const execution of executions) {
           : {}),
       });
       expect(experimental.enableNativeRunner).toBe(true);
+
+      if (execution.suite.id === "extended-harnesses" && execution.profile.qualificationCandidate === "pi" && execution.task.id === "file-edit-validate") {
+        piFileSeed = await seedPiFile(workspacePath, nonce);
+        await writeSanitizedJson(snapshotsDir, "pi-file-seed.json", piFileSeed, secrets);
+      }
 
       if (execution.suite.id === "daytona-git-streaming") {
         await setupGitStreamingWorkspace(workspacePath);
@@ -2135,6 +2142,15 @@ for (const execution of executions) {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
         if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
+      }
+      if (piFileSeed) {
+        const proof = await collectPiFileEvidence({ page, api, nonce, companyId: fixtures.company.id,
+          issueId: issue.id, agentId: fixtures.agent.id, run: finalRun,
+          events: runEventsByRun.find(entry => entry.runId === finalRun.id)?.events ?? [],
+          seed: piFileSeed, workspace: workspacePath,
+          environment: execution.environment.id === "daytona" ? "daytona" : "local", environmentId: fixtures.environment.id,
+          evidence: data => writeSanitizedJson(snapshotsDir, "pi-file-observation.json", data, secrets) });
+        await writeSanitizedJson(snapshotsDir, "pi-file-evidence.json", proof, secrets);
       }
       if (execution.suite.id === "task-titles") {
         const titleEvidence = gradeTaskTitle({

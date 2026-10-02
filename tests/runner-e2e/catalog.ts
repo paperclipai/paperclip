@@ -3,6 +3,7 @@ import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
 import { piNativeTasks } from "./pi-native-cases.js";
+import { piFilePrompt } from "./pi-file-evidence.js";
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
@@ -1102,9 +1103,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "pi-native", label: "Pi native boundaries", manualOnly: true,
     description: "Pi native forms, registered agent files and human permission denial on local and Daytona execution; automatic deny-all remains local-only.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "pi"),
-    environments: runnerEnvironments, tasks: piNativeTasks, expectedMatrixSize: 7,
-    excludedExecutionIds: ["pi-native.runner-acpx-pi.daytona.restrictive-denial"],
-    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, remoteDenyAll: "unsupported-native-bootstrap-read-is-denied", remoteEvidence: "owned-lease-sealed-observer" },
+    environments: runnerEnvironments, tasks: piNativeTasks, expectedMatrixSize: 10,
+    excludedExecutionIds: ["pi-native.runner-acpx-pi.daytona.restrictive-denial", "pi-native.runner-acpx-pi.local.native-pending-provider-death"],
+    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, providerDeath: "daytona-exact-pi-child-pidfd-production-expiry", remoteDenyAll: "unsupported-native-bootstrap-read-is-denied", remoteEvidence: "owned-lease-sealed-observer", pendingControllerRestart: "same-live-native-request" },
   },
   {
     id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
@@ -1146,7 +1147,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
     tasks: [...openRouterBreadthTasks, localIntegrityTasks[1]!, extendedHarnessFileTask],
     expectedMatrixSize: 30,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28" },
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28", piFileEvidence: "seed-edit-execute-public-download-v1" },
   },
   {
     id: "instruction-persistence", label: "Instruction Persistence",
@@ -1489,7 +1490,8 @@ export function buildRunnerMatrix(
               suiteDefinitionHash: suiteDefinitionHash(suite),
               profile,
               environment,
-              task,
+              task: suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
+                ? { ...task, buildPrompt: piFilePrompt } : task,
               groups: [
                 ...new Set([
                   ...suite.groups,

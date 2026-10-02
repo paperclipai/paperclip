@@ -5,19 +5,21 @@ import { buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
 describe("Pi native Product qualification", () => {
-  it("selects four local and three remote Pi cases without changing the basic extended matrix", () => {
+  it("selects five local and five remote Pi cases without changing the basic extended matrix", () => {
     const suite = runnerSuites.find(row => row.id === "pi-native")!;
-    expect(suite.manualOnly).toBe(true); expect(suite.expectedMatrixSize).toBe(7);
+    expect(suite.manualOnly).toBe(true); expect(suite.expectedMatrixSize).toBe(10);
     const cells = runnerMatrix.filter(row => row.suite.id === suite.id);
-    expect(cells).toHaveLength(7);
+    expect(cells).toHaveLength(10);
     expect(cells.every(row => row.profile.qualificationCandidate === "pi")).toBe(true);
     expect(cells.filter(row => row.environment.id === "local").map(row => [row.task.id, row.task.expectedRunCount])).toEqual([
       ["native-questions", 1], ["agent-files-fresh-run", 2], ["restrictive-denial", 1], ["human-permission-denial", 1],
+      ["native-pending-controller-restart", 1],
     ]);
     expect(cells.filter(row => row.environment.id === "daytona").map(row => [row.task.id, row.task.expectedRunCount])).toEqual([
       ["native-questions", 1], ["agent-files-fresh-run", 2], ["human-permission-denial", 1],
+      ["native-pending-controller-restart", 1], ["native-pending-provider-death", 1],
     ]);
-    expect(cells.reduce((sum, row) => sum + row.task.expectedRunCount, 0)).toBe(9);
+    expect(cells.reduce((sum, row) => sum + row.task.expectedRunCount, 0)).toBe(12);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.suite.id === suite.id)).toBe(false);
     expect(runnerMatrix.filter(row => row.suite.id === "extended-harnesses")).toHaveLength(30);
     expect(piNativeTasks[0]!.buildPrompt("fixture")).toContain("paperclip_native_question");

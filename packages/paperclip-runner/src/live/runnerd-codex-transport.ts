@@ -3518,7 +3518,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_adopted_runner_state_directory_required");
     }
     if (options.provider === "acpx" && options.acpxAgent !== undefined
-      && ["pi", "cursor", "copilot"].includes(options.acpxAgent)
+      && ["cursor", "copilot"].includes(options.acpxAgent)
       && options.acpxCandidateProfile !== options.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }

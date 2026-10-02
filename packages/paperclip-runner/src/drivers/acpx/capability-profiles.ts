@@ -53,7 +53,7 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     extensionNotifications: ["github.com/copilot/sessionEvent"],
   },
   pi: {
-    displayName: "Pi", qualification: "pending", models: "exact-qualified",
+    displayName: "Pi", qualification: "qualified", models: "exact-qualified",
     permissions: "interactive", questions: "form", plans: "semantic-only", tools: "owned-extension",
     recovery: "session-load", usage: "reported", steering: "owned-extension-pending", followUp: "owned-extension-pending",
     artifacts: "references-pending", extensionRequests: [], extensionNotifications: ["paperclip/pi_notice"],

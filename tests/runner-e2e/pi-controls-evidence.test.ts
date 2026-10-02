@@ -124,18 +124,24 @@ describe("Pi controls catalog admission", () => {
     expect(cells).toHaveLength(4); expect(cells.every(c => c.profile.qualificationCandidate === "pi" && c.task.expectedRunCount === 1)).toBe(true);
     expect(cells.map(c => `${c.environment.id}/${c.task.id}`).sort()).toEqual(["daytona/pending-permission-stop", "daytona/same-turn-steering", "local/pending-permission-stop", "local/same-turn-steering"]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(c => c.suite.id === "pi-controls")).toBe(false);
-    expect(validateRunnerCatalog()).toHaveLength(466);
+    expect(validateRunnerCatalog()).toHaveLength(469);
     for (const cell of cells) expect(JSON.parse(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "pi", model: cell.profile.model }]);
     expect(() => assertRemoteNativeEvidencePrerequisites(cells, {})).toThrow();
   });
-  it("keeps existing Pi-native and active Stop definition identities", () => {
+  it("pins the Pi 1 profile and versioned coverage while retaining active Stop identity", () => {
+    // Pi 1/profile 12 changes profile-bearing definitions. Coverage v4/v2 adds
+    // provider death, pending restart and the strict file oracle; no runtime admission is promoted.
+    const pi = runnerMatrix.find(c => c.profile.qualificationCandidate === "pi")!.profile;
+    expect(pi.modelQualification?.qualificationId).toBe("pi:0.0.33:1.0.0:openrouter");
+    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 4, profileVersion: 12 });
+    expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 2 });
     const hashes = Object.fromEntries(runnerSuites.filter(s => ["pi-native", "native-active-stop", "extended-harnesses", "rich-acp-warm-continuity"].includes(s.id)).map(s => [s.id, suiteDefinitionHash(s)]));
     expect(hashes).toEqual({
-      "pi-native": "7aaacf83924fdfc7163594e08b9a64ac516f9eb8a0c2c96636b6d2fe4f23776a",
+      "pi-native": "eec3b2c140d81561e69c13c1b193b66f7790af0cfc90bbed76c57af2d1e3cdde",
       "native-active-stop": "99682b2b106d816a011834fae5a944ed7729958893709d5b83a19b6f595e7e4d",
-      "rich-acp-warm-continuity": "aead43b3f4f8ed285e2d1c30a517a1850633ae42e593f53122bea9e72af92585",
-      "extended-harnesses": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "rich-acp-warm-continuity": "25e69f031696aeb459e6722a056ae0802379f9137799648fdd1945881f32f41a",
+      "extended-harnesses": "e50f79cf604bffb2cdee3ad4e8bc1d106045a4f44ef07e877032ff5b8960c8ab",
     });
-    expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(19);
+    expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(22);
   });
 });

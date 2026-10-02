@@ -8,7 +8,7 @@ const provider = { kind: "acpx", agent: "cursor", model: "exact-model", permissi
 const authorize = (value: unknown) => ({ [ACPX_QUALIFICATION_ENV]: JSON.stringify(value) });
 describe("host ACPX qualification admission", () => {
   afterEach(() => vi.unstubAllEnvs());
-  it.each(["cursor", "copilot", "pi"])("admits %s through agent validation and native input only for the exact host pair", (agent) => {
+  it.each(["cursor", "copilot"])("admits %s through agent validation and native input only for the exact host pair", (agent) => {
     const config = { provider: "acpx", acpxAgent: agent, model: "exact-model" };
     vi.stubEnv(ACPX_QUALIFICATION_ENV, undefined);
     expect(() => resolvePaperclipRunnerProviderProfile(config)).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
@@ -18,6 +18,21 @@ describe("host ACPX qualification admission", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })).toMatchObject({ acpxAgent: agent, model: config.model });
     expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "other-model" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_qualification_invalid" }));
     expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
+  });
+  it("admits only the exact Pi model without host authorization and preserves permission modes", () => {
+    const config = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
+    for (const authorization of [undefined, "malformed unrelated candidate authorization"]) {
+      vi.stubEnv(ACPX_QUALIFICATION_ENV, authorization);
+      expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject(config);
+      for (const acpxPermissionMode of [undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"]) {
+        expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...config, acpxPermissionMode } }))
+          .toMatchObject({ ...config, acpxPermissionMode: acpxPermissionMode ?? "approve-all" });
+      }
+      for (const model of [undefined, "", "different-model"]) {
+        expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model }))
+          .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_unqualified" }));
+      }
+    }
   });
   it("keeps normal candidate execution closed and admits only the exact operator pair", () => {
     expect(resolveAcpxQualification(provider, {})).toBeUndefined();

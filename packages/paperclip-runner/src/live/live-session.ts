@@ -902,7 +902,7 @@ export class CapabilityLiveSessionService {
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
     if (input.provider === "acpx" && input.acpxAgent !== undefined
-      && ["pi", "cursor", "copilot"].includes(input.acpxAgent)
+      && ["cursor", "copilot"].includes(input.acpxAgent)
       && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }

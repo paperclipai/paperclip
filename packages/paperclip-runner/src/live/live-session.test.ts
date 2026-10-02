@@ -27,15 +27,28 @@ import { persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js"
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 import * as workspaceDiff from "./workspace-diff.js";
 
-it.each(["pi", "cursor", "copilot"] as const)("requires separately bound evaluation opt-in for %s", async (acpxAgent) => {
+it.each(["cursor", "copilot"] as const)("requires separately bound evaluation opt-in for %s", async (acpxAgent) => {
   const service = new CapabilityLiveSessionService();
   await expect(service.create({ provider: "acpx", acpxAgent, requestedModel: "explicit-model" }))
     .rejects.toThrow("explicit evaluation opt-in");
   const mismatched = new CapabilityLiveSessionService({ transportOptions: {
-    acpxCandidateProfile: acpxAgent === "pi" ? "cursor" : "pi",
+    acpxCandidateProfile: "pi",
   } });
   await expect(mismatched.create({ provider: "acpx", acpxAgent, requestedModel: "explicit-model" }))
     .rejects.toThrow("explicit evaluation opt-in");
+});
+
+it("admits Pi live sessions without candidate opt-in while preserving the exact profile", async () => {
+  const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(providerState()) });
+  const session = await service.create({ provider: "acpx", acpxAgent: "pi", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
+  try {
+    expect(session.snapshot().config.acpxProfile).toMatchObject({
+      agent: "pi", agentProfileVersion: 11,
+      commandDigest: "sha256:5e276f48c8a87b3e6165369faac62d3925282c84b98934575b1b7b97ad50b309",
+    });
+    await expect(service.create({ provider: "acpx", acpxAgent: "pi", requestedModel: "another-model" }))
+      .rejects.toThrow("requires exact model");
+  } finally { await session.shutdown("test complete"); }
 });
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {

@@ -10,7 +10,8 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
-// This test runs real pinned Pi RPC without issuing a prompt or loading keys.
+// Tests run real pinned Pi RPC without live provider credentials. The final
+// stream regressions use synthetic loopback responses and a socket deny guard.
 const packageRoot = process.env.PAPERCLIP_TEST_PI_RUNTIME_ROOT
   ?? dirname(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
 const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
@@ -354,3 +355,163 @@ test("real pinned Pi tool dispatch admits registered agent files and rejects una
     assert.equal(dialogs.length, 2); assert.ok(dialogs.every(title => title.startsWith("paperclip.pi.permission.v1:")));
   } finally { session?.dispose(); await rm(root, { recursive: true, force: true }); }
 });
+
+// This regression crosses Pi 1's real RPC serializer, the owned extension and
+// the patched ACP wrapper. Only an owned loopback HTTP fixture can be reached;
+// dummy authentication is unrelated to any provider account.
+for (const scenario of ["hello", "interleaved-tools", "provider-error", "provider-unknown"]) {
+  test(`real Pi 1 serialized RPC ${scenario} through owned ACP/MCP bridge`, { timeout: 30_000 }, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-pi-stream-")));
+    let child; let server;
+    t.after(async () => {
+      if (child) {
+        child.stdin.end();
+        if (child.exitCode === null) { const timer = setTimeout(() => child.kill("SIGTERM"), 3000); await once(child, "exit"); clearTimeout(timer); }
+      }
+      if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+      try {
+        if (child) assert.equal(JSON.parse(await readFile(join(root, "owned-retirement.json"), "utf8")).allOwnedChildrenClosed, true);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+    await mkdir(join(root, "workspace")); await mkdir(join(root, "agent"));
+    const wrapperRoot = process.env.PAPERCLIP_TEST_PI_ACP_PACKAGE
+      ? dirname(process.env.PAPERCLIP_TEST_PI_ACP_PACKAGE)
+      : join(dirname(dirname(packageRoot)), "pi-acp");
+    const calls = []; const modelRequests = [];
+    const tools = ["paperclip_get_context", "paperclip_finish"].map(name => ({ name, description: name, inputSchema: { type: "object", properties: {}, additionalProperties: true } }));
+    server = createServer(async (request, response) => {
+      let body = ""; for await (const chunk of request) { body += chunk; assert.ok(body.length < 1_048_576); }
+      const value = JSON.parse(body);
+      if (request.url === "/v1/chat/completions") {
+        modelRequests.push(value.model); assert.ok(modelRequests.length <= 3);
+        if (scenario.startsWith("provider-")) {
+          response.writeHead(scenario === "provider-error" ? 401 : 418, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "Bearer sensitive-canary /private/sensitive-canary", type: "authentication_error" } })); return;
+        }
+        const n = modelRequests.length;
+        const toolTurn = n === 1 || scenario === "hello" && n === 2;
+        const names = scenario === "interleaved-tools" ? tools.map(tool => tool.name) : [n === 1 ? tools[0].name : tools[1].name];
+        const chunks = [];
+        if (toolTurn) {
+          chunks.push({ choices: [{ index: 0, delta: { tool_calls: names.map((name, index) => ({ index, id: `call_${n}_${index}`, type: "function", function: { name: `mcp__paperclip__${name}`, arguments: '{"fixture":' } })) } }] });
+          // Reverse delivery order proves index correlation, not FIFO guessing.
+          for (const index of names.map((_, index) => index).reverse()) chunks.push({ choices: [{ index: 0, delta: { tool_calls: [{ index, function: { arguments: `${index}}` } }] } }] });
+        } else chunks.push({ choices: [{ index: 0, delta: { reasoning: "Fixture thought", content: "HELLO_COMPLETE" } }] });
+        chunks.push({ choices: [{ index: 0, delta: {}, finish_reason: toolTurn ? "tool_calls" : "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(chunks.map(chunk => `data: ${JSON.stringify({ id: "offline", ...chunk })}\n\n`).join("") + "data: [DONE]\n\n"); return;
+      }
+      assert.equal(request.url, "/mcp");
+      calls.push({ method: value.method, name: value.params?.name, args: value.params?.arguments });
+      const result = value.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : value.method === "tools/list" ? { tools }
+          : { content: [{ type: "text", text: JSON.stringify({ accepted: true }) }] };
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ jsonrpc: "2.0", id: value.id, result }));
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    await writeFile(join(root, "agent/models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "offline-fixture-not-a-key" } } }));
+    const bootstrap = join(root, "bootstrap.mjs");
+    await writeFile(bootstrap, `
+import net from "node:net";
+import { writeFileSync } from "node:fs";
+const original = net.Socket.prototype.connect; let admitted = 0;
+net.Socket.prototype.connect = function(...args) {
+  const a = Array.isArray(args[0]) ? args[0] : args;
+  const options = typeof a[0] === "object" ? a[0] : { port: a[0], host: a[1] };
+  if (options.path || options.host !== "127.0.0.1" || Number(options.port) !== ${port}) throw new Error("OFFLINE_NETWORK_DENIED_BEFORE_CONNECT");
+  admitted++; return original.apply(this, args);
+};
+try { new net.Socket().connect({ host: "203.0.113.1", port: 443 }); throw new Error("guard failed"); }
+catch (error) { if (error.message !== "OFFLINE_NETWORK_DENIED_BEFORE_CONNECT" || admitted !== 0) throw error; }
+writeFileSync(${JSON.stringify(join(root, "network-denial.json"))}, JSON.stringify({ deniedBeforeConnect: true, underlyingConnections: admitted }));
+await import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/cli.js")).href)});
+`);
+    const extension = join(root, "extension.mjs");
+    await writeFile(extension, stripTypeScriptTypes(extensionSource));
+    await writeFile(join(root, "pi-acp-runtime.js"), stripTypeScriptTypes(await readFile(new URL("../src/drivers/acpx/pi-acp-runtime.ts", import.meta.url), "utf8")));
+    // The fixture owns each real Pi ChildProcess handle even if the wrapper
+    // elects to exit early. No numeric PID/group selector is used for cleanup.
+    const owner = join(root, "wrapper-owner.mjs");
+    await writeFile(owner, `
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { writeFileSync } from "node:fs";
+const spawn = childProcess.spawn; const children = [];
+childProcess.spawn = (...args) => {
+  const child = spawn(...args); const owned = { child, closed: false, spawnError: false, completion: null };
+  child.on("error", () => { owned.spawnError = true; });
+  owned.completion = new Promise(resolve => child.once("close", () => { owned.closed = true; resolve(); }));
+  children.push(owned); return child;
+};
+syncBuiltinESMExports();
+const exit = process.exit.bind(process); let retiring;
+process.exit = code => {
+  retiring ??= (async () => {
+    const retirements = await Promise.allSettled(children.map(async owned => {
+      const child = owned.child;
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      const timer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 1500);
+      try { await owned.completion; } finally { clearTimeout(timer); }
+    }));
+    writeFileSync(${JSON.stringify(join(root, "owned-retirement.json"))}, JSON.stringify({ allOwnedChildrenClosed: children.every(owned => owned.closed) && retirements.every(result => result.status === "fulfilled"), spawnErrors: children.filter(owned => owned.spawnError).length, count: children.length }));
+  })().finally(() => exit(code));
+};
+process.on("SIGTERM", () => process.exit(143)); process.on("SIGINT", () => process.exit(130));
+await import(${JSON.stringify(pathToFileURL(join(wrapperRoot, "dist/index.js")).href)});
+`);
+    child = spawn(process.execPath, [owner], {
+      cwd: join(root, "workspace"), stdio: "pipe", env: {
+        PATH: "/usr/bin:/bin", HOME: root, PI_CODING_AGENT_DIR: join(root, "agent"), PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0",
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_PI_READ_ONLY: "0",
+        PAPERCLIP_PI_NODE_EXECUTABLE: await realpath(process.execPath), PAPERCLIP_PI_ENTRYPOINT: bootstrap, PAPERCLIP_PI_EXTENSION_PATH: extension,
+      },
+    });
+    let buffered = ""; let stderr = ""; let sequence = 0; const pending = new Map(); const notifications = [];
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    const decoder = new StringDecoder("utf8");
+    child.stdout.on("data", chunk => {
+      buffered += decoder.write(chunk);
+      for (;;) {
+        const index = buffered.indexOf("\n"); if (index < 0) break;
+        const message = JSON.parse(buffered.slice(0, index)); buffered = buffered.slice(index + 1);
+        const waiter = pending.get(message.id);
+        if (waiter) { pending.delete(message.id); message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result); }
+        else notifications.push(message);
+      }
+    });
+    child.once("exit", () => { for (const waiter of pending.values()) waiter.reject(new Error(`wrapper exited: ${stderr}`)); pending.clear(); });
+    const call = (method, params) => new Promise((resolve, reject) => {
+      const id = ++sequence; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`timeout: ${method}`)); }, 15_000);
+      pending.set(id, { resolve(value) { clearTimeout(timer); resolve(value); }, reject(error) { clearTimeout(timer); reject(error); } });
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+    await call("initialize", { protocolVersion: 1, clientCapabilities: {} });
+    const session = await call("session/new", { cwd: join(root, "workspace"), mcpServers: [{ type: "http", name: "paperclip", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: "Bearer 0123456789abcdef0123456789abcdef" }] }] });
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    await call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: model });
+    const result = await call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Call paperclip_get_context, then paperclip_finish. Finally say HELLO_COMPLETE." }] });
+    assert.deepEqual(JSON.parse(await readFile(join(root, "network-denial.json"), "utf8")), { deniedBeforeConnect: true, underlyingConnections: 0 });
+    assert.ok(modelRequests.every(value => value === "deepseek/deepseek-v4-flash-0731"));
+    assert.doesNotMatch(JSON.stringify({ result, notifications, stderr }), /sensitive-canary/);
+    if (scenario.startsWith("provider-")) {
+      assert.equal(modelRequests.length, 1); assert.equal(calls.filter(call => call.method === "tools/call").length, 0);
+      assert.equal(result._meta.jetbrains.air.sessionFailure.severity, "error");
+      const notice = notifications.find(event => event.method === "paperclip/pi_notice" && event.params.category === "runtime_failure");
+      assert.equal(notice?.params.details.reason, scenario === "provider-error" ? "provider_http_401" : "unknown_native_failure"); return;
+    }
+    assert.equal(result.stopReason, "end_turn"); assert.equal(result._meta?.jetbrains, undefined);
+    assert.deepEqual(calls.filter(call => call.method === "tools/call").map(call => call.name), ["paperclip_get_context", "paperclip_finish"]);
+    assert.equal(result.usage.totalTokens, (scenario === "hello" ? 3 : 2) * 13);
+    const updates = notifications.map(event => event.params?.update).filter(Boolean);
+    assert.equal(updates.filter(update => update.content?.text === "HELLO_COMPLETE").length, 1);
+    assert.ok(updates.some(update => update.sessionUpdate === "agent_thought_chunk" && update.content.text === "Fixture thought"));
+    const starts = updates.filter(update => update.sessionUpdate === "tool_call");
+    assert.equal(starts.length, 2); assert.notEqual(starts[0].toolCallId, starts[1].toolCallId);
+    for (const start of starts) {
+      assert.equal(updates.filter(update => update.toolCallId === start.toolCallId && update.status === "completed").length, 1);
+      assert.ok(updates.some(update => update.toolCallId === start.toolCallId && update.status === "in_progress"));
+    }
+  });
+}

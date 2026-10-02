@@ -1,9 +1,9 @@
 # Pi rich ACP runtime
 
-## Pi 1.0 candidate (2026-10-01, profile v11)
+## Pi 1.0 candidate (2026-10-02, profile v12)
 
 The candidate now pins **`@earendil-works/pi-coding-agent@1.0.0`** with
-`pi-acp@0.0.33`, ACPX `0.13.1`, and portable Node `24.21.0`. Pi v10 and older
+`pi-acp@0.0.33`, ACPX `0.13.1`, and portable Node `24.21.0`. Pi v11 and older
 sessions must reopen. Cursor v10, Copilot v12, and legacy adapters are unchanged.
 This is a new runtime candidate: historical Pi 0.84.2 passes do not qualify it.
 Local Product, Runner protocol, and Daytona paid qualification remain pending.
@@ -16,6 +16,27 @@ and has SHA-256 `638ed3abbe54ef70cbf8673ae4bc531e791613756aac04644cfcdcc4af0fafa
 The isolated npm lock preserves the complete upstream shrinkwrap, supplementing
 seven Pi-family entries' omitted integrities from their exact npm 1.0.0 records.
 Upstream now pins Undici 8.10.2 itself; the previous 8.9.0 replacement is removed.
+
+Profile v11's first local hello failed on its first streamed update: Pi 1 RPC
+removes `message` and `partial` from deltas, while the wrapper required the old
+shape. The run stopped and the task became blocked; this was a runtime
+compatibility failure, not a successful hello. V12 binds deltas to the original
+message occurrence, tracks indexed tool fragments, and checks completed text,
+thinking, tool identity, and arguments against native final receipts. Real Pi 1
+RPC/owned-extension tests reproduce the failure and pass the repaired local-only
+get-context → finish path, interleaved tools, and a sanitized provider error.
+These synthetic loopback responses establish compatibility, not paid qualification.
+Pi may also send a native final message without streamed blocks. That receipt
+is preserved without inventing deltas; only observed completed stream blocks
+are checked against its indexed content. Error or aborted receipts may retire
+incomplete blocks, but cannot contradict blocks already completed.
+
+Runtime failures now emit bounded known reasons before prompt rejection. Raw
+exception bodies, credentials, paths, and unknown text stay withheld. Actual
+provider token usage still comes from native completed receipts; fixture usage
+is not live billing evidence. New wrapper/helper closure pins and Rust admission
+constants require fresh platform packs and daemons. Historical v11 artifacts
+must not be relabeled as v12.
 
 Compatibility changes preserve the existing rich runtime surface:
 

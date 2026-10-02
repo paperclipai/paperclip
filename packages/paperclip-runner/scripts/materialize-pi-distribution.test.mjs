@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +13,17 @@ async function fixture(t) {
   const write = async (path, data) => { await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), data); };
   return { root, write };
 }
+
+test("plain Node loads the source materializer without a TypeScript import resolver", () => {
+  const materializer = new URL("./materialize-pi-distribution.mjs", import.meta.url).href;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { materializePiDistribution } = await import(${JSON.stringify(materializer)});
+    const assert = await import("node:assert/strict");
+    await assert.rejects(materializePiDistribution({ outputRoot: "relative" }), /must be absolute/);
+  `], { env: { PATH: process.env.PATH ?? "", LANG: "en_US.UTF-8" }, encoding: "utf8", timeout: 10_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("distribution lock closes exact wrapper, SDK and upstream Pi graph with integrity", async () => {
   const pkg = JSON.parse(await readFile(new URL("./pi-distribution/package.json", import.meta.url), "utf8"));

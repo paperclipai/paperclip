@@ -113,6 +113,10 @@ for (const scenario of ["narration-final", "tool-only", "empty-final"]) test(`ac
 for (const scenario of ["missing-message-start", "duplicate-message-start", "mismatched-message-end", "missing-message-end"]) test(`actual wrapper rejects malformed native boundaries: ${scenario}`, async t => {
   const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
   await assert.rejects(f.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: scenario }] }), /exited|Internal error/);
+  const failure = f.notifications.find(event => event.method === "paperclip/pi_notice" && event.params.category === "runtime_failure");
+  assert.ok(failure, "native failure notice is flushed before prompt rejection");
+  assert.ok(["rpc_delta_boundary_invalid", "assistant_boundary_invalid"].includes(failure.params.details.reason));
+  assert.equal(failure.params.severity, "error");
 });
 
 test("actual patched ACP process scopes recycled native IDs across iterations and warm prompts", async (t) => {

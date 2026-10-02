@@ -12,6 +12,8 @@ import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
 import type { RemoteNativeFixture, RemoteNativeSnapshot } from "./remote-native-fixtures.js";
+import { runPiPendingProviderDeath, PI_DEATH_MARKER } from "./pi-native-provider-death-flow.js";
+import { runPiPendingControllerRestart } from "./pi-native-restart-flow.js";
 
 export interface PiRemoteBootstrap {
   prompt(nonce: string): string;
@@ -92,7 +94,31 @@ export async function runPiNativeFlow(input: {
     return result;
   }
   try {
-    if (execution.task.id === "native-questions") {
+    if (execution.task.id === "native-pending-provider-death") {
+      if (!remote) throw new Error("Exact Pi-child fault is available only on owned Daytona Linux");
+      await create(execution.task.buildTitle(nonce), execution.task.buildPrompt(nonce), { targets: [PI_DEATH_MARKER] });
+      checks.push(...await runPiPendingProviderDeath({ page, api, companyId: fixtures.company.id, deadlineAt: input.deadlineAt,
+        fixture: currentRemote!, load, events, capture: input.capture, evidence: input.evidence }));
+      const originalRunId = runs[0]!.id;
+      input.registerCleanupAssertion!(async () => {
+        const state = await load();
+        const passed = state.issue.status === "blocked" && state.runs.length === 1 && state.runs[0]?.id === originalRunId && state.runs[0]?.status === "failed"
+          && state.interactions.every(card => card.status === "expired" || (card.status === "pending" && card.continuationPolicy === "wake_assignee"));
+        await input.evidence("pi-provider-death-final-no-replay.json", { ...state, passed });
+        if (!passed) throw new Error("Provider loss replayed a run or consumed the unanswered fallback during cleanup");
+        return [{ id: "death-no-replay-through-cleanup", passed, detail: "Original failed run remains the only run through cleanup" }];
+      });
+    } else if (execution.task.id === "native-pending-controller-restart") {
+      await create(execution.task.buildTitle(nonce), execution.task.buildPrompt(nonce), { targets: ["pi-native-restart-answer.json"] });
+      checks.push(...await runPiPendingControllerRestart({
+        page, companyId: fixtures.company.id, deadlineAt: input.deadlineAt, load, events,
+        restart: input.restart, settle: () => settle(1), capture: input.capture, evidence: input.evidence,
+        readProof: async () => {
+          if (remote) await finishRemote("native-restart-final");
+          return JSON.parse(await readWorkspace("pi-native-restart-answer.json"));
+        },
+      }));
+    } else if (execution.task.id === "native-questions") {
       const name = `name-${randomBytes(8).toString("hex")}`; const draft = `draft-${randomBytes(8).toString("hex")}\nSecond line`;
       await create(execution.task.buildTitle(nonce), execution.task.buildPrompt(nonce), { targets: ["pi-native-answers.json"] });
       const seen = new Set<string>(); let runId: string | undefined;
