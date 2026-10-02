@@ -14187,6 +14187,11 @@ export function heartbeatService(
         })
         .returning()
         .then((rows) => rows[0]);
+      // A BEFORE INSERT trigger on agent_wakeup_requests (e.g. an operator's
+      // queue-serialisation trigger) may filter the insert with RETURN NULL,
+      // leaving no row to return. Skip the retry instead of crashing on
+      // wakeupRequest.id below.
+      if (!wakeupRequest) return null;
 
       const queuedRun = await tx
         .insert(heartbeatRuns)
@@ -15959,6 +15964,16 @@ export function heartbeatService(
           })
           .returning()
           .then((rows) => rows[0]);
+        // A BEFORE INSERT trigger on agent_wakeup_requests may filter the
+        // insert with RETURN NULL, leaving no row to return. Skip the
+        // scheduled retry instead of crashing on wakeupRequest.id below.
+        if (!wakeupRequest) {
+          return {
+            outcome: "not_scheduled", issueId, errorCode: "wakeup_request_filtered",
+            reason: "Wakeup request insert returned no row (filtered by a BEFORE INSERT trigger)",
+            details: { issueId, retryOfRunId: run.id },
+          };
+        }
 
         const scheduledRun = await tx
           .insert(heartbeatRuns)
