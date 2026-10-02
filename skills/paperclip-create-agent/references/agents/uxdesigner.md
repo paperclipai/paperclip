@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # UX Designer Agent Template
 
 Use this template when hiring product designers who produce UX specs, review interface quality, identify usability risks, and evolve the design system.
