@@ -300,6 +300,79 @@ const support = await getEmbeddedPostgresTestSupport();
         enableAgentChat: true,
       });
     });
+    it("hard-deletes a chat through the ordinary issue delete route and frees the slot for a brand-new chat", async () => {
+      const appFor = (userId?: string, allowed = true) => {
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => {
+          req.actor = {
+            type: "board",
+            source: "session",
+            userId: userId ?? randomUUID(),
+            companyIds: allowed ? [companyId] : [],
+          };
+          next();
+        });
+        app.use("/api", issueRoutes(db, { wakeup: async () => null } as never));
+        app.use(errorHandler);
+        return app;
+      };
+      const path = `/api/companies/${companyId}/chats/${agentId}`;
+      const owner = randomUUID();
+      await db
+        .insert(companyMemberships)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: owner,
+          status: "active",
+          membershipRole: "operator",
+        });
+      await ensureHumanRoleDefaultGrants(db, {
+        companyId,
+        principalId: owner,
+        membershipRole: "operator",
+        grantedByUserId: null,
+      });
+      const opened = await request(appFor(owner)).post(path);
+      expect(opened.status).toBe(200);
+      const chatId = opened.body.id as string;
+      await issueService(db).addComment(chatId, "Before the delete", {
+        userId: owner,
+      });
+
+      // No company access at all still can't reach the chat's delete route.
+      expect(
+        (await request(appFor(undefined, false)).delete(`/api/issues/${chatId}`))
+          .status,
+      ).toBe(404);
+      expect(await issueService(db).getById(chatId)).not.toBeNull();
+
+      const deleted = await request(appFor(owner)).delete(
+        `/api/issues/${chatId}`,
+      );
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.id).toBe(chatId);
+      expect(await issueService(db).getById(chatId)).toBeNull();
+      expect(
+        await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, chatId)),
+      ).toHaveLength(0);
+
+      // The (company, agent, user) conversation slot is free again: GET
+      // reports no chat, and the next POST creates a brand-new issue rather
+      // than resurrecting the deleted one.
+      expect((await request(appFor(owner)).get(path)).body).toBeNull();
+      expect(
+        await issueService(db).getConversation(companyId, agentId, owner),
+      ).toBeNull();
+      const reopened = await request(appFor(owner)).post(path);
+      expect(reopened.status).toBe(200);
+      expect(reopened.body.id).not.toBe(chatId);
+      expect(reopened.body.conversationUserId).toBe(owner);
+    });
     it("deduplicates concurrent message retries and preserves recoverable delivery", async () => {
       const issue = await create();
       const clientRequestId = randomUUID();

@@ -7,6 +7,7 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { DeleteChatButton } from "@/components/DeleteChatButton";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
 import { deriveInitials } from "@/components/Identity";
@@ -5432,14 +5433,53 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
+  // `issue` falls back to a client-only draft (agentChatDraft) with a
+  // synthetic `chat:<agentId>` id before the first message is ever sent, so
+  // it is always truthy in conversation mode. Only a real, persisted
+  // conversation issue can be deleted.
+  const persistedConversationIssueId = conversation
+    ? (conversation.issue?.id ?? null)
+    : (issue?.id ?? null);
+  const deleteConversation = useMutation({
+    mutationFn: (id: string) => issuesApi.remove(id),
+    onSuccess: (_data, id) => {
+      if (conversationAgent) {
+        queryClient.setQueryData(
+          queryKeys.agentChats.detail(resolvedCompanyId ?? null, currentUserId, conversationAgent.id),
+          null,
+        );
+      }
+      queryClient.removeQueries({ queryKey: queryKeys.issues.detail(id) });
+      invalidateIssueCollections();
+      pushToast({ title: "Chat deleted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Could not delete chat",
+        body: err instanceof Error ? err.message : "Try again.",
+        tone: "error",
+      });
+    },
+  });
   useEffect(() => {
     if (conversationAgent) {
       setBreadcrumbs([{
         label: conversationAgent.name,
         leading: <Avatar className="size-6 shrink-0"><AvatarFallback>{deriveInitials(conversationAgent.name)}</AvatarFallback></Avatar>,
         leadingKey: `agent:${conversationAgent.id}`,
-        trailing: <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
-        trailingKey: `configure:${conversationAgent.id}`,
+        trailing: (
+          <div className="flex items-center gap-0.5">
+            <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>
+            {persistedConversationIssueId ? (
+              <DeleteChatButton
+                agentName={conversationAgent.name}
+                pending={deleteConversation.isPending}
+                onDelete={async () => { await deleteConversation.mutateAsync(persistedConversationIssueId); }}
+              />
+            ) : null}
+          </div>
+        ),
+        trailingKey: `configure:${conversationAgent.id}:${persistedConversationIssueId ?? "draft"}`,
       }]);
       return;
     }
@@ -5456,6 +5496,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ]);
   }, [
     conversationAgent,
+    persistedConversationIssueId,
+    deleteConversation,
     breadcrumbTitle,
     breadcrumbIdentifier,
     hasLiveRuns,

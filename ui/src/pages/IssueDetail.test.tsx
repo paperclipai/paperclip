@@ -61,6 +61,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   steerQueuedComment: vi.fn(),
   discardQueuedComment: vi.fn(),
   markRead: vi.fn(),
+  remove: vi.fn(),
   update: vi.fn(),
   resolveRecoveryAction: vi.fn(),
   previewTreeControl: vi.fn(),
@@ -608,6 +609,7 @@ vi.mock("@/components/ui/button", () => ({
       {children}
     </button>
   ),
+  buttonVariants: () => "",
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -1437,6 +1439,45 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+  });
+
+  it("deletes the conversation from its breadcrumb menu and frees the chat cache for a new one", async () => {
+    const agent = createAgent();
+    const canonical = createIssue({ id: "chat-1", conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    mockIssuesApi.remove.mockResolvedValue(canonical);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} /></QueryClientProvider>);
+    });
+    await flushReact();
+    queryClient.setQueryData(queryKeys.agentChats.detail("company-1", null, agent.id), canonical);
+
+    const trailing = mockSetBreadcrumbs.mock.calls.at(-1)?.[0]?.[0]?.trailing as ReactElement;
+    expect(trailing).toBeTruthy();
+    const menuContainer = document.createElement("div");
+    document.body.appendChild(menuContainer);
+    const menuRoot = createTooltipRoot(menuContainer);
+    await act(async () => { menuRoot.render(trailing); });
+
+    const deleteTrigger = menuContainer.querySelector<HTMLButtonElement>(
+      `[aria-label="Delete chat with ${agent.name}"]`,
+    )!;
+    expect(deleteTrigger).toBeTruthy();
+    await act(async () => { deleteTrigger.click(); });
+    const confirmButton = [...document.querySelectorAll<HTMLButtonElement>("[role=alertdialog] button")].at(-1)!;
+    await act(async () => { confirmButton.click(); });
+    await flushReact();
+
+    expect(mockIssuesApi.remove).toHaveBeenCalledWith("chat-1");
+    expect(
+      queryClient.getQueryData(queryKeys.agentChats.detail("company-1", null, agent.id)),
+    ).toBeNull();
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Chat deleted" }),
+    );
+
+    await act(async () => { menuRoot.unmount(); });
+    menuContainer.remove();
   });
 
   it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
