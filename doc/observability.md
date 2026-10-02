@@ -453,6 +453,19 @@ termination, remove the live execution control, or change the timeout. The
 context is sent only through the existing opt-in Sentry gate and never leaks
 into unrelated captures.
 
+The context also samples the pending execution `phase` and `phaseElapsedMs`
+when the Stop timer expires. An in-memory tracker belongs to the exact live
+execution control; a replaced or missing owner reports `unknown` with a null
+elapsed time. Labels come from a closed list and elapsed time uses a monotonic
+clock, capped at one day. Nested scopes remain visible while their awaits are
+pending, including ACP session close, transport stop, instruction collection,
+workspace restore, and host instruction or lease cleanup. `phase_reporting`
+means a step is waiting to write timing or teardown error diagnostics. `adapter_execution` and
+`host_execution` are coarse labels for work outside those narrower scopes.
+The tracker clears when its executor finishes. A phase is diagnostic context,
+not evidence that a provider stopped or that files were recovered. No new
+run-log or Telemetry event is emitted by this tracker.
+
 The shared reporter also attaches bounded diagnostic contexts for both legacy
 and native runs:
 
