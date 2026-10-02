@@ -93,6 +93,14 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain(`<option value="${selected}" selected="">`);
   });
 
+  it.each([undefined, "off", "low", "high", "max"])("displays saved Pi thinking level %s", piThinkingLevel => {
+    const html = renderRunner({ provider: "acpx", acpxAgent: "pi", piThinkingLevel });
+    expect(html).toContain('aria-label="Pi thinking level"');
+    expect(html).toContain(`<option value="${piThinkingLevel ?? "low"}" selected="">`);
+  });
+  it("shows unsupported saved Pi level without aliasing it", () => {
+    expect(renderRunner({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "medium" })).toContain("Unsupported saved thinking level");
+  });
   it.each(["claude", "copilot", "pi"])("does not expose Cursor mode for %s", acpxAgent => {
     expect(renderRunner({ provider: "acpx", acpxAgent })).not.toContain('aria-label="Cursor mode"');
   });

@@ -40,13 +40,13 @@ it.each(["cursor", "copilot"] as const)("requires separately bound evaluation op
 
 it("admits Pi live sessions without candidate opt-in while preserving the exact profile", async () => {
   const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(providerState()) });
-  const session = await service.create({ provider: "acpx", acpxAgent: "pi", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
+  const session = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
   try {
     expect(session.snapshot().config.acpxProfile).toMatchObject({
-      agent: "pi", agentProfileVersion: 12,
-      commandDigest: "sha256:47306e6d2a9b59e8f9189f725ebb7a0a7f91826044d1739e1a35ab31f228ba1f",
+      agent: "pi", agentProfileVersion: 13,
+      commandDigest: "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
     });
-    await expect(service.create({ provider: "acpx", acpxAgent: "pi", requestedModel: "another-model" }))
+    await expect(service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "another-model" }))
       .rejects.toThrow("requires exact model");
   } finally { await session.shutdown("test complete"); }
 });
@@ -1343,7 +1343,7 @@ describe("Capability live runnerd and Codex session", () => {
         queue.push({ method: "turn/completed", params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } } });
       };
       const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state), transportOptions: { acpxCandidateProfile: acpxAgent } });
-      const session = await service.create({ provider: "acpx", acpxAgent, requestedModel: acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-model" });
+      const session = await service.create({ provider: "acpx", acpxAgent, ...(acpxAgent === "pi" ? { piThinkingLevel: "low" as const } : {}), requestedModel: acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-model" });
       try {
         const result = await session.sendMessage("Orient to this task.");
         expect(result.status).toBe("completed"); expect(retained(result.snapshot)).toEqual([]);
@@ -1367,7 +1367,7 @@ describe("Capability live runnerd and Codex session", () => {
       transportOptions: { acpxCandidateProfile: acpxAgent },
     });
     const session = await service.create({
-      provider: "acpx", acpxAgent,
+      provider: "acpx", acpxAgent, ...(acpxAgent === "pi" ? { piThinkingLevel: "low" as const } : {}),
       requestedModel: acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-model",
     });
     const result = await session.sendMessage("Orient to this task.");

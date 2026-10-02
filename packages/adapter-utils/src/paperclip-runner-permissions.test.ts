@@ -1,3 +1,4 @@
+import { resolvePaperclipRunnerPiThinkingLevel } from "./paperclip-runner-permissions.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -90,5 +91,19 @@ describe("Cursor session mode admission", () => {
   it.each([["codex", "cursor"], ["acpx", "copilot"], ["acpx", "pi"], ["acpx", "claude"]])("rejects mode on %s/%s", (provider, agent) => {
     expect(resolvePaperclipRunnerCursorMode(provider, agent, undefined)).toBeUndefined();
     expect(() => resolvePaperclipRunnerCursorMode(provider, agent, "plan")).toThrow("only for Cursor");
+  });
+});
+
+describe("Pi thinking configuration", () => {
+  it.each([undefined, "off", "low", "high", "max"] as const)("persists exact level %s with low as the fresh-config default", value => {
+    expect(resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", value)).toBe(value ?? "low");
+  });
+  it.each(["medium", "minimal", "xhigh", "", null, 1])("rejects unsupported alias %s", value => {
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", value)).toThrow();
+  });
+  it("rejects foreign provider settings", () => {
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("codex", "pi", "low")).toThrow(/only/);
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("acpx", "cursor", "low")).toThrow(/only/);
+    expect(resolvePaperclipRunnerPiThinkingLevel("codex", undefined, undefined)).toBeUndefined();
   });
 });

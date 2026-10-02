@@ -50,6 +50,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         cursor_mode: None,
+        pi_thinking_level: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -317,6 +318,10 @@ fn permission_origin_is_bound_to_the_admitted_connection_and_survives_projection
             "explicit-test-model"
         }
         .to_owned();
+        if agent == "pi" {
+            cfg.pi_thinking_level =
+                Some(paperclip_runner_core::acpx_provider_session::PiThinkingLevel::Low);
+        }
         if agent == "cursor" {
             cfg.cursor_mode = Some(paperclip_runner_core::acpx_provider_session::CursorMode::Agent);
         }

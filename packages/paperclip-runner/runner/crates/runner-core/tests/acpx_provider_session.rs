@@ -45,6 +45,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         cursor_mode: None,
+        pi_thinking_level: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -67,6 +68,7 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
         cursor_mode: None,
+        pi_thinking_level: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
@@ -342,4 +344,42 @@ fn receiver_rejects_sub_megabyte_tool_event_before_pending_admission_or_resoluti
 #[test]
 fn receiver_admits_normal_tool_event_and_resolves_only_correlated_call_once() {
     check_tool_receiver_admission(false);
+}
+
+#[test]
+fn pi_thinking_effective_identity_is_admitted_before_any_turn() {
+    use paperclip_runner_core::acpx_provider_session::{
+        AcpxProviderRuntimePolicy, PiThinkingLevel,
+    };
+    let mut cfg = config("bootstrap");
+    cfg.agent = "pi".to_owned();
+    cfg.model = "openrouter/deepseek/deepseek-v4-flash-0731".to_owned();
+    cfg.pi_thinking_level = Some(PiThinkingLevel::Low);
+    cfg.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+    let mut session = AcpxProviderSession::start(&cfg).unwrap();
+    assert_eq!(
+        session.identity().pi_thinking_level,
+        Some(PiThinkingLevel::Low)
+    );
+    assert!(session.state().active_turn_id().is_none());
+    let identity = session.identity().clone();
+    session.shutdown("thinking mode admitted").unwrap();
+    cfg.expected_identity = Some(identity);
+    let mut restored = AcpxProviderSession::start(&cfg).unwrap();
+    assert_eq!(
+        restored.identity().pi_thinking_level,
+        Some(PiThinkingLevel::Low)
+    );
+    assert!(restored.state().active_turn_id().is_none());
+    restored
+        .shutdown("restored thinking mode admitted")
+        .unwrap();
+    for mode in [
+        "bootstrap-wrong-pi-thinking",
+        "bootstrap-missing-pi-thinking",
+        "bootstrap-alias-pi-thinking",
+    ] {
+        cfg.transport.args = vec!["--mode".to_owned(), mode.to_owned()];
+        assert!(start_error(&cfg).contains("identity"));
+    }
 }

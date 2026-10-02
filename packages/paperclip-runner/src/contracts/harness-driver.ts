@@ -456,6 +456,7 @@ export interface AcpxSessionIdentity {
   permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
   /** Effective native mode; required on current Cursor session identities. */
   cursorMode?: "agent" | "plan" | "ask";
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

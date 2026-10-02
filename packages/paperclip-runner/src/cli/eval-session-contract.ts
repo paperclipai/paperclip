@@ -1,3 +1,4 @@
+import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import type {
   CapabilityLiveSessionSnapshot,
   CreateCapabilityLiveSessionInput,
@@ -69,6 +70,7 @@ export interface EvalSessionRequest {
   driver?: EvalSessionDriver;
   opencodeVersion?: string;
   acpxAgent?: QualifiedAcpxAgent;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   managedProfile?: EvalSessionManagedProfile;
   agentCoreProfile?: EvalSessionAgentCoreProfile;
   runnerd: { path: string; sha256: string };
@@ -258,6 +260,7 @@ export function parseEvalSessionRequest(
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");
   }
+  const piThinkingLevel = resolvePiThinkingLevel(provider === "acpx" ? String(acpxAgent) : "", input.piThinkingLevel);
   const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot";
   if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
     throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
@@ -327,6 +330,7 @@ export function parseEvalSessionRequest(
     throw new Error("request.session.acpxAgent must match request.acpxAgent");
   }
 
+  if (session.piThinkingLevel !== piThinkingLevel) throw new Error("request.session.piThinkingLevel must match request.piThinkingLevel");
   return {
     schema: EVAL_SESSION_REQUEST_SCHEMA,
     attemptId: text(input.attemptId, "request.attemptId"),
@@ -338,6 +342,7 @@ export function parseEvalSessionRequest(
       ? { opencodeVersion: text(input.opencodeVersion, "request.opencodeVersion") }
       : {}),
     ...(acpxAgent === undefined ? {} : { acpxAgent }),
+    ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
     ...(managedProfile === undefined ? {} : { managedProfile }),
     ...(agentCoreProfile === undefined ? {} : { agentCoreProfile }),
     runnerd: {

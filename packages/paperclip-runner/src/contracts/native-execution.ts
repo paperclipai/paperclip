@@ -91,7 +91,7 @@ export interface NativeAcpxProfileSnapshot {
   protocolVersion: 1;
   acpxVersion: "0.13.1";
   agent: NativeAcpxAgent;
-  agentProfileVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+  agentProfileVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
   agentServerPackage: string;
   agentServerVersion: string;
   agentRuntimePackage: string | null;
@@ -125,6 +125,7 @@ export type NativeProviderConfig =
       model: string;
       permissionMode?: NativeAcpxPermissionMode;
       cursorMode?: NativeCursorMode;
+      piThinkingLevel?: "off" | "low" | "high" | "max";
       /** Present only in persisted v1-v3 inputs. */
       permissionPolicy?: "interactive";
       profile: NativeAcpxProfileSnapshot;
@@ -140,6 +141,7 @@ export type NativeProviderConfigV4 =
       model: string;
       permissionMode: NativeAcpxPermissionMode;
       cursorMode?: NativeCursorMode;
+      piThinkingLevel?: "off" | "low" | "high" | "max";
       profile: NativeAcpxProfileSnapshot;
     };
 
@@ -453,7 +455,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", ...(isV4 ? ["cursorMode"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["cursorMode"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
         : provider.kind === "opencode" && isV4
@@ -573,6 +575,12 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       invocationLimits: { maxIterations, maxOutputTokens, timeoutSeconds },
     };
   } else if (provider.kind === "acpx") {
+    if (provider.piThinkingLevel !== undefined && (provider.agent !== "pi" || (typeof provider.piThinkingLevel !== "string" || !["off", "low", "high", "max"].includes(provider.piThinkingLevel)))) {
+      throw new NativeExecutionInputError("input.provider.piThinkingLevel must be off, low, high, or max and is supported only for Pi");
+    }
+    if (provider.agent === "pi" && record(provider.profile, "input.provider.profile").agentProfileVersion === 13 && provider.piThinkingLevel === undefined) {
+      throw new NativeExecutionInputError("input.provider.piThinkingLevel is required for Pi profile 13");
+    }
     if (provider.cursorMode !== undefined && (provider.agent !== "cursor"
       || (provider.cursorMode !== "agent" && provider.cursorMode !== "plan" && provider.cursorMode !== "ask"))) {
       throw new NativeExecutionInputError("input.provider.cursorMode must be agent, plan, or ask and is supported only for Cursor");
@@ -608,7 +616,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       || profile.protocolVersion !== 1
       || profile.acpxVersion !== "0.13.1"
       || profile.agent !== provider.agent
-      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5 && profile.agentProfileVersion !== 6 && profile.agentProfileVersion !== 7 && profile.agentProfileVersion !== 8 && profile.agentProfileVersion !== 9 && profile.agentProfileVersion !== 10 && profile.agentProfileVersion !== 11 && profile.agentProfileVersion !== 12)
+      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5 && profile.agentProfileVersion !== 6 && profile.agentProfileVersion !== 7 && profile.agentProfileVersion !== 8 && profile.agentProfileVersion !== 9 && profile.agentProfileVersion !== 10 && profile.agentProfileVersion !== 11 && profile.agentProfileVersion !== 12 && profile.agentProfileVersion !== 13)
     ) {
       throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
     }
@@ -625,6 +633,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
       ...(provider.cursorMode === undefined ? {} : { cursorMode: provider.cursorMode as NativeCursorMode }),
+      ...(provider.piThinkingLevel === undefined ? {} : { piThinkingLevel: provider.piThinkingLevel as "off" | "low" | "high" | "max" }),
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,

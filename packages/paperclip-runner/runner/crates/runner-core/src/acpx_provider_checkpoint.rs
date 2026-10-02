@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSessionConfig, AcpxProviderSessionIdentity, CursorMode,
+    PiThinkingLevel,
 };
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory,
@@ -50,6 +51,8 @@ struct PersistedAcpxProviderSessionIdentity {
     permission_mode: AcpxPermissionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cursor_mode: Option<CursorMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pi_thinking_level: Option<PiThinkingLevel>,
     provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -73,6 +76,7 @@ impl PersistedAcpxProviderSessionIdentity {
             effective_model: identity.effective_model,
             permission_mode,
             cursor_mode: identity.cursor_mode,
+            pi_thinking_level: identity.pi_thinking_level,
             provider_lifetime_fence_candidates: identity.provider_lifetime_fence_candidates,
         })
     }
@@ -90,6 +94,7 @@ impl PersistedAcpxProviderSessionIdentity {
             effective_model: self.effective_model.clone(),
             permission_mode: Some(self.permission_mode),
             cursor_mode: self.cursor_mode,
+            pi_thinking_level: self.pi_thinking_level,
             provider_lifetime_fence_candidates: self.provider_lifetime_fence_candidates,
         }
     }
@@ -111,6 +116,7 @@ impl AcpxSuspensionCheckpoint {
             || identity.effective_model != config.model
             || identity.permission_mode != Some(config.permission_mode)
             || identity.cursor_mode != config.cursor_mode
+            || identity.pi_thinking_level != config.pi_thinking_level
             || config
                 .expected_identity
                 .as_ref()

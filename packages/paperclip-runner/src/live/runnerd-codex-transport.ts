@@ -1,3 +1,4 @@
+import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
@@ -1134,6 +1135,8 @@ export interface CapabilityRunnerdProcessEvidence {
   agentPid: number | null;
   agentProcessStartedAt: string | null;
   providerDriver: string | null;
+  /** Effective native mode, populated only from the admitted Pi identity. */
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   providerVersion: string | null;
   acpxAgent: QualifiedAcpxAgent | null;
   agentServerVersion: string | null;
@@ -1157,6 +1160,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   acpxCandidateProfile?: "pi" | "cursor" | "copilot";
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxCursorMode?: "agent" | "plan" | "ask";
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
   /** SHA-256 verified by the provider-pack authority before runner startup. */
@@ -3510,6 +3514,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string; permission?: boolean }>();
 
   constructor(readonly options: CapabilityRunnerdCodexTransportOptions) {
+    resolvePiThinkingLevel(options.provider === "acpx" ? options.acpxAgent ?? "codex" : "", options.piThinkingLevel);
     if (options.acpxCursorMode !== undefined && (options.provider !== "acpx" || options.acpxAgent !== "cursor"
       || !["agent", "plan", "ask"].includes(options.acpxCursorMode))) {
       throw new Error("acpxCursorMode must be agent, plan, or ask and is supported only for Cursor");
@@ -4701,6 +4706,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               instructions: baseInstructions,
               providerPolicy: { readOnly: params.permissions === "paperclip-runner-workspace-read-only" },
               ...(acpxProfile!.agent === "cursor" ? { cursorMode: this.options.acpxCursorMode ?? "agent" } : {}),
+              ...(acpxProfile!.agent === "pi" ? { piThinkingLevel: this.options.piThinkingLevel } : {}),
               permissionMode: resolveRunnerdAcpxPermissionMode(
                 this.options.acpxPermissionMode,
               ),
@@ -6370,6 +6376,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (descriptor.turnControls !== undefined && descriptor.agent !== (this.options.acpxAgent ?? "codex")) {
         throw new Error("ACPX capability identity differs from the admitted profile");
       }
+      const piThinkingLevel = admittedPiThinkingLevel(this.options.acpxAgent ?? "codex", this.options.piThinkingLevel, descriptor, providerIdentity);
+      if (piThinkingLevel !== undefined) this.#evidence.piThinkingLevel = piThinkingLevel;
       this.#turnControls = parseAcpxTurnControlCapabilities(descriptor.turnControls, descriptor.agent);
     }
     if (pid !== null) {

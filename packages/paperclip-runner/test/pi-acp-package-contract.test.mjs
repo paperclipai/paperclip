@@ -297,3 +297,63 @@ for (const outcome of ["success", "failure", "oversized"]) {
     assert.equal(terminal._meta.terminal_exit.exit_code, outcome === "failure" ? 7 : 0);
   });
 }
+
+
+const thoughtOption = configuration => configuration.configOptions.find(option => option.id === "thought_level");
+const assertedThinking = (configuration, current, levels = ["off", "low", "high", "max"]) => {
+  assert.equal(configuration.modes.currentModeId, current);
+  assert.deepEqual(configuration.modes.availableModes.map(mode => mode.id), levels);
+  assert.equal(thoughtOption(configuration).currentValue, current);
+  assert.deepEqual(thoughtOption(configuration).options.map(option => option.value), levels);
+};
+
+test("thinking modes use native capabilities and preserve effective max across warm load", async t => {
+  const f = await fixture(t);
+  const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  assertedThinking(session, "off");
+  for (const level of ["high", "low", "max"]) {
+    const result = await f.call("session/set_config_option", { sessionId: session.sessionId, configId: "thought_level", value: level });
+    assert.equal(thoughtOption(result).currentValue, level);
+    assert.equal(f.notifications.filter(event => event.params?.update?.sessionUpdate === "current_mode_update").at(-1).params.update.currentModeId, level);
+  }
+  assertedThinking(await f.call("session/load", { sessionId: session.sessionId, cwd: join(f.root, "workspace"), mcpServers: [] }), "max");
+  await f.call("session/set_mode", { sessionId: session.sessionId, modeId: "off" });
+  assert.equal(f.notifications.filter(event => event.params?.update?.sessionUpdate === "current_mode_update").at(-1).params.update.currentModeId, "off");
+});
+
+test("unsupported thinking aliases are rejected before native mutation on both ACP routes", async t => {
+  const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  for (const level of ["minimal", "medium", "xhigh", "unknown"]) {
+    await assert.rejects(f.call("session/set_mode", { sessionId: session.sessionId, modeId: level }), /Unsupported thinking level/);
+    await assert.rejects(f.call("session/set_config_option", { sessionId: session.sessionId, configId: "thought_level", value: level }), /Unsupported thinking level/);
+  }
+  await assert.rejects(readFile(join(f.root, "agent/thinking-calls.jsonl")), { code: "ENOENT" });
+  assertedThinking(await f.call("session/load", { sessionId: session.sessionId, cwd: join(f.root, "workspace"), mcpServers: [] }), "off");
+});
+
+test("model changes refresh supported modes and truthful effective state", async t => {
+  const f = await fixture(t); const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  await f.call("session/set_mode", { sessionId: session.sessionId, modeId: "low" });
+  const result = await f.call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: "openrouter/fixture-alternate" });
+  assert.equal(thoughtOption(result).currentValue, "high");
+  assert.deepEqual(thoughtOption(result).options.map(option => option.value), ["off", "high"]);
+  await assert.rejects(f.call("session/set_mode", { sessionId: session.sessionId, modeId: "low" }), /Unsupported thinking level/);
+});
+
+for (const method of ["session/set_mode", "session/set_config_option"]) test(`${method} rejects native silent clamping without a false success update`, async t => {
+  const f = await fixture(t, { PI_FIXTURE_THINKING_CLAMP: "1" });
+  const session = await f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] });
+  const from = f.notifications.length;
+  await assert.rejects(f.call(method, { sessionId: session.sessionId, ...(method === "session/set_mode" ? { modeId: "low" } : { configId: "thought_level", value: "low" }) }), /Internal error|did not apply/);
+  assert.ok(!f.notifications.slice(from).some(event => event.params?.update?.sessionUpdate === "current_mode_update"));
+  assert.deepEqual((await readFile(join(f.root, "agent/thinking-calls.jsonl"), "utf8")).trim().split("\n").map(JSON.parse), ["low"]);
+});
+
+for (const capability of ["failed", "duplicate", "unknown", "empty", "missing"]) test(`thinking admission rejects ${capability} native capabilities`, async t => {
+  const f = await fixture(t, { PI_FIXTURE_THINKING_CAPABILITIES: capability });
+  await assert.rejects(f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] }), /Internal error/);
+});
+for (const current of ["future", "medium"]) test(`thinking admission rejects unsupported effective state ${current}`, async t => {
+  const f = await fixture(t, { PI_FIXTURE_THINKING_CURRENT: current });
+  await assert.rejects(f.call("session/new", { cwd: join(f.root, "workspace"), mcpServers: [] }), /Internal error/);
+});

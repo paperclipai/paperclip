@@ -156,6 +156,8 @@ function legacyProfile(input: {
   };
 }
 
+const PI_QUALIFICATION_THINKING_LEVEL = "low" as const;
+
 function nativeProfile(input: {
   id: string;
   label: string;
@@ -207,6 +209,7 @@ function nativeProfile(input: {
         lifecycleMode: "per_turn",
         idleTimeoutMs: 300_000,
         ...permissionConfig,
+        ...(input.acpxAgent === "pi" ? { piThinkingLevel: PI_QUALIFICATION_THINKING_LEVEL } : {}),
         env: {
           ...(credentialRef ? { [input.credential]: credentialRef } : {}),
           // Codex's supported automation credential is CODEX_API_KEY. Keep
@@ -1452,6 +1455,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: profile.id,
           model: profile.model,
           qualification: profile.modelQualification,
+          ...(profile.qualificationCandidate === "pi" ? { piThinkingLevel: PI_QUALIFICATION_THINKING_LEVEL } : {}),
         })),
         environments: suite.environments.map((environment) => ({
           id: environment.id,

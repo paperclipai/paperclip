@@ -220,12 +220,14 @@ export function CodexLocalConfigFields({
                     ...values!.adapterSchemaValues,
                     provider,
                     acpxSessionMode: undefined,
+                    piThinkingLevel: undefined,
                     ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
                   },
                 });
               } else {
                 mark("adapterConfig", "provider", provider);
                 mark("adapterConfig", "acpxSessionMode", undefined);
+                mark("adapterConfig", "piThinkingLevel", undefined);
                 mark("adapterConfig", "model", model);
                 if (provider === "acpx") {
                   mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
@@ -249,11 +251,12 @@ export function CodexLocalConfigFields({
             onChange={(event) => {
               const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === event.target.value);
               const acpxSessionMode = profile?.value === "cursor" ? "agent" : undefined;
+              const piThinkingLevel = profile?.value === "pi" ? "low" : undefined;
               if (!profile?.qualified) return;
               const model = profile.value === "pi" ? defaultAcpxPiModel : profile.value === "claude" ? defaultAcpxClaudeModel : "";
               if (isCreate) set!({ model,
-                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value, acpxSessionMode } });
-              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "model", model); }
+                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value, acpxSessionMode, piThinkingLevel } });
+              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "piThinkingLevel", piThinkingLevel); mark("adapterConfig", "model", model); }
             }}>
             {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => <option key={profile.value} value={profile.value} disabled={!profile.qualified}>
               {profile.label}{profile.qualified ? "" : " — qualification pending"}
@@ -272,6 +275,15 @@ export function CodexLocalConfigFields({
             <option value="agent">Agent</option>
             <option value="plan">Plan</option>
             <option value="ask">Ask</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "pi" && (
+        <Field configSection="adapter" label="Pi thinking level" hint="The runner verifies this exact level before each session can prompt. Changing it starts a new session.">
+          <select className={inputClass} aria-label="Pi thinking level" value={String(runnerSchemaValue("piThinkingLevel", "low"))}
+            onChange={(event) => updateRunnerSchemaValue("piThinkingLevel", event.target.value)}>
+            {!["off", "low", "high", "max"].includes(String(runnerSchemaValue("piThinkingLevel", "low"))) && <option value={String(runnerSchemaValue("piThinkingLevel", "low"))} disabled>Unsupported saved thinking level</option>}
+            <option value="off">Off</option><option value="low">Low</option><option value="high">High</option><option value="max">Max</option>
           </select>
         </Field>
       )}

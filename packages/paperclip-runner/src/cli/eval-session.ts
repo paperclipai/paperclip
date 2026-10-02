@@ -407,7 +407,7 @@ export async function runEvalSessionCli(
       provider: requestedProvider,
       requestedModel: request.model,
       ...(requestedProvider === "acpx"
-        ? { acpxAgent: request.acpxAgent ?? "codex" }
+        ? { acpxAgent: request.acpxAgent ?? "codex", ...(request.piThinkingLevel === undefined ? {} : { piThinkingLevel: request.piThinkingLevel }) }
         : { acpxAgent: undefined }),
       ...(request.managedProfile === undefined
         ? {}
@@ -450,6 +450,7 @@ export async function runEvalSessionCli(
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
       providerSessionId: snapshot.providerSessionId,
+      ...(request.acpxAgent === "pi" ? { piThinkingLevel: snapshot.process?.piThinkingLevel ?? null } : {}),
       ...(requestedProvider === "claude_managed"
         ? {
             managedProfile: request.managedProfile,

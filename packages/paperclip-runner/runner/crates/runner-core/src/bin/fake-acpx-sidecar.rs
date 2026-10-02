@@ -247,6 +247,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "bootstrap"
             | "goals"
+            | "bootstrap-wrong-pi-thinking"
+            | "bootstrap-missing-pi-thinking"
+            | "bootstrap-alias-pi-thinking"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
             | "controls"
@@ -804,6 +807,12 @@ fn bootstrap_success(
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
                     "cursorMode": params.get("cursorMode"),
+                    "piThinkingLevel": match mode {
+                        "bootstrap-wrong-pi-thinking" => json!("high"),
+                        "bootstrap-missing-pi-thinking" => Value::Null,
+                        "bootstrap-alias-pi-thinking" => json!("medium"),
+                        _ => params.get("piThinkingLevel").cloned().unwrap_or(Value::Null),
+                    },
                     "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},

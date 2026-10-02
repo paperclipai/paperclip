@@ -232,6 +232,14 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "pi" };
+    options.piThinkingLevel = "low";
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "high" }, configOptions: [{ id: "thought_level", currentValue: "high" }] } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: [{ id: "thought_level", currentValue: "low" }] } });
+    });
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (value) => { created = value; return runtime; },

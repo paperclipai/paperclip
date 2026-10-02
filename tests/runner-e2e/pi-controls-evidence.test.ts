@@ -129,18 +129,22 @@ describe("Pi controls catalog admission", () => {
     expect(() => assertRemoteNativeEvidencePrerequisites(cells, {})).toThrow();
   });
   it("pins the Pi 1 profile and versioned coverage while retaining active Stop identity", () => {
-    // Pi 1/profile 12 changes profile-bearing definitions. Coverage v4/v2 adds
+    // Pi 1/profile 13 changes profile-bearing definitions. Coverage v4/v2 adds
     // provider death, pending restart and the strict file oracle; no runtime admission is promoted.
     const pi = runnerMatrix.find(c => c.profile.qualificationCandidate === "pi")!.profile;
     expect(pi.modelQualification?.qualificationId).toBe("pi:0.0.33:1.0.0:openrouter");
-    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 4, profileVersion: 12 });
+    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 4, profileVersion: 13 });
     expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 2 });
+    for (const cell of runnerMatrix.filter(cell => cell.profile.qualificationCandidate === "pi")) {
+      const agent = cell.profile.buildAgent({ environmentId: "environment", environmentFixtureId: cell.environment.id, workspacePath: "/workspace", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "synthetic", version: "latest" } } });
+      expect(agent.adapterConfig).toMatchObject({ piThinkingLevel: "low" });
+    }
     const hashes = Object.fromEntries(runnerSuites.filter(s => ["pi-native", "native-active-stop", "extended-harnesses", "rich-acp-warm-continuity"].includes(s.id)).map(s => [s.id, suiteDefinitionHash(s)]));
     expect(hashes).toEqual({
-      "pi-native": "eec3b2c140d81561e69c13c1b193b66f7790af0cfc90bbed76c57af2d1e3cdde",
+      "pi-native": "5038d59a5176ca215bc29b2d532c1d51d134442b046dd230c1e060050109964d",
       "native-active-stop": "99682b2b106d816a011834fae5a944ed7729958893709d5b83a19b6f595e7e4d",
-      "rich-acp-warm-continuity": "25e69f031696aeb459e6722a056ae0802379f9137799648fdd1945881f32f41a",
-      "extended-harnesses": "e50f79cf604bffb2cdee3ad4e8bc1d106045a4f44ef07e877032ff5b8960c8ab",
+      "rich-acp-warm-continuity": "3000c64a9879b95926add1d822530c8812b70a223e94219766554d9c0092eedf",
+      "extended-harnesses": "9814841e571cb8bb1dc5188a8577245896e0ce8c851294ac5dea9e3d42689db6",
     });
     expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(22);
   });

@@ -43,6 +43,16 @@ pub enum CursorMode {
     Ask,
 }
 
+/// Exact native Pi modes. No aliases, clamping, or implicit Rust default.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PiThinkingLevel {
+    Off,
+    Low,
+    High,
+    Max,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpxProviderSessionIdentity {
@@ -59,6 +69,8 @@ pub struct AcpxProviderSessionIdentity {
     pub permission_mode: Option<AcpxPermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_mode: Option<CursorMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_thinking_level: Option<PiThinkingLevel>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -80,6 +92,7 @@ pub struct AcpxProviderSessionConfig {
     pub working_directory: PathBuf,
     pub permission_mode: AcpxPermissionMode,
     pub cursor_mode: Option<CursorMode>,
+    pub pi_thinking_level: Option<PiThinkingLevel>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -113,6 +126,11 @@ impl AcpxProviderSessionConfig {
         if (self.agent == "cursor") != self.cursor_mode.is_some() {
             return Err(LocalRunnerError::invalid(
                 "ACPX Cursor mode must be explicit for Cursor and absent for other agents",
+            ));
+        }
+        if (self.agent == "pi") != self.pi_thinking_level.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX Pi thinking level must be explicit for Pi and absent for other agents",
             ));
         }
         if matches!(self.agent.as_str(), "pi" | "cursor" | "copilot")
@@ -187,6 +205,7 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.effective_model != self.model
                 || expected_identity.permission_mode != Some(self.permission_mode)
                 || expected_identity.cursor_mode != self.cursor_mode
+                || expected_identity.pi_thinking_level != self.pi_thinking_level
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -1266,6 +1285,9 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(level) = config.pi_thinking_level {
+        params["piThinkingLevel"] = json!(level);
+    }
     if let Some(mode) = config.cursor_mode {
         params["cursorMode"] = json!(mode);
     }
@@ -1379,6 +1401,7 @@ fn verify_open_response(
         || identity.effective_model != config.model
         || identity.permission_mode != Some(config.permission_mode)
         || identity.cursor_mode != config.cursor_mode
+        || identity.pi_thinking_level != config.pi_thinking_level
         || config
             .expected_identity
             .as_ref()
@@ -1603,7 +1626,7 @@ mod permission_mode_tests {
 }
 
 #[cfg(test)]
-mod cursor_mode_tests {
+mod provider_mode_tests {
     use super::*;
 
     fn config() -> AcpxProviderSessionConfig {
@@ -1625,6 +1648,7 @@ mod cursor_mode_tests {
             working_directory: std::env::temp_dir(),
             permission_mode: AcpxPermissionMode::ApproveReads,
             cursor_mode: Some(CursorMode::Plan),
+            pi_thinking_level: None,
             permission_mode_pinned: true,
             provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
             system_instructions: String::new(),
@@ -1651,6 +1675,7 @@ mod cursor_mode_tests {
             effective_model: "explicit-model".to_owned(),
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
             cursor_mode: Some(CursorMode::Plan),
+            pi_thinking_level: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
@@ -1738,5 +1763,138 @@ mod cursor_mode_tests {
             &identity
         )
         .is_err());
+    }
+
+    fn pi_config() -> AcpxProviderSessionConfig {
+        let mut config = config();
+        config.agent = "pi".to_owned();
+        config.model = "openrouter/deepseek/deepseek-v4-flash-0731".to_owned();
+        config.cursor_mode = None;
+        config.pi_thinking_level = Some(PiThinkingLevel::Low);
+        config
+    }
+
+    fn pi_identity(config: &AcpxProviderSessionConfig) -> AcpxProviderSessionIdentity {
+        let mut identity = identity();
+        identity.requested_model = config.model.clone();
+        identity.effective_model = config.model.clone();
+        identity.cursor_mode = None;
+        identity.pi_thinking_level = config.pi_thinking_level;
+        identity
+    }
+
+    #[test]
+    fn pi_thinking_level_is_closed_explicit_and_pi_only() {
+        for (name, level) in [
+            ("off", PiThinkingLevel::Off),
+            ("low", PiThinkingLevel::Low),
+            ("high", PiThinkingLevel::High),
+            ("max", PiThinkingLevel::Max),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<PiThinkingLevel>(json!(name)).unwrap(),
+                level
+            );
+            assert_eq!(serde_json::to_value(level).unwrap(), json!(name));
+        }
+        for value in [
+            json!("medium"),
+            json!("minimal"),
+            json!("xhigh"),
+            json!("Low"),
+            json!(" low"),
+            json!(null),
+            json!(1),
+        ] {
+            assert!(serde_json::from_value::<PiThinkingLevel>(value).is_err());
+        }
+        let mut config = pi_config();
+        config.validate().unwrap();
+        config.pi_thinking_level = None;
+        assert!(config.validate().is_err());
+        config = self::config();
+        config.pi_thinking_level = Some(PiThinkingLevel::Low);
+        assert!(config.validate().is_err());
+        config.pi_thinking_level = None;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn pi_thinking_open_requires_exact_effective_ack_for_every_level() {
+        let mut config = pi_config();
+        for level in [
+            PiThinkingLevel::Off,
+            PiThinkingLevel::Low,
+            PiThinkingLevel::High,
+            PiThinkingLevel::Max,
+        ] {
+            config.pi_thinking_level = Some(level);
+            assert_eq!(
+                session_open_params(&config, &[])["piThinkingLevel"],
+                json!(level)
+            );
+            let identity = pi_identity(&config);
+            let response = json!({"sidecarPid": 100, "status": {}, "identity": identity});
+            assert_eq!(
+                verify_open_response(&response, 100, &config).unwrap(),
+                identity
+            );
+            for wrong in [
+                None,
+                Some(PiThinkingLevel::Off),
+                Some(PiThinkingLevel::Low),
+                Some(PiThinkingLevel::High),
+                Some(PiThinkingLevel::Max),
+            ] {
+                if wrong == Some(level) {
+                    continue;
+                }
+                let mut changed = response.clone();
+                changed["identity"]["piThinkingLevel"] = json!(wrong);
+                assert!(verify_open_response(&changed, 100, &config).is_err());
+            }
+            let mut missing = response.clone();
+            missing["identity"]
+                .as_object_mut()
+                .unwrap()
+                .remove("piThinkingLevel");
+            assert!(verify_open_response(&missing, 100, &config).is_err());
+            let mut alias = response.clone();
+            alias["identity"]["piThinkingLevel"] = json!("medium");
+            assert!(verify_open_response(&alias, 100, &config).is_err());
+        }
+        let non_pi = self::config();
+        assert!(session_open_params(&non_pi, &[])
+            .get("piThinkingLevel")
+            .is_none());
+        let mut foreign = identity();
+        foreign.pi_thinking_level = Some(PiThinkingLevel::Low);
+        assert!(verify_open_response(
+            &json!({"sidecarPid":100,"status":{},"identity":foreign}),
+            100,
+            &non_pi
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn pi_thinking_reopen_and_suspend_reject_missing_or_changed_mode() {
+        let mut config = pi_config();
+        let identity = pi_identity(&config);
+        config.expected_identity = Some(identity.clone());
+        config.validate().unwrap();
+        for level in [None, Some(PiThinkingLevel::High)] {
+            let mut old = identity.clone();
+            old.pi_thinking_level = level;
+            config.expected_identity = Some(old.clone());
+            assert!(config.validate().is_err());
+            assert!(
+                verify_suspend_response(&json!({"suspended":true,"identity":old}), &identity)
+                    .is_err()
+            );
+        }
+        config.expected_identity = Some(identity.clone());
+        config.pi_thinking_level = Some(PiThinkingLevel::High);
+        assert!(config.validate().is_err());
     }
 }

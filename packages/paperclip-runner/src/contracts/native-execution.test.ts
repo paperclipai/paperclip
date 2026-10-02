@@ -328,7 +328,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 13, 1.5, "12", null]) {
+    for (const unsupportedVersion of [0, 14, 1.5, "13", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
@@ -357,6 +357,7 @@ describe("NativeExecutionInputV1", () => {
         kind: "acpx", agent: declaration.agent,
         model: qualificationModel || "explicit-provider-model",
         permissionPolicy, profile,
+        ...(declaration.agent === "pi" ? { piThinkingLevel: "low" } : {}),
       };
       const parsed = parseNativeExecutionInput({
         ...input,
@@ -503,6 +504,14 @@ describe("native task context ownership", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
   }
+
+  it.each(["off", "low", "high", "max"])("requires exact Pi13 thinking level %s in native input", piThinkingLevel => {
+    const { qualificationModel, reportedModelId: _reported, permissionPolicy: _permission, modelPolicy: _policy, qualificationStatus: _status, ...profile } = QUALIFIED_ACPX_PROFILES.pi;
+    const value = { ...currentInput(), session: { ...currentInput().session, driverKind: "acpx_runtime" }, provider: { kind: "acpx", agent: "pi", model: qualificationModel, permissionMode: "approve-all", piThinkingLevel, profile } };
+    expect(parseNativeExecutionInput(value).provider).toEqual(value.provider);
+    for (const mode of [undefined, null, "medium", "minimal", "xhigh", "", { toString: () => "low" }]) expect(() => parseNativeExecutionInput({ ...value, provider: { ...value.provider, piThinkingLevel: mode } })).toThrow(/piThinkingLevel/);
+    expect(() => parseNativeExecutionInput({ ...value, provider: { ...value.provider, agent: "codex" } })).toThrow(/piThinkingLevel/);
+  });
 
   it.each(["agent", "plan", "ask"])("round-trips Cursor mode %s through the closed execution contract", cursorMode => {
     const { qualificationModel: _model, reportedModelId: _reported, permissionPolicy: _permission,

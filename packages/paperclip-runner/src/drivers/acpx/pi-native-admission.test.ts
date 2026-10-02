@@ -51,6 +51,7 @@ it("rejects corrupt Pi bytes at the command boundary before runtime, spawn or br
   await expect(AcpxRuntimeHost.open({
     runtimeDirectory: join(root, "runtime"), normalizedSessionId: "pi-single-pass-rejection",
     workingDirectory: workspace, agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    piThinkingLevel: "low",
     permissionMode: "approve-all", providerPolicy: { readOnly: true },
     semanticTools: { tools: [], handler: vi.fn() },
   }, {

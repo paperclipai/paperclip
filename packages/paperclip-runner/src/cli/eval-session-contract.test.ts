@@ -36,6 +36,7 @@ function request(overrides: Record<string, unknown> = {}): unknown {
       maxEstimatedCostNanodollars: 100_000_000,
     },
     session: {},
+    ...(overrides.acpxAgent === "pi" ? { piThinkingLevel: "low", session: { piThinkingLevel: "low" } } : {}),
     ...overrides,
   };
 }
@@ -84,6 +85,13 @@ describe("eval-session request contract", () => {
     expect(() => parseEvalSessionRequest(value, { candidateProfile: "cursor" })).toThrow("must match");
   });
 
+  it("requires exact matching Pi mode in request and session and rejects aliases", () => {
+    const base = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
+    for (const value of [undefined, "medium", "minimal", "xhigh", ""]) expect(() => parseEvalSessionRequest(request({ ...base, piThinkingLevel: value }))).toThrow();
+    expect(() => parseEvalSessionRequest(request({ ...base, piThinkingLevel: "low", session: { piThinkingLevel: "high" } }))).toThrow(/must match/);
+    expect(() => parseEvalSessionRequest(request({ piThinkingLevel: "low" }))).toThrow(/only supported/);
+  });
+
   it("accepts only known diagnostic flags and rejects ambiguous repeated arguments", () => {
     const args = ["--request", "/tmp/request.json", "--output", "/tmp/result.json"];
     const expected = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
@@ -110,7 +118,7 @@ describe("eval-session request contract", () => {
     try {
       await writeFile(requestPath, JSON.stringify(request({ provider: "acpx", acpxAgent: agent, model,
         runnerd: { path: join(workspace, "missing-runnerd"), sha256: "a".repeat(64) },
-        session: { workingDirectory: workspace },
+        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) },
       })));
       const { commandDigest: _removed, ...incomplete } = expected;
       for (const stale of [
@@ -489,7 +497,7 @@ describe("eval-session budget settlement", () => {
       const shutdown = vi.fn(async () => { snapshot.status = "closed"; });
       const input = request({ provider: "acpx", acpxAgent: agent, model,
         runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
-        session: { workingDirectory: workspace }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
+        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
       });
       const requestPath = join(workspace, "request.json");
       const outputPath = join(workspace, "output.json");

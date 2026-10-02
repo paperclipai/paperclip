@@ -2018,7 +2018,7 @@ it.each(["opencode", "acpx"] as const)(
 
 it("admits Pi runnerd transport without candidate opt-in and keeps siblings gated", async () => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-pi-production-admission-"));
-  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", stateDirectory: root });
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", stateDirectory: root });
   try {
     await expect(transport.request("collaborationMode/list", {})).resolves.toMatchObject({ data: [{ mode: "plan" }] });
     for (const acpxAgent of ["cursor", "copilot"] as const) {
@@ -7789,4 +7789,11 @@ it.each([
 ] as const)("rejects invalid Cursor mode transport options before allocating resources: %j", options => {
   expect(() => createCapabilityRunnerdCodexTransport(options as unknown as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]))
     .toThrow("acpxCursorMode");
+});
+
+it.each([undefined, "medium", "minimal", "xhigh", null])("rejects non-exact Pi transport thinking level %s before spawn", piThinkingLevel => {
+  expect(() => createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: piThinkingLevel as never })).toThrow(/thinking/);
+});
+it("rejects Pi thinking settings on a different transport provider", () => {
+  expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
 });

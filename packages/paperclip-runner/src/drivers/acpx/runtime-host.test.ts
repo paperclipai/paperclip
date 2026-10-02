@@ -868,9 +868,9 @@ describe("ACPX runtime host", () => {
       expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBe("Bound instructions");
       expect(JSON.parse(options.launchEnvironment.PAPERCLIP_PI_READ_ROOTS!)).toEqual([]);
       expect(options.permissionMode).toBe("approve-all");
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }) });
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", piThinkingLevel: "low" }) });
     });
-    const options = { ...fixture.options, agent: "pi" as const, model,
+    const options = { ...fixture.options, agent: "pi" as const, model, piThinkingLevel: "low" as const,
       permissionMode: "approve-all" as const, providerPolicy: { readOnly: true }, systemInstructions: "Bound instructions" };
     const host = await AcpxRuntimeHost.open(options, fixture.dependencies({
       verifyInstallation: async () => ({ commandDigest: profile.commandDigest,
@@ -887,7 +887,7 @@ describe("ACPX runtime host", () => {
     const copies = await mkdtemp(join(tmpdir(), "paperclip-agent-copies-"));
     temporaryDirectories.push(copies);
     const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-test-model";
-    const options = { ...fixture.options, agent, model, permissionMode: "approve-all" as const,
+    const options = { ...fixture.options, agent, model, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}), permissionMode: "approve-all" as const,
       providerPolicy: { readOnly: false }, environment: { AGENT_HOME: "/ambient/other-agent", PAPERCLIP_PI_AGENT_HOME: "/ambient/other-agent",
         ...(agent === "pi" ? { OPENROUTER_API_KEY: "test" } : agent === "cursor" ? { CURSOR_API_KEY: "test" } : { COPILOT_GITHUB_TOKEN: "test" }),
       },
@@ -895,7 +895,7 @@ describe("ACPX runtime host", () => {
     const opened: AcpxRuntimePortOpenOptions[] = [];
     const dependencies = fixture.dependencies({ openRuntime: async launch => {
       opened.push(launch);
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", ...(agent === "cursor" ? { cursorMode: launch.cursorMode } : {}) }) });
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", ...(agent === "cursor" ? { cursorMode: launch.cursorMode } : {}), ...(agent === "pi" ? { piThinkingLevel: launch.piThinkingLevel } : {}) }) });
     } });
     // Missing trusted context must not turn ambient values into authority.
     const withoutCopy = await AcpxRuntimeHost.open(options, dependencies);

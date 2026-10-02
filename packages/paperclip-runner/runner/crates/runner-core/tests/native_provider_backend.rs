@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
 const PI_ACPX_DIGEST: &str =
-    "sha256:47306e6d2a9b59e8f9189f725ebb7a0a7f91826044d1739e1a35ab31f228ba1f";
+    "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -236,6 +236,7 @@ fn pi_prepare_payload(directory: &Path, mode: &str) -> Value {
     provider["commandDigest"] = json!(PI_ACPX_DIGEST);
     provider["sidecarArgs"][3] = json!(PI_ACPX_DIGEST);
     provider["providerPolicy"] = json!({"readOnly":true});
+    provider["piThinkingLevel"] = json!("low");
     payload
 }
 
@@ -1371,6 +1372,40 @@ fn rejects_pi_with_an_unqualified_model_before_starting_a_sidecar() {
         .contains("does not match a qualified immutable profile"));
     assert!(!directory.join("acpx-runtime").exists());
     assert!(!directory.join("acpx-provider-state.json").exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn pi_thinking_change_cannot_attach_to_an_existing_provider_identity() {
+    let directory = temporary_directory("pi-thinking-attach");
+    let config = pi_acpx_config(&directory, "bootstrap");
+    let payload = pi_prepare_payload(&directory, "bootstrap");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload.clone()))
+        .unwrap();
+    let opened = executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(opened.result["piThinkingLevel"], json!("low"));
+    assert_eq!(
+        opened.events[0].2["providerDescriptor"]["piThinkingLevel"],
+        json!("low")
+    );
+    let state_path = directory.join("acpx-provider-state.json");
+    let prior = fs::read(&state_path).unwrap();
+    for (index, mode) in ["off", "high", "max"].into_iter().enumerate() {
+        let mut changed = payload.clone();
+        changed["provider"]["piThinkingLevel"] = json!(mode);
+        let error = executor
+            .execute(&command(3 + index as u64, "run.attach", changed))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("immutable_provider_identity_changed"));
+        assert_eq!(fs::read(&state_path).unwrap(), prior);
+    }
+    executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 

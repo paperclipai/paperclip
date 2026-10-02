@@ -35,18 +35,19 @@ describe("ACPX recovery identity", () => {
     ["copilot", "../../../test/fixtures/copilot-profile-v9-identity.json"],
     ["copilot", "../../../test/fixtures/copilot-profile-v10-identity.json"],
     ["copilot", "../../../test/fixtures/copilot-profile-v11-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v12-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v9-identity.json"],
   ] as const)("rejects retained %s sessions after the execution identity changes", async (agent, path) => {
     const fixture = await recoveryFixture();
     const historical = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
     const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : fixture.input.requestedModel);
-    const input = { ...fixture.input, requestedModel: current.qualificationModel, profile: current };
+    const input = { ...fixture.input, requestedModel: current.qualificationModel, profile: current, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}) };
     const next = await createAcpxRecoveryBinding(input);
     const prior = await createAcpxRecoveryBinding({ ...input, profile: { ...current,
       agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
     const priorExpected = { ...fixture.expected, profileDigest: prior.commandDigest,
       requestedModel: prior.requestedModel, effectiveModel: prior.effectiveModel,
-      ...(agent === "cursor" ? { cursorMode: "agent" as const } : {}) };
+      ...(agent === "cursor" ? { cursorMode: "agent" as const } : {}), ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}) };
     const record = createAcpxIdentityRecord(priorExpected, prior);
     expect(next.profileDigest).not.toBe(prior.profileDigest);
     expect(next.profileSessionKey).not.toBe(prior.profileSessionKey);
@@ -67,6 +68,22 @@ describe("ACPX recovery identity", () => {
     expect(() => verifyExpectedAcpxIdentity(expected, agent, record)).toThrow(/immutable session/);
     expect(() => verifyExpectedAcpxIdentity(expected, plan, { ...record, cursorMode: undefined })).toThrow(/persisted runtime record/);
     await expect(createAcpxRecoveryBinding({ ...fixture.input, cursorMode: "plan" })).rejects.toThrow(/only supported/);
+  });
+
+  it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, piThinkingLevel: "low" as const };
+    const low = await createAcpxRecoveryBinding(input);
+    const high = await createAcpxRecoveryBinding({ ...input, piThinkingLevel: "high" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: low.commandDigest, requestedModel: low.requestedModel, effectiveModel: low.effectiveModel, piThinkingLevel: "low" as const };
+    const persisted = createAcpxIdentityRecord(expected, low);
+    expect(acpxProviderSessionIdentity(persisted, low).piThinkingLevel).toBe("low");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, piThinkingLevel: undefined }, low, persisted)).toThrow(/immutable/);
+    expect(() => verifyExpectedAcpxIdentity(expected, low, { ...persisted, piThinkingLevel: undefined })).toThrow(/persisted/);
+    expect(() => verifyExpectedAcpxIdentity(expected, high, persisted)).toThrow(/immutable/);
+    await expect(createAcpxRecoveryBinding({ ...input, piThinkingLevel: undefined })).rejects.toThrow(/explicit/);
   });
 
   it("derives one stable, filesystem-safe runtime directory name", () => {

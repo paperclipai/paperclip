@@ -146,6 +146,7 @@ export interface CodexAcpxDriverOptions {
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
   cursorMode?: "agent" | "plan" | "ask";
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   providerPolicy?: { readOnly: boolean };
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
@@ -460,6 +461,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-all",
         cursorMode: this.#options.cursorMode,
+        piThinkingLevel: this.#options.piThinkingLevel,
         providerPolicy: this.#options.providerPolicy,
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
@@ -1287,6 +1289,7 @@ class CodexAcpxSession implements HarnessSession {
         effectiveModel: identity.effectiveModel,
         permissionMode: identity.permissionMode,
         ...(identity.cursorMode === undefined ? {} : { cursorMode: identity.cursorMode }),
+        ...(identity.piThinkingLevel === undefined ? {} : { piThinkingLevel: identity.piThinkingLevel }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -2149,6 +2152,7 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
         identity.permissionMode,
       )) ||
     (identity.cursorMode !== undefined && !["agent", "plan", "ask"].includes(identity.cursorMode)) ||
+    (identity.piThinkingLevel !== undefined && !["off", "low", "high", "max"].includes(identity.piThinkingLevel)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,
     )

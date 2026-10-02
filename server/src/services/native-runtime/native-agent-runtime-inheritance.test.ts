@@ -42,3 +42,7 @@ describe("native hire runtime inheritance", () => {
       .not.toHaveProperty("managedProfileId");
   });
 });
+
+it("preserves Pi thinking configuration without live identity or credentials", () => {
+  expect(inheritNativeRunnerAdapterConfig({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", runtimeSessionId: "prior", env: { OPENROUTER_API_KEY: "canary" } })).toEqual({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low" });
+});

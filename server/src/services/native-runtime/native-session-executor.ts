@@ -5578,6 +5578,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.effectiveModel !== expectedModel ||
         identity.permissionMode !== input.execution.provider.permissionMode ||
         !acpxRecoveryCursorModeMatches(input.execution.provider, descriptor.cursorMode, identity.cursorMode) ||
+        !acpxRecoveryPiThinkingMatches(input.execution.provider, descriptor.piThinkingLevel, identity.piThinkingLevel) ||
         !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
@@ -5676,6 +5677,12 @@ function acpxRecoveryCursorModeMatches(
   return expected === undefined && observedModes.every(mode => mode === undefined);
 }
 
+function acpxRecoveryPiThinkingMatches(provider: NativeExecutionInput["provider"], ...observed: unknown[]): boolean {
+  const expected = record(provider).piThinkingLevel;
+  if (provider.kind === "acpx" && provider.agent === "pi") return ["off", "low", "high", "max"].includes(String(expected)) && observed.every(value => value === expected);
+  return expected === undefined && observed.every(value => value === undefined);
+}
+
 export function providerSessionIdentityTransitionIsAllowed(input: {
   execution: NativeExecutionInput;
   previous: unknown;
@@ -5686,6 +5693,7 @@ export function providerSessionIdentityTransitionIsAllowed(input: {
     record(record(input.previous).providerSessionIdentity).cursorMode,
     record(record(input.current).providerSessionIdentity).cursorMode,
   )) return false;
+  if (!acpxRecoveryPiThinkingMatches(input.execution.provider, record(record(input.previous).providerSessionIdentity).piThinkingLevel, record(record(input.current).providerSessionIdentity).piThinkingLevel)) return false;
   if (canonicalJson(input.previous) === canonicalJson(input.current)) {
     return true;
   }
@@ -12650,6 +12658,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 : resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxCursorMode: input.execution.provider.cursorMode,
+              piThinkingLevel: input.execution.provider.piThinkingLevel,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
                 input.execution.schema === "paperclip.native-execution-input.v5",

@@ -550,7 +550,7 @@ describe("native backend factory", () => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const profile = resolveQualifiedAcpxProfile("pi", QUALIFIED_ACPX_PROFILES.pi.qualificationModel);
-    Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, profile });
+    Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
     const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
     await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
   });

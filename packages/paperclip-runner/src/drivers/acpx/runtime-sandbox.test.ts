@@ -438,6 +438,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     workingDirectory: workspace,
     profile: resolveQualifiedAcpxProfile(agent, models[agent]),
     requestedModel: models[agent],
+    ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}),
     permissionMode: "approve-reads",
   });
   return { root, binding };

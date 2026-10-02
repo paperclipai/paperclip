@@ -1,3 +1,4 @@
+import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import type { ChildProcess } from "node:child_process";
 
 import {
@@ -301,6 +302,8 @@ export async function openQualifiedAcpxRuntime(
     );
   };
   const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
+  const selectedPiThinkingLevel = resolvePiThinkingLevel(options.profile.agent, options.piThinkingLevel);
+  const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : null;
   const selectedCursorMode = resolveCursorSessionMode(options.profile.agent, options.cursorMode);
   const cursorMode = selectedCursorMode ? createCursorModeAdmission(selectedCursorMode) : null;
   const cursorInstructions = options.profile.agent === "cursor"
@@ -313,6 +316,7 @@ export async function openQualifiedAcpxRuntime(
       const mode = cursorMode.createGuard();
       return (direction: "inbound" | "outbound", message: unknown) => { instructions(direction, message); mode(direction, message); };
     } } : {}),
+    ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -512,6 +516,18 @@ export async function openQualifiedAcpxRuntime(
           await commandLaunches.refreshConsumedCommand?.();
         }
         return ensuredHandle;
+      }) : piThinking ? ensuredSession.then(async (ensuredHandle) => {
+        handle = ensuredHandle;
+        options.signal?.throwIfAborted();
+        if (!piThinking.isReady()) {
+          if (!runtime.setConfigOption) throw new Error("Pi thinking admission requires native configuration");
+          await runtime.setConfigOption({ handle: ensuredHandle, key: "thought_level", value: selectedPiThinkingLevel! });
+          piThinking.assertReady();
+          await children.verifyLifetimeOwnership();
+          options.signal?.throwIfAborted();
+          await commandLaunches.refreshConsumedCommand?.();
+        }
+        return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
       throw classifySessionEnsureFailure(error);
@@ -527,6 +543,7 @@ export async function openQualifiedAcpxRuntime(
       : await boundedHandshake;
     cursorInstructions?.assertReady();
     cursorMode?.assertReady();
+    piThinking?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -581,7 +598,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(selectedCursorMode ? { cursorMode: selectedCursorMode } : {}) },
+      { ...requireIdentity(handle), ...(selectedCursorMode ? { cursorMode: selectedCursorMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

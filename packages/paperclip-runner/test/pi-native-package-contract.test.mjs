@@ -359,37 +359,43 @@ test("real pinned Pi tool dispatch admits registered agent files and rejects una
 // This regression crosses Pi 1's real RPC serializer, the owned extension and
 // the patched ACP wrapper. Only an owned loopback HTTP fixture can be reached;
 // dummy authentication is unrelated to any provider account.
-for (const scenario of ["hello", "interleaved-tools", "provider-error", "provider-unknown"]) {
+for (const scenario of ["hello", "interleaved-tools", "provider-error", "provider-unknown", "thinking-modes"]) {
   test(`real Pi 1 serialized RPC ${scenario} through owned ACP/MCP bridge`, { timeout: 30_000 }, async t => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-pi-stream-")));
     let child; let server;
     t.after(async () => {
       if (child) {
-        child.stdin.end();
+        // Loaded-session command updates can still be pending at EOF. Retire
+        // through the owned wrapper handler so every native child is awaited.
+        if (scenario === "thinking-modes") child.kill("SIGTERM"); else child.stdin.end();
         if (child.exitCode === null) { const timer = setTimeout(() => child.kill("SIGTERM"), 3000); await once(child, "exit"); clearTimeout(timer); }
       }
       if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
       try {
-        if (child) assert.equal(JSON.parse(await readFile(join(root, "owned-retirement.json"), "utf8")).allOwnedChildrenClosed, true);
+        if (child) {
+          const retirement = JSON.parse(await readFile(join(root, "owned-retirement.json"), "utf8"));
+          assert.equal(retirement.allOwnedChildrenClosed, true);
+          if (scenario === "thinking-modes") { assert.equal(retirement.count, 2); assert.equal(retirement.spawnErrors, 0); }
+        }
       } finally { await rm(root, { recursive: true, force: true }); }
     });
     await mkdir(join(root, "workspace")); await mkdir(join(root, "agent"));
     const wrapperRoot = process.env.PAPERCLIP_TEST_PI_ACP_PACKAGE
       ? dirname(process.env.PAPERCLIP_TEST_PI_ACP_PACKAGE)
       : join(dirname(dirname(packageRoot)), "pi-acp");
-    const calls = []; const modelRequests = [];
+    const calls = []; const modelRequests = []; const reasoningRequests = [];
     const tools = ["paperclip_get_context", "paperclip_finish"].map(name => ({ name, description: name, inputSchema: { type: "object", properties: {}, additionalProperties: true } }));
     server = createServer(async (request, response) => {
       let body = ""; for await (const chunk of request) { body += chunk; assert.ok(body.length < 1_048_576); }
       const value = JSON.parse(body);
       if (request.url === "/v1/chat/completions") {
-        modelRequests.push(value.model); assert.ok(modelRequests.length <= 3);
+        modelRequests.push(value.model); reasoningRequests.push({ model: value.model, reasoning: value.reasoning }); assert.ok(modelRequests.length <= 3);
         if (scenario.startsWith("provider-")) {
           response.writeHead(scenario === "provider-error" ? 401 : 418, { "content-type": "application/json" });
           response.end(JSON.stringify({ error: { message: "Bearer sensitive-canary /private/sensitive-canary", type: "authentication_error" } })); return;
         }
         const n = modelRequests.length;
-        const toolTurn = n === 1 || scenario === "hello" && n === 2;
+        const toolTurn = scenario !== "thinking-modes" && (n === 1 || scenario === "hello" && n === 2);
         const names = scenario === "interleaved-tools" ? tools.map(tool => tool.name) : [n === 1 ? tools[0].name : tools[1].name];
         const chunks = [];
         if (toolTurn) {
@@ -490,7 +496,32 @@ await import(${JSON.stringify(pathToFileURL(join(wrapperRoot, "dist/index.js")).
     await call("initialize", { protocolVersion: 1, clientCapabilities: {} });
     const session = await call("session/new", { cwd: join(root, "workspace"), mcpServers: [{ type: "http", name: "paperclip", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: "Bearer 0123456789abcdef0123456789abcdef" }] }] });
     const model = "openrouter/deepseek/deepseek-v4-flash-0731";
-    await call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: model });
+    const selected = await call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: model });
+    if (scenario === "thinking-modes") {
+      const thought = config => config.configOptions.find(option => option.id === "thought_level");
+      assert.equal(thought(selected).currentValue, "high", "native medium default clamps to high for this exact model");
+      assert.deepEqual(thought(selected).options.map(option => option.value), ["off", "low", "high", "max"]);
+      await call("session/set_mode", { sessionId: session.sessionId, modeId: "high" });
+      assert.equal((await call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Reply HELLO_COMPLETE." }] })).stopReason, "end_turn");
+      const low = await call("session/set_config_option", { sessionId: session.sessionId, configId: "thought_level", value: "low" });
+      assert.equal(thought(low).currentValue, "low");
+      assert.equal((await call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Reply HELLO_COMPLETE again." }] })).stopReason, "end_turn");
+      assert.deepEqual(reasoningRequests, [
+        { model: "deepseek/deepseek-v4-flash-0731", reasoning: { effort: "high" } },
+        { model: "deepseek/deepseek-v4-flash-0731", reasoning: { effort: "low" } },
+      ]);
+      await assert.rejects(call("session/set_mode", { sessionId: session.sessionId, modeId: "medium" }), /Unsupported thinking level/);
+      const maximum = await call("session/set_config_option", { sessionId: session.sessionId, configId: "thought_level", value: "max" });
+      assert.equal(thought(maximum).currentValue, "max");
+      const loaded = await call("session/load", { sessionId: session.sessionId, cwd: join(root, "workspace"), mcpServers: [] });
+      assert.equal(loaded.modes.currentModeId, "max"); assert.equal(thought(loaded).currentValue, "max");
+      assert.deepEqual(loaded.modes.availableModes.map(mode => mode.id), ["off", "low", "high", "max"]);
+      const modes = notifications.filter(event => event.params?.update?.sessionUpdate === "current_mode_update").map(event => event.params.update.currentModeId);
+      assert.deepEqual(modes, ["high", "low", "max"]);
+      assert.deepEqual(JSON.parse(await readFile(join(root, "network-denial.json"), "utf8")), { deniedBeforeConnect: true, underlyingConnections: 0 });
+      assert.equal(calls.filter(call => call.method === "tools/call").length, 0);
+      return;
+    }
     const result = await call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Call paperclip_get_context, then paperclip_finish. Finally say HELLO_COMPLETE." }] });
     assert.deepEqual(JSON.parse(await readFile(join(root, "network-denial.json"), "utf8")), { deniedBeforeConnect: true, underlyingConnections: 0 });
     assert.ok(modelRequests.every(value => value === "deepseek/deepseek-v4-flash-0731"));

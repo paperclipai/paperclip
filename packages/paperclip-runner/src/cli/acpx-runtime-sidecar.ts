@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -293,6 +294,7 @@ async function dispatch(
         model: params.model,
         permissionMode: params.permissionMode,
         cursorMode: params.cursorMode,
+        piThinkingLevel: params.piThinkingLevel,
         providerPolicy: params.providerPolicy,
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
@@ -1203,6 +1205,7 @@ function parseOpenParams(
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   if (value.cursorMode !== undefined && agent !== "cursor") throw new Error("cursorMode is supported only for Cursor");
+  const piThinkingLevel = resolvePiThinkingLevel(agent, value.piThinkingLevel);
   resolveQualifiedAcpxProfile(agent, model);
   if (
     value.providerSessionKey !== undefined &&
@@ -1223,6 +1226,7 @@ function parseOpenParams(
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
     ...(agent === "cursor" ? { cursorMode: requiredCursorMode(value.cursorMode === undefined ? "agent" : value.cursorMode) } : {}),
+    ...(piThinkingLevel ? { piThinkingLevel } : {}),
     permissionModePinned: value.permissionModePinned === true,
     ...(value.providerPolicy == null ? {} : { providerPolicy: parseProviderPolicy(value.providerPolicy) }),
     systemInstructions: boundedText(
@@ -1293,6 +1297,7 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
       ? {}
       : { permissionMode: requiredPermissionMode(input.permissionMode) }),
     ...(input.cursorMode === undefined ? {} : { cursorMode: requiredCursorMode(input.cursorMode) }),
+    ...(input.piThinkingLevel === undefined ? {} : { piThinkingLevel: resolvePiThinkingLevel("pi", input.piThinkingLevel) }),
     providerLifetimeFenceCandidates: requiredFenceCandidates(
       input.providerLifetimeFenceCandidates,
     ),

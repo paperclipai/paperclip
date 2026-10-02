@@ -2,64 +2,86 @@
 
 ## Current Pi 1.0 qualification checkpoint — October 2, 2026
 
-Pi now uses `@earendil-works/pi-coding-agent@1.0.0`, `pi-acp@0.0.33`,
-ACPX `0.13.1`, and profile **12**. Its exact model remains
-`openrouter/deepseek/deepseek-v4-flash-0731`. Cursor v10 and Copilot v12
-remain gated while Pi qualification is completed. The held Pi admission branch
-is preparation for testing normal installation; it is not production qualification.
+Pi uses `@earendil-works/pi-coding-agent@1.0.0`, `pi-acp@0.0.33`, and ACPX
+`0.13.1`. Profile **13** adds explicit, native-acknowledged reasoning selection
+for the exact model `openrouter/deepseek/deepseek-v4-flash-0731`. New Pi
+configuration and qualification cases select `low`. This candidate is not yet
+production qualified. Cursor v10 and Copilot v13 remain gated.
 
-The first paid Pi 1.0 local hello on profile 11 failed: Pi's serialized RPC
-message updates no longer carry the old SDK-shaped partial message. That failure
-is retained, with $0.000142518 observed on the dedicated OpenRouter key and
-complete owned-process cleanup. Profile 12 repairs the actual RPC boundary;
-its local-only tests exercise the real Pi CLI, wrapper and owned extension.
-They do not replace authenticated product tests.
+Copilot's declaration hashes the shared sidecar, sidecar protocol, direct driver,
+and generated schema bundle. Pi's reasoning field changed those four files, so
+Copilot's pending declaration advances to v13 with digest
+`sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1`.
+Its executable, distribution closure, model, permissions, and qualification
+status are unchanged. The v12 declaration remains historical, and v12 warm
+sessions are rejected. This source-identity repair supplies no Copilot paid proof.
 
-At runtime source `b9e5d6ecdb05ab7244c90976e07c950f8d09b15b`, the fresh
-macOS ARM64 daemon and verified pack pass the original no-key startup test
-(6.741 seconds to settlement) and all 48 native/ACP contract tests without skips.
-The original evidence collector rejected Node 24's summary format after the
-runtime checks had passed. Its failure is preserved; independently reviewed
-offline finalization verifies those same logs and full asset inventories without
-rerunning the tests. The fresh native Intel build also passed all 48 contract
-tests, but its canonical startup failed at the unchanged 30-second deadline
-(35.032 seconds to settlement). A later instrumented run passed at 22.959 seconds;
-it used a read-verified, warmed filesystem state and does not erase the original
-failure. A four-run I/O-pool comparison was inconclusive, so no production
-thread-pool change was adopted. Intel startup and the final installed-package
-local/Daytona tests remain separate gates.
+The first profile-13 source (`f5c5fde38`) built a fresh ARM daemon and Pi pack,
+then passed original startup and all 61 native/ACP contract tests without model
+calls. Its full Runner suite found three missing-mode test fixtures and the
+stale Copilot declaration. Those failures are retained. The corrected final
+source still requires fresh platform builds, complete checks, and paid tests.
 
-Testing the actual public package installation exposed a packaging defect:
-ambient npm 10 pruned 84 files from the pinned Pi dependency closure. Setup now
-uses npm 11.19.0 bundled in the independently verified Node archive. The repaired
-provisioner reproduces the original profile-12 closure with ambient npm disabled;
-fresh public-package installation proof remains required.
+Profile 12 passed one paid local hello through the actual installed public
+CLI/server and normal runtime setup. The next question-continuation case failed
+at the unchanged 120-second native deadline: Pi emitted 1,019 reasoning deltas,
+but no tool call or question. The tool and schema were present. One native turn
+was submitted; the two visible start rows were canonical and mirrored activity,
+not evidence of two provider requests. Both attempts completed owned-process,
+IPC, temporary-root, installed-inventory, and post-run accounting checks.
 
-Normal Daytona setup now has an explicit operator command to import a verified
+The dedicated key recorded $0.000510742 for the hello and $0.004995065 for the
+failed question. Including the earlier profile-11 failure ($0.000142518), its
+observed total was $0.005648325 at that reconciliation. These are observed key
+usage changes, not native per-request bills. No failed result has been regraded.
+
+Diagnosis found that the runner did not select the ACP reasoning mode. The
+pinned model's implicit Pi `medium` setting resolves to `high`; this behavior
+also existed in Pi 0.84.2. Pi 1.0 exposes a genuine `low` level. Profile 13 carries
+an explicit setting through configuration, transport, and durable identity,
+and requires the native effective level to match before a prompt is sent.
+It does not increase the timeout. The timed-out HTTP body was not captured,
+so source-derived default mapping does not establish the cause of that failure.
+Fresh qualification must use the new profile and exact final build.
+
+Historical source `4c58da84fd86a0cd7bc1d952987b031786fc6b2b` passed full Runner
+verification and normal Intel startup at 28.295 seconds under the original
+30-second limit, plus all 48 native/ACP contract tests. The Intel result has
+only 1.705 seconds of margin and does not establish broad cold-start reliability.
+Its fresh Linux daemon, Pi pack, and image were built and inventoried; live
+Daytona qualification remained pending. The public Mac installation reproduced
+the complete Pi dependency closure using npm 11.19.0 from the verified Node
+archive. None of these artifacts qualifies profile 13.
+
+The same source's full repository check failed six stale test assertions and
+an `ETXTBSY` binary-staging error; the downstream Grok check then lacked built
+server output. Typecheck, token gates, and Product E2E typecheck/unit checks
+passed. The stale assertions have targeted repairs. A Linux process owner was
+not captured for `ETXTBSY`; two exact native fixtures later passed on ARM with
+all owned daemon handles closed, which does not resolve the Linux failure.
+The next complete source run retains bounded executable-holder evidence around
+check boundaries. A later run on obsolete harness source was canceled by the
+lead and is retained as incomplete, not successful verification.
+
+Normal Daytona setup has an explicit operator command to import a verified
 Linux companion into the installed server. It binds the trusted manifest to the
-installed source, Pi profile, daemon and complete provider-pack inventory, then
-uses the ordinary remote execution path without test-only binary or pack
-overrides. Its 31 focused tests cover asynchronous bounded verification,
-cancellation, existing-cache validation, contained paths and owned cleanup.
-These tests do not establish live Daytona qualification or release publication.
-
-Full repository typecheck, tests, token gates, Product E2E typecheck/unit checks,
-and build passed on the earlier source `efe019a79f50440d7bd6c3bc6c75fb8f18953093`.
-Its Runner verification also passed. These results are historical prerequisites;
-profile 12 and the final installation changes still need their own verification.
+installed source, Pi profile, daemon, and complete provider-pack inventory, then
+uses ordinary remote execution without test-only binary or pack overrides.
+The final installed import, image publication, and paid proof remain required.
 
 The dedicated Pi test key has a $5 lifetime OpenRouter-credit limit. Its BYOK
-charges are not included in that provider-enforced limit. Qualification therefore
-also requires the reviewed operational policy verifying no configured BYOK
-credentials, fresh account/key evidence, one paid case at a time, and usage
-monitoring. The key's $5 reservation is counted once within the combined $100
-campaign budget. Native price estimates are never substituted for provider bills.
+charges are outside that provider-enforced limit, so qualification additionally
+uses the reviewed no-BYOK operational policy, fresh account/key evidence, one
+paid case at a time, and usage monitoring. The $5 reservation is counted once
+within the combined $100 campaign budget. Native price estimates are never
+substituted for provider bills.
 
-The [Pi capability inventory](runner-pi-capabilities.md#pi-10-candidate-2026-10-02-profile-v12)
-records Pi 1.0's native interfaces, wrapper changes, and unused capabilities.
-The comparison below remains the supported-surface map; older paid observations
-retain their named historical profiles. Current Pi 1.0 paid Product, Runner
-protocol, native controls, and Daytona qualification are still pending.
+The [Pi capability inventory](runner-pi-capabilities.md#pi-10-candidate-2026-10-02-profile-v13)
+records native interfaces, ACP mappings, user surfaces, and explicit gaps.
+The comparison below remains the supported-surface map; old observations retain
+their exact historical profile identities. Final source checks and profile-13
+local Product, Runner protocol, native-control, and Daytona qualification remain
+pending.
 
 Historical source checkpoint (2026-10-01): **Cursor v10, Copilot v12 and Pi v10
 remain unqualified**. Copilot receipt v2 distinguishes original provider

@@ -247,3 +247,15 @@ export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
   { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY"] },
 ] as const);
+
+/** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */
+export type PaperclipRunnerPiThinkingLevel = "off" | "low" | "high" | "max";
+export function resolvePaperclipRunnerPiThinkingLevel(provider: unknown, agent: unknown, value: unknown): PaperclipRunnerPiThinkingLevel | undefined {
+  if (provider !== "acpx" || agent !== "pi") {
+    if (value !== undefined) throw new Error("piThinkingLevel is supported only for Pi");
+    return undefined;
+  }
+  if (value === undefined) return "low";
+  if (value === "off" || value === "low" || value === "high" || value === "max") return value;
+  throw new Error("Pi thinking level must be off, low, high, or max");
+}

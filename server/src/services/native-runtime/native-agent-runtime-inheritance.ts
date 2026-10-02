@@ -13,6 +13,7 @@ export const INHERITABLE_NATIVE_RUNNER_CONFIG_KEYS = [
   "opencodePermissionMode",
   "acpxPermissionMode",
   "acpxSessionMode",
+  "piThinkingLevel",
   "lifecycleMode",
   "modelReasoningEffort",
   "maxIterations",

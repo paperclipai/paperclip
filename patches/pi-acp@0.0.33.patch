@@ -142,7 +142,19 @@
      }
    }
    /**
-@@ -242,7 +245,7 @@
+@@ -229,6 +232,11 @@
+     if (!res.success) throw new Error(`pi set_model failed: ${res.error ?? JSON.stringify(res.data)}`);
+     return res.data;
+   }
++  async getAvailableThinkingLevels() {
++    const res = await this.request({ type: "get_available_thinking_levels" });
++    if (!res.success) throw new Error(`pi get_available_thinking_levels failed: ${res.error ?? JSON.stringify(res.data)}`);
++    return res.data;
++  }
+   async setThinkingLevel(level) {
+     const res = await this.request({ type: "set_thinking_level", level });
+     if (!res.success) throw new Error(`pi set_thinking_level failed: ${res.error ?? JSON.stringify(res.data)}`);
+@@ -242,7 +250,7 @@
      if (!res.success) throw new Error(`pi set_steering_mode failed: ${res.error ?? JSON.stringify(res.data)}`);
    }
    async compact(customInstructions) {
@@ -151,7 +163,7 @@
      if (!res.success) throw new Error(`pi compact failed: ${res.error ?? JSON.stringify(res.data)}`);
      return res.data;
    }
-@@ -283,17 +286,23 @@
+@@ -283,17 +291,23 @@
      await this.writeLine(`${JSON.stringify({ type: "extension_ui_response", ...response })}
  `);
    }
@@ -181,7 +193,7 @@
      });
    }
    writeLine(line) {
-@@ -337,7 +346,7 @@
+@@ -337,7 +351,7 @@
      {
        authMethods: getAuthMethods()
      },
@@ -190,7 +202,7 @@
    );
  }
 
-@@ -534,6 +543,14 @@
+@@ -534,6 +548,14 @@
    const record = value;
    const command = record?.command ?? record?.cmd ?? record?.args?.command ?? record?.args?.cmd ?? record?.input?.command ?? record?.input?.cmd ?? record?.rawInput?.command ?? record?.rawInput?.cmd ?? record?.toolInput?.command ?? record?.toolInput?.cmd ?? record?.details?.command ?? record?.details?.cmd;
    return typeof command === "string" && command.trim() ? command : void 0;
@@ -205,7 +217,7 @@
  }
  function bashResultText(result) {
    const record = result;
-@@ -714,6 +731,7 @@
+@@ -714,6 +736,7 @@
      try {
        proc = await PiRpcProcess.spawn({
          cwd: params.cwd,
@@ -213,7 +225,7 @@
          piCommand: params.piCommand
        });
      } catch (e) {
-@@ -808,6 +826,9 @@
+@@ -808,6 +831,9 @@
      this.proc = opts.proc;
      this.conn = opts.conn;
      this.fileCommands = opts.fileCommands ?? [];
@@ -223,7 +235,7 @@
      this.proc.onEvent((ev) => this.handlePiEvent(ev));
    }
    setStartupInfo(text) {
-@@ -822,10 +843,7 @@
+@@ -822,10 +848,7 @@
    sendStartupInfoIfPending() {
      if (this.startupInfoSent || !this.startupInfo) return;
      this.startupInfoSent = true;
@@ -235,7 +247,7 @@
    }
    async prompt(message, images = []) {
      const expandedMessage = expandSlashCommand(message, this.fileCommands);
-@@ -852,6 +870,7 @@
+@@ -852,6 +875,7 @@
    }
    async cancel() {
      this.cancelRequested = true;
@@ -243,7 +255,7 @@
      if (this.turnQueue.length) {
        const queued = this.turnQueue.splice(0, this.turnQueue.length);
        for (const t of queued) t.resolve("cancelled");
-@@ -870,6 +889,8 @@
+@@ -870,6 +894,8 @@
      return this.cancelRequested;
    }
    emit(update) {
@@ -252,7 +264,7 @@
      this.lastEmit = this.lastEmit.then(
        () => this.conn.sessionUpdate({
          sessionId: this.sessionId,
-@@ -877,6 +898,12 @@
+@@ -877,6 +903,12 @@
        })
      ).catch(() => {
      });
@@ -265,7 +277,7 @@
    }
    async flushEmits() {
      await this.lastEmit;
-@@ -890,6 +917,7 @@
+@@ -890,6 +922,7 @@
        kind: "execute",
        status: params.status,
        locations: params.locations,
@@ -273,7 +285,7 @@
        ...params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {},
        ...params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {}
      });
-@@ -903,6 +931,7 @@
+@@ -903,6 +936,7 @@
        sessionUpdate: "tool_call_update",
        toolCallId: params.toolCallId,
        status: params.status,
@@ -281,7 +293,7 @@
        _meta: {
          ...delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {},
          ...params.status === "completed" || params.status === "failed" ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {}
-@@ -920,18 +949,24 @@
+@@ -920,18 +954,24 @@
      this.cancelRequested = false;
      this.inAgentLoop = false;
      this.pendingTurn = { resolve: t.resolve, reject: t.reject };
@@ -308,7 +320,7 @@
          }
          this.pendingTurn = null;
          this.inAgentLoop = false;
-@@ -946,20 +981,47 @@
+@@ -946,20 +986,47 @@
    handlePiEvent(ev) {
      const type = String(ev.type ?? "");
      switch (type) {
@@ -364,7 +376,7 @@
            break;
          }
          if (ame?.type === "toolcall_start" || ame?.type === "toolcall_delta" || ame?.type === "toolcall_end") {
-@@ -1047,7 +1109,7 @@
+@@ -1047,7 +1114,7 @@
            if (p) {
              try {
                const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
@@ -373,7 +385,7 @@
                this.fileSnapshots.set(toolCallId, { path: p, oldText: snapshotOldText });
                if (toolName === "edit") {
                  for (const needle of getEditOldTexts(args)) {
-@@ -1125,7 +1187,7 @@
+@@ -1125,7 +1192,7 @@
          if (!isError && snapshot) {
            try {
              const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
@@ -382,7 +394,7 @@
              if (snapshot.oldText === null || newText !== snapshot.oldText) {
                hasStructuredDiff = true;
                content = [
-@@ -1154,48 +1216,41 @@
+@@ -1154,48 +1221,41 @@
          break;
        }
        case "extension_ui_request": {
@@ -455,7 +467,7 @@
          break;
        }
        case "agent_start": {
-@@ -1210,9 +1265,12 @@
+@@ -1210,9 +1270,12 @@
          break;
        }
        case "agent_settled": {
@@ -469,7 +481,7 @@
            this.pendingTurn = null;
            this.inAgentLoop = false;
            const next = this.turnQueue.shift();
-@@ -1725,6 +1783,7 @@
+@@ -1725,6 +1788,7 @@
    return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join4(homedir4(), ".pi", "agent");
  }
  function getEnableSkillCommands(cwd) {
@@ -477,7 +489,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.enableSkillCommands;
    if (typeof direct === "boolean") return direct;
-@@ -1733,6 +1792,7 @@
+@@ -1733,6 +1797,7 @@
    return true;
  }
  function getQuietStartup(cwd) {
@@ -485,7 +497,7 @@
    const merged = getMergedSettings(cwd);
    const direct = merged.quietStartup;
    if (typeof direct === "boolean") return direct;
-@@ -1824,6 +1884,7 @@
+@@ -1824,6 +1889,7 @@
    const out = [];
    const seen = /* @__PURE__ */ new Set();
    for (const c of [...a, ...b]) {
@@ -493,7 +505,7 @@
      if (seen.has(c.name)) continue;
      seen.add(c.name);
      out.push(c);
-@@ -1884,11 +1945,13 @@
+@@ -1884,11 +1950,13 @@
          throw RequestError3.invalidParams(`Unknown sessionId: ${sessionId}`);
        }
        const cwd = opts?.cwd ?? stored.cwd;
@@ -507,7 +519,7 @@
            piCommand: process.env.PI_ACP_PI_COMMAND
          });
        } catch (e) {
-@@ -1897,7 +1960,7 @@
+@@ -1897,7 +1965,7 @@
          }
          throw e;
        }
@@ -516,7 +528,7 @@
        const session = this.sessions.getOrCreate(sessionId, {
          cwd,
          mcpServers: opts?.mcpServers ?? [],
-@@ -1917,6 +1980,7 @@
+@@ -1917,6 +1985,7 @@
      }
    }
    async initialize(params) {
@@ -524,7 +536,7 @@
      const supportedVersion = 1;
      const requested = params.protocolVersion;
      return {
-@@ -1933,7 +1997,8 @@
+@@ -1933,7 +2002,8 @@
        }),
        agentCapabilities: {
          loadSession: true,
@@ -534,7 +546,7 @@
          promptCapabilities: {
            image: true,
            audio: false,
-@@ -1942,8 +2007,7 @@
+@@ -1942,8 +2012,7 @@
          sessionCapabilities: {
            // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
            // Enables a native session picker in clients that support it.
@@ -544,7 +556,7 @@
          }
        }
      };
-@@ -1953,7 +2017,7 @@
+@@ -1953,7 +2022,7 @@
        throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
      }
      this.lastSessionCwd = params.cwd;
@@ -553,7 +565,7 @@
      const enableSkillCommands = getEnableSkillCommands(params.cwd);
      const session = await this.sessions.create({
        cwd: params.cwd,
-@@ -1994,14 +2058,14 @@
+@@ -1994,14 +2063,14 @@
        this.cleanupFailedNewSession(session.sessionId, state);
        throw RequestError3.authRequired(
          { authMethods: getAuthMethods() },
@@ -570,7 +582,7 @@
        );
      }
      const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
-@@ -2064,34 +2128,27 @@
+@@ -2064,34 +2133,27 @@
    }
    async prompt(params) {
      const session = await this.restoreSession(params.sessionId);
@@ -617,7 +629,7 @@
        }
        if (cmd === "session") {
          const stats = await session.proc.getSessionStats();
-@@ -2112,13 +2169,8 @@
+@@ -2112,13 +2174,8 @@
          }
          const text = lines.length ? lines.join("\n") : `Session stats:
  ${JSON.stringify(stats, null, 2)}`;
@@ -633,7 +645,7 @@
          return { stopReason: "end_turn" };
        }
        if (cmd === "name") {
-@@ -2418,22 +2470,24 @@
+@@ -2418,22 +2475,24 @@
            enabled = !current;
          }
          await session.proc.setAutoCompaction(enabled);
@@ -670,7 +682,7 @@
    }
    async cancel(params) {
      const session = this.sessions.maybeGet(params.sessionId);
-@@ -2473,7 +2527,7 @@
+@@ -2473,7 +2532,7 @@
        mcpServers: params.mcpServers
      });
      const proc = session.proc;
@@ -679,7 +691,7 @@
      this.sessions.closeAllExcept?.(session.sessionId);
      this.store.upsert({
        sessionId: params.sessionId,
-@@ -2482,7 +2536,7 @@
+@@ -2482,7 +2541,7 @@
      });
      const data = await proc.getMessages();
      const messages = Array.isArray(data?.messages) ? data.messages : [];
@@ -688,7 +700,7 @@
        const role = String(m?.role ?? "");
        if (role === "user") {
          const text = normalizePiMessageText(m?.content);
-@@ -2501,16 +2555,14 @@
+@@ -2501,16 +2560,14 @@
          if (text) {
            await this.conn.sessionUpdate({
              sessionId: session.sessionId,
@@ -708,7 +720,7 @@
          const isError = Boolean(m?.isError);
          const isBash = isBashTool(toolName);
          if (isBash) {
-@@ -2524,7 +2576,7 @@
+@@ -2524,7 +2581,7 @@
                kind: "execute",
                status: "completed",
                content: bashTerminalContent(toolCallId),
@@ -717,7 +729,7 @@
              }
            });
            await this.conn.sessionUpdate({
-@@ -2535,7 +2587,8 @@
+@@ -2535,7 +2592,8 @@
                status: isError ? "failed" : "completed",
                _meta: {
                  ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
@@ -727,7 +739,7 @@
                }
              }
            });
-@@ -2549,6 +2602,7 @@
+@@ -2549,6 +2607,7 @@
              title: toolName,
              kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
              status: "completed",
@@ -735,7 +747,7 @@
              rawInput: null,
              rawOutput: m
            }
-@@ -2560,6 +2614,7 @@
+@@ -2560,6 +2619,7 @@
              sessionUpdate: "tool_call_update",
              toolCallId,
              status: isError ? "failed" : "completed",
@@ -743,7 +755,7 @@
              content: text ? [{ type: "content", content: { type: "text", text } }] : null,
              rawOutput: m
            }
-@@ -2607,6 +2662,7 @@
+@@ -2607,6 +2667,7 @@
      return response;
    }
    async deleteSession(params) {
@@ -751,7 +763,95 @@
      const stored = this.store.get(params.sessionId);
      const piSession = findPiSession(params.sessionId);
      if (!stored && !piSession) {
-@@ -2828,6 +2884,7 @@
+@@ -2630,15 +2691,12 @@
+   async setSessionMode(params) {
+     const session = await this.restoreSession(params.sessionId);
+     const mode = String(params.modeId);
+-    if (!isThinkingLevel(mode)) {
+-      throw RequestError3.invalidParams(`Unknown modeId: ${mode}`);
+-    }
+-    await session.proc.setThinkingLevel(mode);
+-    void this.conn.sessionUpdate({
++    const modes = await setVerifiedThinkingLevel(session.proc, mode);
++    await this.conn.sessionUpdate({
+       sessionId: session.sessionId,
+       update: {
+         sessionUpdate: "current_mode_update",
+-        currentModeId: mode
++        currentModeId: modes.currentModeId
+       }
+     });
+     await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc);
+@@ -2653,15 +2711,12 @@
+     if (configId === MODEL_CONFIG_ID) {
+       await setSessionModel(session.proc, params.value);
+     } else if (configId === THOUGHT_LEVEL_CONFIG_ID) {
+-      if (!isThinkingLevel(params.value)) {
+-        throw RequestError3.invalidParams(`Unknown thinking level: ${params.value}`);
+-      }
+-      await session.proc.setThinkingLevel(params.value);
+-      void this.conn.sessionUpdate({
++      const modes = await setVerifiedThinkingLevel(session.proc, params.value);
++      await this.conn.sessionUpdate({
+         sessionId: session.sessionId,
+         update: {
+           sessionUpdate: "current_mode_update",
+-          currentModeId: params.value
++          currentModeId: modes.currentModeId
+         }
+       });
+     } else {
+@@ -2672,20 +2727,18 @@
+   }
+ };
+ function isThinkingLevel(x) {
+-  return x === "off" || x === "minimal" || x === "low" || x === "medium" || x === "high" || x === "xhigh";
++  return x === "off" || x === "minimal" || x === "low" || x === "medium" || x === "high" || x === "xhigh" || x === "max";
+ }
+ async function getThinkingState(proc, pre) {
+-  let current = "medium";
+-  const state = pre?.state ?? await (async () => {
+-    try {
+-      return await proc.getState();
+-    } catch {
+-      return null;
+-    }
+-  })();
+-  const tl = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
+-  if (tl && isThinkingLevel(tl)) current = tl;
+-  const available = ["off", "minimal", "low", "medium", "high", "xhigh"];
++  const available = (await proc.getAvailableThinkingLevels())?.levels;
++  if (!Array.isArray(available) || available.length === 0 || available.some((level) => !isThinkingLevel(level)) || new Set(available).size !== available.length) {
++    throw new Error("Pi returned invalid supported thinking levels");
++  }
++  const state = pre?.state ?? await proc.getState();
++  const current = state?.thinkingLevel;
++  if (!isThinkingLevel(current) || !available.includes(current)) {
++    throw new Error("Pi returned an unsupported effective thinking level");
++  }
+   return {
+     currentModeId: current,
+     availableModes: available.map((id) => ({
+@@ -2694,6 +2747,18 @@
+       description: null
+     }))
+   };
++}
++async function setVerifiedThinkingLevel(proc, requested) {
++  const before = await getThinkingState(proc);
++  if (!before.availableModes.some((mode) => mode.id === requested)) {
++    throw RequestError3.invalidParams(`Unsupported thinking level for the current model: ${requested}`);
++  }
++  await proc.setThinkingLevel(requested);
++  const after = await getThinkingState(proc);
++  if (after.currentModeId !== requested) {
++    throw new Error("Pi did not apply the requested thinking level");
++  }
++  return after;
+ }
+ async function getSessionConfiguration(proc, pre) {
+   const [models, modes] = await Promise.all([getModelState(proc, pre), getThinkingState(proc, { state: pre?.state })]);
+@@ -2828,6 +2893,7 @@
    return 0;
  }
  function buildUpdateNotice() {
@@ -759,7 +859,7 @@
    try {
      const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
      const installed = (String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()).replace(
-@@ -2848,6 +2905,7 @@
+@@ -2848,6 +2914,7 @@
    }
  }
  function buildStartupInfo(opts) {
@@ -767,7 +867,7 @@
    void opts.fileCommands;
    const md = [];
    try {
-@@ -2980,6 +3038,7 @@
+@@ -2980,6 +3047,7 @@
 
  // src/index.ts
  if (process.argv.includes("--terminal-login")) {
@@ -775,7 +875,7 @@
    const { spawnSync: spawnSync2 } = await import("child_process");
    const cmd = getPiCommand(process.env.PI_ACP_PI_COMMAND);
    const res = spawnSync2(cmd, [], {
-@@ -3019,11 +3078,12 @@
+@@ -3019,11 +3087,12 @@
    }
  });
  var stream = ndJsonStream(input, output);
@@ -790,7 +890,7 @@
    } catch {
    }
    try {
---- /dev/null
+--- a/dist/paperclip-runtime.js
 +++ b/dist/paperclip-runtime.js
 @@ -0,0 +1,577 @@
 +/** Source for the helper embedded in patches/pi-acp@0.0.33.patch. */

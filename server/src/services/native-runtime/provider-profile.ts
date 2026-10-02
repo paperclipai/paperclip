@@ -4,6 +4,7 @@ import {
   PAPERCLIP_RUNNER_ACPX_PROFILES,
   resolvePaperclipRunnerPermissionMode,
   resolvePaperclipRunnerCursorMode,
+  resolvePaperclipRunnerPiThinkingLevel,
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
@@ -122,6 +123,7 @@ export type PaperclipRunnerNativeProviderInput =
       acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
       acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
       acpxSessionMode?: "agent" | "plan" | "ask";
+      piThinkingLevel?: "off" | "low" | "high" | "max";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -357,6 +359,9 @@ export function resolvePaperclipRunnerProviderProfile(
       error instanceof Error ? error.message : "Invalid Cursor session mode",
     );
   }
+  try { resolvePaperclipRunnerPiThinkingLevel(candidate, config.acpxAgent, config.piThinkingLevel); } catch (error) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_pi_thinking_invalid", error instanceof Error ? error.message : "Invalid Pi thinking level");
+  }
   const model = optionalString(config.model);
   if (candidate === "codex") {
     return {
@@ -532,6 +537,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       provider: "acpx",
       model: profile.model,
       acpxAgent: profile.acpxAgent,
+      ...(profile.acpxAgent === "pi" ? { piThinkingLevel: resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", config.piThinkingLevel) } : {}),
       ...(profile.acpxAgent === "cursor" ? {
         acpxSessionMode: resolvePaperclipRunnerCursorMode("acpx", "cursor", config.acpxSessionMode),
       } : {}),

@@ -6,6 +6,7 @@ import {
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   resolvePaperclipRunnerCursorMode,
+  resolvePaperclipRunnerPiThinkingLevel,
   PAPERCLIP_RUNNER_ACPX_PROFILES,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
@@ -99,6 +100,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     : "codex";
   const acpxAgent = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent)?.value ?? "claude";
   const cursorMode = resolvePaperclipRunnerCursorMode(provider, acpxAgent, schemaValues.acpxSessionMode);
+  const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(provider, acpxAgent, schemaValues.piThinkingLevel);
 
   const schemaModel = typeof schemaValues.model === "string"
     ? schemaValues.model.trim()
@@ -188,6 +190,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "opencodePermissionMode",
     "acpxPermissionMode",
     "acpxSessionMode",
+    "piThinkingLevel",
     "managedProfileId",
     "managedAgentsRetentionAcknowledged",
     "maxSessionListCostUsd",
@@ -247,6 +250,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       ? {
           acpxAgent,
           ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
+          ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),

@@ -90,6 +90,7 @@ describe("ACPX driver profile", () => {
     expect(
       validateAcpxDriverConfig({
         agent: "pi",
+        piThinkingLevel: "low",
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).toMatchObject({
