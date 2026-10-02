@@ -182,7 +182,16 @@ definition.
   canonical MCP endpoint (origin + path, no query or fragment), so the
   authorization server can audience-restrict the token to that server.
 - RFC 9728 protected-resource discovery, path-aware first
-  (`/.well-known/oauth-protected-resource<path>`) then origin.
+  (`/.well-known/oauth-protected-resource<path>`) then origin. This runs on
+  every 401, including one with no `WWW-Authenticate` header, as the MCP
+  authorization spec requires. Some gateways strip or rename that header
+  (AWS API Gateway sends `x-amzn-remapped-www-authenticate`). A bare 401 becomes
+  a sign-in prompt only when this discovery finds validated metadata. Otherwise
+  it stays a `Remote app returned HTTP 401` error. A connection set up with a
+  key or custom headers does not get this discovery: its bare 401 means that
+  the key was rejected. Metadata found at a well-known URL must name this MCP
+  endpoint as its `resource` (RFC 9728 §3.3). Paperclip ignores metadata that
+  names a different path on the same host.
 - RFC 8414 authorization-server discovery for issuers with a path, in the
   spec's insertion form (`/.well-known/oauth-authorization-server<path>`) and
   the widely deployed OIDC suffix form (`<path>/.well-known/...`). A metadata

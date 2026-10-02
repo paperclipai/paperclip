@@ -6824,14 +6824,24 @@ export function toolAccessService(
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
-      if (
-        response.status === 401 &&
-        /bearer|oauth|authorization/i.test(authenticate)
-      ) {
-        const endpoints = await discoverOAuthEndpoints(
-          connection,
-          authenticate,
-        );
+      const advertisesChallenge = /bearer|oauth|authorization/i.test(authenticate);
+      // The MCP authorization spec requires a client to fall back to the
+      // well-known protected-resource metadata when a 401 carries no usable
+      // `WWW-Authenticate` challenge. Some gateways strip or rename the header
+      // (AWS API Gateway sends `x-amzn-remapped-www-authenticate`), so a bare
+      // 401 still gets discovery. It is only treated as a sign-in challenge
+      // when that discovery produces validated metadata. A connection the
+      // operator set up with a key keeps that auth method: a bare 401 there
+      // means the key was rejected, not that the server wants a sign-in.
+      const mayDiscoverWithoutChallenge = connection.authKind !== "api_key";
+      const endpoints =
+        response.status === 401 && (advertisesChallenge || mayDiscoverWithoutChallenge)
+          ? await discoverOAuthEndpoints(
+            connection,
+            advertisesChallenge ? authenticate : null,
+          )
+          : null;
+      if (response.status === 401 && (advertisesChallenge || endpoints)) {
         if (endpoints) {
           const nextConfig = {
             ...connection.config,
@@ -8944,10 +8954,14 @@ export function toolAccessService(
       typeof oauth.metadataUrl === "string" ? oauth.metadataUrl : null,
       hints?.metadataUrl ?? null,
     ].filter((value): value is string => Boolean(value));
+    // Set only when the candidates were derived from the MCP endpoint's own
+    // well-known URLs rather than named by the server or an operator.
+    let wellKnownResource: string | null = null;
     if (metadataCandidates.length === 0) {
       const endpoint = new URL(
         await assertRemoteEndpointAllowed(connection.config),
       );
+      wellKnownResource = canonicalResourceIndicator(endpoint.toString());
       metadataCandidates.push(...protectedResourceMetadataUrls(endpoint));
       // The MCP server may double as its own authorization server, in which case
       // it serves authorization-server metadata directly at (or under) its path.
@@ -8960,6 +8974,17 @@ export function toolAccessService(
         rejections,
         firstPartyOrigin,
       );
+      // RFC 9728 §3.3: metadata found at a well-known URL must name the
+      // resource that URL was built from. On a host that serves several MCP
+      // servers, origin-level metadata can describe a different path, and
+      // adopting its `resource` would request a token for the wrong server.
+      if (
+        endpoints?.resource &&
+        wellKnownResource &&
+        canonicalResourceIndicator(endpoints.resource) !== wellKnownResource
+      ) {
+        continue;
+      }
       if (endpoints) {
         return {
           ...endpoints,
