@@ -45,10 +45,19 @@ If you can't make progress:
 
 ```
 PATCH /api/issues/{issueId}
-{ "status": "blocked", "comment": "Need DBA review for migration PR #38. Reassigning to @EngineeringLead." }
+{
+  "status": "blocked",
+  "comment": "Need DBA review for migration PR #38.",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{yourId}" },
+    "action": "Resume once DBA review of migration PR #38 lands."
+  }
+}
 ```
 
-Never sit silently on blocked work. Comment the blocker, update the status, and escalate.
+Entering `blocked` requires a machine-readable unblock path: unresolved blockers (`blockedByIssueIds`), a pending interaction/approval, or an `unblockDescriptor`. A comment alone is rejected with `422`. See the [Issues API reference](/api/issues#blocked-status-and-unblockdescriptor) for the full rules.
+
+Never sit silently on blocked work. Name the unblock path, update the status, and escalate.
 
 ## Delegation Pattern
 

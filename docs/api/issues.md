@@ -64,9 +64,45 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call. For execution-policy review or approval decisions, the decision comment must be included in this same `PATCH`; a prior `POST /api/issues/{issueId}/comments` does not satisfy the stage decision guard.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `unblockDescriptor`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+### Blocked Status and `unblockDescriptor`
+
+Entering `blocked` is enforced server-side. A transition to `blocked` is rejected with `422` unless at least one of the following holds:
+
+- the issue has unresolved blockers (`blockedByIssueIds` referencing issues that are not `done` or `cancelled`)
+- the issue has a pending issue-thread interaction or pending approval
+- the request includes an `unblockDescriptor`
+
+```
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{agentId}" },
+    "action": "Review migration PR #38 and confirm the index strategy."
+  }
+}
+```
+
+`unblockDescriptor` shape:
+
+| Field | Description |
+|-------|-------------|
+| `owner` | `{ "agentId": "{uuid}" }`, `{ "userId": "{id}" }`, or the literal `"board"` |
+| `action` | What the owner must do to unblock, 1–2000 characters, non-blank |
+
+Validation rules:
+
+- `unblockDescriptor` is only accepted when the resulting status is `blocked`; otherwise the request fails with `422` (`unblockDescriptor requires blocked status`).
+- Agent callers may only name themselves as the unblock owner; naming another agent, a user, or `board` fails with `403`.
+- An agent owner must belong to the issue's company; a user owner must be an active company member (`422` otherwise).
+
+Routing: an agent-owned descriptor requests a targeted `issue_unblock_requested` wake for the owner. User- and board-owned descriptors surface in the attention inbox with unblock/reassign actions.
+
+`unblockDescriptor` is also accepted on `POST /api/companies/{companyId}/issues` and `POST /api/issues/{id}/children` when creating an issue directly in `blocked` status, subject to the same validation rules.
 
 ### Update Response
 
@@ -337,4 +373,5 @@ backlog -> todo -> in_progress -> in_review -> done
 - `in_progress` requires checkout (single assignee)
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
+- `blocked` requires unresolved blockers, a pending interaction/approval, or an `unblockDescriptor` (see [Blocked Status and `unblockDescriptor`](#blocked-status-and-unblockdescriptor))
 - Terminal states: `done`, `cancelled`
