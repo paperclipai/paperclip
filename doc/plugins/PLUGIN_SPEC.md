@@ -617,6 +617,7 @@ Input includes:
 - data key (plugin-defined, e.g. `"sync-health"`, `"issue-detail"`)
 - context (company id, project id, entity id, etc.)
 - optional query parameters
+- the authenticated actor context that the host resolves from the bridge request (`actorContext`, the same shape as for `performAction`)
 
 ### 13.9 `performAction`
 
@@ -730,10 +731,12 @@ Scoped API routes:
 
 Attention and decision triage helpers:
 
-- `ctx.attention.list({ companyId, actorUserId, queue, sort, all, includeDismissed, archived, activitySince, activityUntil, cursor, limit })` returns the attention feed of the paired user (`attention.read`).
+- `ctx.attention.list({ companyId, queue, sort, all, includeDismissed, archived, activitySince, activityUntil, cursor, limit })` returns the attention feed of the acting user (`attention.read`). `all` requires `queue`.
 - `ctx.decisions.queues.list`, `ctx.decisions.queues.listItems`, and `ctx.decisions.triage.get` read decision queues and triage (`decision.queues.read`).
 - `ctx.decisions.triage.update` sets `decideBy` and `snoozedUntil`. `ctx.decisions.retention.setKeep`, `archive`, and `revive` change retention (`decision.triage.manage`).
-- Every call takes `actorUserId`. The host makes sure on each call that this user is an active human member of the company, and applies the same authorization and per-source read checks as the web app routes. Write calls reject viewer members.
+- The plugin does not name the user. The host records the signed-in board user of each `getData` or `performAction` bridge call, and of each scoped API request, in the host-owned invocation scope. These calls act only for that user. A call outside such an invocation (a job, an event, an agent tool, a timer) is rejected.
+- The host makes sure on each call that this user is an active human member of the company, and applies the same authorization and per-source read checks as the web app routes. Write calls reject viewer members.
+- Timestamps in results are ISO 8601 strings.
 - Triage and retention rows are attributed to the user. The activity entries use `actorType: "plugin"` with the user as the initiating actor.
 
 ## 14.2 Example SDK Shape

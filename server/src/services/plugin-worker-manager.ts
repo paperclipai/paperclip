@@ -1147,12 +1147,39 @@ export function createPluginWorkerHandle(
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
+  /**
+   * Read the signed-in board user from the authenticated actor the host route
+   * attached to this host→worker call. Only host code builds these params, so
+   * the value never comes from the worker.
+   */
+  function deriveInvocationActorUserId(
+    method: HostToWorkerMethodName | string,
+    params: Record<string, unknown>,
+  ): string | null {
+    if ((method === "getData" || method === "performAction") && isRecord(params.actorContext)) {
+      return params.actorContext.type === "user" ? readNonEmptyString(params.actorContext.userId) : null;
+    }
+    if (method === "handleApiRequest" && isRecord(params.actor)) {
+      return params.actor.actorType === "user" ? readNonEmptyString(params.actor.userId) : null;
+    }
+    return null;
+  }
+
   function deriveInvocationScope(
     method: HostToWorkerMethodName | string,
     params: unknown,
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
+    const scope = deriveInvocationCompanyScope(method, params);
+    if (!scope) return null;
+    const actorUserId = deriveInvocationActorUserId(method, params);
+    return actorUserId ? { ...scope, actorUserId } : scope;
+  }
 
+  function deriveInvocationCompanyScope(
+    method: HostToWorkerMethodName | string,
+    params: Record<string, unknown>,
+  ): PluginInvocationScope | null {
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) return { companyId: directCompanyId };
 

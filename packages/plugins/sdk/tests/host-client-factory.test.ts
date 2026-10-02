@@ -421,7 +421,7 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
 
 describe("createHostClientHandlers attention and decision triage capabilities", () => {
   const context = { invocationScope: { companyId: "company-a" } };
-  const source = { companyId: "company-a", sourceKind: "approval" as const, sourceId: "ap-1", actorUserId: "user-a" };
+  const source = { companyId: "company-a", sourceKind: "approval" as const, sourceId: "ap-1" };
 
   function servicesWithSpies() {
     const spies = {
@@ -453,13 +453,13 @@ describe("createHostClientHandlers attention and decision triage capabilities", 
     const { spies, services } = servicesWithSpies();
     const handlers = createHostClientHandlers({ pluginId: "paperclip.test", capabilities: [], services });
     await expect(
-      handlers["attention.list"]({ companyId: "company-a", actorUserId: "user-a" }, context),
+      handlers["attention.list"]({ companyId: "company-a" }, context),
     ).rejects.toBeInstanceOf(CapabilityDeniedError);
     await expect(
-      handlers["decisions.queues.list"]({ companyId: "company-a", actorUserId: "user-a" }, context),
+      handlers["decisions.queues.list"]({ companyId: "company-a" }, context),
     ).rejects.toBeInstanceOf(CapabilityDeniedError);
     await expect(
-      handlers["decisions.queues.listItems"]({ companyId: "company-a", key: "prs", actorUserId: "user-a" }, context),
+      handlers["decisions.queues.listItems"]({ companyId: "company-a", key: "prs" }, context),
     ).rejects.toBeInstanceOf(CapabilityDeniedError);
     await expect(handlers["decisions.triage.get"](source, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
     await expect(
@@ -480,7 +480,7 @@ describe("createHostClientHandlers attention and decision triage capabilities", 
       capabilities: ["attention.read", "decision.queues.read"],
       services,
     });
-    await expect(handlers["attention.list"]({ companyId: "company-a", actorUserId: "user-a" }, context))
+    await expect(handlers["attention.list"]({ companyId: "company-a" }, context))
       .resolves.toEqual({ items: [] });
     await expect(handlers["decisions.triage.get"](source, context)).resolves.toBeNull();
     await expect(
@@ -504,7 +504,9 @@ describe("createHostClientHandlers attention and decision triage capabilities", 
       .resolves.toEqual({ id: "r" });
     await expect(handlers["decisions.retention.archive"](source, context)).resolves.toEqual({ id: "r" });
     await expect(handlers["decisions.retention.revive"](source, context)).resolves.toEqual({ id: "r" });
-    expect(spies.updateTriage).toHaveBeenCalledWith({ ...source, snoozedUntil: null });
+    // The host-owned invocation context reaches the service, which takes the
+    // acting user from it.
+    expect(spies.updateTriage).toHaveBeenCalledWith({ ...source, snoozedUntil: null }, context);
     expect(spies.setRetentionKeep).toHaveBeenCalledOnce();
     expect(spies.archive).toHaveBeenCalledOnce();
     expect(spies.revive).toHaveBeenCalledOnce();
@@ -518,7 +520,7 @@ describe("createHostClientHandlers attention and decision triage capabilities", 
       services,
     });
     await expect(
-      handlers["attention.list"]({ companyId: "company-b", actorUserId: "user-a" }, context),
+      handlers["attention.list"]({ companyId: "company-b" }, context),
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     await expect(
       handlers["decisions.triage.update"]({ ...source, companyId: "company-b", decideBy: "today" }, context),

@@ -1062,23 +1062,33 @@ export function buildHostServices(
   };
 
   /**
-   * Resolve the paired board user a plugin acts for on the attention and
-   * decision surfaces. Re-verifies active human membership on every call
-   * (viewers pass for reads only) and returns the same board authorization
-   * actor the web app's routes see for that user, so the decision services
-   * apply their normal per-source read checks. When `action` is set, also
-   * runs the web app route's company-level authorization check.
+   * Resolve the board user a plugin acts for on the attention and decision
+   * surfaces. The user comes only from the host-owned invocation scope: the
+   * signed-in board user whose UI bridge call or scoped API request started the
+   * current invocation. A plugin cannot name a user, so it can never act for a
+   * member who did not invoke it. Calls with no such user (jobs, events, agent
+   * tools, timers) are rejected.
+   *
+   * Re-verifies active human membership on every call (viewers pass for reads
+   * only) and returns the same board authorization actor the web app's routes
+   * see for that user, so the decision services apply their normal per-source
+   * read checks. When `action` is set, also runs the web app route's
+   * company-level authorization check.
    */
   const resolveDecisionBoardActor = async (
     companyId: string,
-    actorUserId: string | undefined,
+    context: WorkerHostCallContext | undefined,
     options: {
       write: boolean;
       action?: "decision_queue:read" | "decision_triage:manage";
     },
   ): Promise<AuthorizationActor & { userId: string }> => {
+    const scope = context?.invocationScope;
+    const actorUserId = scope?.companyId === companyId ? scope.actorUserId : undefined;
     if (typeof actorUserId !== "string" || actorUserId.trim().length === 0) {
-      throw new Error("actorUserId is required: attention and decision calls act for a board user");
+      throw new Error(
+        "Attention and decision calls act for the signed-in board user who started the current invocation; this invocation has none",
+      );
     }
     const { membershipRole } = await requireActiveHumanMember(companyId, actorUserId, {
       allowViewer: !options.write,
@@ -1097,7 +1107,7 @@ export function buildHostServices(
         resource: { type: "company", companyId },
       });
       if (!decision.allowed) {
-        throw new Error(decision.explanation || `actorUserId "${actorUserId}" may not ${options.action}`);
+        throw new Error(decision.explanation || `user "${actorUserId}" may not ${options.action}`);
       }
     }
     return actor;
@@ -3011,25 +3021,29 @@ export function buildHostServices(
     },
 
     attention: {
-      async list(params) {
+      async list(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         // Mirrors GET /companies/:companyId/attention: the feed is the paired
         // user's own view (their dismissals), and any active member may read it.
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, { write: false });
+        const actor = await resolveDecisionBoardActor(companyId, context, { write: false });
         if (params.sort !== undefined && params.sort !== "activity" && params.sort !== "decide") {
           throw new Error("sort must be 'activity' or 'decide'");
         }
         if (params.limit !== undefined && !Number.isInteger(params.limit)) {
           throw new Error("limit must be an integer");
         }
+        // The SDK contract: a full snapshot (`all`) must name a queue. The web
+        // app route may serve an unscoped snapshot; a plugin may not.
         const all = params.all === true;
+        if (all && (typeof params.queue !== "string" || params.queue.trim().length === 0)) {
+          throw new Error("all requires a queue filter");
+        }
         return (await attention.list(companyId, {
           userId: actor.userId,
           includeDismissed: params.includeDismissed === true,
           archived: params.archived === true,
           all,
-          allowUnscopedAll: all,
           activitySince: params.activitySince,
           activityUntil: params.activityUntil,
           queue: params.queue,
@@ -3041,19 +3055,19 @@ export function buildHostServices(
     },
 
     decisions: {
-      async listQueues(params) {
+      async listQueues(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: false,
           action: "decision_queue:read",
         });
         return (await decisionQueues.list(companyId, actor)) as any;
       },
-      async listQueueItems(params) {
+      async listQueueItems(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: false,
           action: "decision_queue:read",
         });
@@ -3062,20 +3076,20 @@ export function buildHostServices(
         }
         return (await decisionQueues.listItems(companyId, params.key, actor)) as any;
       },
-      async getTriage(params) {
+      async getTriage(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: false,
           action: "decision_queue:read",
         });
         const source = parseDecisionSource(params);
         return (await decisionQueues.getTriage(companyId, source.sourceKind, source.sourceId, actor)) as any;
       },
-      async updateTriage(params) {
+      async updateTriage(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: true,
           action: "decision_triage:manage",
         });
@@ -3092,10 +3106,10 @@ export function buildHostServices(
           actor: pluginDecisionMutationActor(actor.userId),
         })) as any;
       },
-      async setRetentionKeep(params) {
+      async setRetentionKeep(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: true,
           action: "decision_triage:manage",
         });
@@ -3109,10 +3123,10 @@ export function buildHostServices(
           actor: pluginDecisionMutationActor(actor.userId),
         })) as any;
       },
-      async archive(params) {
+      async archive(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: true,
           action: "decision_triage:manage",
         });
@@ -3124,10 +3138,10 @@ export function buildHostServices(
           actor: pluginDecisionMutationActor(actor.userId),
         })) as any;
       },
-      async revive(params) {
+      async revive(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+        const actor = await resolveDecisionBoardActor(companyId, context, {
           write: true,
           action: "decision_triage:manage",
         });

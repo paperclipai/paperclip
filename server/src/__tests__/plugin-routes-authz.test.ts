@@ -713,6 +713,13 @@ describe("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: null,
+        companyId: companyA,
+      },
       renderEnvironment: null,
     });
   });

@@ -766,7 +766,7 @@ export function pluginRoutes(
     }
   }
 
-  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
+  function bridgeActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
     const scopedCompanyId = companyId ?? null;
     if (req.actor.type === "agent") {
       return {
@@ -1444,6 +1444,7 @@ export function pluginRoutes(
           key: body.key,
           ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
+          actorContext: bridgeActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1536,7 +1537,7 @@ export function pluginRoutes(
         {
           key: body.key,
           params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext: bridgeActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1631,6 +1632,7 @@ export function pluginRoutes(
           key,
           ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
+          actorContext: bridgeActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1720,7 +1722,7 @@ export function pluginRoutes(
         {
           key,
           params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext: bridgeActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );

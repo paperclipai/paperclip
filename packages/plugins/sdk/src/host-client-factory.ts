@@ -262,20 +262,26 @@ export interface HostServices {
     decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
-  /** Provides `attention.list`. */
+  /**
+   * Provides `attention.list`. The host must act for
+   * `context.invocationScope.actorUserId` and reject a call without it.
+   */
   attention: {
-    list(params: WorkerToHostMethods["attention.list"][0]): Promise<WorkerToHostMethods["attention.list"][1]>;
+    list(params: WorkerToHostMethods["attention.list"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["attention.list"][1]>;
   };
 
-  /** Provides `decisions.queues.*`, `decisions.triage.*`, `decisions.retention.*`. */
+  /**
+   * Provides `decisions.queues.*`, `decisions.triage.*`, `decisions.retention.*`.
+   * Same user binding as `attention`.
+   */
   decisions: {
-    listQueues(params: WorkerToHostMethods["decisions.queues.list"][0]): Promise<WorkerToHostMethods["decisions.queues.list"][1]>;
-    listQueueItems(params: WorkerToHostMethods["decisions.queues.listItems"][0]): Promise<WorkerToHostMethods["decisions.queues.listItems"][1]>;
-    getTriage(params: WorkerToHostMethods["decisions.triage.get"][0]): Promise<WorkerToHostMethods["decisions.triage.get"][1]>;
-    updateTriage(params: WorkerToHostMethods["decisions.triage.update"][0]): Promise<WorkerToHostMethods["decisions.triage.update"][1]>;
-    setRetentionKeep(params: WorkerToHostMethods["decisions.retention.setKeep"][0]): Promise<WorkerToHostMethods["decisions.retention.setKeep"][1]>;
-    archive(params: WorkerToHostMethods["decisions.retention.archive"][0]): Promise<WorkerToHostMethods["decisions.retention.archive"][1]>;
-    revive(params: WorkerToHostMethods["decisions.retention.revive"][0]): Promise<WorkerToHostMethods["decisions.retention.revive"][1]>;
+    listQueues(params: WorkerToHostMethods["decisions.queues.list"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.queues.list"][1]>;
+    listQueueItems(params: WorkerToHostMethods["decisions.queues.listItems"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.queues.listItems"][1]>;
+    getTriage(params: WorkerToHostMethods["decisions.triage.get"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.triage.get"][1]>;
+    updateTriage(params: WorkerToHostMethods["decisions.triage.update"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.triage.update"][1]>;
+    setRetentionKeep(params: WorkerToHostMethods["decisions.retention.setKeep"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.setKeep"][1]>;
+    archive(params: WorkerToHostMethods["decisions.retention.archive"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.archive"][1]>;
+    revive(params: WorkerToHostMethods["decisions.retention.revive"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.revive"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -988,29 +994,29 @@ export function createHostClientHandlers(
     }),
 
     // Attention feed and decision triage
-    "attention.list": gated("attention.list", async (params) => {
-      return services.attention.list(params);
+    "attention.list": gated("attention.list", async (params, context) => {
+      return services.attention.list(params, context);
     }),
-    "decisions.queues.list": gated("decisions.queues.list", async (params) => {
-      return services.decisions.listQueues(params);
+    "decisions.queues.list": gated("decisions.queues.list", async (params, context) => {
+      return services.decisions.listQueues(params, context);
     }),
-    "decisions.queues.listItems": gated("decisions.queues.listItems", async (params) => {
-      return services.decisions.listQueueItems(params);
+    "decisions.queues.listItems": gated("decisions.queues.listItems", async (params, context) => {
+      return services.decisions.listQueueItems(params, context);
     }),
-    "decisions.triage.get": gated("decisions.triage.get", async (params) => {
-      return services.decisions.getTriage(params);
+    "decisions.triage.get": gated("decisions.triage.get", async (params, context) => {
+      return services.decisions.getTriage(params, context);
     }),
-    "decisions.triage.update": gated("decisions.triage.update", async (params) => {
-      return services.decisions.updateTriage(params);
+    "decisions.triage.update": gated("decisions.triage.update", async (params, context) => {
+      return services.decisions.updateTriage(params, context);
     }),
-    "decisions.retention.setKeep": gated("decisions.retention.setKeep", async (params) => {
-      return services.decisions.setRetentionKeep(params);
+    "decisions.retention.setKeep": gated("decisions.retention.setKeep", async (params, context) => {
+      return services.decisions.setRetentionKeep(params, context);
     }),
-    "decisions.retention.archive": gated("decisions.retention.archive", async (params) => {
-      return services.decisions.archive(params);
+    "decisions.retention.archive": gated("decisions.retention.archive", async (params, context) => {
+      return services.decisions.archive(params, context);
     }),
-    "decisions.retention.revive": gated("decisions.retention.revive", async (params) => {
-      return services.decisions.revive(params);
+    "decisions.retention.revive": gated("decisions.retention.revive", async (params, context) => {
+      return services.decisions.revive(params, context);
     }),
 
     // Issue Documents
