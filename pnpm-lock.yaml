@@ -60,8 +60,8 @@ importers:
         specifier: ^1.62.1
         version: 1.62.1
       agentmail:
-        specifier: ^0.5.14
-        version: 0.5.20
+        specifier: ^0.5.31
+        version: 0.5.31
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
@@ -5526,8 +5526,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  agentmail@0.5.20:
-    resolution: {integrity: sha512-EA1QAwxkkbH2fUZ8hC/hWZzDsGBV7b50c5LEHcwFi8/e6SArB+U50fDXBMxcbn8jh/UDeNEJZncdYxicrN64SQ==}
+  agentmail@0.5.31:
+    resolution: {integrity: sha512-wBH5xwO2bIS8mhV+S/4ciwIhH0XFnrvfAubircTfWInCGSo/DP/i6/IZ+cYA4aZTStMEDecGxwhIkIAgzwKjpA==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       '@x402/fetch': ^2
@@ -13331,9 +13331,9 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agentmail@0.5.20:
+  agentmail@0.5.31:
     dependencies:
-      ws: 8.21.3
+      ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
