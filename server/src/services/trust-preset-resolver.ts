@@ -53,6 +53,8 @@ export type TrustPresetResolution =
   | {
     kind: "low_trust_review";
     preset: typeof LOW_TRUST_REVIEW_PRESET;
+    /** Server-derived authority for this run's exact task; never a policy input. */
+    humanDirectedIssueId?: string;
     boundary: LowTrustBoundary & { companyId: string };
     sourcePresets: Partial<Record<TrustPresetPolicySource, TrustPreset>>;
   }

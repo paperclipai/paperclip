@@ -42,14 +42,13 @@ export const storybookCompanies: Company[] = [
     issueCounter: 1641,
     budgetMonthlyCents: 250_000,
     spentMonthlyCents: 67_500,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
     requireBoardApprovalForNewAgents: true,
+    interactionResolverGovernance: {},
     feedbackDataSharingEnabled: true,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#0f766e",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-01T09:00:00.000Z"),
@@ -66,14 +65,13 @@ export const storybookCompanies: Company[] = [
     issueCounter: 88,
     budgetMonthlyCents: 180_000,
     spentMonthlyCents: 39_500,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
     requireBoardApprovalForNewAgents: false,
+    interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#4f46e5",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-03T09:00:00.000Z"),
@@ -90,14 +88,13 @@ export const storybookCompanies: Company[] = [
     issueCounter: 204,
     budgetMonthlyCents: 90_000,
     spentMonthlyCents: 91_200,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
     requireBoardApprovalForNewAgents: true,
+    interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#c2410c",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-05T09:00:00.000Z"),
@@ -116,6 +113,7 @@ export const storybookAuthSession: AuthSession = {
     email: "riley@paperclip.local",
     image: null,
   },
+  sentryDsn: null,
 };
 
 export const storybookAgents: Agent[] = [
@@ -194,6 +192,39 @@ export const storybookAgents: Agent[] = [
 ];
 
 export const storybookAgentMap = new Map(storybookAgents.map((agent) => [agent.id, agent]));
+
+/**
+ * The agent the onboarding hire returns.
+ *
+ * Kept out of `storybookAgents` deliberately: that list is what the company
+ * already has, and this one does not exist until the wizard's Connect step
+ * creates it. Putting it in the list would give the review step an agent it had
+ * not yet hired.
+ */
+export const storybookHiredAgent: Agent = {
+  id: "agent-storybook",
+  companyId: "company-storybook",
+  name: "Darnold",
+  urlKey: "darnold",
+  role: "general",
+  title: "Chief of Staff",
+  icon: "sparkles",
+  status: "idle",
+  reportsTo: null,
+  capabilities: "Runs the company's first workflows and hires the team behind them.",
+  adapterType: "claude_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 100_000,
+  spentMonthlyCents: 0,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: true },
+  lastHeartbeatAt: null,
+  metadata: null,
+  createdAt: recent(0),
+  updatedAt: recent(0),
+};
 
 export const storybookIssueLabels: IssueLabel[] = [
   {
@@ -505,6 +536,7 @@ export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
     strategyType: "git_worktree",
     name: "PAP-1641 storybook worktree",
     status: "active",
+    deliveryState: "unknown",
     cwd: `${storybookWorktreeRoot}/PAP-1641-create-super-detailed-storybooks-for-our-project`,
     repoUrl: "https://github.com/paperclipai/paperclip",
     baseRef: "master",
@@ -533,6 +565,7 @@ export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
     strategyType: "git_worktree",
     name: "PAP-1608 release smoke cleanup",
     status: "cleanup_failed",
+    deliveryState: "unknown",
     cwd: `${storybookWorktreeRoot}/PAP-1608-release-smoke-cleanup`,
     repoUrl: "https://github.com/paperclipai/paperclip",
     baseRef: "master",
@@ -608,6 +641,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
         branchTemplate: "{issueIdentifier}-{slug}",
         worktreeParentDir: storybookWorktreeRoot,
         provisionCommand: null,
+        runtimeProvisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
         teardownCommand: null,
       },
       workspaceRuntime: null,
@@ -713,6 +747,7 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: "Set up Storybook and move UX review surfaces into stories.",
     status: "in_progress",
     priority: "high",
+    reviewPolicy: null,
     assigneeAgentId: "agent-codex",
     assigneeUserId: null,
     responsibleUserId: null,

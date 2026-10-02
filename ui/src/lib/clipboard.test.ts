@@ -60,6 +60,20 @@ describe("copyTextToClipboard", () => {
     expect(textarea.style.opacity).toBeUndefined();
   });
 
+  it("falls back when the secure-context Clipboard API rejects the write", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("permission denied");
+    });
+    vi.stubGlobal("window", { isSecureContext: true });
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { doc } = installDocumentStub(() => true);
+
+    await copyTextToClipboard("retry through fallback");
+
+    expect(writeText).toHaveBeenCalledWith("retry through fallback");
+    expect(doc.execCommand).toHaveBeenCalledWith("copy");
+  });
+
   it("throws when the execCommand fallback reports failure", async () => {
     vi.stubGlobal("window", { isSecureContext: false });
     vi.stubGlobal("navigator", {});

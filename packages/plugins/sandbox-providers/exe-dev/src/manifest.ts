@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.exe-dev-sandbox-provider";
-const PLUGIN_VERSION = "0.1.1";
+const PLUGIN_VERSION = "0.1.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -80,18 +80,21 @@ const manifest: PaperclipPluginManifestV1 = {
           cpu: {
             type: "number",
             description: "Optional CPU count passed to `exe.dev new --cpu`.",
+            default: 4,
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },
           memory: {
             type: "string",
             description: "Optional memory size such as `4GB`.",
+            default: "4GB",
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },
           disk: {
             type: "string",
             description: "Optional disk size such as `20GB`.",
+            default: "20GB",
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM resources",
           },

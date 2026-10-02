@@ -38,6 +38,9 @@ describe("bridge exec", () => {
     expect(optionsArg).not.toHaveProperty("args");
     expect(optionsArg).not.toHaveProperty("stdin");
     expect(commandArg).toContain('. /etc/profile');
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(commandArg).not.toContain("nvm.sh");
+    expect(commandArg).not.toContain("NVM_DIR");
     expect(commandArg).toContain("cd ");
     expect(commandArg).toContain("/workspace/paperclip");
     expect(commandArg).toContain("PAPERCLIP_TEST_FLAG");

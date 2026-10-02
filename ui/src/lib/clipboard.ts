@@ -3,7 +3,7 @@ export async function copyTextToClipboard(text: string): Promise<void> {
   // HTTP on a non-localhost host (e.g. a Tailscale name) `writeText` may resolve
   // without actually writing, so gate on `isSecureContext` and otherwise fall
   // through to the execCommand path below.
-  const isSecure = typeof window === "undefined" || window.isSecureContext;
+  const isSecure = typeof window === "undefined" || window.isSecureContext !== false;
   if (isSecure && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);

@@ -9,6 +9,7 @@ const {
   resolveCommandForLogs,
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
+  runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ const {
   resolveCommandForLogs: vi.fn(async () => "/usr/bin/codex"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
+  runSshCommand: vi.fn(async () => ({ stdout: Buffer.from("{}").toString("base64"), stderr: "" })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
@@ -56,6 +58,7 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
     ...actual,
     prepareWorkspaceForSshExecution,
     restoreWorkspaceFromSshExecution,
+    runSshCommand,
     syncDirectoryToSsh,
   };
 });
@@ -70,6 +73,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
 
 describe("codex remote execution", () => {
@@ -113,6 +117,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -276,6 +281,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -357,6 +363,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -388,6 +395,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-",
     ]);
   });
@@ -428,6 +436,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -459,6 +468,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",
@@ -501,6 +511,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -538,6 +549,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",
@@ -545,4 +557,142 @@ describe("codex remote execution", () => {
     expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
   });
+
+  it("runs in place at the authoritative root without archive prepare or restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-in-place-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-in-place",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "codex", env: { CODEX_HOME: codexHomeDir } },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "task_session",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/copied/workspace",
+        workspaceRealization: {
+          mode: "in_place",
+          authoritativeRoot: "/app",
+          pathAliases: [],
+          outboundRestorePaths: [],
+        },
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/app",
+          remoteCwd: "/app",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    const homeSyncArgs = (syncDirectoryToSsh.mock.calls[0] as unknown[])?.[0] as {
+      localDir: string;
+      remoteDir: string;
+    };
+    expect(homeSyncArgs.localDir).toContain("paperclip-codex-home-sync");
+    expect(homeSyncArgs.remoteDir).toBe("/app/.paperclip-runtime/codex/home");
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | undefined;
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/app");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_REALIZATION_MODE).toBe("in_place");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT).toBe("/app");
+    expect(call?.[3].env.CODEX_HOME).toBe("/app/.paperclip-runtime/codex/home");
+    expect(call?.[3].remoteExecution?.remoteCwd).toBe("/app");
+  });
+
+  it("reselects the full assignment and bootstrap guidance after a failed resume", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-cli-fallback-context-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "unknown thread id session-old",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "thread.started", thread_id: "session-fresh" }),
+          JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+        ].join("\\n"),
+        stderr: "",
+        pid: 124,
+        startedAt: new Date().toISOString(),
+      });
+
+    await execute({
+      runId: "run-codex-cli-fallback-context",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Codex Coder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-old",
+        sessionParams: { sessionId: "session-old", cwd: workspaceDir },
+        sessionDisplayId: "session-old",
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: { OPENAI_API_KEY: "fixture-openai-key" },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const first = (runChildProcess.mock.calls[0] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    const retry = (runChildProcess.mock.calls[1] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    expect(first).toContain("## Compact assignment");
+    expect(first).not.toContain("Explain the next step before starting work.");
+    expect(retry).toContain("## Owned assignment");
+    expect(retry).toContain("Explain the next step before starting work.");
+    expect(retry).not.toContain("## Compact assignment");
+    expect(retry.indexOf("comment-first")).toBeLessThan(retry.indexOf("comment-second"));
+    expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
+  });
+
 });

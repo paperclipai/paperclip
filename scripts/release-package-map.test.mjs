@@ -24,6 +24,33 @@ test("release package list only contains CI-enrolled packages", () => {
   assert.ok(enabledPackages.every((pkg) => pkg.publishFromCi === true));
 });
 
+test("release package list publishes the installable channel entrypoint last", () => {
+  const enabledPackages = getReleasePackages();
+
+  assert.equal(enabledPackages.at(-1)?.name, "paperclipai");
+  assert.ok(enabledPackages.slice(0, -1).some((pkg) => pkg.name === "@paperclipai/server"));
+});
+
+test("release package list keeps runtime workspace dependencies ahead of consumers", () => {
+  const enabledPackages = getReleasePackages();
+  const publishIndexByName = new Map(enabledPackages.map((pkg, index) => [pkg.name, index]));
+
+  for (const pkg of enabledPackages) {
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+      for (const [dependencyName, spec] of Object.entries(pkg.pkg[section] ?? {})) {
+        if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
+        const dependencyIndex = publishIndexByName.get(dependencyName);
+        if (dependencyIndex === undefined) continue;
+
+        assert.ok(
+          dependencyIndex < publishIndexByName.get(pkg.name),
+          `${dependencyName} must publish before ${pkg.name}`,
+        );
+      }
+    }
+  }
+});
+
 test("Hermes release surface publishes the unified built-in package and keeps gateway as a shim", () => {
   const packages = buildReleasePackagePlan();
   const hermes = packages.find((pkg) => pkg.name === "@paperclipai/hermes-paperclip-adapter");

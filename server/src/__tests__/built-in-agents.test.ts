@@ -1,9 +1,12 @@
+import fs from "node:fs/promises";
+import { fileHash } from "../services/agent-file-store.js";
+import { stockHash } from "../services/managed-resource-drift.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agentConfigRevisions,
@@ -27,7 +30,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { HttpError } from "../errors.ts";
+import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionsService } from "../services/agent-instructions.ts";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
@@ -44,6 +47,16 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const BUILT_IN_MARKER_UNIQUE_INDEX = "agents_company_built_in_agent_key_unique_idx";
+// Mirrors migration 0192. Used to drop/restore the partial unique index when a
+// test needs to simulate legacy duplicates that predate the constraint.
+const BUILT_IN_MARKER_UNIQUE_INDEX_DDL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS "${BUILT_IN_MARKER_UNIQUE_INDEX}"
+    ON "agents" ("company_id", ((metadata -> 'paperclipBuiltInAgent' ->> 'key')))
+    WHERE (metadata -> 'paperclipBuiltInAgent' ->> 'key') IS NOT NULL
+      AND status <> 'terminated'
+`;
 
 function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -107,6 +120,16 @@ describe("built-in agent asset loading", () => {
 describeEmbeddedPostgres("built-in agents", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const instructionOperator = { type: "board", userId: "local-board", source: "local_implicit" } as const;
+  async function writeInstructionEntry(agent: { id: string; companyId: string }, entryFile: string, content: string) {
+    const service = agentInstructionRevisionService(db);
+    const target = { companyId: agent.companyId, agentId: agent.id };
+    const baseline = await service.readCurrent(target, instructionOperator);
+    await service.commit({ ...target, entryFile, content, baseRevisionId: baseline?.revision.id ?? null, source: "board" }, instructionOperator);
+    const refreshed = await agentService(db).getById(agent.id);
+    return { adapterConfig: refreshed!.adapterConfig };
+  }
+
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-built-in-agents-");
@@ -129,6 +152,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(agents);
     await db.delete(budgetPolicies);
     await db.delete(companies);
+    // Some tests drop the built-in marker unique index to simulate legacy
+    // (pre-migration 0192) duplicates; restore it now that all rows are gone.
+    await db.execute(sql.raw(BUILT_IN_MARKER_UNIQUE_INDEX_DDL));
   });
 
   afterAll(async () => {
@@ -541,7 +567,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       capabilities: "Custom purpose",
     });
 
-    const reset = await builtIns.reset(companyId, "briefs");
+    const reset = await builtIns.reset(companyId, "briefs", {}, instructionOperator);
 
     expect(reset).toMatchObject({
       status: "ready",
@@ -557,7 +583,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
-  it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
+  it("reconciles an enabled Reflection Coach bundle with skill sync and a disabled routine", async () => {
     const companyId = await seedCompany({ requireApproval: false });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -569,6 +595,17 @@ describeEmbeddedPostgres("built-in agents", () => {
       permissions: {},
     });
 
+    // The Reflection Coach is opt-in (not auto-created). Enabling it on demand
+    // materializes its managed bundle in a single pass.
+    const enabled = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    expect(enabled.agent?.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsEntryFile: "AGENTS.md",
+    });
+    expect(enabled.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
+
+    // Startup reconcile keeps the enabled bundle tracking stock and re-grants
+    // the root/company default permissions.
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
     expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(4);
@@ -594,11 +631,6 @@ describeEmbeddedPostgres("built-in agents", () => {
         },
       },
     });
-    expect(state.agent?.adapterConfig).toMatchObject({
-      instructionsBundleMode: "managed",
-      instructionsEntryFile: "AGENTS.md",
-    });
-    expect(state.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
@@ -681,7 +713,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     )).size).toBe(3);
   });
 
-  it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
+  it("preserves new-agent approval gates during on-demand Reflection Coach provisioning", async () => {
     const companyId = await seedCompany({ requireApproval: true });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -698,12 +730,11 @@ describeEmbeddedPostgres("built-in agents", () => {
       applyInSeparateFollowUpRun: true,
     };
 
-    const result = await reconcileBuiltInAgentsOnStartup(db);
-
-    expect(result).toMatchObject({
-      autoEnsured: 2,
-      pendingApprovals: 2,
-    });
+    // The Reflection Coach is opt-in, so it's enabled on demand. With board
+    // approval required, provisioning it must leave a pending agent + a
+    // hire_agent approval rather than an active agent.
+    const provisioned = await builtInAgentService(db).provision(companyId, "reflection-coach");
+    expect(provisioned.approval).not.toBeNull();
     const state = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(state).toMatchObject({
       status: "pending_approval",
@@ -739,7 +770,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
-    expect(pendingReconcile.pendingApprovals).toBe(2);
+    expect(pendingReconcile.pendingApprovals).toBe(1);
     const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(stillPending).toMatchObject({
       status: "pending_approval",
@@ -775,7 +806,105 @@ describeEmbeddedPostgres("built-in agents", () => {
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
-    expect(approvalRows).toHaveLength(2);
+    expect(approvalRows).toHaveLength(1);
+  });
+
+  it("automatically upgrades untouched stock instructions while preserving personal files", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const created = await svc.ensure(companyId, "reflection-coach");
+    const agent = created.agent!;
+    const oldFiles = { "AGENTS.md": "# Previous stock instructions\n", "obsolete.txt": "old stock support" };
+    await writeInstructionEntry(agent, "AGENTS.md", oldFiles["AGENTS.md"]);
+    await agentInstructionsService(db).writeFile(agent, "obsolete.txt", oldFiles["obsolete.txt"]);
+    await agentInstructionsService(db).writeFile(agent, "personal.txt", "keep my notes");
+    await db.update(builtInManagedResources).set({ stockHash: stockHash(oldFiles), stockVersion: "previous",
+      defaultsJson: { entryFile: "AGENTS.md", files: Object.keys(oldFiles) },
+    }).where(and(eq(builtInManagedResources.companyId, companyId), eq(builtInManagedResources.resourceKind, "instructions")));
+    const updated = await svc.ensure(companyId, "reflection-coach");
+    expect(updated.resources.find(resource => resource.resourceKind === "instructions")).toMatchObject({ stockStatus: "stock_current" });
+    expect((await agentInstructionsService().readFile(updated.agent!, "AGENTS.md")).content).toContain("You are Reflection Coach");
+    expect((await agentInstructionsService().readFile(updated.agent!, "personal.txt")).content).toBe("keep my notes");
+    await expect(agentInstructionsService().readFile(updated.agent!, "obsolete.txt")).rejects.toMatchObject({ status: 404 });
+    const [event] = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.actorId, "built-in-reconcile")));
+    expect(event).toMatchObject({ actorType: "system", action: "agent.files_updated" });
+  });
+
+  it.each(["file", "database"])("retries a stock update after a %s failure without overwriting intervening edits", async (failure) => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const created = await svc.ensure(companyId, "reflection-coach");
+    const agent = created.agent!;
+    const oldFiles = { "AGENTS.md": "# Old stock\n", "obsolete.txt": "old supporting file" };
+    await writeInstructionEntry(agent, "AGENTS.md", oldFiles["AGENTS.md"]);
+    await agentInstructionsService(db).writeFile(agent, "obsolete.txt", oldFiles["obsolete.txt"]);
+    await db.update(builtInManagedResources).set({ stockHash: stockHash(oldFiles), stockVersion: "old",
+      defaultsJson: { entryFile: "AGENTS.md", files: Object.keys(oldFiles) },
+    }).where(and(eq(builtInManagedResources.companyId, companyId), eq(builtInManagedResources.resourceKind, "instructions")));
+    const trigger = `stock_failure_${companyId.replaceAll("-", "")}`;
+    const remove = fs.rm.bind(fs);
+    const fault = failure === "file" ? vi.spyOn(fs, "rm").mockImplementation(async (file, options) => {
+      if (String(file).endsWith("/obsolete.txt")) throw new Error("injected stock file failure");
+      return remove(file, options);
+    }) : null;
+    if (failure === "database") {
+      await db.execute(sql.raw(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.company_id = '${companyId}' AND NEW.resource_kind = 'instructions' AND NEW.stock_hash <> OLD.stock_hash THEN
+          RAISE EXCEPTION 'injected stock binding failure'; END IF; RETURN NEW; END $$`));
+      await db.execute(sql.raw(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON built_in_managed_resources FOR EACH ROW EXECUTE FUNCTION ${trigger}()`));
+    }
+    try { await expect(svc.ensure(companyId, "reflection-coach")).rejects.toThrow(); }
+    finally {
+      fault?.mockRestore();
+      if (failure === "database") {
+        await db.execute(sql.raw(`DROP TRIGGER ${trigger} ON built_in_managed_resources`));
+        await db.execute(sql.raw(`DROP FUNCTION ${trigger}()`));
+      }
+    }
+    const [pending] = await db.select().from(builtInManagedResources).where(and(eq(builtInManagedResources.companyId, companyId), eq(builtInManagedResources.resourceKind, "instructions")));
+    expect(pending.defaultsJson.pendingInstructionsUpdate).toBeTruthy();
+    expect(pending.stockHash).toBe(stockHash(oldFiles));
+    const partial = (await agentInstructionsService().readFile(agent, "AGENTS.md")).content;
+    expect(partial).toContain("You are Reflection Coach");
+    // A real operator edit after the failed attempt must stop the retry.
+    await writeInstructionEntry(agent, "AGENTS.md", "operator edit after failure");
+    await svc.ensure(companyId, "reflection-coach");
+    expect((await agentInstructionsService().readFile(agent, "AGENTS.md")).content).toBe("operator edit after failure");
+    await writeInstructionEntry(agent, "AGENTS.md", partial);
+    const retried = await svc.ensure(companyId, "reflection-coach");
+    expect(retried.resources.find(resource => resource.resourceKind === "instructions")).toMatchObject({ stockStatus: "stock_current" });
+    await expect(agentInstructionsService().readFile(agent, "obsolete.txt")).rejects.toMatchObject({ status: 404 });
+    const [complete] = await db.select().from(builtInManagedResources).where(eq(builtInManagedResources.id, pending.id));
+    expect(complete.defaultsJson.pendingInstructionsUpdate).toBeUndefined();
+  });
+
+  it.each([false, true])("supersedes an interrupted stock version, including rollback=%s", async (rollback) => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const created = await svc.ensure(companyId, "reflection-coach");
+    const agent = created.agent!;
+    const currentStock = (await agentInstructionsService().readFile(agent, "AGENTS.md")).content;
+    const oldFiles = { "AGENTS.md": rollback ? currentStock : "# Original stock" };
+    const interruptedFiles = { "AGENTS.md": "# Intermediate stock", "intermediate-only.txt": "intermediate support" };
+    await writeInstructionEntry(agent, "AGENTS.md", interruptedFiles["AGENTS.md"]);
+    await agentInstructionsService(db).writeFile(agent, "intermediate-only.txt", interruptedFiles["intermediate-only.txt"]);
+    await agentInstructionsService(db).writeFile(agent, "personal.txt", "personal notes");
+    await db.update(builtInManagedResources).set({ stockHash: stockHash(oldFiles), stockVersion: "old",
+      defaultsJson: { entryFile: "AGENTS.md", files: Object.keys(oldFiles), pendingInstructionsUpdate: {
+        stockHash: stockHash(interruptedFiles),
+        baseHashes: { "AGENTS.md": fileHash(Buffer.from(oldFiles["AGENTS.md"])), "intermediate-only.txt": null },
+        nextHashes: Object.fromEntries(Object.entries(interruptedFiles).map(([file, text]) => [file, fileHash(Buffer.from(text))])),
+      } },
+    }).where(and(eq(builtInManagedResources.companyId, companyId), eq(builtInManagedResources.resourceKind, "instructions")));
+    await writeInstructionEntry(agent, "AGENTS.md", "intervening operator edit");
+    await svc.ensure(companyId, "reflection-coach");
+    expect((await agentInstructionsService().readFile(agent, "AGENTS.md")).content).toBe("intervening operator edit");
+    await writeInstructionEntry(agent, "AGENTS.md", interruptedFiles["AGENTS.md"]);
+    const updated = await svc.ensure(companyId, "reflection-coach");
+    expect(updated.resources.find(resource => resource.resourceKind === "instructions")).toMatchObject({ stockStatus: "stock_current" });
+    expect((await agentInstructionsService().readFile(agent, "AGENTS.md")).content).toBe(currentStock);
+    await expect(agentInstructionsService().readFile(agent, "intermediate-only.txt")).rejects.toMatchObject({ status: 404 });
+    expect((await agentInstructionsService().readFile(agent, "personal.txt")).content).toBe("personal notes");
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {
@@ -784,7 +913,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const created = await builtIns.ensure(companyId, "reflection-coach");
     const instructions = agentInstructionsService();
 
-    await instructions.writeFile(created.agent!, "AGENTS.md", "# Custom Reflection Coach\n\nOperator edit.\n");
+    await writeInstructionEntry(created.agent!, "AGENTS.md", "# Custom Reflection Coach\n\nOperator edit.\n");
 
     const reconciled = await builtIns.ensure(companyId, "reflection-coach");
     const drift = reconciled.resources.find((resource) => resource.resourceKind === "instructions");
@@ -798,7 +927,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       content: "# Custom Reflection Coach\n\nOperator edit.\n",
     });
 
-    const reset = await builtIns.reset(companyId, "reflection-coach");
+    const reset = await builtIns.reset(companyId, "reflection-coach", {}, instructionOperator);
     expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
       stockStatus: "stock_current",
       resetAvailable: false,
@@ -806,6 +935,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     const resetFile = await instructions.readFile(reset.agent!, "AGENTS.md");
     expect(resetFile.content).toContain("Reflection Coach");
     expect(resetFile.content).not.toContain("Operator edit.");
+    const revisions = agentInstructionRevisionService(db);
+    const target = { companyId, agentId: created.agent!.id, entryFile: "AGENTS.md" };
+    const history = await revisions.history(target, instructionOperator);
+    expect(history.revisions).toHaveLength(0);
+    const current = await revisions.readCurrent(target, instructionOperator);
+    expect(current?.content).toBe(resetFile.content);
   });
 
   it("blocks deleting a built-in agent", async () => {
@@ -901,11 +1036,16 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(readBuiltInAgentMarker(row?.metadata)).toEqual({ key: "briefs", featureKeys: ["briefs"] });
   });
 
-  it("reports duplicate active instances for a company/key", async () => {
-    const companyId = await seedCompany();
+  // Reproduce a company that already carries duplicate marked rows from before
+  // migration 0192 by dropping the unique index, inserting two active rows, and
+  // pairing a pending hire_agent approval with the newer one.
+  async function seedLegacyDuplicateBriefs(companyId: string) {
+    await db.execute(sql.raw(`DROP INDEX IF EXISTS "${BUILT_IN_MARKER_UNIQUE_INDEX}"`));
+    const olderId = randomUUID();
+    const newerId = randomUUID();
     await db.insert(agents).values([
       {
-        id: randomUUID(),
+        id: olderId,
         companyId,
         name: "Briefs One",
         role: "general",
@@ -914,12 +1054,80 @@ describeEmbeddedPostgres("built-in agents", () => {
         adapterConfig: { model: "gpt-5.4" },
         runtimeConfig: {},
         permissions: {},
+        createdAt: new Date("2026-07-18T00:00:00.000Z"),
         metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
       },
       {
-        id: randomUUID(),
+        id: newerId,
         companyId,
         name: "Briefs Two",
+        role: "general",
+        status: "pending_approval",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+        createdAt: new Date("2026-07-18T00:00:00.025Z"),
+        metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+      },
+    ]);
+    const approval = await approvalService(db).create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      status: "pending",
+      payload: { agentId: newerId, sourceBuiltInAgentKey: "briefs", featureKeys: ["briefs"] },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+    return { olderId, newerId, approvalId: approval!.id };
+  }
+
+  it("self-heals duplicate active instances, keeping the oldest and cancelling the newer's approval", async () => {
+    const companyId = await seedCompany();
+    const { olderId, newerId, approvalId } = await seedLegacyDuplicateBriefs(companyId);
+
+    // A plain read resolves the duplicate rather than throwing.
+    const state = await builtInAgentService(db).get(companyId, "briefs");
+    expect(state.agentId).toBe(olderId);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(olderId)?.status).toBe("idle");
+    expect(byId.get(newerId)?.status).toBe("terminated");
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    const [approval] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(approval?.status).toBe("cancelled");
+  });
+
+  it("makes concurrent provisioning lose cleanly instead of creating duplicates", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+
+    const [first, second] = await Promise.all([
+      svc.ensure(companyId, "briefs"),
+      svc.ensure(companyId, "briefs"),
+    ]);
+
+    expect(first.agentId).toBeTruthy();
+    expect(second.agentId).toBe(first.agentId);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    // The partial unique index now rejects any further active marked row.
+    await expect(
+      db.insert(agents).values({
+        id: randomUUID(),
+        companyId,
+        name: "Briefs Dupe",
         role: "general",
         status: "idle",
         adapterType: "codex_local",
@@ -927,16 +1135,89 @@ describeEmbeddedPostgres("built-in agents", () => {
         runtimeConfig: {},
         permissions: {},
         metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+      }),
+    ).rejects.toMatchObject({
+      cause: {
+        code: "23505",
+        constraint_name: BUILT_IN_MARKER_UNIQUE_INDEX,
       },
+    });
+  });
+
+  it("makes concurrent board-gated provisioning resolve to a single pending agent and approval", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+    const svc = builtInAgentService(db);
+
+    const results = await Promise.all([
+      svc.provision(companyId, "briefs"),
+      svc.provision(companyId, "briefs"),
     ]);
 
-    await expect(builtInAgentService(db).ensure(companyId, "briefs")).rejects.toMatchObject({
-      status: 409,
-      details: {
-        code: "built_in_agent_duplicate_instance",
-        key: "briefs",
-      },
-    } satisfies Partial<HttpError>);
+    const agentIds = new Set(results.map((result) => result.state.agentId));
+    expect(agentIds.size).toBe(1);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    const openApprovals = await db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")));
+    const briefsApprovals = openApprovals.filter(
+      (row) => (row.payload as { sourceBuiltInAgentKey?: string } | null)?.sourceBuiltInAgentKey === "briefs",
+    );
+    expect(briefsApprovals).toHaveLength(1);
+    // The winner returns its freshly created approval; the loser returns the
+    // same approval or null (if it re-resolves before that row commits), never
+    // a second one.
+    expect(results.some((result) => result.approval?.id === briefsApprovals[0]!.id)).toBe(true);
+    for (const result of results) {
+      if (result.approval) {
+        expect(result.approval.id).toBe(briefsApprovals[0]!.id);
+      }
+    }
+  });
+
+  it("self-heals duplicates during startup reconciliation without aborting later companies", async () => {
+    const affectedCompanyId = await seedCompany({ requireApproval: false });
+    const { olderId, newerId } = await seedLegacyDuplicateBriefs(affectedCompanyId);
+    // A second company created after the affected one — previously skipped
+    // entirely because the duplicate error escaped the reconciliation loop.
+    // Give it a drifted built-in row so we can prove reconcile still reached it.
+    const healthyCompanyId = await seedCompany({ requireApproval: false });
+    const healthyBriefsId = randomUUID();
+    await db.insert(agents).values({
+      id: healthyBriefsId,
+      companyId: healthyCompanyId,
+      name: "Stale Briefs",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+    });
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+    expect(result.companyFailures).toBe(0);
+
+    const affectedRows = await db.select().from(agents).where(eq(agents.companyId, affectedCompanyId));
+    const affectedById = new Map(affectedRows.map((row) => [row.id, row]));
+    expect(affectedById.get(olderId)?.status).toBe("idle");
+    expect(affectedById.get(newerId)?.status).toBe("terminated");
+    expect(
+      affectedRows.filter(
+        (row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs",
+      ),
+    ).toHaveLength(1);
+
+    // The company after the affected one was still reconciled (its drifted
+    // built-in row was repaired to stock) rather than skipped.
+    const [healthyBriefs] = await db.select().from(agents).where(eq(agents.id, healthyBriefsId));
+    expect(healthyBriefs?.name).toBe("Briefs Agent");
   });
 
   it("automatically materializes the Reflection Coach bundle without enabling background work", async () => {
@@ -1046,8 +1327,6 @@ describeEmbeddedPostgres("built-in agents", () => {
       featureKeys: ["summarizer"],
     });
 
-    expect(state.agent?.runtimeConfig).not.toHaveProperty("modelProfiles.cheap");
-
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
@@ -1103,31 +1382,13 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
-  it("preserves an operator-overridden cheap summariser model across reconcile", async () => {
-    const companyId = await seedCompany();
-    const builtIns = builtInAgentService(db);
-    const created = await builtIns.ensure(companyId, "summarizer");
-
-    // Operator overrides the cheap lane with a provider-specific low-cost model.
-    await agentService(db).update(created.agentId!, {
-      runtimeConfig: {
-        modelProfiles: { cheap: { enabled: true, label: "Cheap", adapterConfig: { model: "haiku-cheap" } } },
-      },
-    }, { allowBuiltInAgentMetadata: true });
-
-    const reconciled = await builtIns.ensure(companyId, "summarizer");
-    expect(reconciled.agent?.runtimeConfig).toMatchObject({
-      modelProfiles: { cheap: { adapterConfig: { model: "haiku-cheap" } } },
-    });
-  });
-
   it("restores Summarizer instruction drift on reset", async () => {
     const companyId = await seedCompany();
     const builtIns = builtInAgentService(db);
     const created = await builtIns.ensure(companyId, "summarizer");
     const instructions = agentInstructionsService();
 
-    await instructions.writeFile(created.agent!, "AGENTS.md", "# Custom Summarizer\n\nOperator edit.\n");
+    await writeInstructionEntry(created.agent!, "AGENTS.md", "# Custom Summarizer\n\nOperator edit.\n");
 
     const reconciled = await builtIns.ensure(companyId, "summarizer");
     expect(reconciled.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
@@ -1136,7 +1397,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       changedFiles: ["AGENTS.md"],
     });
 
-    const reset = await builtIns.reset(companyId, "summarizer");
+    const reset = await builtIns.reset(companyId, "summarizer", {}, instructionOperator);
     expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
       stockStatus: "stock_current",
       resetAvailable: false,
@@ -1276,7 +1537,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const coach = created.agent!;
     const instructionsSvc = agentInstructionsService();
     const originalInstructions = "# Target Coder\n\nWork from the assigned issue.\n";
-    const prepared = await instructionsSvc.writeFile(target, "AGENTS.md", originalInstructions);
+    const prepared = await writeInstructionEntry(target, "AGENTS.md", originalInstructions);
     let persistedTarget = (await agentsSvc.update(target.id, { adapterConfig: prepared.adapterConfig }))!;
 
     const interactionsSvc = issueThreadInteractionService(db);
@@ -1288,7 +1549,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       if (interaction?.kind !== "request_confirmation" || interaction.status !== "accepted") {
         return false;
       }
-      const written = await instructionsSvc.writeFile(persistedTarget, "AGENTS.md", input.nextInstructions);
+      const written = await writeInstructionEntry(persistedTarget, "AGENTS.md", input.nextInstructions);
       persistedTarget = (await agentsSvc.update(persistedTarget.id, { adapterConfig: written.adapterConfig }))!;
       return true;
     };
@@ -1425,7 +1686,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const agent = created.agent!;
 
     const instructionsSvc = agentInstructionsService();
-    await instructionsSvc.writeFile(agent, "AGENTS.md", "# Custom Reflection Coach\n\nDo not overwrite me.\n");
+    await writeInstructionEntry(agent, "AGENTS.md", "# Custom Reflection Coach\n\nDo not overwrite me.\n");
     await db
       .update(companySkills)
       .set({ markdown: "---\nname: reflection-coach\n---\n\n# Custom skill\n" })
@@ -1454,7 +1715,7 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const reset = await builtInAgentService(db).reset(companyId, "reflection-coach", {
       resources: ["instructions", "routine"],
-    });
+    }, instructionOperator);
     expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
       stockStatus: "stock_current",
       resetAvailable: false,

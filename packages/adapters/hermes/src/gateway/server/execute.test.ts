@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
@@ -94,6 +95,36 @@ describe("execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("reports dispatch before starting the remote run create request", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const onDispatch = vi.fn();
+    ctx.onDispatch = onDispatch;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        expect(onDispatch).toHaveBeenCalledTimes(1);
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("constructs POST /v1/runs with auth, idempotency, and Hermes session headers", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -144,6 +175,159 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it.each([false, true])("preserves chat handoff policy on gateway turns (resumed=%s)", async (resumed) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    ctx.config.payloadTemplate = { input: "Custom gateway instruction." };
+    const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    ctx.context = {
+      conversationMode: true,
+      issueId: "issue-1",
+      paperclipTaskMarkdown: directive,
+      paperclipTaskMarkdownCompact: directive,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    };
+    if (resumed) ctx.runtime.sessionId = "prior-session";
+    await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const call = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const prompt = JSON.parse(String(call?.[1]?.body)).input as string;
+    expect(prompt).toContain("Custom gateway instruction.");
+    expect(prompt).toContain(directive);
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("clear final disposition");
+    expect(prompt).not.toContain("Create child issues");
+  });
+
+  it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
+    const description = "Update launch-card.svg and change the CTA to Try Team free.";
+    const fullTaskMarkdown = [
+      "Paperclip task context:",
+      '- Issue: "PAP-1"',
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+    ].join("\n");
+    const compactTaskMarkdown = ["Paperclip task context:", '- Issue: "PAP-1"'].join("\n");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wakeContext = (reason: string) => ({
+      issueId: "issue-1",
+      wakeReason: reason,
+      paperclipTaskMarkdown: fullTaskMarkdown,
+      paperclipTaskMarkdownCompact: compactTaskMarkdown,
+      paperclipWake: {
+        reason,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          title: "Do the thing",
+          description,
+          descriptionTruncated: false,
+          status: "in_progress",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+    });
+
+    const freshCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    freshCtx.context = wakeContext("issue_assigned");
+    await execute(freshCtx);
+
+    const resumeCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    resumeCtx.context = wakeContext("issue_commented");
+    resumeCtx.runtime = {
+      sessionId: "session-1",
+      sessionParams: null,
+      sessionDisplayId: "session-1",
+      taskKey: "PAP-1",
+    };
+    await execute(resumeCtx);
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runBodies = calls
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string });
+    expect(runBodies).toHaveLength(2);
+    // Fresh run: brief exactly once (task markdown only; wake-prompt copy suppressed).
+    expect(runBodies[0]!.input.split(description)).toHaveLength(2);
+    // Stable-session resume: compact task markdown, no re-sent brief.
+    expect(runBodies[1]!.input).toContain("Paperclip task context:");
+    expect(runBodies[1]!.input).not.toContain(description);
+  });
+
+  it.each([false, true])("delivers the shared assignment and ordered comments at the HTTP boundary (resumed=%s)", async (resumed) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "completed", output: "done" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      payloadTemplate: { input: "Custom gateway instruction." },
+    });
+    const promptContext = createPromptContextFixture();
+    ctx.context = { ...promptContext, conversationMode: true };
+    if (resumed) ctx.runtime.sessionId = "prior-session";
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const input = JSON.parse(String(runCall?.[1]?.body)).input as string;
+    expect(input).toContain("Custom gateway instruction.");
+    expect(input.indexOf("Append the same ledger entry.")).toBeGreaterThanOrEqual(0);
+    expect(input.indexOf("Append the same ledger entry.")).toBeLessThan(input.indexOf("Change the final scope to the launch checklist."));
+    expect(input.split("Append the same ledger entry.")).toHaveLength(3);
+    expect(input).not.toContain("Structured wake payload JSON:");
+    expect(input.split("Keep this deliberate repetition. Keep this deliberate repetition.")).toHaveLength(2);
+    const continuationHeading = "## Current request and continuation context";
+    const continuationStart = input.indexOf(continuationHeading);
+    const fencedStart = input.indexOf("```text\n", continuationStart);
+    const fencedEnd = input.indexOf("\n```", fencedStart + "```text\n".length);
+    expect(continuationStart).toBeGreaterThanOrEqual(0);
+    expect(fencedStart).toBeGreaterThan(continuationStart);
+    expect(fencedEnd).toBeGreaterThan(fencedStart);
+    const continuation = JSON.parse(input.slice(
+      fencedStart + "```text\n".length,
+      fencedEnd,
+    )) as Record<string, unknown>;
+    expect(continuation.objectiveSource).toEqual(promptContext.executionContinuation.objectiveSource);
+    if (resumed) {
+      expect(input).toContain("## Compact assignment");
+      expect(continuation.objective).toBe("Keep this deliberate repetition. Keep this deliberate repetition.");
+    } else {
+      expect(continuation).not.toHaveProperty("objective");
+    }
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -187,6 +371,45 @@ describe("execute", () => {
         "http://127.0.0.1:9119/api/v1/runs/run-hermes-1/events",
       ]),
     );
+  });
+
+  it("renders current wake comments once when the gateway task brief owns them", async () => {
+    const commentBody = "Keep this current comment exactly once.";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.context = {
+      issueId: "issue-1",
+      paperclipTaskMarkdown: [
+        "Paperclip task context:",
+        '- Issue: "PAP-1"',
+      ].join("\n"),
+      paperclipTurnContext: {
+        version: 1,
+        assignment: { owner: "task_markdown" },
+        events: { owner: "wake_prompt", comments: [{ id: "comment-1", revision: "rev-1" }] },
+      },
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", identifier: "PAP-1", title: "Do the thing", status: "in_progress" },
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        comments: [{ id: "comment-1", body: commentBody }],
+        fallbackFetchNeeded: false,
+      },
+    };
+
+    await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const prompt = JSON.parse(String(runCall?.[1]?.body)).input as string;
+    expect(prompt.split(commentBody)).toHaveLength(2);
   });
 
   it("routes the default Hermes dashboard chat URL on port 9119 through the API prefix", async () => {

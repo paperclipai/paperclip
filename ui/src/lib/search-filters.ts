@@ -136,6 +136,11 @@ export function buildFilterChips(filters: SearchFilters, lookups: FilterChipLook
       },
     });
   }
+  // PAP-411: priority controls are hidden from the UI, but the priority filter
+  // DSL (`priority:high`) stays functional at the data layer per board decision.
+  // A priority filter can therefore still enter the query via URL round-trip or
+  // typed DSL, so we always render a removable chip for it — otherwise a restored
+  // priority filter would silently narrow results with no way to see or clear it.
   for (const priority of filters.priority ?? []) {
     chips.push({
       id: `priority:${priority}`,

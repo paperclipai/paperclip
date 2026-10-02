@@ -76,6 +76,45 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
+    "keeps the newest backup for each retained calendar month",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-retention-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const janNewest = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql.gz");
+      const janOlder = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
+      const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
+
+      try {
+        fs.writeFileSync(janNewest, "jan-newest");
+        fs.writeFileSync(janOlder, "jan-older");
+        fs.writeFileSync(decOld, "dec-old");
+
+        fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
+        fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
+        fs.utimesSync(decOld, new Date("2025-12-15T12:00:00Z"), new Date("2025-12-15T12:00:00Z"));
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(2);
+        expect(fs.existsSync(janNewest)).toBe(true);
+        expect(fs.existsSync(janOlder)).toBe(false);
+        expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
@@ -100,6 +139,21 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "metadata" jsonb,
             "created_at" timestamptz NOT NULL DEFAULT now()
           );
+        `);
+        await sourceSql.unsafe(`
+          CREATE FUNCTION "public"."backup_test_mark_done"()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+            NEW."state" := 'done';
+            RETURN NEW;
+          END;
+          $$;
+          CREATE TRIGGER "backup_test_mark_done_trigger"
+          BEFORE UPDATE OF "title" ON "public"."backup_test_records"
+          FOR EACH ROW
+          EXECUTE FUNCTION "public"."backup_test_mark_done"();
         `);
 
         const payload = "x".repeat(8192);
@@ -174,6 +228,18 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             metadata: { index: 159, even: false },
           },
         ]);
+
+        await restoreSql.unsafe(`
+          UPDATE "public"."backup_test_records"
+          SET "title" = 'triggered'
+          WHERE "title" = 'row-0'
+        `);
+        const triggeredRows = await restoreSql.unsafe<{ state: string }[]>(`
+          SELECT "state"::text AS "state"
+          FROM "public"."backup_test_records"
+          WHERE "title" = 'triggered'
+        `);
+        expect(triggeredRows).toEqual([{ state: "done" }]);
       } finally {
         await sourceSql.end();
         await restoreSql.end();
@@ -423,7 +489,9 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
       const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
       const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
       process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+      process.env.PAPERCLIP_PSQL_PATH = "/bin/false";
 
       try {
         await sourceSql.unsafe(`
@@ -459,6 +527,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(backupSql.indexOf("-- Data for: public.aaa_child_records")).toBeLessThan(
           backupSql.indexOf("-- Data for: public.zzz_parent_records"),
         );
+        expect(backupSql).not.toContain(" FROM stdin;");
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
@@ -476,6 +545,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           delete process.env.PAPERCLIP_PG_DUMP_PATH;
         } else {
           process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
         }
         await sourceSql.end();
         await restoreSql.end();

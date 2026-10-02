@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
@@ -28,6 +29,7 @@ import {
   CircleDot,
   DollarSign,
   Calendar,
+  ArchiveRestore,
 } from "lucide-react";
 
 export function Companies() {
@@ -41,6 +43,9 @@ export function Companies() {
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  // A cloud stack holds exactly one company; creating another is a 403 floor
+  // server-side, so the wizard entry point is hidden rather than dead-ending.
+  const isCloud = Boolean(useCloudInstance());
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -70,8 +75,21 @@ export function Companies() {
     },
   });
 
+  // Unarchiving previously had no UI at all: archiving happens in company
+  // settings, but an archived company disappears from the sidebar switcher,
+  // so its settings page — and with it any way back — was only reachable by
+  // hand-typed URL. This list is the one place that still shows archived
+  // companies, so restoration lives here.
+  const unarchiveMutation = useMutation({
+    mutationFn: (id: string) => companiesApi.update(id, { status: "active" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+    },
+  });
+
   useEffect(() => {
-    setBreadcrumbs([{ label: "Companies" }]);
+    setBreadcrumbs([{ label: "Organizations" }]);
   }, [setBreadcrumbs]);
 
   function startEdit(companyId: string, currentName: string) {
@@ -92,14 +110,16 @@ export function Companies() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
-        <Button size="sm" onClick={() => openOnboarding()}>
-          <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Company
-        </Button>
+        {isCloud ? null : (
+          <Button size="sm" onClick={() => openOnboarding()}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Organization
+          </Button>
+        )}
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
+        {loading && <p className="text-sm text-muted-foreground">Loading organizations...</p>}
         {error && <p className="text-sm text-destructive">{error.message}</p>}
       </div>
 
@@ -218,13 +238,22 @@ export function Companies() {
                         <Pencil className="h-3.5 w-3.5" />
                         Rename
                       </DropdownMenuItem>
+                      {company.status === "archived" && (
+                        <DropdownMenuItem
+                          disabled={unarchiveMutation.isPending}
+                          onClick={() => unarchiveMutation.mutate(company.id)}
+                        >
+                          <ArchiveRestore className="h-3.5 w-3.5" />
+                          Unarchive
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"
                         onClick={() => setConfirmDeleteId(company.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                        Delete Company
+                        Delete Organization
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -267,7 +296,7 @@ export function Companies() {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
+                    Delete this organization and all its data? This cannot be undone.
                   </p>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     <Button

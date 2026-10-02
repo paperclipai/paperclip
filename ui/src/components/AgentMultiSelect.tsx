@@ -1,6 +1,6 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -94,7 +94,7 @@ export function AgentSelect({
                   setOpen(false);
                 }}
               >
-                <AgentIcon icon={agent.icon ?? null} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <AgentAvatar agent={agent} size={16} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"/>
                 <span className="flex min-w-0 flex-col">
                   <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
                   {agent.title ? <span className="truncate text-xs text-muted-foreground">{agent.title}</span> : null}
@@ -261,7 +261,7 @@ export function AgentMultiSelect({
                       setSelection(next);
                     }}
                   />
-                  <AgentIcon icon={agent.icon ?? null} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <AgentAvatar agent={agent} size={16} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"/>
                   <span className="flex min-w-0 flex-col">
                     <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
                       <span className="truncate">{agent.name}</span>
@@ -306,7 +306,7 @@ export function AgentMultiSelect({
         <div className="space-y-0.5">
           {selectedAgents.slice(0, 3).map((agent) => (
             <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
-              <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <AgentAvatar agent={agent} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
               <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
             </div>
           ))}

@@ -30,11 +30,13 @@ import type {
 import {
   runChildProcess,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
-  renderPaperclipWakePrompt,
+  selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -51,6 +53,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -137,9 +140,10 @@ export function buildPrompt(
   config: Record<string, unknown>,
   options: { resumedSession?: boolean } = {},
 ): string {
-  const template = cfgString(config.promptTemplate) || HERMES_DEFAULT_PROMPT_TEMPLATE;
-
   const context = (ctx as any).context || {};
+  const template = cfgString(config.promptTemplate) || (context.conversationMode === true
+    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+    : HERMES_DEFAULT_PROMPT_TEMPLATE);
   const taskId = cfgString(context.taskId) || cfgString(context.issueId) || cfgString(ctx.config?.taskId);
   const taskTitle = cfgString(context.taskTitle) || cfgString(ctx.config?.taskTitle) || "";
   const taskBody = cfgString(context.taskBody) || cfgString(ctx.config?.taskBody) || "";
@@ -159,9 +163,12 @@ export function buildPrompt(
     paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
   }
 
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+  const { taskContextNote: taskContextMarkdown, wakePrompt } = selectPaperclipPromptSections(context, {
     resumedSession: options.resumedSession === true,
+    includeCommunicationGuidance: true,
   });
+  // Keep the historical variable available to custom templates. Automatic
+  // assembly uses the ownership-aware assignment variant below.
   const paperclipTaskMarkdown = cfgString(context.paperclipTaskMarkdown)?.trim() || "";
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
@@ -186,6 +193,7 @@ export function buildPrompt(
     paperclipWakePrompt: wakePrompt,
     paperclipTaskMarkdown,
     taskContext: paperclipTaskMarkdown,
+    taskContextMarkdown,
     paperclipWakeJson: wakePayloadJson,
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
@@ -198,7 +206,7 @@ export function buildPrompt(
   return joinPromptSections([
     wakePrompt,
     sessionHandoffMarkdown,
-    paperclipTaskMarkdown,
+    taskContextMarkdown,
     rendered,
   ]);
 }
@@ -344,6 +352,25 @@ export async function execute(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
 
+  // The server adds this runtime inventory at the run boundary. Requiring the
+  // marker avoids touching a developer's real Hermes home in direct unit or
+  // library calls that did not opt into Paperclip runtime skills.
+  if (Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
+    try {
+      const selectedSkills = await reconcileHermesPaperclipSkills(config);
+      if (selectedSkills.length > 0) {
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
+      throw err;
+    }
+  }
+
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
   //   1. Explicit provider in adapterConfig (user override)
@@ -461,6 +488,7 @@ export async function execute(
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
@@ -468,6 +496,8 @@ export async function execute(
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
   delete env.PAPERCLIP_API_KEY;
+  // Wake context travels in the prompt; drop both inherited and configured copies.
+  delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
@@ -478,8 +508,6 @@ export async function execute(
   if (envWakeReason) env.PAPERCLIP_WAKE_REASON = envWakeReason;
   const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctxContext.paperclipWake);
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   // ── Resolve working directory ──────────────────────────────────────────
   const cwd =
@@ -557,6 +585,8 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+  } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
+    executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
   if (parsed.usage) {

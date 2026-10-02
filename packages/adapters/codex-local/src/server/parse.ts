@@ -31,6 +31,8 @@ export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawProtocolEvent = false;
+  let sawProtocolTerminalEvent = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -45,6 +47,10 @@ export function parseCodexJsonl(stdout: string) {
     if (!event) continue;
 
     const type = asString(event.type, "");
+    if (type) sawProtocolEvent = true;
+    if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+      sawProtocolTerminalEvent = true;
+    }
     if (type === "thread.started") {
       sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
       continue;
@@ -86,7 +92,28 @@ export function parseCodexJsonl(stdout: string) {
     usage,
     usageBasis: "per_run" as const,
     errorMessage,
+    sawProtocolEvent,
+    sawProtocolTerminalEvent,
   };
+}
+
+/**
+ * Structural crash detection: the codex CLI can only report an agent-level
+ * failure through the JSONL protocol (an `error` event, `turn.failed`, or a
+ * finished `turn.completed` followed by a nonzero exit). A nonzero exit after
+ * the protocol stream started but before any terminal event means the process
+ * died out from under the agent (MCP transport crash, worker panic, killed
+ * tool server) — retriable infrastructure, not agent behavior. This
+ * deliberately does not match error text: transport failure strings vary, and
+ * stdout/stderr can quote agent output that merely discusses network errors.
+ */
+export function isCodexHarnessCrash(input: {
+  exitCode: number | null;
+  sawProtocolEvent: boolean;
+  sawProtocolTerminalEvent: boolean;
+}): boolean {
+  if ((input.exitCode ?? 0) === 0) return false;
+  return input.sawProtocolEvent && !input.sawProtocolTerminalEvent;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {

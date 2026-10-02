@@ -92,4 +92,21 @@ describe("buildNetworkPolicyManifests", () => {
     );
     expect(fallback).toBeUndefined();
   });
+
+  it("builds a task-scoped allow policy without namespace-wide base rules", () => {
+    const [, egress] = buildNetworkPolicyManifests({
+      ...baseInput,
+      name: "pc-run-egress",
+      podSelector: { "paperclip.io/run-id": "run-123" },
+      includeBaseRules: false,
+      egressAllowFqdns: ["github.com", "pypi.org"],
+      ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", name: "pc-run", uid: "uid-1" }],
+    });
+
+    expect(egress.metadata.name).toBe("pc-run-egress");
+    expect(egress.metadata.ownerReferences).toHaveLength(1);
+    expect(egress.spec.podSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
+    expect(egress.spec.egress).toHaveLength(1);
+    expect(egress.spec.egress[0].to[0].ipBlock.cidr).toBe("0.0.0.0/0");
+  });
 });

@@ -26,6 +26,114 @@ export interface ChunkMergeRefs {
 
 const SEEN_CHUNK_KEY_CAP = 12000;
 
+/**
+ * Retention budget for a run's kept chunk window. Task views pass a byte budget
+ * with `collapseTrimmed` so the just-rendered scrollback is retained and, when
+ * the budget is genuinely exceeded, the oldest content collapses behind a
+ * visible marker instead of silently vanishing midstream. Compact consumers
+ * (dashboard tickers, summary draft) keep the historical chunk-count cap by
+ * passing a bare number, which discards silently as before.
+ */
+export interface ChunkRetentionBudget {
+  /** Hard ceiling on retained chunk count. */
+  maxChunks?: number;
+  /** Soft ceiling on retained chunk payload size (UTF-16 code units ≈ bytes). */
+  maxBytes?: number;
+  /**
+   * When true, trimming leaves a single visible "earlier output trimmed" marker
+   * at the head so collapsed content never disappears without a trace. When
+   * false (the default for count-only callers), trimming is silent.
+   */
+  collapseTrimmed?: boolean;
+}
+
+/**
+ * Text of the synthetic system chunk that marks where older output was
+ * collapsed out of the retained window. Rendered as an ordinary system line by
+ * `buildTranscript`, so the affordance is adapter-agnostic.
+ */
+export const TRIMMED_OUTPUT_MARKER_TEXT =
+  "⋯ earlier output trimmed to stay within the live transcript buffer ⋯";
+
+export function isTrimmedOutputMarkerChunk(chunk: RunLogChunk): boolean {
+  return (
+    chunk.stream === "system" &&
+    chunk.chunk === TRIMMED_OUTPUT_MARKER_TEXT &&
+    chunk.seq === undefined
+  );
+}
+
+function makeTrimmedOutputMarkerChunk(ts: string): RunLogChunk {
+  return { ts, stream: "system", chunk: TRIMMED_OUTPUT_MARKER_TEXT };
+}
+
+function chunkRetainedSize(chunk: RunLogChunk): number {
+  return chunk.chunk.length;
+}
+
+function normalizeRetentionBudget(budget: number | ChunkRetentionBudget): ChunkRetentionBudget {
+  return typeof budget === "number" ? { maxChunks: budget } : budget;
+}
+
+/**
+ * Trim a run's retained window to its budget. Byte-budget trimming keeps the
+ * newest chunks and (when `collapseTrimmed`) prepends one marker so the
+ * scrollback shows earlier output was collapsed rather than silently dropped.
+ * Returns the highest sequenced chunk actually removed so callers can raise the
+ * trimmed-seq floor and drop re-delivered older records.
+ */
+export function applyRetentionBudget(
+  chunks: RunLogChunk[],
+  budget: ChunkRetentionBudget,
+): { chunks: RunLogChunk[]; trimmedSeq: number | null } {
+  const { maxChunks, maxBytes, collapseTrimmed } = budget;
+
+  // Peel off any existing marker so it is never counted or duplicated; a single
+  // marker is re-added below if trimming is (still) in effect.
+  const hadMarker = chunks.length > 0 && isTrimmedOutputMarkerChunk(chunks[0]!);
+  const real = hadMarker ? chunks.slice(1) : chunks;
+
+  let removeCount = 0;
+  if (typeof maxChunks === "number" && real.length > maxChunks) {
+    removeCount = real.length - maxChunks;
+  }
+  if (typeof maxBytes === "number") {
+    let totalBytes = 0;
+    for (const chunk of real) totalBytes += chunkRetainedSize(chunk);
+    let byteRemove = 0;
+    // Always keep the newest chunk even if it alone exceeds the byte budget.
+    while (byteRemove < real.length - 1 && totalBytes > maxBytes) {
+      totalBytes -= chunkRetainedSize(real[byteRemove]!);
+      byteRemove += 1;
+    }
+    if (byteRemove > removeCount) removeCount = byteRemove;
+  }
+
+  if (removeCount <= 0) {
+    // Nothing new to trim. Preserve an existing marker so an earlier collapse
+    // keeps its trace; otherwise return the marker-stripped array only if we
+    // actually stripped one (we never had a real trim to justify keeping it).
+    if (hadMarker) return { chunks, trimmedSeq: null };
+    return { chunks: real, trimmedSeq: null };
+  }
+
+  const removed = real.slice(0, removeCount);
+  const kept = real.slice(removeCount);
+
+  let trimmedSeq: number | null = null;
+  for (const item of removed) {
+    if (typeof item.seq === "number" && (trimmedSeq === null || item.seq > trimmedSeq)) {
+      trimmedSeq = item.seq;
+    }
+  }
+
+  if (collapseTrimmed || hadMarker) {
+    const markerTs = kept[0]?.ts ?? removed[removed.length - 1]!.ts;
+    return { chunks: [makeTrimmedOutputMarkerChunk(markerTs), ...kept], trimmedSeq };
+  }
+  return { chunks: kept, trimmedSeq };
+}
+
 export function readChunkSeq(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -96,7 +204,7 @@ export function mergeRunLogChunks(
   prevChunks: RunLogChunk[],
   incoming: IncomingRunLogChunk[],
   refs: ChunkMergeRefs,
-  maxChunksPerRun: number,
+  budget: number | ChunkRetentionBudget,
 ): { chunks: RunLogChunk[]; changed: boolean } {
   if (incoming.length === 0) return { chunks: prevChunks, changed: false };
 
@@ -144,14 +252,12 @@ export function mergeRunLogChunks(
   if (refs.seenChunkKeys.size > SEEN_CHUNK_KEY_CAP) {
     refs.seenChunkKeys.clear();
   }
-  if (existing.length > maxChunksPerRun) {
-    const trimmed = existing.splice(0, existing.length - maxChunksPerRun);
-    let seqFloor = refs.trimmedSeqFloorByRun.get(runId) ?? 0;
-    for (const item of trimmed) {
-      if (typeof item.seq === "number" && item.seq > seqFloor) seqFloor = item.seq;
-    }
-    if (seqFloor > 0) refs.trimmedSeqFloorByRun.set(runId, seqFloor);
+
+  const { chunks: retained, trimmedSeq } = applyRetentionBudget(existing, normalizeRetentionBudget(budget));
+  if (trimmedSeq !== null) {
+    const seqFloor = refs.trimmedSeqFloorByRun.get(runId) ?? 0;
+    if (trimmedSeq > seqFloor) refs.trimmedSeqFloorByRun.set(runId, trimmedSeq);
   }
 
-  return { chunks: existing, changed: true };
+  return { chunks: retained, changed: true };
 }

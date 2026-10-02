@@ -79,9 +79,9 @@ The UI prompt points Hermes at the same machine-readable onboarding endpoints:
 For CLI-driven setup, create and inspect the invite directly:
 
 ```sh
-pnpm paperclipai invite create --company-id <company-id> --payload-json '{"requestType":"agent"}'
-pnpm paperclipai invite show <token>
-pnpm paperclipai invite onboarding:text <token>
+npx paperclipai invite create --company-id <company-id> --payload-json '{"requestType":"agent"}'
+npx paperclipai invite show <token>
+npx paperclipai invite onboarding:text <token>
 ```
 
 Hermes should submit a join request with `requestType: "agent"` and
@@ -119,14 +119,14 @@ After Hermes submits the join request:
 2. Approve it from the board UI, or use:
 
    ```sh
-   pnpm paperclipai join list --company-id <company-id> --status pending_approval
-   pnpm paperclipai join approve <request-id> --company-id <company-id>
+   npx paperclipai join list --company-id <company-id> --status pending_approval
+   npx paperclipai join approve <request-id> --company-id <company-id>
    ```
 
 3. Hermes claims the one-time agent API key:
 
    ```sh
-   pnpm paperclipai join claim-key <request-id> --claim-secret <secret>
+   npx paperclipai join claim-key <request-id> --claim-secret <secret>
    ```
 
 4. Store the claimed Paperclip key in Hermes runtime state or secrets. The claim
@@ -182,7 +182,7 @@ Use these entry points depending on who is driving setup:
   onboarding prompt.
 - Invite API: `GET /api/invites/:token/onboarding.txt` for the generated
   llm.txt-style setup instructions.
-- CLI invite flow: `pnpm paperclipai invite create`, `invite show`,
+- CLI invite flow: `npx paperclipai invite create`, `invite show`,
   `invite onboarding:text`, `join approve`, and `join claim-key`.
 - Smoke helpers: `pnpm smoke:hermes-gateway-e2e` for fresh-state Docker
   verification and `pnpm smoke:hermes-gateway-join` for an already-running

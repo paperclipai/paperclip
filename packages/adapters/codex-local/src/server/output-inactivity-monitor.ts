@@ -34,6 +34,7 @@ export interface CodexOutputInactivityMonitorState {
   outputChunkCount: number;
   outputBytes: number;
   parsedEventCount: number;
+  processActivityCount: number;
 }
 
 export interface CodexOutputInactivityMonitorOptions {
@@ -51,6 +52,7 @@ export interface CodexOutputInactivityMonitorOptions {
 
 export interface CodexOutputInactivityMonitorHandle {
   noteOutputChunk(stream: "stdout" | "stderr", chunk: string): void;
+  noteProcessActivity(): void;
   /** Returns the current state without stopping the timer. */
   state(): CodexOutputInactivityMonitorState;
   /** Cancels any pending timer and returns the final state. */
@@ -85,6 +87,7 @@ export function createCodexOutputInactivityMonitor(
     outputChunkCount: 0,
     outputBytes: 0,
     parsedEventCount: 0,
+    processActivityCount: 0,
   };
   let timerHandle: unknown = null;
   let stopped = false;
@@ -120,6 +123,12 @@ export function createCodexOutputInactivityMonitor(
       state.lastEventAt = now();
       arm();
     },
+    noteProcessActivity() {
+      if (stopped || state.fired) return;
+      state.processActivityCount += 1;
+      state.lastEventAt = now();
+      arm();
+    },
     state() {
       return { ...state };
     },
@@ -136,11 +145,11 @@ export function createCodexOutputInactivityMonitor(
 
 /**
  * Format the inactivity monitor error message in the canonical
- * `monitor: no codex output for {N}m {S}s` shape consumed by NEE-81.
+ * `monitor: no codex activity (output or process) for {N}m {S}s` shape consumed by NEE-81.
  */
 export function formatOutputInactivityMonitorErrorMessage(elapsedMs: number): string {
   const total = Math.max(0, Math.round(elapsedMs / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total - minutes * 60;
-  return `monitor: no codex output for ${minutes}m ${seconds}s`;
+  return `monitor: no codex activity (output or process) for ${minutes}m ${seconds}s`;
 }

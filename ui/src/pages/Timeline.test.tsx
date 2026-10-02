@@ -5,12 +5,13 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Timeline, timelineSummary } from "./Timeline";
+import { loadTimelineWindow, Timeline, timelineSummary } from "./Timeline";
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockWorkTimelineApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const mockLocation = vi.hoisted(() => ({ search: "" }));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -25,7 +26,7 @@ vi.mock("@/api/workTimeline", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/PAP/timeline" }),
+  useLocation: () => ({ pathname: "/PAP/timeline", search: mockLocation.search }),
 }));
 
 vi.mock("@/components/RequestCollapsedSidebar", () => ({
@@ -130,6 +131,7 @@ describe("Timeline", () => {
       defaultOptions: { queries: { retry: false } },
     });
     mockWorkTimelineApi.get.mockResolvedValue(emptyTimeline);
+    mockLocation.search = "";
   });
 
   afterEach(() => {
@@ -154,6 +156,27 @@ describe("Timeline", () => {
     await flushReact();
 
     expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
+  });
+
+  it("applies project scope from the project Timeline control", async () => {
+    mockLocation.search = "?projectId=11111111-1111-4111-8111-111111111111";
+    root = createRoot(container);
+
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Timeline />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Project Timeline");
+    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ projectId: "11111111-1111-4111-8111-111111111111" }),
+      expect.anything(),
+    );
   });
 
   it("renders range controls plus icon zoom controls without the user lens selector or visible-duration readout", async () => {
@@ -201,6 +224,55 @@ describe("Timeline", () => {
       element.textContent?.includes("2 runs") && element.textContent.includes("Range"),
     );
     expect(footer).not.toBeUndefined();
+  });
+
+  it("loads every timeline page in the selected window", async () => {
+    mockWorkTimelineApi.get
+      .mockResolvedValueOnce({
+        ...populatedTimeline,
+        actors: [populatedTimeline.actors[0]],
+        spans: [populatedTimeline.spans[0]],
+        pagination: {
+          limit: 500,
+          offset: 0,
+          totalIssues: 501,
+          hasMore: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        ...populatedTimeline,
+        actors: [populatedTimeline.actors[1]],
+        spans: [populatedTimeline.spans[1]],
+        pagination: {
+          limit: 500,
+          offset: 500,
+          totalIssues: 501,
+          hasMore: false,
+        },
+      });
+
+    const controller = new AbortController();
+    const result = await loadTimelineWindow("company-1", {
+      from: populatedTimeline.window.from,
+      to: populatedTimeline.window.to,
+    }, controller.signal);
+
+    expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(1, "company-1", expect.objectContaining({
+      limit: 500,
+      offset: 0,
+    }), { signal: controller.signal });
+    expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(2, "company-1", expect.objectContaining({
+      limit: 500,
+      offset: 500,
+    }), { signal: controller.signal });
+    expect(result.actors.map((actor) => actor.id)).toEqual(["agent:codex", "agent:qa"]);
+    expect(result.spans.map((span) => span.runId)).toEqual(["run-1", "run-2"]);
+    expect(result.pagination).toEqual({
+      limit: 500,
+      offset: 0,
+      totalIssues: 501,
+      hasMore: false,
+    });
   });
 
   it("clamps open run summary time to the returned timeline window", async () => {
@@ -304,6 +376,7 @@ describe("Timeline", () => {
         from: expect.any(String),
         to: expect.any(String),
       }),
+      { signal: expect.any(AbortSignal) },
     );
     expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
