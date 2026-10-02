@@ -841,7 +841,7 @@ An active run can still be unhealthy even when its process is `running`. Papercl
 
 The recovery service owns this contract:
 
-- classify active-run output silence as `ok`, `suspicious`, `critical`, `snoozed`, or `not_applicable`
+- classify active-run output silence as `ok`, `suspicious` after five minutes, `critical` after fifteen minutes, `snoozed`, or `not_applicable`; measure silence from the latest output, falling back to the run start when no output exists
 - honor active snooze and continue decisions on the run
 - permanently suppress the signal for a run after a `dismissed_false_positive` decision
 - build the `outputSilence` summary shown by live-run and active-run API responses

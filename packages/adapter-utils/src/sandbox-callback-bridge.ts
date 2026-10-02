@@ -26,6 +26,7 @@ import type { RunProcessResult } from "./server-utils.js";
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
+const MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // A `BridgeBodyReservation` owner (`http2-bridge-server.ts`) now bounds the
@@ -358,14 +359,19 @@ async function runShell(
   shellCommand: "bash" | "sh" = "sh",
   stdin?: string,
 ): Promise<RunProcessResult> {
-  return await runner.execute({
+  // These short file/control operations must not inherit an hours-long agent
+  // lifetime. Enforce the deadline on the host too: a provider may never settle
+  // its promise even when it receives timeoutMs. This does not prove the remote
+  // operation stopped; callers must not replay an uncertain write on timeout.
+  const controlTimeoutMs = Math.min(timeoutMs, MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS);
+  return await withTimeout(runner.execute({
     command: shellCommand,
     args: shellCommandArgs(script),
     cwd,
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
     },
-    timeoutMs,
+    timeoutMs: controlTimeoutMs,
     stdin,
     // Every command that rides this helper is bridge control-plane plumbing:
     // input delivery, output read, callback relay, and queue/setup bookkeeping.
@@ -374,7 +380,7 @@ async function runShell(
     // for the whole run; a control write on the same session queues behind the
     // agent command that never returns — a permanent deadlock.
     bypassSession: true,
-  });
+  }), controlTimeoutMs, "Sandbox bridge control command");
 }
 
 function requireSuccessfulResult(action: string, result: RunProcessResult): RunProcessResult {

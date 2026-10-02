@@ -1536,6 +1536,69 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it.each([
+    [4 * 60 * 60 * 1000, 30_000],
+    [250, 250],
+  ])("bounds a hung bridge read configured for %i ms to %i ms", async (configuredMs, expectedMs) => {
+    vi.useFakeTimers();
+    try {
+      const runner = { execute: vi.fn(() => new Promise<RunProcessResult>(() => {})) };
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner, remoteCwd: "/workspace", timeoutMs: configuredMs,
+      });
+      let error: unknown;
+      const read = client.readTextFile("/workspace/events/1.json").catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(expectedMs - 1);
+      expect(error).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(error).toEqual(new Error(`Sandbox bridge control command timed out after ${expectedMs}ms.`));
+      await read;
+      expect(runner.execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        timeoutMs: expectedMs, bypassSession: true,
+      }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons a timed-out upload without replaying it or continuing after a late response", async () => {
+    vi.useFakeTimers();
+    try {
+      const success: RunProcessResult = {
+        exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null,
+        startedAt: new Date().toISOString(),
+      };
+      let finishAppend!: (result: RunProcessResult) => void;
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[] }) => {
+          if (input.args?.[1]?.startsWith("printf")) {
+            return new Promise<RunProcessResult>((resolve) => { finishAppend = resolve; });
+          }
+          return success;
+        }),
+      };
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner, remoteCwd: "/workspace", timeoutMs: 4 * 60 * 60 * 1000,
+      });
+      let error: unknown;
+      const write = client.writeTextFile("/workspace/stdin/1.json", "sensitive-input")
+        .catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await write;
+      finishAppend(success);
+      await vi.advanceTimersByTimeAsync(0);
+      const scripts = runner.execute.mock.calls.map(([input]) => input.args?.[1] ?? "");
+      expect(scripts.filter((script) => script.startsWith("printf"))).toHaveLength(1);
+      expect(scripts.some((script) => script.startsWith("base64 -d"))).toBe(false);
+      expect(scripts.at(-1)).toMatch(/^rm -f .*paperclip-upload/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks command-managed bridge operations with the bridge execution channel", async () => {
     const runner = {
       execute: vi.fn(async () => ({
