@@ -2890,6 +2890,50 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("lets a run-less service-scoped comment through when reopen is a no-op on an open issue", async () => {
+    // On an open issue the route never applies `reopen`/`resume` for agent
+    // actors, so the flag changes no task state and the comment stands on its
+    // own authorization — same outcome the assignee's key would get with a
+    // run. Only closed/blocked issues keep the run-context requirement.
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "reply with a redundant reopen flag",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: assigneeAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyId: "key-router-1",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "reply with a redundant reopen flag", reopen: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockObserveServiceKeyCrossIssueInfluence).toHaveBeenCalledTimes(1);
+  });
+
   it("charges the run budget when a service-scoped key does send a run", async () => {
     const routerAgentId = "33333333-3333-4333-8333-333333333333";
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
