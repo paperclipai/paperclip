@@ -10,6 +10,11 @@ import {
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
+import {
+  resolveHostClaudeSettingsDir,
+  runReadsClaudeUserSettings,
+  seedManagedAiGateSettings,
+} from "./managed-ai-gate-settings.js";
 import { secretService } from "./secrets.js";
 import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -260,6 +265,15 @@ export async function prepareManagedAiRuntime(
     );
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
+    // The private config dir below replaces the host's Claude user settings
+    // source, which on a managed runner host is where the deny-side runner
+    // gates live. Carry those gates in, or fail the run rather than run it
+    // ungated.
+    if (runReadsClaudeUserSettings(input.adapterType, input.config))
+      await seedManagedAiGateSettings({
+        providerHome,
+        hostSettingsDir: resolveHostClaudeSettingsDir(process.env, configuredEnv),
+      });
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),

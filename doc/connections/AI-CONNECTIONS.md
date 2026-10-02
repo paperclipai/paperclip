@@ -152,6 +152,18 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
+A Claude invocation's private home also replaces the host's Claude user
+settings source, so the deny-side runner gates registered there would otherwise
+not load. The invocation carries two keys of the host `settings.json` into its
+private config dir and nothing else: `hooks` and `permissions.deny`. Both can
+only refuse work the run would otherwise be allowed to do. `env`, `apiKeyHelper`
+and `permissions.defaultMode` stay on the host, because they could re-inject a
+provider credential the private home exists to isolate or widen the run's
+permission posture. A declared gate that cannot be carried, and a carried hook
+whose command names a local file that is not executable, fail the invocation:
+an absent security boundary is reported, not skipped. A host with no
+`settings.json` declares no gate and carries nothing.
+
 A subscription invocation takes no lease. Two invocations of one grant, from
 the same or a different provider account, run at the same time. At cleanup,
 each invocation re-reads the credential stored at that moment under a row

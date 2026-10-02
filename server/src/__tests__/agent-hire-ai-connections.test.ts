@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -25,6 +25,13 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
+  // A managed AI run carries the host's deny-side Claude gate into its private
+  // config dir. Point the host settings source at an empty fixture dir so a
+  // real ~/.claude/settings.json on this machine cannot change what these
+  // suites observe.
+  const hostClaudeDir = path.join(home, "host-claude");
+  await mkdir(hostClaudeDir, { recursive: true });
+  vi.stubEnv("CLAUDE_CONFIG_DIR", hostClaudeDir);
   database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
   db = createDb(database.connectionString);
 }, 90_000);
