@@ -69,10 +69,15 @@ describe("directory merge lock process lifetime", () => {
     return await access(`${lock}.owner.json`).then(() => `${lock}.owner.json`, () => path.join(lock, "owner.json"));
   }
 
-  function expireWait() {
-    const now = Date.now();
-    return vi.spyOn(Date, "now").mockReturnValueOnce(now).mockReturnValue(now + 60_000);
-  }
+  // A short real wait budget for a test that asserts a timeout. 200 ms still
+  // lets the implementation's 50 ms retry interval run at least 4 retries, so
+  // the timeout is reached because the lock is genuinely held, not because
+  // the clock was replaced.
+  const TIMEOUT_ASSERTION_WAIT_MS = 200;
+  // A short real wait budget for the crash-recovery test, which asserts a
+  // successful acquisition. It must absorb ordinary scheduling jitter around
+  // the crash while still resolving well inside the test timeout below.
+  const CRASH_RECOVERY_WAIT_MS = 5_000;
 
   it("recovers a killed holder even when its recorded PID has been reused", async () => {
     const { target, env, lock } = await fixture();
@@ -83,11 +88,8 @@ describe("directory merge lock process lifetime", () => {
     const recordPath = await ownerPath(lock);
     const record = JSON.parse(await readFile(recordPath, "utf8"));
     await writeFile(recordPath, JSON.stringify({ ...record, pid: process.pid }));
-    // This test asserts a successful acquisition, so it keeps the real wait
-    // budget instead of an expired clock: it must let the implementation's
-    // own retry loop absorb ordinary scheduling jitter around the crash.
-    await expect(withDirectoryMergeLock(target, async () => "restored", env)).resolves.toBe("restored");
-  }, 35_000);
+    await expect(withDirectoryMergeLock(target, async () => "restored", env, undefined, CRASH_RECOVERY_WAIT_MS)).resolves.toBe("restored");
+  }, 15_000);
 
   it("protects a live holder in another process regardless of diagnostic PID or age", async () => {
     const { target, env, lock } = await fixture();
@@ -95,10 +97,7 @@ describe("directory merge lock process lifetime", () => {
     const recordPath = await ownerPath(lock);
     await writeFile(recordPath, JSON.stringify({ pid: 2_147_483_647, createdAt: "2000-01-01T00:00:00.000Z" }));
     const contender = vi.fn();
-    const clock = expireWait();
-    try {
-      await expect(withDirectoryMergeLock(target, contender, env)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
-    } finally { clock.mockRestore(); }
+    await expect(withDirectoryMergeLock(target, contender, env, undefined, TIMEOUT_ASSERTION_WAIT_MS)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
     expect(contender).not.toHaveBeenCalled();
     const exited = once(child, "exit");
     child.send("release");
@@ -115,18 +114,12 @@ describe("directory merge lock process lifetime", () => {
   it("keeps the OS lock when a same-process contender closes its connection", async () => {
     const { target, env } = await fixture();
     await withDirectoryMergeLock(target, async () => {
-      const clock = expireWait();
-      try {
-        await expect(withDirectoryMergeLock(target, async () => undefined, env)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
-      } finally { clock.mockRestore(); }
+      await expect(withDirectoryMergeLock(target, async () => undefined, env, undefined, TIMEOUT_ASSERTION_WAIT_MS)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
       // A same-process test alone cannot prove that the OS lock survived: on
       // POSIX, closing an unmanaged descriptor can drop process-wide locks.
       const result = await promisify(execFile)(process.execPath, ["--import", loader, "--eval", `
         import { withDirectoryMergeLock, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from ${JSON.stringify(module)};
-        const now = Date.now();
-        let calls = 0;
-        Date.now = () => now + calls++ * 60_000;
-        withDirectoryMergeLock(${JSON.stringify(target)}, async () => "entered")
+        withDirectoryMergeLock(${JSON.stringify(target)}, async () => "entered", undefined, undefined, ${TIMEOUT_ASSERTION_WAIT_MS})
           .then(() => { console.error("Entered a live holder's lock"); process.exit(1); })
           .catch(error => {
             if (error.code !== WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) { console.error(error); process.exit(1); }
@@ -168,10 +161,7 @@ describe("directory merge lock process lifetime", () => {
     await mkdir(lock, { recursive: true });
     if (kind !== "missing") await writeFile(path.join(lock, "owner.json"), kind === "malformed" ? "{broken" : JSON.stringify({ pid: 2_147_483_647, createdAt: "2000-01-01T00:00:00.000Z" }));
     const contender = vi.fn();
-    const clock = expireWait();
-    try {
-      await expect(withDirectoryMergeLock(target, contender, env)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
-    } finally { clock.mockRestore(); }
+    await expect(withDirectoryMergeLock(target, contender, env, undefined, TIMEOUT_ASSERTION_WAIT_MS)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
     expect(contender).not.toHaveBeenCalled();
     expect((await stat(lock)).isDirectory()).toBe(true);
   });
