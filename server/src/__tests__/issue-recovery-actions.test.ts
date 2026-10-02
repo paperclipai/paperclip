@@ -572,8 +572,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    // `todo`, not `blocked`: there is no dependency here, and `attemptCount` is
+    // 2, still inside the rehome ladder. `blocked` with zero blocker edges is
+    // unreachable by any wake path (AND-13551).
     expect(updatedIssue).toMatchObject({
-      status: "blocked",
+      status: "todo",
     });
     const recoveryIssues = await db
       .select()
@@ -1320,6 +1323,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(result).toMatchObject({ escalated: 1, reviewParticipantRequeued: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    // Stays `blocked`: a configuration failure cannot fix itself, so this cause
+    // is excluded from the `todo` rehome ladder. It is not an orphan block —
+    // the escalation declares a `notified_owner` wake path (AND-13551).
     expect(updatedIssue).toMatchObject({
       status: "blocked",
       assigneeAgentId: coderId,
@@ -1390,6 +1396,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(result).toMatchObject({ escalated: 1, skipped: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    // Stays `blocked` — `configuration_incomplete` is excluded from the rehome
+    // ladder because retrying a missing/invalid model pin cannot succeed. The
+    // escalation declares a `notified_owner` wake path (AND-13551).
     expect(updatedIssue?.status).toBe("blocked");
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
@@ -1593,7 +1602,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
+  it("keeps the source issue on the escalation disposition when source-scoped wakeup is claimed synchronously", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
     const enqueueWakeup = vi.fn(async () => {
@@ -1622,7 +1631,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterFirst?.status).toBe("blocked");
+    // The point of this test is that a synchronously-claimed wakeup does not
+    // leave the source issue in the escalation's disposition. That disposition
+    // is now `todo` rather than an unreachable `blocked` (AND-13551).
+    expect(afterFirst?.status).toBe("todo");
     expect(afterFirst?.assigneeAgentId).toBe(coderId);
 
     const secondLatestRun = {
@@ -1651,7 +1663,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterSecond?.status).toBe("blocked");
+    // attemptCount 2 is still inside the ladder, so the second escalation also
+    // rehomes to `todo` rather than materialising a recovery blocker.
+    expect(afterSecond?.status).toBe("todo");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);

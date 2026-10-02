@@ -184,6 +184,22 @@ const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
  * `CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS`).
  */
 const STRANDED_REHOME_MAX_TODO_ATTEMPTS = 3;
+/**
+ * Causes that no amount of retrying can clear, so they are never rehomed to
+ * `todo`.
+ *
+ * Rehoming exists to make a *transiently* stranded task pickable again. A task
+ * stranded on configuration — an unbound secret ref, a sandbox plugin stuck in
+ * `error`, a workspace with no project id — fails identically on every retry,
+ * so `todo` would just burn the ladder re-dispatching a doomed run. These stay
+ * `blocked`, and the escalation declares the `notified_owner` wake path (the
+ * board-owned recovery action and its notice) so the orphan-blocked guard is
+ * still satisfied.
+ */
+const STRANDED_REHOME_INELIGIBLE_CAUSES = new Set<StrandedRecoveryCause>([
+  "configuration_incomplete",
+  "workspace_validation_failed",
+]);
 const STRANDED_REHOME_EXHAUSTED_FINGERPRINT_PREFIX = "stranded_rehome_exhausted";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
@@ -4079,6 +4095,26 @@ export function recoveryService(
     if (input.blockerIds.length > 0) {
       return {
         patch: { status: "blocked", blockedByIssueIds: input.blockerIds },
+        recoveryIssue: null,
+      };
+    }
+
+    // A configuration failure cannot fix itself, so rehoming it to `todo` only
+    // buys N wasted re-dispatches of a run that will fail the same way: a
+    // missing secret binding, a stuck sandbox plugin, or a workspace with no
+    // project id needs a human or an executive to change configuration. Park
+    // it, but declare the wake path rather than leaving an orphan `blocked` —
+    // the board-owned recovery action and its notice comment are the owner that
+    // clears this, which is the same contract the other escalations here use.
+    if (STRANDED_REHOME_INELIGIBLE_CAUSES.has(input.recoveryCause)) {
+      return {
+        patch: {
+          status: "blocked",
+          blockedWakePath: {
+            kind: "notified_owner",
+            reason: input.recoveryCause,
+          },
+        },
         recoveryIssue: null,
       };
     }
