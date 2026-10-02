@@ -9,6 +9,7 @@ import {
   CONNECTABLE_APP_DEFINITIONS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getAppDefinitionForUrl,
   getConnectableAppDefinition,
   getRecommendedConnectionMethod,
@@ -458,6 +459,76 @@ describe("AppDefinition catalog", () => {
     });
   });
 
+  it("supports organization tokens and OAuth for the official read-only Enterpret MCP", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(
+      (entry) => entry.slug === "enterpret",
+    )!;
+    expect(
+      getAppDefinitionForUrl("https://wisdom-api.enterpret.com/server/mcp")
+        ?.slug,
+    ).toBe("enterpret");
+    // Both methods target the official read-only MCP, not the beta Agent MCP.
+    expect(app.methods.map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(app.redirectConstraints).toBe("https-or-loopback-http");
+    expect(APP_STORE_HIDDEN_SLUGS.has("enterpret")).toBe(false);
+    expect(app.availability?.available).not.toBe(false);
+    expect(app.ownershipAvailability?.dcr).not.toBe(false);
+    expect(getAvailableConnectionMethods(app).map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(getAvailableConnectionMethod(app)?.key).toBe("mcp-api-key");
+    expect(getAvailableConnectionMethod(app, "mcp-oauth")?.key).toBe("mcp-oauth");
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    expect(app.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      // Enterpret documents no customer-registered OAuth app, only RFC 7591.
+      ownershipModes: ["dcr"],
+      grantKinds: ["user"],
+      riskTier: "S3",
+      defaults: {
+        serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+        // Narrower than the "mcp:read mcp:write" the 401 challenge advertises.
+        scopesHint: ["mcp:read"],
+      },
+    });
+    // RFC 9728 -> RFC 8414 discovery resolves from the challenge, so shipping a
+    // complete endpoint pair would suppress discovery permanently.
+    expect(app.methods[1].defaults?.authorizationEndpoint).toBeUndefined();
+    expect(app.methods[1].defaults?.tokenEndpoint).toBeUndefined();
+    expect(app.methods[1].label).toBe("Sign in with Enterpret");
+    expect(app.methods[1].warnings?.some((w) => /broader OAuth scopes/i.test(w))).toBe(
+      true,
+    );
+    // The definition records the placement of a credential, never a value.
+    const serialized = JSON.stringify(app);
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}/);
+    // "Bearer " may appear only as the header prefix, never trailed by a value.
+    expect(serialized.match(/Bearer[^"]*/g)).toEqual(["Bearer "]);
+    for (const method of app.methods)
+      for (const credentialField of method.credentialFields ?? [])
+        expect(credentialField).not.toHaveProperty("defaultValue");
+  });
+
   it("uses the reviewed current endpoints and configuration modes", () => {
     const method = (slug: string, key?: string) =>
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
@@ -626,13 +697,21 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
     ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
-  it("defaults every action, reads and writes, to allowed", () => {
+  it("defaults every new connection action to allowed except Enterpret writes", () => {
     for (const app of APP_DEFINITIONS)
-      for (const method of app.methods)
+      for (const method of app.methods) {
+        if (app.slug === "enterpret") {
+          expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+            access: "all_agents",
+            askFirstRiskLevels: ["write", "destructive"],
+          });
+          continue;
+        }
         expect(recommendedDefaultsForApp(app, method.key)).toEqual({
           access: "all_agents",
           askFirstRiskLevels: [],
         });
+      }
   });
   it("defaults explicit read/write capability groups to their write-capable method", () => {
     const drive = APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
@@ -728,7 +807,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(59);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

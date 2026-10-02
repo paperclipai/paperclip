@@ -807,6 +807,91 @@ const apps = [
       { requiredResourceFilters: ["team", "project", "environment"] },
     ),
   ],
+  // Enterpret advertises RFC 9728 -> RFC 8414 discovery from its own 401
+  // challenge (issuer https://oauth.enterpret.com, PKCE S256, registration
+  // endpoint present, token_endpoint_auth_method "none"), so `defaults` ships
+  // `serverUrl` only and the broker resolves endpoints at connect time.
+  // Both methods target the official read-only Enterpret MCP. Enterpret Agent's
+  // beta write MCP is a separate service and is outside this connector's scope.
+  // OAuth scope reporting and revocation-cache fixes await provider deployment
+  // and fresh live validation; scope names alone do not prove write capability.
+  // The provider documents no customer-registered OAuth app, so OAuth stays
+  // `dcr` only rather than `["customer", "dcr"]`.
+  [
+    "enterpret",
+    "Enterpret",
+    "Ask questions about your customer feedback and pull verbatim quotes with citations.",
+    "analytics",
+    "enterpret.com",
+    ["https://wisdom-api.enterpret.com/*"],
+    [
+      method(
+        "mcp-api-key",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+        "S3",
+        "Generate an auth token in Enterpret under Settings, Enterpret MCP, then paste it below. One token belongs to one Enterpret organization. This is the recommended connection method.",
+        {
+          label: "Use an auth token",
+          grantKinds: ["organization"],
+          whenToUse:
+            "Recommended. Use an organization auth token from Settings → Enterpret MCP. This is the primary, store-ready connection method.",
+          credentialFields: [
+            field(
+              "authorization",
+              "Enterpret auth token",
+              "Paste the token from Settings, Enterpret MCP",
+            ),
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Bearer ",
+          },
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "Check your auth token's expiry in Enterpret Settings > Enterpret MCP and replace it before it lapses.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+            "run_graph_query starts as Ask first. Cypher is not established as read-only even when Enterpret advertises readOnlyHint.",
+          ],
+        },
+      ),
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+          scopesHint: ["mcp:read"],
+        },
+        "S3",
+        "Sign in to Enterpret in the browser to query the official read-only MCP. Each person connects with their own Enterpret account, and Enterpret attributes their queries individually.",
+        {
+          label: "Sign in with Enterpret",
+          ownershipModes: ["dcr"],
+          grantKinds: ["user"],
+          whenToUse:
+            "Use browser sign-in when each person should query feedback under their own Enterpret account.",
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "The official Enterpret MCP is read-only. Enterpret previously reported broader OAuth scopes, including mcp:write and email, than Paperclip requested. Enterpret is correcting this scope reporting; it does not establish access to the separate beta Agent MCP.",
+            "After revocation, Enterpret may cache token validity for up to 24 hours. Disconnect this connection to stop Paperclip access immediately. Enterpret is reducing this delay.",
+            "You need an Enterpret account with access to your organization's feedback.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+          ],
+        },
+      ),
+    ],
+    {
+      docsUrl: "https://enterpret.support.site/article/enterpret-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+    },
+  ],
   [
     "anthropic",
     "Anthropic",

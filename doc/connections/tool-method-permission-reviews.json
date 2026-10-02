@@ -423,6 +423,41 @@
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
+      "app": "enterpret",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Query the organization's customer feedback and retrieve cited quotes. The current MCP tool catalog has no write actions.",
+      "evidence": [
+        "https://helpcenter.enterpret.com/en/articles/12665166-enterpret-mcp-server",
+        "https://github.com/paperclipai/paperclip/pull/13906"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "token-connect-safe-read-refresh-reconnect-verified",
+      "evidenceLimit": "Isolated self-hosted same-machine QA on 2026-09-30. Dashboard revocation did not immediately invalidate the token: it reconnected and completed a safe read. Token-path agent-session deny, real agent process, expiry recovery, VPS, and Cloud remain untested.",
+      "keyPermissions": "An organization auth token can read that organization's customer feedback. Use a token from Settings > Enterpret MCP and check its displayed expiry there."
+    },
+    {
+      "app": "enterpret",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:read"
+      ],
+      "capability": "read",
+      "supportedActions": "Query the organization's customer feedback and retrieve cited quotes. OAuth targets the same official read-only MCP; the separate beta Enterpret Agent write MCP is out of scope.",
+      "evidence": [
+        "https://helpcenter.enterpret.com/en/articles/12665166-enterpret-mcp-server",
+        "https://github.com/paperclipai/paperclip/pull/13906"
+      ],
+      "reviewedAt": "2026-09-30",
+      "liveProof": "tool-list-verified-scope-mismatch",
+      "evidenceLimit": "On 2026-10-01 the account holder reported Vivek confirmed the official MCP is read-only and the Agent write MCP is separate. OAuth scope-reporting and token-revocation cache fixes are committed as fast follows after connector deployment; they are not release prerequisites. Fresh authorization/refresh remain unverified. Scope names alone do not establish write access."
+    },
+    {
       "app": "executor",
       "method": "mcp",
       "auth": "none",
