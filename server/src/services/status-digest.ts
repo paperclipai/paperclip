@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
@@ -101,6 +101,10 @@ export function statusDigestService(db: Db) {
               and(
                 eq(issueThreadInteractions.companyId, companyId),
                 eq(issueThreadInteractions.status, "pending"),
+                // An interaction directed to an agent is work waiting on that
+                // agent, not a human wait. The digest's human label therefore
+                // only includes rows with no agent addressee.
+                isNull(issueThreadInteractions.addresseeAgentId),
               ),
             )
             .then((rows) => toCount(rows[0]?.count)),

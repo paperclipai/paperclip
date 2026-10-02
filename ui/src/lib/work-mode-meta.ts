@@ -1,5 +1,5 @@
 import type { IssueWorkMode } from "@paperclipai/shared";
-import { ClipboardList, Hammer, MessageCircleQuestion, type LucideIcon } from "lucide-react";
+import { ClipboardList, Eye, Hammer, MessageCircleQuestion, type LucideIcon } from "lucide-react";
 
 export type WorkModeTone = "neutral" | "ask" | "planning";
 
@@ -38,7 +38,7 @@ const PLANNING_CLASSES = {
 };
 
 export function isIssueWorkMode(value: unknown): value is IssueWorkMode {
-  return value === "standard" || value === "ask" || value === "planning";
+  return value === "standard" || value === "ask" || value === "planning" || value === "read_only";
 }
 
 export function workModeMetaList(): WorkModeMeta[] {
@@ -64,6 +64,13 @@ export function workModeMetaList(): WorkModeMeta[] {
       tone: "ask",
       classes: ASK_CLASSES,
     },
+    {
+      value: "read_only",
+      label: "Read-only mode",
+      icon: Eye,
+      tone: "neutral",
+      classes: STANDARD_CLASSES,
+    },
   ];
 }
 
@@ -84,6 +91,9 @@ export function titleForPendingWorkMode(mode: IssueWorkMode): string {
   }
   if (mode === "planning") {
     return "Plan mode is on for this submission. Click to change.";
+  }
+  if (mode === "read_only") {
+    return "Read-only mode is on for this submission. The server permits GET requests only.";
   }
   return "Auto mode for this submission. Click to change.";
 }

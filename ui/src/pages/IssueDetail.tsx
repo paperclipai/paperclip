@@ -7043,7 +7043,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               carries its own mode chip; a header chip would misread as a
               task-global setting. Flag OFF keeps the legacy badge. */}
         {!taskChatShellEnabled &&
-        (issue.workMode === "ask" || issue.workMode === "planning")
+        (issue.workMode === "ask" || issue.workMode === "planning" || issue.workMode === "read_only")
           ? (() => {
               const workModeMeta = workModeMetaFor(issue.workMode);
               const WorkModeIcon = workModeMeta.icon;

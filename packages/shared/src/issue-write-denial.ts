@@ -33,6 +33,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
   "issue_write_read_only_run",
+  "issue_write_run_identity_required",
 ] as const;
 
 export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
@@ -279,6 +280,23 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Remove \`onBehalfOfUserId\` from the request and retry; the server fills in ` +
           `${responsible} from your run.`,
+      };
+
+    case "issue_write_run_identity_required":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Verified run identity",
+        title: "A mutating agent request must identify its active run",
+        description:
+          `A persistent agent key is not itself a run credential. The server could not ` +
+          `verify an active run belonging to ${actor}, so it refused the write before ` +
+          `the route ran.`,
+        whoCanAct:
+          `${actor} with its active run identity, or a board member.`,
+        sanctionedPath:
+          "Send the request with the runtime-issued run credential and X-Paperclip-Run-Id; do not reuse or guess a run id.",
       };
 
     case "issue_write_read_only_run":
