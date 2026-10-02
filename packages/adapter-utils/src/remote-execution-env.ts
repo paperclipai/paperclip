@@ -28,6 +28,158 @@ function readEnvValueCaseInsensitive(env: NodeJS.ProcessEnv, key: string): strin
   return undefined;
 }
 
+// Linux caps every individual exec argument and environment string at
+// MAX_ARG_STRLEN (128 KiB with 4 KiB pages) and the whole argv+env block at
+// RLIMIT_STACK/4 (~2 MiB with an 8 MiB stack). A value over either limit makes
+// execve fail with E2BIG before the child starts. Prune any single oversized
+// value regardless of key prefix, then keep the aggregate well under budget.
+// The child either recovers the value via the Paperclip API or runs without it.
+export const ENV_SINGLE_VALUE_MAX_BYTES = 64 * 1024;
+export const ENV_AGGREGATE_MAX_BYTES = 1024 * 1024;
+
+// PATH resolution and HOME-based lookup happen before the child runs, so
+// pruning them breaks command resolution; they are also far below the budget
+// in every real deployment.
+const ENV_AGGREGATE_PROTECTED_KEYS = new Set(["PATH", "HOME"]);
+
+export function pruneOversizedLaunchEnvWithReport(
+  env: NodeJS.ProcessEnv,
+): { env: NodeJS.ProcessEnv; dropped: string[] } {
+  const entries = Object.entries(env).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  const dropped: string[] = [];
+  const kept: NodeJS.ProcessEnv = {};
+  // execve counts UTF-8 bytes, not JavaScript characters: account in bytes.
+  let totalBytes = 0;
+  for (const [key, value] of entries) {
+    const valueBytes = Buffer.byteLength(value);
+    if (valueBytes > ENV_SINGLE_VALUE_MAX_BYTES) {
+      dropped.push(key);
+      continue;
+    }
+    kept[key] = value;
+    totalBytes += Buffer.byteLength(key) + valueBytes + 1;
+  }
+  if (totalBytes > ENV_AGGREGATE_MAX_BYTES) {
+    const dropOrder = entries
+      .filter(
+        ([key, value]) =>
+          key in kept && !ENV_AGGREGATE_PROTECTED_KEYS.has(key),
+      )
+      .sort(
+        (a, b) =>
+          Buffer.byteLength(b[1]) - Buffer.byteLength(a[1]) ||
+          (a[0] < b[0] ? -1 : 1),
+      );
+    for (const [key, value] of dropOrder) {
+      if (totalBytes <= ENV_AGGREGATE_MAX_BYTES) break;
+      delete kept[key];
+      dropped.push(key);
+      totalBytes -= Buffer.byteLength(key) + Buffer.byteLength(value) + 1;
+    }
+  }
+  return { env: kept, dropped };
+}
+
+export function pruneOversizedLaunchEnv(
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return pruneOversizedLaunchEnvWithReport(env).env;
+}
+
+// The SSH lanes fold the whole remote environment into a single `sh -c`
+// argv string, so the assembled env block has the per-string limit too.
+// Budget the assembled `KEY=VALUE` block (quoting included) so several
+// medium values cannot jointly exceed the per-argument exec limit. The
+// budget bounds the final post-quoting bytes; `SSH_REMOTE_ARG_MAX_BYTES`
+// reserves headroom for the rest of the argument (profile lines, the quoted
+// remote command, and ssh overhead) via the lanes' `reservedArgBytes`.
+export const SSH_REMOTE_ARG_MAX_BYTES = 128 * 1024 - 4 * 1024;
+export const SSH_REMOTE_ENV_MAX_BYTES = 96 * 1024;
+
+// ssh.ts's shellQuote wraps the value in single quotes and expands each
+// embedded quote to `'\''`; the whole script is quoted once more at launch,
+// so every inner quote costs another 3 bytes in the final argument. Mirror
+// both expansions exactly: raw-byte accounting undercounts quote-heavy
+// values by up to 4x and lets the assembled argument blow the limit.
+function countSingleQuotes(value: string): number {
+  let count = 0;
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) === 39) count++;
+  }
+  return count;
+}
+
+function shellQuotedBytes(value: string): number {
+  return Buffer.byteLength(value) + 2 + 4 * countSingleQuotes(value);
+}
+
+// Bytes the outer script re-quote adds to a script fragment: each single
+// quote inside expands 1 -> 4 (+3) and the wrapper adds 2.
+export function sshScriptOuterQuotedBytes(script: string): number {
+  return Buffer.byteLength(script) + 2 + 3 * countSingleQuotes(script);
+}
+
+// Bytes an entry adds to the final `sh -c '<script>'` ssh argument: the
+// inner-quoted `KEY=VALUE` plus the outer re-quote's expansion of each inner
+// quote (+3 bytes) and one entry separator.
+function sshEnvEntryFinalBytes(key: string, value: string): number {
+  return (
+    Buffer.byteLength(key) +
+    1 +
+    shellQuotedBytes(value) +
+    3 * (2 + countSingleQuotes(value)) +
+    1
+  );
+}
+
+export function budgetSshRemoteEnvWithReport(
+  env: Record<string, string> | NodeJS.ProcessEnv,
+  options: { reservedArgBytes?: number } = {},
+): { env: Record<string, string>; dropped: string[] } {
+  // The quoted remote command shares the launch argument with the env
+  // block, so the env budget shrinks by whatever the rest of the argument
+  // already occupies.
+  const envBudget = Math.max(
+    0,
+    Math.min(
+      SSH_REMOTE_ENV_MAX_BYTES,
+      SSH_REMOTE_ARG_MAX_BYTES - Math.max(0, options.reservedArgBytes ?? 0),
+    ),
+  );
+  const { env: pruned, dropped } = pruneOversizedLaunchEnvWithReport(env);
+  const kept: Record<string, string> = {};
+  let totalBytes = 0;
+  const candidates = Object.entries(pruned)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    // Keep the largest entries first: a payload-carrying value must not be
+    // crowded out by smaller optional settings when both would fit.
+    .sort(
+      (a, b) =>
+        sshEnvEntryFinalBytes(b[0], b[1]) -
+          sshEnvEntryFinalBytes(a[0], a[1]) ||
+        (a[0] < b[0] ? -1 : 1),
+    );
+  for (const [key, value] of candidates) {
+    const entryBytes = sshEnvEntryFinalBytes(key, value);
+    if (totalBytes + entryBytes > envBudget) {
+      dropped.push(key);
+      continue;
+    }
+    kept[key] = value;
+    totalBytes += entryBytes;
+  }
+  return { env: kept, dropped };
+}
+
+export function budgetSshRemoteEnv(
+  env: Record<string, string> | NodeJS.ProcessEnv,
+  options: { reservedArgBytes?: number } = {},
+): Record<string, string> {
+  return budgetSshRemoteEnvWithReport(env, options).env;
+}
+
 export function sanitizeRemoteExecutionEnv(
   env: Record<string, string>,
   inheritedEnv: NodeJS.ProcessEnv = process.env,

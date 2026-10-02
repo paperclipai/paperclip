@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { budgetSshRemoteEnvWithReport, sshScriptOuterQuotedBytes } from "./remote-execution-env.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -1204,14 +1205,11 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    const envEntries = Object.entries(options.env ?? {})
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-    for (const [key] of envEntries) {
-      if (!isValidShellEnvKey(key)) {
-        throw new Error(`Invalid SSH environment variable key: ${key}`);
-      }
-    }
-
+    // The whole remote env is folded into one `sh -c` argv string, so the
+    // assembled env block needs a per-argument byte budget as well. Reserve
+    // the env-independent part of the argument (profile lines, the quoted
+    // remote command, wrappers) so a large remote command shrinks the env
+    // budget instead of overflowing the assembled argument.
     // Mirror buildSshSpawnTarget: source the login profiles first, then run
     // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
     // profile re-exports. The SSH target is an operator-configured host, not a
@@ -1223,12 +1221,39 @@ export async function runSshCommand(
     // .bash_profile typically sources .bashrc itself; only source .bashrc
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
+    const profileLines = [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ];
+    const envFreeScript = [
+      ...profileLines,
+      `exec env  sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
+    const reservedArgBytes =
+      6 + sshScriptOuterQuotedBytes(envFreeScript);
+    const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(
+      options.env ?? {},
+      { reservedArgBytes },
+    );
+    if (dropped.length) {
+      console.warn(
+        { droppedKeys: dropped },
+        "dropped oversized SSH remote env values before launch",
+      );
+    }
+    for (const [key] of Object.entries(launchEnv)) {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+    }
+
+    const envArgs = Object.entries(launchEnv).map(
+      ([key, value]) => `${key}=${shellQuote(value)}`,
+    );
+    const remoteScript = [
+      ...profileLines,
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
@@ -1266,17 +1291,6 @@ export async function buildSshSpawnTarget(input: {
   args: string[];
   cleanup: () => Promise<void>;
 }> {
-  for (const key of Object.keys(input.env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid SSH environment variable key: ${key}`);
-    }
-  }
-  const auth = await createSshAuthArgs(input.spec);
-  const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
@@ -1288,11 +1302,45 @@ export async function buildSshSpawnTarget(input: {
   // .bash_profile typically sources .bashrc itself; only source .bashrc
   // directly when no .bash_profile exists, so a host that adds nvm in
   // .bashrc still resolves node without a double-run of the setup.
-  const remoteScript = [
+  const profileLines = [
     'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+  ];
+  // The whole remote env is folded into a single `sh -c` argv string, so the
+  // assembled env block needs a per-argument byte budget as well (E2BIG).
+  // Reserve the env-independent part of the argument (profile lines, the
+  // quoted command and args, wrappers) so a large command shrinks the env
+  // budget instead of overflowing the assembled argument.
+  const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  const envFreeScript = [
+    ...profileLines,
+    `cd ${shellQuote(input.spec.remoteCwd)}`,
+    `exec env  ${remoteCommandParts}`,
+  ].join(" && ");
+  const reservedArgBytes = 6 + sshScriptOuterQuotedBytes(envFreeScript);
+  const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(input.env, {
+    reservedArgBytes,
+  });
+  if (dropped.length) {
+    console.warn(
+      { droppedKeys: dropped },
+      "dropped oversized SSH remote env values before launch",
+    );
+  }
+  for (const key of Object.keys(launchEnv)) {
+    if (!isValidShellEnvKey(key)) {
+      throw new Error(`Invalid SSH environment variable key: ${key}`);
+    }
+  }
+  const auth = await createSshAuthArgs(input.spec);
+  const sshArgs = [...auth.args];
+  const envArgs = Object.entries(launchEnv)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const remoteScript = [
+    ...profileLines,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
