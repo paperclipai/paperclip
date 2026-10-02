@@ -72,6 +72,7 @@ describe("adapter model listing", () => {
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
+    expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -162,7 +163,7 @@ describe("adapter model listing", () => {
     // Keep Opus 4.8 first, using its documented dateless Bedrock ID.
     expect(models[0]?.id).toBe("us.anthropic.claude-opus-4-8");
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
-      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5",
+      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5",
       "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7", "us.anthropic.claude-sonnet-4-6",
     ]));
     expect(models.map((model) => model.id)).not.toEqual(expect.arrayContaining(["us.anthropic.claude-opus-4-8-v1"]));

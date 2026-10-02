@@ -12,6 +12,7 @@ const BEDROCK_MODELS: AdapterModel[] = [
   { id: "us.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
   { id: "us.anthropic.claude-opus-5-5", label: "Bedrock Opus 5.5" },
   { id: "us.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
+  { id: "us.anthropic.claude-sonnet-5-5", label: "Bedrock Sonnet 5.5" },
   { id: "us.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
   // Fable 5.1's documented geo inference ID carries no -v1 suffix, unlike earlier entries.
   { id: "us.anthropic.claude-fable-5-1", label: "Bedrock Fable 5.1" },
