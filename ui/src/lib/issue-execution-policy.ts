@@ -1,35 +1,8 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees";
+import { randomUuid } from "./random-uuid";
 
 type StageType = "review" | "approval";
-
-function newId() {
-  const webCrypto = globalThis.crypto;
-  if (typeof webCrypto?.randomUUID === "function") {
-    return webCrypto.randomUUID();
-  }
-
-  const bytes = new Uint8Array(16);
-  if (typeof webCrypto?.getRandomValues === "function") {
-    webCrypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
-  return [
-    hex.slice(0, 4).join(""),
-    hex.slice(4, 6).join(""),
-    hex.slice(6, 8).join(""),
-    hex.slice(8, 10).join(""),
-    hex.slice(10, 16).join(""),
-  ].join("-");
-}
 
 function principalKey(principal: IssueExecutionStagePrincipal | IssueExecutionStageParticipant) {
   return principal.type === "agent" ? `agent:${principal.agentId}` : `user:${principal.userId}`;
@@ -67,7 +40,7 @@ function mergeParticipants(
     const key = principalKey(principal);
     const previous = existingByKey.get(key);
     participants.push({
-      id: previous?.id ?? newId(),
+      id: previous?.id ?? randomUuid(),
       type: principal.type,
       agentId: principal.type === "agent" ? principal.agentId ?? null : null,
       userId: principal.type === "user" ? principal.userId ?? null : null,
@@ -89,7 +62,7 @@ export function buildExecutionPolicy(input: {
   const reviewParticipants = mergeParticipants(existingReviewStage?.participants, input.reviewerValues);
   if (reviewParticipants.length > 0) {
     stages.push({
-      id: existingReviewStage?.id ?? newId(),
+      id: existingReviewStage?.id ?? randomUuid(),
       type: "review" as const,
       approvalsNeeded: 1 as const,
       participants: reviewParticipants,
@@ -100,7 +73,7 @@ export function buildExecutionPolicy(input: {
   const approvalParticipants = mergeParticipants(existingApprovalStage?.participants, input.approverValues);
   if (approvalParticipants.length > 0) {
     stages.push({
-      id: existingApprovalStage?.id ?? newId(),
+      id: existingApprovalStage?.id ?? randomUuid(),
       type: "approval" as const,
       approvalsNeeded: 1 as const,
       participants: approvalParticipants,

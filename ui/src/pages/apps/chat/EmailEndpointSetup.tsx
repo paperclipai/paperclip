@@ -39,6 +39,7 @@ import {
   lowTrustBoundaryHasScope,
 } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
+import { randomUuid } from "@/lib/random-uuid";
 import type {
   AgentPermissions,
   EmailEndpointSummary,
@@ -67,7 +68,7 @@ export function EmailEndpointSetup() {
     new Set(params.get("agentId") ? [params.get("agentId")!] : []),
   );
   const [apiKey, setApiKey] = useState("");
-  const [requestId] = useState(() => crypto.randomUUID());
+  const [requestId] = useState(() => randomUuid());
   const [addressMode, setAddressMode] = useState("new");
   const [inboxId, setInboxId] = useState("");
   const [username, setUsername] = useState("");
