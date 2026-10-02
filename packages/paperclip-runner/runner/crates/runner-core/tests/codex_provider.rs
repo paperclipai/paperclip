@@ -617,6 +617,14 @@ fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
                         assert!(!params.to_string().contains("fixture-login"));
                         assert!(params.get("authMode").is_none());
                         assert!(params.get("planType").is_none());
+                        let normalized = normalize_codex_notification(&method, &params);
+                        assert_eq!(normalized.len(), 1);
+                        assert_eq!(normalized[0].event_type, "harness.diagnostic");
+                        assert_eq!(normalized[0].payload["code"], "codex_unrelated_information");
+                        assert_eq!(
+                            normalized[0].payload["providerMethod"],
+                            params["providerMethod"]
+                        );
                     }
                     if method == "turn/completed" {
                         completed = true;

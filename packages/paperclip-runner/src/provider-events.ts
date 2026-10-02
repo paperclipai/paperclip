@@ -593,6 +593,23 @@ export function canonicalProviderEventsFromCodex(
   const type = text(item.type);
   const itemId = safeId(text(item.id, text(params.itemId)), "provider-item");
   const completed = method === "item/completed";
+  if (method === "warning" && params.classification === "unrelated_information") {
+    const boundedField = (key: string, limit: number) =>
+      typeof params[key] === "string" ? params[key].slice(0, limit) : null;
+    return [{
+      eventType: "harness.diagnostic",
+      itemId,
+      payload: {
+        code: "codex_unrelated_information",
+        classification: "unrelated_information",
+        providerMethod: boundedField("providerMethod", 160),
+        expectedThreadId: boundedField("expectedThreadId", 256),
+        receivedThreadId: boundedField("receivedThreadId", 256),
+        expectedTurnId: boundedField("expectedTurnId", 256),
+        receivedTurnId: boundedField("receivedTurnId", 256),
+      },
+    }];
+  }
   if (method === "turn/plan/updated") {
     const turnPlanId = safeId(text(params.turnId), "turn-plan");
     return [
