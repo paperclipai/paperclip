@@ -729,12 +729,35 @@ function rateBucket(rule: ToolRateLimitRule, ctx: ToolAccessContext): string {
 }
 
 function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessContext) {
-  if (!scope || Object.keys(scope).length === 0) return true;
-  const allowed = listValues(scope.allow);
-  if (allowed.includes(`tool:${ctx.toolName}`)) return true;
-  if (ctx.connectionId && allowed.includes(`connection:${ctx.connectionId}`)) return true;
-  if (ctx.applicationId && allowed.includes(`application:${ctx.applicationId}`)) return true;
-  return selectorMatches(scope, ctx);
+  if (scope === null || scope === undefined) return true;
+  if (!isRecord(scope)) return false;
+  if (Object.keys(scope).length === 0) return true;
+  const { allow, ...selectors } = scope;
+  if (Object.hasOwn(scope, "allow")) {
+    const values = typeof allow === "string" ? [allow] : allow;
+    if (!Array.isArray(values) || values.length === 0 ||
+        !values.every((value) => typeof value === "string" && value.trim().length > 0)) return false;
+    if (!values.includes(`tool:${ctx.toolName}`) &&
+        !(ctx.upstreamToolName && values.includes(`tool:${ctx.upstreamToolName}`)) &&
+        !(ctx.connectionId && values.includes(`connection:${ctx.connectionId}`)) &&
+        !(ctx.applicationId && values.includes(`application:${ctx.applicationId}`))) return false;
+  }
+  // Grant restrictions must all be understood and match. The permissive policy
+  // selector matcher cannot validate untrusted or historical grant JSON itself.
+  const keys = new Set([
+    "actorType", "agentId", "projectId", "routineId", "issueId", "gatewayId",
+    "applicationId", "connectionId", "catalogEntryId", "applicationKey",
+    "providerType", "toolName", "riskLevel",
+  ]);
+  for (const [key, value] of Object.entries(selectors)) {
+    if (keys.has(key)) {
+      if (typeof value !== "string" || value.trim().length === 0) return false;
+    } else if (key.endsWith("s") && keys.has(key.slice(0, -1))) {
+      if (!Array.isArray(value) || value.length === 0 ||
+          !value.every((entry) => typeof entry === "string" && entry.trim().length > 0)) return false;
+    } else return false;
+  }
+  return selectorMatches(selectors, ctx);
 }
 
 export function toolAccessPolicyService(db: Db) {
