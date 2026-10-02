@@ -563,6 +563,17 @@ class OpenCodeHarnessSession implements HarnessSession {
   }): Promise<{ turnId: string }> {
     if (this.#activeTurnId !== null)
       throw new Error("OpenCode session already has an active turn");
+    // Answer selection is turn-local even when the run and provider session
+    // continue. Keep the run's semantic-result commitment, but never select
+    // text or correlate terminal parts from a previous turn.
+    this.#semanticResultTextBoundary = null;
+    this.#semanticResultProviderMessageId = null;
+    this.#semanticResultProviderTextBoundary = null;
+    this.#semanticResultProviderPartBoundaries.clear();
+    this.#lastNonTerminalToolSourceSeq = 0;
+    this.#completedTextPartIds.clear();
+    this.#completedReasoningPartIds.clear();
+    this.#completedTextParts.length = 0;
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#activeTurnId = turnId;
     this.#emit("turn.submitted", {
@@ -1612,6 +1623,17 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   #emitAssistantPart(part: Record<string, unknown>, turnId: string): void {
+    if (turnId !== this.#activeTurnId) {
+      // Reject before mutating selection state: the emission gate alone
+      // cannot stop a late part from becoming the next turn's final answer.
+      this.#emit("harness.diagnostic", {
+        code: "opencode_late_terminal_turn_event_dropped",
+        message: "OpenCode sent an assistant part for a turn that already reached a terminal state.",
+        droppedEventType: "message.part.updated",
+        turnId,
+      });
+      return;
+    }
     const partId = text(part.id, `${turnId}:part`);
     const partType = text(part.type, "unknown");
     const messageId = text(part.messageID, text(part.messageId)) || null;

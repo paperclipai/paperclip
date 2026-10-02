@@ -2159,6 +2159,42 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("selects each turn's own final answer when a provider session is reused", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-post-tool-final-selection",
+      normalizedSessionId: "post-tool-final-selection",
+      workingDirectory: workspace,
+    });
+    for (const [prompt, expected] of [
+      ["final-after-tool-commentary", "This is the complete substantive answer emitted after the accepted completion tool call."],
+      ["correlated-final-message", "Correlated substantive final answer."],
+      ["final-after-tool-commentary-delayed-terminal", "This is the complete substantive answer emitted after the accepted completion tool call."],
+    ]) {
+      const { turnId } = await session.startTurn({ message: { role: "user", text: prompt! } });
+      const events = await collectTurnEvents(session.events());
+      const finals = events.filter((event) => event.eventType === "item.completed"
+        && event.payload.kind === "agentMessage" && event.payload.channel === "final");
+      expect(finals).toHaveLength(1);
+      expect(finals[0]).toMatchObject({ turnId, payload: { text: expected } });
+    }
+    await session.close({ reason: "test" });
+  });
+
   it("rejects malformed and oversized SSE frames", async () => {
     const stream = (value: string) =>
       new ReadableStream<Uint8Array>({
