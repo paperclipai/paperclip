@@ -96,6 +96,13 @@ export function createOpenCodeOutputInactivityMonitor(
   };
   let timerHandle: unknown = null;
   let stopped = false;
+  // Stdout arrives in arbitrary chunks; a JSONL event can span two chunks.
+  // Keep the incomplete trailing line between chunks so the split event
+  // counts as progress once its remainder arrives. Without this, a healthy
+  // run producing split events on a sandbox target (where process-activity
+  // sampling is disabled) could be terminated for inactivity even though the
+  // final-output parser reads the complete event.
+  let pendingLine = "";
 
   const fire = () => {
     if (state.fired || stopped) return;
@@ -128,7 +135,10 @@ export function createOpenCodeOutputInactivityMonitor(
       }
       state.outputChunkCount += 1;
       state.outputBytes += Buffer.byteLength(chunk, "utf8");
-      for (const rawLine of chunk.split(/\r?\n/)) {
+      const data = pendingLine + chunk;
+      const lines = data.split(/\r?\n/);
+      pendingLine = lines.pop() ?? "";
+      for (const rawLine of lines) {
         if (isHeartbeatLine(rawLine)) {
           state.parsedEventCount += 1;
           state.lastEventAt = now();

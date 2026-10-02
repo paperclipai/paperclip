@@ -104,6 +104,39 @@ describe("OpenCode local skill injection", () => {
     expect(prompts[1]).toContain("## Owned assignment");
   });
 
+  it("retains the session identity when the output-inactivity monitor fires", async () => {
+    const commandPath = path.join(configHome, "fake-opencode-monitor");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // The mocked run outlives the inactivity window (50ms < 300ms), so the
+    // monitor fires while the run is still pending and no kill target is
+    // ever provided by the mock.
+    runProcessMock
+      .mockReset()
+      .mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return probeResult({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "" });
+      });
+    const result = await execute({
+      runId: "run-monitor-session",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "sess_keep", sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath, cwd: configHome, model: "openai/gpt-5",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+        outputInactivityTimeoutMs: 50,
+      },
+      context: createPromptContextFixture(),
+      onLog: async () => {},
+    });
+    expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
+    // The interrupted session may still be resumable — the result must keep
+    // its identity instead of instructing the resolver to clear it.
+    expect(result.sessionId).toBe("sess_keep");
+    expect(result.sessionParams).toMatchObject({ sessionId: "sess_keep" });
+    expect(result.sessionDisplayId).toBe("sess_keep");
+    expect(result.clearSession).toBe(false);
+  });
+
   it("injects runtime skills into the configured child HOME", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-configured-home-"));
     const processHome = path.join(root, "process-home");

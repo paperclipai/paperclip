@@ -110,6 +110,47 @@ function signalOpenCodeChild(
   return false;
 }
 
+/**
+ * Whether the inactivity monitor may signal this spawn target from the
+ * Paperclip host. Local runs spawn a real child process we own, and SSH runs
+ * spawn a local ssh client we own — both report a real local process group on
+ * POSIX. A sandbox runner instead reports a provider-internal pid and forces
+ * `processGroupId` to null; signaling that pid with `process.kill` can hit an
+ * unrelated host process while the sandbox-side opencode keeps running, and
+ * sandbox teardown has no local seam (it belongs to the sandbox runner and the
+ * runner's own timeout). So remote spawns without a local process group are
+ * never signaled: the monitor still fails the run fast, and teardown stays
+ * with the execution target's own runner.
+ */
+function canSignalSpawnTarget(
+  target: { pid: number | null; processGroupId: number | null } | null,
+  executionTargetIsRemote: boolean,
+): target is { pid: number; processGroupId: number | null } {
+  if (!target || target.pid == null || target.pid <= 0) return false;
+  if (executionTargetIsRemote && (target.processGroupId == null || target.processGroupId <= 0)) {
+    return false;
+  }
+  return true;
+}
+
+/** Whether the spawned child (or its process group) still exists. */
+function isSpawnTargetAlive(target: { pid: number; processGroupId: number | null }): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(target.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;
   const trimmed = model.trim();
@@ -732,39 +773,61 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const message = formatOpenCodeOutputInactivityMonitorErrorMessage(monitorElapsedMs);
                 const elapsedSec = Math.round(monitorElapsedMs / 1000);
                 const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
+                const sentSigterm = beginMonitorTermination();
+                const terminationNote = sentSigterm
+                  ? "terminating opencode child via SIGTERM (5s grace, then SIGKILL)"
+                  : killTarget
+                    ? "execution target has no safe local kill seam; failing the run fast and leaving teardown to the target's own runner"
+                    : "no spawned child to signal yet; a child that spawns after this point is terminated on spawn";
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
                   `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
                   `parsedEvents=${state.parsedEventCount} stderrChunkCount=${state.stderrChunkCount} stderrBytes=${state.stderrBytes} ` +
                   `processActivityCount=${state.processActivityCount} ` +
-                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
-                  `terminating opencode child via SIGTERM (5s grace, then SIGKILL).\n`;
+                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ${terminationNote}.\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
                 // the promise so the surrounding try/finally can await flush before
                 // the run resolves. Without this the diagnostic that explains the
                 // kill could be dropped if the child exits faster than onLog flushes.
                 monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
-                const target = killTarget;
-                if (!target || (target.pid == null && target.processGroupId == null)) {
-                  return;
-                }
-                const sentSig = signalOpenCodeChild(target, "SIGTERM");
-                if (sentSig) monitorTerminationSignal = "SIGTERM";
-                sigkillTimer = setTimeout(() => {
-                  sigkillTimer = null;
-                  const stillSent = signalOpenCodeChild(target, "SIGKILL");
-                  if (stillSent) monitorTerminationSignal = "SIGKILL";
-                }, OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
-                if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
-                  (sigkillTimer as { unref: () => void }).unref();
-                }
               },
             });
 
+      // Signal the spawned child (SIGTERM, then SIGKILL after the grace
+      // window). Returns false when the target is not safely signalable from
+      // the host — a sandbox runner's pid must never be signaled here.
+      const beginMonitorTermination = (): boolean => {
+        const target = killTarget;
+        if (!canSignalSpawnTarget(target, executionTargetIsRemote)) return false;
+        const sentSig = signalOpenCodeChild(target, "SIGTERM");
+        if (sentSig) monitorTerminationSignal = "SIGTERM";
+        sigkillTimer = setTimeout(() => {
+          sigkillTimer = null;
+          const stillSent = signalOpenCodeChild(target, "SIGKILL");
+          if (stillSent) monitorTerminationSignal = "SIGKILL";
+        }, OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+        if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
+          (sigkillTimer as { unref: () => void }).unref();
+        }
+        return true;
+      };
+
       const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
         killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
-        if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
+        if (monitor && monitorFired) {
+          // The inactivity window elapsed before the child spawned (slow
+          // runtime preparation). The already-fired monitor never signals
+          // again, so without this the fresh child would run to the
+          // wall-clock timeout. Terminate it immediately on spawn.
+          monitorLogPromise = Promise.resolve(
+            onLog(
+              "stderr",
+              "[paperclip] Output inactivity monitor fired before the opencode child spawned; terminating the fresh child now.\n",
+            ),
+          ).catch(() => {});
+          beginMonitorTermination();
+        } else if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
           processActivityMonitor.current = createOpenCodeProcessActivityMonitor({
             pid: meta.pid,
             processGroupId: meta.processGroupId,
@@ -814,6 +877,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         processActivityMonitor.current?.stop();
         monitor?.stop();
         if (sigkillTimer) {
+          // The run resolved before the SIGKILL grace ended — e.g. opencode
+          // exited promptly after SIGTERM while a detached tool subprocess in
+          // its process group ignored SIGTERM and closed its inherited stdio.
+          // Escalate to SIGKILL now if the group is still alive instead of
+          // canceling the forced shutdown and leaking the subprocess.
+          if (canSignalSpawnTarget(killTarget, executionTargetIsRemote) && isSpawnTargetAlive(killTarget)) {
+            const stillSent = signalOpenCodeChild(killTarget, "SIGKILL");
+            if (stillSent) monitorTerminationSignal = "SIGKILL";
+          }
           clearTimeout(sigkillTimer);
           sigkillTimer = null;
         }
@@ -823,6 +895,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
     };
+
+    const buildSessionIdentity = (resolvedSessionId: string | null) =>
+      resolvedSessionId
+        ? ({
+            sessionId: resolvedSessionId,
+            cwd: effectiveExecutionCwd,
+            ...(workspaceId ? { workspaceId } : {}),
+            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+            ...(executionTargetIsRemote
+              ? {
+                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+                }
+              : {}),
+          } as Record<string, unknown>)
+        : null;
 
     const toResult = (
       attempt: {
@@ -838,6 +926,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (attempt.monitor?.fired) {
         const errorMessage = formatOpenCodeOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
         const modelId = model || null;
+        // Retain the session identity on a monitor-fired failure: opencode
+        // may have persisted the interrupted session, so the next run can
+        // resume it. Nulling every session field here reads as an
+        // instruction to clear the stored session, which would strand a
+        // resumable session — the same retention rule the ordinary error
+        // path applies.
+        const resolvedSessionId = runtimeSessionId || null;
         return {
           exitCode: null,
           signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
@@ -849,9 +944,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             outputTokens: attempt.parsed.usage.outputTokens,
             cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
           },
-          sessionId: null,
-          sessionParams: null,
-          sessionDisplayId: null,
+          sessionId: resolvedSessionId,
+          sessionParams: buildSessionIdentity(resolvedSessionId),
+          sessionDisplayId: resolvedSessionId,
           provider: parseModelProvider(modelId),
           biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
           model: modelId,
@@ -868,7 +963,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             },
           },
           summary: attempt.parsed.summary,
-          clearSession: Boolean(clearSessionOnMissingSession),
+          clearSession: false,
         };
       }
       if (attempt.proc.timedOut) {
@@ -884,20 +979,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const resolvedSessionId =
         attempt.parsed.sessionId ??
         (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
-      const resolvedSessionParams = resolvedSessionId
-        ? ({
-            sessionId: resolvedSessionId,
-            cwd: effectiveExecutionCwd,
-            ...(workspaceId ? { workspaceId } : {}),
-            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-            ...(executionTargetIsRemote
-              ? {
-                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-                }
-              : {}),
-          } as Record<string, unknown>)
-        : null;
+      const resolvedSessionParams = buildSessionIdentity(resolvedSessionId);
 
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);

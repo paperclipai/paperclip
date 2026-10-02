@@ -6,6 +6,7 @@ import {
   formatOpenCodeOutputInactivityMonitorErrorMessage,
   resolveOpenCodeInactivityTimeout,
 } from "./output-inactivity-monitor.js";
+import { createOpenCodeProcessActivityMonitor } from "./process-activity-monitor.js";
 
 class FakeClock {
   private nowMs = 0;
@@ -223,6 +224,85 @@ describe("createOpenCodeOutputInactivityMonitor", () => {
     expect(fireCount).toBe(0);
     monitor.stop();
     expect(fireCount).toBe(0);
+  });
+
+  it("counts a JSONL event split across two stdout chunks as progress (incomplete lines are buffered)", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const monitor = createOpenCodeOutputInactivityMonitor({
+      timeoutMs: 1_000,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+    clock.advance(600);
+    monitor.noteOutputChunk("stdout", '{"type":"step_st');
+    monitor.noteOutputChunk("stdout", 'art","sessionID":"ses_a"}\n');
+    expect(monitor.state().parsedEventCount).toBe(1);
+    clock.advance(999);
+    expect(fireCount).toBe(0);
+    clock.advance(1);
+    expect(fireCount).toBe(1);
+    monitor.stop();
+  });
+
+  it("counts an event split across three chunks with CRLF boundaries as progress", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const monitor = createOpenCodeOutputInactivityMonitor({
+      timeoutMs: 1_000,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+    monitor.noteOutputChunk("stdout", '{"type":"te');
+    monitor.noteOutputChunk("stdout", "xt\",\"part\":{\"text\":\"hi\"}}\r");
+    monitor.noteOutputChunk("stdout", "\n");
+    expect(monitor.state().parsedEventCount).toBe(1);
+    monitor.stop();
+    expect(fireCount).toBe(0);
+  });
+
+  it("retry-storm stderr plus an idle process does NOT keep the run alive (composed production wiring)", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const inactivity = createOpenCodeOutputInactivityMonitor({
+      timeoutMs: 1_000,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+    // Production wiring (execute.ts wrappedOnSpawn): a process-activity
+    // monitor feeds noteProcessActivity(). A retrying opencode idles between
+    // backoff sleeps — CPU ticks, IO bytes, and the child list stay
+    // unchanged — so the activity monitor must never report progress and the
+    // retry storm must still be bounded despite its stderr traffic.
+    const activity = createOpenCodeProcessActivityMonitor({
+      pid: 4242,
+      processGroupId: 4242,
+      intervalMs: 100,
+      sample: async () => ({ cpuTicks: 10, ioBytes: 100, processIds: "4242" }),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onActivity: () => inactivity.noteProcessActivity(),
+    });
+    const chunk = "ERROR stream error, retrying in 2.0s\n";
+    for (let i = 0; i < 48 && fireCount === 0; i += 1) {
+      clock.advance(250);
+      inactivity.noteOutputChunk("stderr", chunk);
+    }
+    activity.stop();
+    inactivity.stop();
+    expect(fireCount).toBe(1);
   });
 
   it("multiple JSONL events in one chunk all reset the timer", () => {
