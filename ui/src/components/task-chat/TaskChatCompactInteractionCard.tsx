@@ -27,6 +27,7 @@ import type {
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { InteractionReplacementNotice } from "@/components/InteractionReplacementNotice";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -589,6 +590,7 @@ function ReceiptDisclosure({
       }
     >
       {request}
+      {!compact ? <InteractionReplacementNotice interaction={interaction} /> : null}
       {answerReason ? (
         <p className="text-sm text-muted-foreground">
           <span className="font-medium">Reason:</span> {answerReason}
@@ -605,35 +607,38 @@ function ReceiptDisclosure({
         ? "Questions answered"
         : buildIssueThreadInteractionSummary(interaction);
     return (
-      <details
-        className="group"
-        data-testid={
-          interaction.kind === "ask_user_questions" &&
-          interaction.status === "answered"
-            ? "task-chat-answered-questions-receipt"
-            : "task-chat-interaction-receipt"
-        }
-      >
-        <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <span
-            className="flex w-6 shrink-0 items-center justify-center"
-            data-testid="task-chat-interaction-receipt-icon-slot"
-          >
-            <Icon
+      <>
+        <details
+          className="group"
+          data-testid={
+            interaction.kind === "ask_user_questions" &&
+            interaction.status === "answered"
+              ? "task-chat-answered-questions-receipt"
+              : "task-chat-interaction-receipt"
+          }
+        >
+          <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <span
+              className="flex w-6 shrink-0 items-center justify-center"
+              data-testid="task-chat-interaction-receipt-icon-slot"
+            >
+              <Icon
+                aria-hidden
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                data-testid="task-chat-interaction-receipt-icon"
+              />
+            </span>
+            <span>{summary}</span>
+            <ChevronRight
               aria-hidden
-              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-              data-testid="task-chat-interaction-receipt-icon"
+              className="ml-auto h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover:opacity-70 group-focus-visible:opacity-70 group-open:rotate-90"
+              data-testid="task-chat-interaction-receipt-caret"
             />
-          </span>
-          <span>{summary}</span>
-          <ChevronRight
-            aria-hidden
-            className="ml-auto h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover:opacity-70 group-focus-visible:opacity-70 group-open:rotate-90"
-            data-testid="task-chat-interaction-receipt-caret"
-          />
-        </summary>
-        {detail}
-      </details>
+          </summary>
+          {detail}
+        </details>
+        <InteractionReplacementNotice interaction={interaction} />
+      </>
     );
   }
 

@@ -10,7 +10,7 @@ import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
-import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
+import { TaskChatScrollReady, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -1202,13 +1202,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
     });
     for (const interaction of interactions ?? []) {
-      // Withdrawn/superseded confirmations are retracted calls to action — drop
-      // them so a dead card never stacks above the one that replaced it.
+      // Explicit withdrawals are hidden; replacements retain their receipts.
       if (isSuppressedThreadInteraction(interaction)) continue;
-      // A never-rendered card — a degenerate `ask_user_questions` (e.g. the
-      // onboarding `Test / A` placeholder) or a stale sibling superseded by a
-      // newer question (PAP-437) — is filtered here so it leaves no empty slot
-      // or gap in the ordered backbone (PAP-424, plan from PAP-420).
+      // Filter unanswerable placeholders without leaving empty timeline slots.
       const isSupersededQuestionReceipt =
         interaction.kind === "ask_user_questions" &&
         interaction.status !== "pending" &&
@@ -2484,6 +2480,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const [selectedPendingKey, setSelectedPendingKey] = useState<string | null>(
     null,
   );
+  const inputNavigation = useTaskChatScrollNavigation();
+  const handledInputNavigationRef = useRef<string | null>(null);
   const knownPendingKeysRef = useRef<Set<string>>(new Set());
   const lastInputUserCommentRef = useRef(latestUserCommentId);
   useEffect(() => {
@@ -2503,6 +2501,26 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
     if (hasNewInput) setTakeoverMode("open");
   }, [pendingComposerInputs, latestUserCommentId, currentPendingInputs, currentPendingKeys]);
+  useEffect(() => {
+    const navigationId = JSON.stringify([issueId, inputNavigation.key, inputNavigation.hash]);
+    if (handledInputNavigationRef.current === navigationId) return;
+    handledInputNavigationRef.current = null;
+    if (!inputNavigation.hash?.startsWith("#interaction-")) return;
+    let interactionId: string;
+    try {
+      interactionId = decodeURIComponent(inputNavigation.hash.slice("#interaction-".length));
+    } catch {
+      return;
+    }
+    const input = pendingComposerInputs.find((candidate) =>
+      candidate.kind === "durable" && candidate.interaction.id === interactionId);
+    if (!input) return;
+    // Pending inputs are in the composer, not the scrollable timeline. Open the
+    // requested one; a fresh history key also handles revisiting the same hash.
+    handledInputNavigationRef.current = navigationId;
+    setSelectedPendingKey(input.key);
+    setTakeoverMode("open");
+  }, [issueId, inputNavigation.key, inputNavigation.hash, pendingComposerInputs]);
   const selectedPendingInput =
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
     currentPendingInputs[0] ??

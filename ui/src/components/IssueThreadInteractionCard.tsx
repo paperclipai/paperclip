@@ -12,6 +12,7 @@ import {
   getCheckboxConfirmationSelectedLabels,
   getItemVerdictProgress,
   getQuestionAnswerLabels,
+  interactionExpirationReason,
   shouldHideInteractionCard,
   normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
@@ -31,6 +32,7 @@ import {
 } from "../lib/issue-thread-interactions";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
+import { InteractionReplacementNotice } from "./InteractionReplacementNotice";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -1097,6 +1099,9 @@ function AskUserQuestionsCard({
   }, [interaction.result?.answers]);
 
   const questions = interaction.payload.questions;
+  const expirationReason = interactionExpirationReason(interaction);
+  const replacedByNewerRequest = expirationReason === "superseded_by_newer_interaction"
+    || expirationReason === "superseded_by_newer_request";
   const requiredQuestions = questions.filter((question) => question.required);
   const canSubmit = requiredQuestions.every(
     (question) =>
@@ -1376,14 +1381,20 @@ function AskUserQuestionsCard({
               ? questions.length === 1
                 ? "Question expired when the issue closed"
                 : "Questions expired when the issue closed"
-              : questions.length === 1
-                ? "Question expired by comment"
-                : "Questions expired by comment"}
+              : replacedByNewerRequest
+                ? questions.length === 1 ? "Question replaced by a newer request" : "Questions replaced by a newer request"
+                : expirationReason === "superseded_by_comment"
+                  ? questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"
+                  : questions.length === 1 ? "Question expired" : "Questions expired"}
           </div>
           <p className="mt-1">
             {interaction.result?.outcome === "issue_closed"
               ? "This question request expired automatically when the issue reached a terminal state."
-              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
+              : replacedByNewerRequest
+                ? "A newer interaction replaced this question request. No answer was recorded here."
+                : expirationReason === "superseded_by_comment"
+                  ? "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."
+                  : "This question request expired. No answer was recorded here."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1578,6 +1589,7 @@ function RequestConfirmationResolution({
     const expiredByComment = outcome === "superseded_by_comment";
     const expiredByIssueClosed = outcome === "issue_closed";
     const expiredByTargetChange = outcome === "stale_target";
+    const expiredByNewerRequest = outcome === "superseded_by_newer_request";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         {/*
@@ -1588,7 +1600,9 @@ function RequestConfirmationResolution({
          */}
         {expiredByIssueClosed ? null : (
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-            {expiredByComment ? "Expired by comment" : "Expired by target change"}
+            {expiredByComment ? "Expired by comment"
+              : expiredByNewerRequest ? "Replaced by a newer request"
+                : expiredByTargetChange ? "Expired by target change" : "Expired"}
           </div>
         )}
         <p className="leading-6">
@@ -1596,7 +1610,11 @@ function RequestConfirmationResolution({
             ? "A board comment superseded this confirmation before it was resolved."
             : expiredByIssueClosed
               ? "This confirmation expired automatically when the issue reached a terminal state."
-              : "The requested target changed before this confirmation was resolved."}
+              : expiredByNewerRequest
+                ? "A newer interaction replaced this confirmation before it was resolved."
+                : expiredByTargetChange
+                  ? "The requested target changed before this confirmation was resolved."
+                  : "This confirmation expired before it was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -3564,15 +3582,7 @@ export function IssueThreadInteractionCard({
   onUploadImage,
   externalReferences,
 }: IssueThreadInteractionCardProps) {
-  // Single enforcement point (PAP-424, plan from PAP-420; extended by PAP-437):
-  // a card that should never be drawn — a degenerate `ask_user_questions`
-  // (placeholder junk like the onboarding `Test / A` card, no genuine question)
-  // or a stale sibling the server auto-expired when its creator posted a newer
-  // question (`superseded_by_newer_interaction`). Every render site (both thread
-  // backbones + the attention resolver) routes through this component, so
-  // suppressing here suppresses it everywhere at once. The interaction is still
-  // created and stored server-side; only the render is suppressed. Composition
-  // sites additionally filter it so no empty slot lingers.
+  // Suppress unanswerable placeholders, but retain expired replacement receipts.
   if (shouldHideInteractionCard(interaction)) return null;
   const isPlan = isPlanConfirmation(interaction);
   const isToolAction =
@@ -3805,6 +3815,7 @@ export function IssueThreadInteractionCard({
         </div>
 
         <div className="mt-5">
+          <InteractionReplacementNotice interaction={interaction} />
           {interaction.kind === "suggest_tasks" ? (
             <SuggestTasksCard
               interaction={interaction}

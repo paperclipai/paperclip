@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
+import { act, forwardRef, useImperativeHandle, type ForwardedRef, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,12 @@ import {
 import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import type { TaskChatInteractionItem } from "./task-chat-model";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, className }: { to: string; children: ReactNode; className?: string }) => (
+    <a href={to} className={className}>{children}</a>
+  ),
+}));
 
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
@@ -112,6 +118,29 @@ describe("TaskChatInteractionCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("shows a replacement link on expired question and confirmation receipts without resolution controls", () => {
+    const question = { ...pendingAskUserQuestionsInteraction, status: "expired" as const, result: {
+      version: 1 as const, answers: [], expirationReason: "superseded_by_newer_interaction" as const,
+      supersededByInteractionId: "question-newer",
+    } };
+    const confirmation = createRequestConfirmation({ status: "expired", result: {
+      version: 1, outcome: "superseded_by_newer_request", supersededByInteractionId: "confirmation-newer",
+    } });
+    const accept = vi.fn();
+    const submit = vi.fn();
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider>
+      <TaskChatInteractionCard item={interactionItem(question)} onSubmitInteractionAnswers={submit} />
+      <TaskChatInteractionCard item={interactionItem(confirmation)} onAcceptInteraction={accept} />
+    </ThemeProvider></TooltipProvider>));
+    const links = container.querySelectorAll('[data-testid="interaction-replacement-notice"] a');
+    expect(links).toHaveLength(2);
+    expect(links[0]?.getAttribute("href")).toBe(`/issues/${question.issueId}#interaction-question-newer`);
+    expect(links[1]?.getAttribute("href")).toBe("/issues/issue-1#interaction-confirmation-newer");
+    expect(container.querySelectorAll("button, input, textarea")).toHaveLength(0);
+    expect(accept).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("does not render a pending confirmation in the timeline", () => {
@@ -247,6 +276,8 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).toContain(
       "Confirmation expired after comment",
     );
+    expect(container.querySelector('[data-testid="interaction-replacement-notice"] a')?.getAttribute("href"))
+      .toBe("/issues/issue-1#comment-comment-1");
   });
 
   it("does not put the latest plan body into an older revision receipt", () => {

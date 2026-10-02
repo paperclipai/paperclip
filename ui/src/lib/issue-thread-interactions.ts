@@ -418,9 +418,8 @@ export function isDegenerateAskUserQuestions(
 /**
  * A stale sibling `ask_user_questions` that the server auto-expired when its own
  * creator posted a newer one on the same issue (PAP-437). The replacement card
- * is already in the thread, so this expired shell adds nothing and is never
- * drawn. Gated on `status === "expired"` so a still-pending card is never hidden
- * (PAP-424 / 00b136f45: hiding a pending question would strand the assignee).
+ * remains available as a receipt linking to its replacement. Gated on
+ * `status === "expired"` so a pending card is never treated as replaced.
  * Distinct from `superseded_by_comment`, which keeps its stale notice.
  */
 export function isSupersededByNewerSiblingInteraction(
@@ -440,8 +439,39 @@ export function isSupersededByNewerSiblingInteraction(
 export function shouldHideInteractionCard(
   interaction: IssueThreadInteraction,
 ): boolean {
-  return (
-    isDegenerateAskUserQuestions(interaction)
-    || isSupersededByNewerSiblingInteraction(interaction)
-  );
+  return isDegenerateAskUserQuestions(interaction);
+}
+
+export function interactionExpirationReason(interaction: IssueThreadInteraction): string | null {
+  if (interaction.status !== "expired" || !interaction.result) return null;
+  const result = interaction.result;
+  return ("expirationReason" in result ? result.expirationReason : null)
+    ?? ("outcome" in result ? result.outcome : null)
+    ?? null;
+}
+
+/** Existing server audit metadata, never a new permission or resolution. */
+export function interactionReplacement(
+  interaction: IssueThreadInteraction,
+): { label: string; href: string } | null {
+  if (interaction.status !== "expired" || !interaction.result) return null;
+  const result = interaction.result;
+  const reason = interactionExpirationReason(interaction);
+  const base = `/issues/${encodeURIComponent(interaction.issueId)}`;
+  if (
+    (reason === "superseded_by_newer_interaction" || reason === "superseded_by_newer_request") &&
+    "supersededByInteractionId" in result && result.supersededByInteractionId
+  ) {
+    return {
+      label: "Replaced by a newer request",
+      href: `${base}#interaction-${encodeURIComponent(result.supersededByInteractionId)}`,
+    };
+  }
+  if (reason === "superseded_by_comment" && "commentId" in result && result.commentId) {
+    return {
+      label: "Expired after a comment",
+      href: `${base}#comment-${encodeURIComponent(result.commentId)}`,
+    };
+  }
+  return null;
 }

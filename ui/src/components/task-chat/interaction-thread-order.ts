@@ -12,29 +12,21 @@ import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
  *     it moves to `resolvedAt` and separates the work before and after that
  *     decision.
  *
- *  2. Withdrawn / superseded confirmation cards lingered in the thread, stacking
- *     a dead card above the accepted one. We suppress those from the backbone
- *     entirely — a retracted or superseded confirmation is not a call to action
- *     and reads as noise next to the outcome that replaced it.
+ *  2. Withdrawn confirmations are suppressed. Superseded confirmations remain
+ *     compact, read-only receipts so readers can follow what replaced them.
  */
 
 // The confirmation-family kinds: cards that are a call to act on a proposal.
-// ask_user_questions / suggest_tasks keep their superseded notices (legacy
-// parity) — only confirmations get fully hidden when withdrawn/superseded.
+// Only withdrawn confirmations are hidden; replacements retain their receipts.
 const CONFIRMATION_KINDS = new Set([
   "request_confirmation",
   "request_checkbox_confirmation",
   "request_item_verdicts",
 ]);
 
-// Terminal outcomes that mean "this confirmation was retracted or replaced": it
-// never got an accept/reject decision the reader needs to see. `withdrawn` is an
-// agent/board retraction; the two `superseded_by_*` outcomes fire when a later
-// comment or a fresh request took its place.
+// Explicit retractions stay suppressed. A replacement is useful audit history.
 const SUPPRESSED_CONFIRMATION_OUTCOMES = new Set([
   "withdrawn",
-  "superseded_by_comment",
-  "superseded_by_newer_request",
 ]);
 
 function interactionOutcome(interaction: IssueThreadInteraction): string | null {
@@ -45,8 +37,7 @@ function interactionOutcome(interaction: IssueThreadInteraction): string | null 
 }
 
 /**
- * A confirmation card that was withdrawn or superseded — hide it from the thread
- * so it never stacks above the confirmation that replaced it.
+ * Hide explicit withdrawals; keep replaced confirmations as terminal receipts.
  */
 export function isSuppressedThreadInteraction(interaction: IssueThreadInteraction): boolean {
   // A secret proposal is also a terminal audit receipt: even when a newer

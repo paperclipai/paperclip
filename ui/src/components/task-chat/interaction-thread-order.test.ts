@@ -55,17 +55,17 @@ describe("isSuppressedThreadInteraction", () => {
     ).toBe(true);
   });
 
-  it("hides confirmations superseded by a comment or a newer request", () => {
+  it("retains confirmations superseded by a comment or a newer request", () => {
     expect(
       isSuppressedThreadInteraction(
         confirmation({ status: "expired", result: result("superseded_by_comment") }),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isSuppressedThreadInteraction(
         confirmation({ status: "expired", result: result("superseded_by_newer_request") }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps superseded secret proposals as terminal audit receipts", () => {

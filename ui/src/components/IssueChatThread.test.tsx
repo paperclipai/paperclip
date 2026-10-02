@@ -12,6 +12,7 @@ import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
@@ -168,6 +169,11 @@ vi.mock("./MarkdownEditor", () => ({
 
 vi.mock("./InlineEntitySelector", () => ({
   InlineEntitySelector: () => null,
+}));
+
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/context/CompanyContext")>(),
+  useCompany: () => ({ selectedCompany: { id: "company-1", issuePrefix: "TAX" } }),
 }));
 
 vi.mock("./Identity", () => ({
@@ -3006,23 +3012,26 @@ describe("IssueChatThread", () => {
 
   it("folds expired request confirmations into an activity row by default", async () => {
     const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            interactions={[createExpiredRequestConfirmationInteraction()]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            currentUserId="user-1"
-            userLabelMap={new Map([["user-1", "Dotta"]])}
-            showComposer={false}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              interactions={[createExpiredRequestConfirmationInteraction()]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              currentUserId="user-1"
+              userLabelMap={new Map([["user-1", "Dotta"]])}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
       );
     });
 
@@ -3044,10 +3053,15 @@ describe("IssueChatThread", () => {
     expect(container.textContent).toContain(
       "Confirmation expired after comment",
     );
+    const replacementLink = container.querySelector('[data-testid="interaction-replacement-notice"] a');
+    expect(replacementLink?.getAttribute("href")).toBe("/TAX/issues/issue-1#comment-comment-1");
+    expect(container.textContent).not.toContain("safe fallback transcript");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Approve plan")).toBe(false);
 
     act(() => {
       root.unmount();
     });
+    queryClient.clear();
   });
 
   it("renders expired secret proposals as full receipts by default", async () => {

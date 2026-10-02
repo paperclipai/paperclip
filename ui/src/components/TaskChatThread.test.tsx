@@ -3,6 +3,8 @@
 import type { ComponentProps, ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
+import { MemoryRouter, useInRouterContext, useLocation, useNavigate } from "react-router-dom";
+import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -77,20 +79,19 @@ vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({
     loaded: true,
   }),
 }));
-vi.mock("@/lib/router", () => ({
-  Link: ({
-    to,
-    children,
-    ...props
-  }: {
-    to: string;
-    children: React.ReactNode;
-  }) => (
-    <a href={to} {...props}>
-      {children}
-    </a>
-  ),
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/context/CompanyContext")>(),
+  useCompany: () => ({ selectedCompany: { id: "company-1", issuePrefix: "TAX" } }),
 }));
+vi.mock("@/lib/router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/router")>();
+  return { ...actual, Link: (props: ComponentProps<typeof actual.Link>) => {
+    // Existing unit cases use plain anchors; the navigation regression uses the
+    // actual company-scoped Link and React Router history.
+    const routed = useInRouterContext();
+    return routed ? <actual.Link {...props} /> : <a href={String(props.to)} className={props.className}>{props.children}</a>;
+  } };
+});
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
     { value, onChange }: { value: string; onChange: (value: string) => void },
@@ -2871,6 +2872,51 @@ describe("TaskChatThread runtime transcript selection", () => {
       ).toBeNull();
     },
   );
+});
+
+describe("TaskChatThread replacement navigation", () => {
+  it("opens the linked pending question and reopens it when the same link is revisited", async () => {
+    const replacement = questionInteraction("replacement", "Pending accounting question", "2026-08-25T18:00:01.000Z");
+    const newer = questionInteraction("other", "Another pending question", "2026-08-25T18:00:02.000Z");
+    const previous = { ...questionInteraction("old", "Original accounting question", "2026-08-25T18:00:00.000Z"),
+      status: "expired", result: { version: 1, answers: [], expirationReason: "superseded_by_newer_interaction",
+        supersededByInteractionId: "replacement" },
+    } as IssueThreadInteraction;
+    const accept = vi.fn();
+    const submit = vi.fn();
+    const interactions = [previous, replacement, newer];
+    function RoutedThread() {
+      const location = useLocation();
+      const navigate = useNavigate();
+      return <TaskChatScrollNavigation.Provider value={{ key: location.key, hash: location.hash, restore: false }}>
+        <button onClick={() => navigate("#comment-other")}>Open comment</button>
+        <button onClick={() => navigate(-1)}>Back</button>
+        <TaskChatThread issueId="issue-1" comments={[]} interactions={interactions} onAdd={async () => {}}
+          onAcceptInteraction={accept} onSubmitInteractionAnswers={submit} />
+      </TaskChatScrollNavigation.Provider>;
+    }
+    await act(async () => render(<MemoryRouter initialEntries={["/TAX/issues/issue-1"]}><RoutedThread /></MemoryRouter>));
+    const panel = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
+    expect(panel()?.textContent).toContain("Another pending question");
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="interaction-replacement-notice"] a')!;
+    expect(link.getAttribute("href")).toBe("/TAX/issues/issue-1#interaction-replacement");
+    await act(async () => link.click());
+    expect(panel()?.textContent).toContain("Pending accounting question");
+    expect(container.querySelector("#interaction-replacement")).not.toBeNull();
+    const dismiss = panel()?.querySelector<HTMLButtonElement>('button[aria-label^="Dismiss"]');
+    expect(dismiss).not.toBeNull();
+    await act(async () => dismiss!.click());
+    expect(panel()).toBeNull();
+    await act(async () => link.click());
+    expect(panel()?.textContent).toContain("Pending accounting question");
+    await act(async () => panel()!.querySelector<HTMLButtonElement>('button[aria-label^="Dismiss"]')!.click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Open comment")!.click());
+    expect(panel()).toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Back")!.click());
+    expect(panel()?.textContent).toContain("Pending accounting question");
+    expect(accept).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
 });
 
 describe("Agent Chat unanswered question history", () => {

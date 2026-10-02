@@ -435,6 +435,38 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Questions expired by comment");
   });
 
+  it("describes a replaced question from its recorded expiry reason", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "expired",
+        result: { version: 1, answers: [], expirationReason: "superseded_by_newer_interaction", supersededByInteractionId: "new-question" },
+      },
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+    expect(host.textContent).toContain("Questions replaced by a newer request");
+    expect(host.textContent).not.toContain("later board/user comment");
+    expect(host.querySelector('[data-testid="interaction-replacement-notice"] a')?.getAttribute("href"))
+      .toBe("/issues/issue-thread-interactions#interaction-new-question");
+    expect(Array.from(host.querySelectorAll("button")).some((button) => button.textContent === "Send answers")).toBe(false);
+  });
+
+  it("describes a replaced confirmation without inventing a target change", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "expired",
+        result: { version: 1, outcome: "superseded_by_newer_request", supersededByInteractionId: "new-confirmation" },
+      },
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+    expect(host.textContent).toContain("A newer interaction replaced this confirmation before it was resolved.");
+    expect(host.textContent).not.toContain("Expired by target change");
+    expect(host.textContent).not.toContain("A board comment superseded");
+    expect(Array.from(host.querySelectorAll("button")).some((button) => button.textContent === "Approve")).toBe(false);
+  });
+
   it("renders withdrawn confirmations with the withdraw reason", () => {
     const host = renderCard({
       interaction: {

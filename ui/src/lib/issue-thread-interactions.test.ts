@@ -10,6 +10,7 @@ import {
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
   interactionReplacesComposerSkip,
+  interactionReplacement,
   isDegenerateAskUserQuestions,
   isSupersededByNewerSiblingInteraction,
   shouldHideInteractionCard,
@@ -656,7 +657,7 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     } as AskUserQuestionsInteraction;
   }
 
-  it("hides an expired card superseded by a newer sibling question", () => {
+  it("retains an expired card and links to the newer sibling question", () => {
     const interaction = askInteraction({
       status: "expired",
       result: {
@@ -668,7 +669,11 @@ describe("isSupersededByNewerSiblingInteraction", () => {
       },
     });
     expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(true);
-    expect(shouldHideInteractionCard(interaction)).toBe(true);
+    expect(shouldHideInteractionCard(interaction)).toBe(false);
+    expect(interactionReplacement(interaction)).toEqual({
+      label: "Replaced by a newer request",
+      href: "/issues/issue-1#interaction-interaction-newer",
+    });
   });
 
   it("never hides a still-pending card (would strand the assignee)", () => {
@@ -686,6 +691,7 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     });
     expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(false);
     expect(shouldHideInteractionCard(interaction)).toBe(false);
+    expect(interactionReplacement(interaction)).toBeNull();
   });
 
   it("keeps the stale notice for a comment-superseded card (does not hide it)", () => {
@@ -701,6 +707,26 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     });
     expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(false);
     expect(shouldHideInteractionCard(interaction)).toBe(false);
+  });
+
+  it("links a comment expiry to the originating comment without implying a replacement", () => {
+    const interaction = askInteraction({ result: {
+      version: 1, answers: [], expirationReason: "superseded_by_comment", commentId: "comment-1",
+    } });
+    expect(interactionReplacement(interaction)).toEqual({
+      label: "Expired after a comment", href: "/issues/issue-1#comment-comment-1",
+    });
+  });
+
+  it("does not invent links for missing metadata or rewrite answered history", () => {
+    const interaction = askInteraction({ result: {
+      version: 1, answers: [], expirationReason: "superseded_by_newer_interaction",
+    } });
+    expect(interactionReplacement(interaction)).toBeNull();
+    expect(interactionReplacement({ ...interaction, status: "answered", result: {
+      version: 1, answers: [{ questionId: "q", optionIds: ["L"], otherText: null }],
+      expirationReason: "superseded_by_newer_interaction", supersededByInteractionId: "newer",
+    } })).toBeNull();
   });
 
   it("still hides a degenerate card through the combined predicate", () => {
