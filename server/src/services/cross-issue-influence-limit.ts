@@ -132,6 +132,7 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    let unscopedOwnership: "checkout" | "assignment" | null = null;
     if (!sourceIssueId) {
       // An `on_demand` run has no issue in its snapshot, and nothing the caller sends
       // can supply one. Refusing outright denied an agent writes to its own assigned
@@ -150,20 +151,27 @@ export async function observeCrossIssueInfluence(
           eq(issues.companyId, input.companyId),
         ))
         .then((rows) => rows[0] ?? null);
-      const ownsTarget = Boolean(
-        target &&
-        ((target.assigneeAgentId && target.assigneeAgentId === input.agentId) ||
-          (target.checkoutRunId && target.checkoutRunId === input.runId)),
-      );
-      if (!ownsTarget) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
-      // Same-issue semantics: an agent acting on an issue it owns is not fan-out, so
-      // the write is admitted uncharged, exactly as a scoped run's write to its own
-      // source issue is below.
-      return null;
+      if (target?.checkoutRunId && target.checkoutRunId === input.runId) {
+        unscopedOwnership = "checkout";
+      } else if (target?.assigneeAgentId && target.assigneeAgentId === input.agentId) {
+        unscopedOwnership = "assignment";
+      }
+      if (!unscopedOwnership) throw crossIssueInfluenceRunContextError({ runHeaderPresent: true });
+      // A checkout is this run's declared subject, written by the server in
+      // `POST /issues/:id/checkout`. It stands in for the missing
+      // `contextSnapshot.issueId`, so writes to it get same-issue semantics —
+      // uncharged, exactly as a scoped run's writes to its own source issue are below.
+      if (unscopedOwnership === "checkout") return null;
+      // Assignment alone proves permission, not scope. An agent can hold many issues,
+      // so "the agent is assigned to all of them" bounds nothing, and leaving these
+      // writes uncharged would let one run fan out across every issue it holds without
+      // ever reaching the cap. Permission and accounting are separate questions: admit
+      // the write, then fall through and charge it like any other cross-issue write.
     }
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }
@@ -194,6 +202,10 @@ export async function observeCrossIssueInfluence(
       details: {
         kind: input.kind,
         sourceIssueId,
+        // Null on the unscoped path, where there is no source issue to name. The
+        // ownership that admitted the write is recorded instead, so an audit can tell
+        // a charged unscoped write from a scoped run's fan-out.
+        unscopedOwnership,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         count: decision.count,
@@ -210,6 +222,7 @@ export async function observeCrossIssueInfluence(
       runId: input.runId,
       agentId: input.agentId,
       sourceIssueId,
+      unscopedOwnership,
       targetIssueId: input.targetIssueId,
       kind: input.kind,
       count: decision.count,

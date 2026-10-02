@@ -222,7 +222,7 @@ describe("cross-issue influence limit rollout", () => {
     targetIssueId: "55555555-5555-4555-8555-555555555555",
   } as const;
 
-  it("lets an unscoped run write to an issue assigned to itself, uncharged", async () => {
+  it("lets an unscoped run write to an issue assigned to itself, and charges it", async () => {
     const fake = counterDb(0, unscopedRun, {
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       checkoutRunId: null,
@@ -231,8 +231,37 @@ describe("cross-issue influence limit rollout", () => {
     await expect(observeCrossIssueInfluence(fake.db as never, {
       ...unscopedBase,
       kind: "update",
-    })).resolves.toBeNull();
-    expect(fake.inserted).toEqual([]);
+      now: new Date(CROSS_ISSUE_INFLUENCE_ENFORCE_AT.getTime() - 1),
+    })).resolves.toMatchObject({ count: 1, allowed: true });
+    // Assignment proves permission, not scope. The write is admitted — the whole point
+    // of OIG-221 — but it is accounted for, so one run cannot fan out across every
+    // issue its agent holds without ever reaching the cap.
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({ sourceIssueId: null, unscopedOwnership: "assignment" }),
+      }),
+    ]);
+  });
+
+  it("refuses an unscoped run's assignment-only write once the cap is spent", async () => {
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, unscopedRun, {
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      checkoutRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...unscopedBase,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({
+      allowed: false,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+    ]);
   });
 
   it("lets an unscoped run write to the issue its own run holds the checkout on", async () => {

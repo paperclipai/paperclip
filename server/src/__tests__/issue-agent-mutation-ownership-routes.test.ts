@@ -206,7 +206,7 @@ function registerRouteMocks() {
   vi.doMock("../services/cross-issue-influence-limit.js", async () => {
     // Only the counter is stubbed. The denial builder and the header probe stay real so
     // the route's 403 copy is the copy an agent actually reads — a hand-written stub here
-    // is exactly how "send the header you already sent" stayed shipped (OIG-308).
+    // is exactly how "send the header you already sent" stayed shipped (#12118).
     const actual = await vi.importActual<
       typeof import("../services/cross-issue-influence-limit.js")
     >("../services/cross-issue-influence-limit.js");
@@ -1104,7 +1104,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   describe("the run-context 403 names which failure this is", () => {
-    // OIG-308: the probe agent in OIG-307 hit this 403 three times, proved with `curl -v`
+    // #12118: the probe agent hit this 403 three times, proved with `curl -v`
     // that X-Paperclip-Run-Id was on the wire, found the advice already satisfied,
     // concluded the server was broken, invented a root cause and ended its heartbeat.
     // The two cases must not read the same.
@@ -1119,7 +1119,7 @@ describe("agent issue mutation checkout ownership", () => {
         // No runId: the actor layer never resolved one, whatever the wire carried.
       });
       // A comment, not a PATCH: the PATCH path hits the checkout-ownership 401 first on
-      // an `in_progress` issue, and commenting is the write the OIG-307 probe was making.
+      // an `in_progress` issue, and commenting is the write the probe in #12118 was making.
       return await request(app)
         .post(`/api/issues/${issueId}/comments`)
         .set(headers)

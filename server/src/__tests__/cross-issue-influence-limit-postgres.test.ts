@@ -15,6 +15,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+  CROSS_ISSUE_INFLUENCE_LIMIT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
 
@@ -176,8 +177,10 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     };
 
+    // Assignment admits the write and charges it. A checkout is the run's declared
+    // subject, so it stands in for the absent `contextSnapshot.issueId` and is free.
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: ownedIssueId }))
-      .resolves.toBeNull();
+      .resolves.toMatchObject({ count: 1, allowed: true });
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: checkedOutIssueId }))
       .resolves.toBeNull();
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: foreignIssueId }))
@@ -190,11 +193,90 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: randomUUID() }))
       .rejects.toMatchObject({ status: 403 });
 
-    // None of the four touched the counter: two were admitted uncharged, two refused.
+    // Exactly one of the four reached the counter: the assignment-only write.
+    const recorded = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toEqual([
+      { action: "issue.cross_issue_influence_observed", entityId: ownedIssueId },
+    ]);
+  });
+
+  // Greptile's P1 on PR #14911: assignment admitted the write *and* skipped the
+  // counter, so one run could reach every issue its agent holds without ever meeting
+  // the cap. Ownership is not a bound — an agent can hold any number of issues — so
+  // the reach has to be charged. Real SQL, because the bound IS the counter query.
+  it("charges an unscoped run once per assigned issue and refuses past the cap", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    // One more issue than the cap allows, every one of them assigned to this agent.
+    const assignedIssueIds = Array.from({ length: CROSS_ISSUE_INFLUENCE_LIMIT + 1 }, () =>
+      randomUUID());
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unscoped Fan-Out",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "on_demand" },
+    });
+    await db.insert(issues).values(assignedIssueIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `Assigned ${index + 1}`,
+      assigneeAgentId: agentId,
+    })));
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "comment" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+
+    // Writes are serialized, because each one must see the count the last one left.
+    const decisions: Array<{ allowed: boolean; count: number } | null> = [];
+    for (const targetIssueId of assignedIssueIds) {
+      decisions.push(await observeCrossIssueInfluence(db, { ...base, targetIssueId }));
+    }
+
+    // N assigned issues, charged N times: 1, 2, ... 20, then the 21st refused.
+    expect(decisions.map((decision) => decision?.count))
+      .toEqual(assignedIssueIds.map((_id, index) => index + 1));
+    expect(decisions.slice(0, CROSS_ISSUE_INFLUENCE_LIMIT).every((d) => d?.allowed)).toBe(true);
+    expect(decisions.at(-1)).toMatchObject({
+      allowed: false,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    });
+
     const recorded = await db
       .select({ action: activityLog.action })
       .from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
-    expect(recorded).toEqual([]);
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed"))
+      .toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected"))
+      .toHaveLength(1);
   });
 });

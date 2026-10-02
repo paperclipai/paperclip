@@ -3777,7 +3777,7 @@ export function issueRoutes(
     if (!req.actor.agentId || !req.actor.runId)
       // The request is in hand here, so the 403 can say which failure this is rather
       // than hedging: a caller told to send a header it demonstrably already sent goes
-      // hunting its own request instead of the transport that ate it (OIG-307/308).
+      // hunting its own request instead of the transport that ate it (#12118).
       throw crossIssueInfluenceRunContextError({
         runHeaderPresent: runIdHeaderWasSent(req),
       });

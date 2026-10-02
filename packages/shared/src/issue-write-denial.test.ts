@@ -89,7 +89,7 @@ describe("describeIssueWriteDenial", () => {
   it("does not send an unscoped run back to resend the header it already sent", () => {
     // The header is honoured; an on-demand run's `contextSnapshot` is what is empty, and
     // no caller can populate it. Offering the header alone read as "retry this" and cost
-    // agents retry loops plus a wrong read of their own permissions (OIG-221).
+    // agents retry loops plus a wrong read of their own permissions (#13078).
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("unscoped");
     expect(copy.sanctionedPath).toContain("cannot help");
@@ -112,10 +112,10 @@ describe("describeIssueWriteDenial", () => {
   });
 
   it("stops advising the header once the server has seen it arrive", () => {
-    // Regression (OIG-308): a probe agent confirmed with `curl -v` that the header was
+    // Regression (#12118): a probe agent confirmed with `curl -v` that the header was
     // on the wire, read advice it had already satisfied, invented a wrong root cause
     // and ended its heartbeat. Observed presence must change the advice, not just the
-    // refusal — and it must still name the ownership path OIG-221 added.
+    // refusal — and it must still name the ownership path #13078 added.
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
       runHeaderPresent: true,
     });

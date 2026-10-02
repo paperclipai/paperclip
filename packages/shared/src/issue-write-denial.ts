@@ -258,15 +258,15 @@ export function describeIssueWriteDenial(
       // the raw request header — presence only, never the value, since this body is
       // agent-visible and the value is a run id.
       //
-      // Leaving it unset keeps the OIG-221 hedge, which is the honest copy when the
+      // Leaving it unset keeps the #13078 hedge, which is the honest copy when the
       // request is not in hand (the UI renders these from a persisted code).
       //
       // Do not offer the header alone on any branch. An on-demand run has an empty
       // `contextSnapshot`, which no caller can populate, so "send the header and retry"
       // was unreachable advice in the most common case and cost agents retry loops plus
-      // a wrong conclusion about their own permissions (OIG-221). Worse, a probe agent
+      // a wrong conclusion about their own permissions (#13078). Worse, a probe agent
       // that had *already* sent the header read advice it had satisfied, concluded the
-      // server was broken, invented a root cause and burned its heartbeat (OIG-308).
+      // server was broken, invented a root cause and burned its heartbeat (#12118).
       const OPEN_CHANNELS =
         `Issue documents and new issues are not gated by this, so they stay available ` +
         `meanwhile.`;
