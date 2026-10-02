@@ -4,6 +4,7 @@ import {
   BUDGET_METRICS,
   BUDGET_SCOPE_TYPES,
   BUDGET_WINDOW_KINDS,
+  isSubscriptionBudgetWindowKind,
 } from "../constants.js";
 
 export const upsertBudgetPolicySchema = z.object({
@@ -16,6 +17,30 @@ export const upsertBudgetPolicySchema = z.object({
   hardStopEnabled: z.boolean().optional().default(true),
   notifyEnabled: z.boolean().optional().default(true),
   isActive: z.boolean().optional().default(true),
+}).superRefine((value, ctx) => {
+  const subscriptionWindow = isSubscriptionBudgetWindowKind(value.windowKind);
+  if (value.metric === "subscription_percent") {
+    if (!subscriptionWindow) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "subscription_percent budgets require a provider_session or provider_week window",
+        path: ["windowKind"],
+      });
+    }
+    if (value.amount > 100) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "subscription_percent budgets are a percentage and cannot exceed 100",
+        path: ["amount"],
+      });
+    }
+  } else if (subscriptionWindow) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "provider_session and provider_week windows require the subscription_percent metric",
+      path: ["windowKind"],
+    });
+  }
 });
 
 export type UpsertBudgetPolicy = z.infer<typeof upsertBudgetPolicySchema>;

@@ -1402,6 +1402,63 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  async function runHarvestTurn(config: Record<string, unknown>) {
+    const root = await makeTempRoot();
+    const observed: unknown[] = [];
+    const rateLimit = { status: "allowed", rateLimitType: "five_hour", utilization: 0.42, resetsAt: 1757775600 };
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "status", text: "usage", tag: "usage_update", used: 10, size: 200000 };
+            yield { type: "status", text: "usage", tag: "usage_update", used: 20, size: 200000, rateLimit };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+    const result = await execute({
+      runId: "run-quota-harvest",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { ...config, stateDir: path.join(root, "state") },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onProviderQuotaObserved: async (observation: unknown) => {
+        observed.push(observation);
+      },
+    } as never);
+    return { result, observed, rateLimit };
+  }
+
+  it("hands rate-limit info from the built-in Claude agent's usage updates to the host", async () => {
+    const { result, observed, rateLimit } = await runHarvestTurn({ agent: "claude" });
+    expect(result.exitCode).toBe(0);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ kind: "claude_rate_limit_info", info: rateLimit });
+    expect(typeof (observed[0] as { observedAt: string }).observedAt).toBe("string");
+  });
+
+  it("never harvests rate-limit info from a custom or non-Claude ACP command", async () => {
+    // A configurable command could report arbitrary utilization there, and the
+    // host shares that snapshot across every agent on the provider.
+    const custom = await runHarvestTurn({ agent: "custom", agentCommand: "node ./fake-acp.js" });
+    expect(custom.result.exitCode).toBe(0);
+    expect(custom.observed).toHaveLength(0);
+    const overridden = await runHarvestTurn({ agent: "claude", agentCommand: "node ./fake-claude-acp.js" });
+    expect(overridden.result.exitCode).toBe(0);
+    expect(overridden.observed).toHaveLength(0);
+  });
+
   it("falls back to usage_update events when the runtime lacks getStatus", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

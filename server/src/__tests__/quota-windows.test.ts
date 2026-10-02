@@ -5,6 +5,8 @@ import type { QuotaWindow } from "@paperclipai/adapter-utils";
 
 // Pure utility functions — import directly from adapter source
 import {
+  ClaudeUsageRateLimitedError,
+  getQuotaWindows as getClaudeQuotaWindows,
   toPercent,
   fetchWithTimeout,
   fetchClaudeQuota,
@@ -322,6 +324,7 @@ describe("parseClaudeCliUsageText", () => {
 
     expect(parseClaudeCliUsageText(raw)).toEqual([
       {
+        key: "five_hour",
         label: "Current session",
         usedPercent: 2,
         resetsAt: null,
@@ -329,6 +332,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets 5pm (America/Chicago)",
       },
       {
+        key: "seven_day",
         label: "Current week (all models)",
         usedPercent: 47,
         resetsAt: null,
@@ -336,6 +340,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets Mar 18 at 7:59am (America/Chicago)",
       },
       {
+        key: "seven_day_sonnet",
         label: "Current week (Sonnet only)",
         usedPercent: 0,
         resetsAt: null,
@@ -343,6 +348,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets Mar 18 at 8:59am (America/Chicago)",
       },
       {
+        key: "extra_usage",
         label: "Extra usage",
         usedPercent: null,
         resetsAt: null,
@@ -521,6 +527,44 @@ describe("fetchClaudeQuota", () => {
     await expect(fetchClaudeQuota("token")).rejects.toThrow("anthropic usage api returned 401");
   });
 
+  it("throws a typed rate-limit error on 429 so callers can tell a throttle from a failure", async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({ error: { type: "rate_limit_error", message: "Rate limited. Please try again later." } }),
+    } as Response);
+    const error = await fetchClaudeQuota("token").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ClaudeUsageRateLimitedError);
+    expect((error as Error).message).toContain("429");
+  });
+
+  it("reports a throttled read as rateLimited without spending a CLI probe on the same endpoint", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-429-${Date.now()}`);
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(path.join(tmpDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok" } }));
+    const savedDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({ error: { type: "rate_limit_error" } }),
+    } as Response);
+    try {
+      const startedAt = Date.now();
+      const result = await getClaudeQuotaWindows();
+      expect(result).toMatchObject({ provider: "anthropic", ok: false, rateLimited: true, windows: [] });
+      expect(result.error).toContain("429");
+      // The CLI fallback sleeps for nine seconds by construction; a throttle
+      // returns long before that.
+      expect(Date.now() - startedAt).toBeLessThan(8_000);
+    } finally {
+      if (savedDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedDir;
+      await fs.rm(tmpDir, { recursive: true });
+    }
+  });
+
   it("returns an empty array when all window fields are absent", async () => {
     mockFetch({});
     const windows = await fetchClaudeQuota("token");
@@ -532,6 +576,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "five_hour",
       label: "Current session",
       usedPercent: 34,
       resetsAt: "2026-01-01T00:00:00Z",
@@ -543,6 +588,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "seven_day",
       label: "Current week (all models)",
       usedPercent: 91,
       resetsAt: null,
@@ -553,6 +599,7 @@ describe("fetchClaudeQuota", () => {
     mockFetch({ five_hour: { utilization: 0.4, resets_at: null } });
     const windows = await fetchClaudeQuota("token");
     expect(windows[0]).toMatchObject({
+      key: "five_hour",
       label: "Current session",
       usedPercent: 40,
     });
@@ -606,6 +653,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toEqual([
       {
+        key: "extra_usage",
         label: "Extra usage",
         usedPercent: null,
         resetsAt: null,
@@ -627,6 +675,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "extra_usage",
       label: "Extra usage",
       usedPercent: 49,
       valueLabel: "$67.93 / $140.00",
@@ -763,6 +812,7 @@ describe("mapCodexRpcQuota", () => {
     expect(snapshot.planType).toBe("pro");
     expect(snapshot.windows).toEqual([
       {
+        key: "five_hour",
         label: "5h limit",
         usedPercent: 1,
         resetsAt: "2025-11-18T21:06:40.000Z",
@@ -770,6 +820,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: "seven_day",
         label: "Weekly limit",
         usedPercent: 27,
         resetsAt: null,
@@ -777,6 +828,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: null,
         label: "GPT-5.3-Codex-Spark · 5h limit",
         usedPercent: 8,
         resetsAt: null,
@@ -784,6 +836,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: null,
         label: "GPT-5.3-Codex-Spark · Weekly limit",
         usedPercent: 20,
         resetsAt: null,
@@ -806,6 +859,7 @@ describe("mapCodexRpcQuota", () => {
 
     expect(snapshot.windows).toEqual([
       {
+        key: "credits",
         label: "Credits",
         usedPercent: null,
         resetsAt: null,

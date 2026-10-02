@@ -430,6 +430,13 @@ export interface AcpxEngineExecutorOptions {
 interface AcpxPreparedRuntime {
   acpxAgent: string;
   coalescePlaceholderToolUpdates: boolean;
+  /**
+   * True only for the built-in Claude ACP agent with no custom command. Its
+   * usage updates carry Claude Code's own rate_limit_event, which the host
+   * folds into the shared quota snapshot; a custom or other ACP command could
+   * report arbitrary values there, so its usage updates are never harvested.
+   */
+  claudeRateLimitHarvest: boolean;
   mode: "persistent" | "oneshot";
   cwd: string;
   // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
@@ -2119,6 +2126,7 @@ async function buildRuntime(input: {
   }
 
   const configuredCommand = asString(config.agentCommand, "").trim();
+  const claudeRateLimitHarvest = acpxAgent === "claude" && configuredCommand.length === 0;
   const builtInCommand = await resolveBuiltInAgentCommand({
     agent: acpxAgent,
     packageRootDir: input.engine.packageRootDir,
@@ -2537,6 +2545,7 @@ async function buildRuntime(input: {
   return {
     acpxAgent,
     coalescePlaceholderToolUpdates,
+    claudeRateLimitHarvest,
     mode,
     // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
@@ -3056,6 +3065,10 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       heartbeatPromptChars: renderedPrompt.length,
     },
   };
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string, unknown>) {
@@ -4890,6 +4903,25 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              // The Claude ACP bridge attaches the SDK's rate_limit_event to
+              // usage updates and the patched acpx runtime keeps it as
+              // `rateLimit`. Hand it to the host so the quota snapshot can be
+              // refreshed from live runs instead of the rate-limited usage
+              // endpoint. Only the built-in Claude agent is trusted to report
+              // it (see claudeRateLimitHarvest). Harvesting is best effort and
+              // never fails the run.
+              const rateLimit = (event as Record<string, unknown>).rateLimit;
+              if (prepared.claudeRateLimitHarvest && ctx.onProviderQuotaObserved && isRecordValue(rateLimit)) {
+                try {
+                  await ctx.onProviderQuotaObserved({
+                    kind: "claude_rate_limit_info",
+                    info: rateLimit,
+                    observedAt: new Date().toISOString(),
+                  });
+                } catch {
+                  // Best effort only.
+                }
+              }
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }

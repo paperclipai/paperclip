@@ -25,6 +25,7 @@ const RETRY_REASON_LABELS: Record<string, string> = {
   assignment_recovery: "Assignment recovery",
   issue_continuation_needed: "Continuation needed",
   max_turns_continuation: "Max-turn continuation",
+  subscription_window_wait: "Subscription window wait",
 };
 
 function readNonEmptyString(value: unknown) {

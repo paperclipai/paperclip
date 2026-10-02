@@ -185,10 +185,35 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f8626e697ad 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..04eec5d740fac7f7e1d0c65c2946047e6db1b125 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
-@@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
+@@ -346,11 +346,12 @@ function usageUpdateEvent(payload) {
+ 		used,
+ 		size,
+ 		cost: normalizeUsageCost(payload.cost),
+-		breakdown: normalizeUsageBreakdown(meta?.usage)
++		breakdown: normalizeUsageBreakdown(meta?.usage),
++		rateLimit: isRecord(meta?.["_claude/rateLimit"]) ? meta["_claude/rateLimit"] : void 0
+ 	});
+ }
+ function buildUsageUpdateEvent(parts) {
+-	const { used, size, cost, breakdown } = parts;
++	const { used, size, cost, breakdown, rateLimit } = parts;
+ 	return {
+ 		type: "status",
+ 		text: used != null && size != null ? `usage updated: ${used}/${size}` : "usage updated",
+@@ -358,7 +359,8 @@ function buildUsageUpdateEvent(parts) {
+ 		...used != null ? { used } : {},
+ 		...size != null ? { size } : {},
+ 		...cost ? { cost } : {},
+-		...breakdown ? { breakdown } : {}
++		...breakdown ? { breakdown } : {},
++		...rateLimit ? { rateLimit } : {}
+ 	};
+ }
+ function availableCommandsUpdateEvent(payload) {
+@@ -744,7 +746,8 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -198,7 +223,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
-@@ -982,6 +983,7 @@ var AcpRuntimeManager = class {
+@@ -982,6 +985,7 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -206,7 +231,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId
-@@ -1586,6 +1588,7 @@ var AcpxRuntime = class {
+@@ -1586,6 +1590,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -214,7 +239,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1617,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1619,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,

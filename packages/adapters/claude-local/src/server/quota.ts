@@ -11,6 +11,19 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
 
+/** Stable window keys, shared with the server-side subscription budget gate. */
+const CLAUDE_QUOTA_WINDOW_KEYS = {
+  "Current session": "five_hour",
+  "Current week (all models)": "seven_day",
+  "Current week (Sonnet only)": "seven_day_sonnet",
+  "Current week (Opus only)": "seven_day_opus",
+  "Extra usage": "extra_usage",
+} as const;
+
+function claudeQuotaWindowKey(label: string): string | null {
+  return (CLAUDE_QUOTA_WINDOW_KEYS as Record<string, string>)[label] ?? null;
+}
+
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
@@ -271,6 +284,21 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
   }
 }
 
+/**
+ * The usage endpoint allows roughly one read per minute per account and
+ * answers 429 with `retry-after: 0` for the rest of the window. That is a
+ * throttle on a healthy endpoint, not a broken probe, and callers treat it
+ * differently: retry gently, and never fall back to the CLI `/usage` panel,
+ * which reads the same endpoint and would only spend another request.
+ */
+export class ClaudeUsageRateLimitedError extends Error {
+  readonly status = 429;
+  constructor() {
+    super("anthropic usage api returned 429 (rate limited; the endpoint allows about one read per minute)");
+    this.name = "ClaudeUsageRateLimitedError";
+  }
+}
+
 export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
     headers: {
@@ -278,12 +306,14 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       "anthropic-beta": "oauth-2025-04-20",
     },
   });
+  if (resp.status === 429) throw new ClaudeUsageRateLimitedError();
   if (!resp.ok) throw new Error(`anthropic usage api returned ${resp.status}`);
   const body = (await resp.json()) as AnthropicUsageResponse;
   const windows: QuotaWindow[] = [];
 
   if (body.five_hour != null) {
     windows.push({
+      key: "five_hour",
       label: "Current session",
       usedPercent: toPercent(body.five_hour.utilization),
       resetsAt: body.five_hour.resets_at ?? null,
@@ -293,6 +323,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day != null) {
     windows.push({
+      key: "seven_day",
       label: "Current week (all models)",
       usedPercent: toPercent(body.seven_day.utilization),
       resetsAt: body.seven_day.resets_at ?? null,
@@ -302,6 +333,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day_sonnet != null) {
     windows.push({
+      key: "seven_day_sonnet",
       label: "Current week (Sonnet only)",
       usedPercent: toPercent(body.seven_day_sonnet.utilization),
       resetsAt: body.seven_day_sonnet.resets_at ?? null,
@@ -311,6 +343,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day_opus != null) {
     windows.push({
+      key: "seven_day_opus",
       label: "Current week (Opus only)",
       usedPercent: toPercent(body.seven_day_opus.utilization),
       resetsAt: body.seven_day_opus.resets_at ?? null,
@@ -320,6 +353,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.extra_usage != null) {
     windows.push({
+      key: "extra_usage",
       label: "Extra usage",
       usedPercent: body.extra_usage.is_enabled === false ? null : toPercent(body.extra_usage.utilization),
       resetsAt: null,
@@ -472,6 +506,7 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   const windows = sections.map<QuotaWindow>((section) => {
     const usedPercent = section.lines.map(percentFromLine).find((value) => value != null) ?? null;
     return {
+      key: claudeQuotaWindowKey(section.label),
       label: section.label,
       usedPercent,
       resetsAt: null,
@@ -561,6 +596,16 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_OAUTH, ok: true, windows };
     } catch (error) {
       errors.push(formatProviderError("Anthropic OAuth usage", error));
+      if (error instanceof ClaudeUsageRateLimitedError) {
+        return {
+          provider: "anthropic",
+          source: CLAUDE_USAGE_SOURCE_OAUTH,
+          ok: false,
+          rateLimited: true,
+          error: errors[0],
+          windows: [],
+        };
+      }
     }
   }
 

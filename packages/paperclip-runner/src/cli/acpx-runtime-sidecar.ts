@@ -939,6 +939,7 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     };
   }
   if (event.type === "status") {
+    const rateLimit = record(event).rateLimit;
     return boundedSidecarValue({
       type: "status",
       text: boundedOptionalText(event.text, "", 4_000),
@@ -946,6 +947,11 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       used: safeNonNegativeNumber(event.used),
       size: safeNonNegativeNumber(event.size),
       ...safeUsage(event.cost, event.breakdown),
+      // Provider rate-limit info harvested by the patched acpx runtime from
+      // Claude's usage updates; the host folds it into its quota snapshot.
+      ...(rateLimit !== null && typeof rateLimit === "object" && !Array.isArray(rateLimit)
+        ? { rateLimit }
+        : {}),
     });
   }
   if (event.type === "tool_call") {

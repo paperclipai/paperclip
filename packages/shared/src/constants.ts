@@ -875,11 +875,45 @@ export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
-export const BUDGET_METRICS = ["billed_cents"] as const;
+export const BUDGET_METRICS = ["billed_cents", "subscription_percent"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
-export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;
+export const BUDGET_WINDOW_KINDS = [
+  "calendar_month_utc",
+  "lifetime",
+  "provider_session",
+  "provider_week",
+] as const;
 export type BudgetWindowKind = (typeof BUDGET_WINDOW_KINDS)[number];
+
+/**
+ * Window kinds that follow the provider's own subscription rate-limit windows
+ * (for example the Claude "current session" and "current week" windows). Their
+ * bounds come from the provider quota snapshot, not from the calendar.
+ */
+export const SUBSCRIPTION_BUDGET_WINDOW_KINDS = ["provider_session", "provider_week"] as const;
+export type SubscriptionBudgetWindowKind = (typeof SUBSCRIPTION_BUDGET_WINDOW_KINDS)[number];
+
+/** Stable machine keys for provider quota windows, independent of display labels. */
+export const QUOTA_WINDOW_KEYS = [
+  "five_hour",
+  "seven_day",
+  "seven_day_sonnet",
+  "seven_day_opus",
+  "extra_usage",
+  "credits",
+] as const;
+export type QuotaWindowKey = (typeof QUOTA_WINDOW_KEYS)[number];
+
+/** Maps a subscription budget window kind to the provider quota window it reads. */
+export const SUBSCRIPTION_BUDGET_WINDOW_QUOTA_KEYS: Record<SubscriptionBudgetWindowKind, QuotaWindowKey> = {
+  provider_session: "five_hour",
+  provider_week: "seven_day",
+};
+
+export function isSubscriptionBudgetWindowKind(value: string): value is SubscriptionBudgetWindowKind {
+  return (SUBSCRIPTION_BUDGET_WINDOW_KINDS as readonly string[]).includes(value);
+}
 
 export const BUDGET_THRESHOLD_TYPES = ["soft", "hard"] as const;
 export type BudgetThresholdType = (typeof BUDGET_THRESHOLD_TYPES)[number];
