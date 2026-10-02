@@ -1,6 +1,67 @@
 # Rich ACP integration and qualification report
 
-Current source checkpoint (2026-10-01): **Cursor v10, Copilot v12 and Pi v10
+## Current Pi 1.0 qualification checkpoint — October 2, 2026
+
+Pi now uses `@earendil-works/pi-coding-agent@1.0.0`, `pi-acp@0.0.33`,
+ACPX `0.13.1`, and profile **12**. Its exact model remains
+`openrouter/deepseek/deepseek-v4-flash-0731`. Cursor v10 and Copilot v12
+remain gated while Pi qualification is completed. The held Pi admission branch
+is preparation for testing normal installation; it is not production qualification.
+
+The first paid Pi 1.0 local hello on profile 11 failed: Pi's serialized RPC
+message updates no longer carry the old SDK-shaped partial message. That failure
+is retained, with $0.000142518 observed on the dedicated OpenRouter key and
+complete owned-process cleanup. Profile 12 repairs the actual RPC boundary;
+its local-only tests exercise the real Pi CLI, wrapper and owned extension.
+They do not replace authenticated product tests.
+
+At runtime source `b9e5d6ecdb05ab7244c90976e07c950f8d09b15b`, the fresh
+macOS ARM64 daemon and verified pack pass the original no-key startup test
+(6.741 seconds to settlement) and all 48 native/ACP contract tests without skips.
+The original evidence collector rejected Node 24's summary format after the
+runtime checks had passed. Its failure is preserved; independently reviewed
+offline finalization verifies those same logs and full asset inventories without
+rerunning the tests. The fresh native Intel build also passed all 48 contract
+tests, but its canonical startup failed at the unchanged 30-second deadline
+(35.032 seconds to settlement). A later instrumented run passed at 22.959 seconds;
+it used a read-verified, warmed filesystem state and does not erase the original
+failure. A four-run I/O-pool comparison was inconclusive, so no production
+thread-pool change was adopted. Intel startup and the final installed-package
+local/Daytona tests remain separate gates.
+
+Testing the actual public package installation exposed a packaging defect:
+ambient npm 10 pruned 84 files from the pinned Pi dependency closure. Setup now
+uses npm 11.19.0 bundled in the independently verified Node archive. The repaired
+provisioner reproduces the original profile-12 closure with ambient npm disabled;
+fresh public-package installation proof remains required.
+
+Normal Daytona setup now has an explicit operator command to import a verified
+Linux companion into the installed server. It binds the trusted manifest to the
+installed source, Pi profile, daemon and complete provider-pack inventory, then
+uses the ordinary remote execution path without test-only binary or pack
+overrides. Its 31 focused tests cover asynchronous bounded verification,
+cancellation, existing-cache validation, contained paths and owned cleanup.
+These tests do not establish live Daytona qualification or release publication.
+
+Full repository typecheck, tests, token gates, Product E2E typecheck/unit checks,
+and build passed on the earlier source `efe019a79f50440d7bd6c3bc6c75fb8f18953093`.
+Its Runner verification also passed. These results are historical prerequisites;
+profile 12 and the final installation changes still need their own verification.
+
+The dedicated Pi test key has a $5 lifetime OpenRouter-credit limit. Its BYOK
+charges are not included in that provider-enforced limit. Qualification therefore
+also requires the reviewed operational policy verifying no configured BYOK
+credentials, fresh account/key evidence, one paid case at a time, and usage
+monitoring. The key's $5 reservation is counted once within the combined $100
+campaign budget. Native price estimates are never substituted for provider bills.
+
+The [Pi capability inventory](runner-pi-capabilities.md#pi-10-candidate-2026-10-02-profile-v12)
+records Pi 1.0's native interfaces, wrapper changes, and unused capabilities.
+The comparison below remains the supported-surface map; older paid observations
+retain their named historical profiles. Current Pi 1.0 paid Product, Runner
+protocol, native controls, and Daytona qualification are still pending.
+
+Historical source checkpoint (2026-10-01): **Cursor v10, Copilot v12 and Pi v10
 remain unqualified**. Copilot receipt v2 distinguishes original provider
 arguments from the validated outgoing completion input. The sidecar commits
 the captured normalized digest only after its exact pending call receives a
@@ -51,7 +112,7 @@ as `25303cf84953985b961b95f89aff0bdb864b2d65`, from head
 unchanged; this adds no paid proof. Those definitions remain the historical
 Cursor v8 checkpoint and require a separate reviewed Cursor v9 update.
 
-Current checkpoint (2026-09-30): **Cursor v9, Copilot v8 and Pi v10 remain unqualified.** The frozen runtime is `5c69b69ef2aeab8d8a367b25a8d894cc5308befa`; controller candidate is `a8df2064d68f40fbf4dec670c4b8478c4b1b1b3f`. All profiles bind shared ACPX patch SHA-256 `bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e`. No profile is promoted and no prior grade is changed.
+Historical checkpoint (2026-09-30): **Cursor v9, Copilot v8 and Pi v10 remain unqualified.** The frozen runtime is `5c69b69ef2aeab8d8a367b25a8d894cc5308befa`; controller candidate is `a8df2064d68f40fbf4dec670c4b8478c4b1b1b3f`. All profiles bind shared ACPX patch SHA-256 `bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e`. No profile is promoted and no prior grade is changed.
 
 Current-profile protocol eval definitions merged in [paperclip-evals #36](https://github.com/paperclipai/paperclip-evals/pull/36) as `d987357461933baca0d4c10cc081f40e7eae5c1b`: 136 deterministic tests and 21 validated cells. These definitions do not supply paid qualification evidence.
 
@@ -786,7 +847,7 @@ qualification gates, not claims that a JavaScript path check confines a shell.
 | P1 | User attachments and image prompting | `AcpxRuntimeTurnInput` and the common runtime adapter currently forward text only, despite underlying image-input support. Implement validated attachment-to-ACP content conversion and model-specific capability admission, then qualify real local/Daytona image prompts. This is an implementation gap as well as a live-verification gap. |
 | P1 | Copilot native session event attribution | `_session_event` omits an originating turn. Preserve bounded event fields as session-scoped notices with `turnAttribution: unknown`; typed delegation, artifacts and compaction need an explicit native correlation contract before turn-owned projection. Standard correlated ACP events remain separate. |
 | P1 | Copilot session-store files and export/artifact URIs | Provider paths are not task-workspace paths. Add a separately authorized export flow with validated bytes and provenance; do not resolve arbitrary URLs or auto-register. |
-| P1 | Pi native fork/history/export interfaces | Pinned Pi 0.84.2 native RPC exposes `fork(entryId)`, `clone`, `get_fork_messages` and `export_html`. The wrapper does not map them to runner controls. Add durable branch lineage for fork/clone and an authorized, contained artifact flow for HTML export before exposing them; do not label these native capabilities absent. |
+| P1 | Pi native fork/history/export interfaces | Pi native RPC exposes `fork(entryId)`, `clone`, `get_fork_messages` and `export_html`; these remain available in the pinned 1.0.0 release. The wrapper does not map them to runner controls. Add durable branch lineage for fork/clone and an authorized, contained artifact flow for HTML export before exposing them; do not label these native capabilities absent. |
 | P1 | Complete usage/billing provenance | Missing cache fields remain unknown. Pi price estimates are displayed separately. Budget qualification requires actual spend coverage, not an estimate presented as a bill. |
 | P1 | Fork/history and richer configuration controls | Cursor session mode now has explicit admission-bound setup. Arbitrary session discovery/forking, mid-turn configuration changes and the parameterized model picker still need company-scoped controls and durable lineage. |
 | P1 | Exact pending-request restoration after process death | Session transcript restoration does not restore callbacks. Expire unresolved requests unless a provider proves exact restoration. |

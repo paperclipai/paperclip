@@ -47,7 +47,9 @@ describe("extended ACP harness qualification", () => {
       expect(cell.task.buildMatchers("nonce", cell)).toContainEqual({ kind: "environment", expected: cell.environment.id });
       const config = cell.profile.buildAgent({ executionId: "warm", environmentId: "env", environmentFixtureId: cell.environment.id, workspacePath: "/tmp/workspace", secretRefs: { [cell.profile.credential]: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" } } }).adapterConfig;
       expect(config).toMatchObject({ lifecycleMode: "warm", idleTimeoutMs: 300_000, timeoutSec: 120 });
-      expect(JSON.parse(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: cell.profile.qualificationCandidate, model: cell.profile.model }]);
+      const admission = buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+      if (cell.profile.qualificationCandidate === "pi") expect(admission).toBeUndefined();
+      else expect(JSON.parse(admission!)).toEqual([{ agent: cell.profile.qualificationCandidate, model: cell.profile.model }]);
       expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, suite: { ...cell.suite, manualOnly: false } }])).toThrow("explicit");
     }
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(cell => cell.suite.id === "rich-acp-warm-continuity")).toBe(false);
@@ -57,7 +59,9 @@ describe("extended ACP harness qualification", () => {
       const cells = runnerMatrix.filter(cell => cell.suite.id === suiteId);
       expect(new Set(cells.map(cell => cell.environment.id))).toEqual(new Set(["local", "daytona"]));
       for (const cell of cells) {
-        expect(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeDefined();
+        const admission = buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+        if (cell.profile.qualificationCandidate === "pi") expect(admission).toBeUndefined();
+        else expect(admission).toBeDefined();
         expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, profile: { ...cell.profile, qualificationCandidate: cell.profile.qualificationCandidate === "pi" ? "cursor" : "pi" } }])).toThrow("explicit");
       }
     }

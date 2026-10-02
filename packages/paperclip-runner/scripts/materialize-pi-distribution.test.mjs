@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { assertPiNodeSystemDependencies, PI_DISTRIBUTION_PINS, materializePiDistribution, piDistributionInstallCommand, verifyLockedPiPackageGraph, writePiDistributionManifest } from "./materialize-pi-distribution.mjs";
+import { assertPiNodeSystemDependencies, PI_DISTRIBUTION_PINS, materializePiDistribution, resolvePiBundledNpm, piDistributionInstallCommand, verifyLockedPiPackageGraph, writePiDistributionManifest } from "./materialize-pi-distribution.mjs";
 import { verifyPiRuntimeManifest } from "../src/drivers/acpx/pi-verified-runtime.ts";
 
 async function fixture(t) {
@@ -97,4 +97,20 @@ test("Node dependency inspection rejects Homebrew and non-system Linux libraries
   assert.doesNotThrow(() => assertPiNodeSystemDependencies("node:\n\t/usr/lib/libSystem.B.dylib (version 0)\n", "darwin"));
   assert.throws(() => assertPiNodeSystemDependencies("libnode.so => /opt/lib/libnode.so (0x000)\n", "linux"), /unbundled/);
   assert.doesNotThrow(() => assertPiNodeSystemDependencies("linux-vdso.so.1 (0x000)\nlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x000)\n/lib64/ld-linux-x86-64.so.2 (0x000)\n", "linux"));
+});
+
+
+test("setup selects the exact archive npm and rejects wrong versions or linked entrypoints", async (t) => {
+  const fixtureRoot = await fixture(t);
+  const root = await realpath(fixtureRoot.root), write = fixtureRoot.write;
+  const prefix = "lib/node_modules/npm/";
+  await write(prefix + "package.json", JSON.stringify({ name: "npm", version: "11.19.0" }));
+  await write(prefix + "bin/npm-cli.js", "// pinned archive fixture");
+  assert.equal(await resolvePiBundledNpm(root), join(root, prefix, "bin/npm-cli.js"));
+  await write(prefix + "package.json", JSON.stringify({ name: "npm", version: "10.9.7" }));
+  await assert.rejects(resolvePiBundledNpm(root), /unexpected npm version/);
+  await write(prefix + "package.json", JSON.stringify({ name: "npm", version: "11.19.0" }));
+  await rm(join(root, prefix, "bin/npm-cli.js"));
+  await symlink(join(root, prefix, "package.json"), join(root, prefix, "bin/npm-cli.js"));
+  await assert.rejects(resolvePiBundledNpm(root), /invalid archive entry/);
 });

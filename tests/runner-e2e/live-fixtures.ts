@@ -1,3 +1,4 @@
+import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import path from "node:path";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
@@ -113,8 +114,9 @@ export async function setupLiveFixtures(input: {
     registry.register<PluginRecord>({
       id: "sandbox-provider",
       async setup() {
+        const installed = await verifyInstalledDaytonaPlugin(process.env, [execution]);
         return api.post<PluginRecord>("/api/plugins/install", {
-          packageName: path.resolve(
+          packageName: installed?.packageRoot ?? path.resolve(
             import.meta.dirname,
             "../../packages/plugins/sandbox-providers/daytona",
           ),

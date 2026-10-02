@@ -130,3 +130,7 @@ export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailur
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+
+export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
+export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
+export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;

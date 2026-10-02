@@ -75,6 +75,76 @@ Pi's published CLI mode union is `text | json | rpc`; no native ACP mode is
 present in this release. The reviewed `pi-acp` wrapper remains necessary.
 
 
+## Explicit Linux companion setup for a Mac controller
+
+A Mac controller needs independently verified Linux runner bytes for Daytona.
+Its host Pi installation is not a Linux provider pack. The operator imports a
+release companion once, before launching agents:
+
+```sh
+paperclipai runtime import-remote /path/to/release/linux-x64 --sha256 MANIFEST_SHA256
+```
+
+Obtain `MANIFEST_SHA256` from the trusted release channel, separately from the
+copied directory. The directory contains `companion.json`,
+`bin/paperclip-runnerd`, and the complete `provider-pack/`. Import verifies the
+installed server's exact build commit, qualified Pi profile, Linux x64 ELF,
+manifest digest, and every file, mode, directory and contained symbolic link.
+External hardlinks, escaping links, extra or modified files, and unsafe modes
+are rejected. This command performs no network requests or model calls and does
+not run the Linux executable on the Mac.
+
+The destination is the private `remote-companions/linux-x64` directory beneath
+the actual installed `@paperclipai/server` package. It must be writable by the
+operator, outside the task workspace, and protected with the same host access
+controls as the server installation. It is not an agent workspace or a remote
+image's self-reported authority. An existing different or damaged installation
+is never replaced automatically. Stop all runs before an operator removes or
+upgrades that cache. Verification and copying use asynchronous 1 MiB chunks,
+yield between chunks, and enforce the same full inventory and ten-minute bound.
+Directory entries must retain owner read/write/search permissions so failed imports
+can drain their owned cleanup. SIGINT/SIGTERM are deferred through owned filesystem
+phases and drain cleanup;
+an uncatchable kill or host failure leaves the import unadmitted until the
+operator resolves its retained lock or incomplete directory. Do not move the
+cache into a task workspace to work around permissions.
+
+Normal remote Pi resolves this authority without binary or pack environment
+overrides. The controller re-verifies its complete inventory and uses the exact
+Linux daemon identity. Existing remote verification compares image bytes against
+that local authority; a mismatch takes the existing verified upload path.
+Controller restart and warm-session recovery retain the original Runner artifact
+identity checks. Cursor, Copilot and explicit operator overrides keep their
+existing admission rules.
+
+For release maintainers, assemble the Linux daemon and default provider pack
+for the **same final commit** as the public server/CLI packages. A reused daemon
+requires complete native source/config/protocol input equality and retains its
+original compiler/build provenance; the manifest does not claim recompilation. In a fresh
+release directory place those outputs at `bin/paperclip-runnerd` and
+`provider-pack/`, preserving the pack's relative links and modes. Then run the
+source-owned manifest generator after building the matching server:
+
+```sh
+node scripts/create-runner-remote-companion.mjs /path/to/release/linux-x64 FINAL_SOURCE_SHA
+```
+
+Publish the complete companion directory (or distribute it through the normal
+trusted release channel) together with the printed manifest SHA256 and the
+source/profile/platform provenance. The import command accepts an already
+extracted directory, not an archive or URL. The release companion must remain
+available with that release; a short-lived qualification artifact is not a
+release distribution. No release publication is implied by the tests here.
+
+Build/publish the Daytona image from those same daemon/pack outputs and configure
+its immutable OCI digest through the ordinary Daytona environment `image` field.
+The image digest and companion manifest are output metadata, not new source
+constants, so publication does not require another source commit. The final live
+proof must use the installed public CLI, this import command, and ordinary image
+configuration without E2E remote binary/provider-pack overrides. That installed
+and paid proof remains pending.
+
+
 Historical v10 qualification checkpoint (2026-09-30): **Pi profile v10 remains unqualified.** The capped-key/login prerequisite remains blocked. Native USD is unknown. The optional private budget helper is not integrated; Cursor's account-cycle cap does not establish Pi's provider spending bound. V10 keeps the native wrapper and closures unchanged, binds the shared ACPX patch under a new digest, and rejects v9 sessions. Fresh exact-runtime admission and final controller verification remain pending.
 
 Historical v9 checkpoint (2026-09-30): **Pi profile v9 remains unqualified**. Current runtime source is `5b8e4454ef0bf12d0bb068c2e41d8c9df9356a1c`; controller/Product harness source is `40064d28522de25fea85c1297f35b41bb8a8897a`. Runtime builds for macOS ARM64/x64 and Linux x64 are complete. No paid profile-v9 pass is claimed. A credential with a verifiable spend limit is still needed for the remaining paid qualification. The optional transport-budget candidate is frozen on a separate branch and is not integrated or a live spending guarantee. See the [comparative capability report](runner-rich-acp-capabilities.md) for current qualification gates and the field audit. The dated observations below retain their original profile identities.
@@ -187,8 +257,8 @@ addressed by v4. Version 2 hello completion and every failure remain retained.
 The wider local and Linux x64 Daytona matrix remains pending; this document does
 not promote the candidate to a qualified production runtime.
 
-The runner pins `pi-acp@0.0.33` and
-`@earendil-works/pi-coding-agent@0.84.2`. The candidate model is
+At this historical pre-1.0 checkpoint, the runner pinned `pi-acp@0.0.33` and
+`@earendil-works/pi-coding-agent@0.84.2`. The candidate model was
 `openrouter/deepseek/deepseek-v4-flash-0731`; only an explicitly bound OpenRouter
 credential may reach this profile. `patches/pi-acp@0.0.33.patch` repairs the ACP
 wrapper. `pi-runtime-extension.ts` supplies the runner-owned semantic bridge and
@@ -963,3 +1033,33 @@ that ID unchanged into the shared MCP dedupe boundary. This is a further
 integration defect. The shared dedupe guard and canonical grader remain intact.
 Both runs lack terminal usage; measured billing is $0.002440082 and cleanup
 passes. Restart and refreshed hello are held until this defect is repaired.
+
+## Explicit host installation
+
+For a published local Paperclip installation, run `paperclipai runtime setup pi`
+with the same installed CLI and account that owns the server package. This is an
+explicit download and verification step; npm installation and agent launch never
+perform it automatically. It installs only this host's supported platform
+(macOS ARM64, macOS x64, or Linux x64), using the source-pinned Node archive, npm
+lock, wrapper patch and complete Pi closure. Node 24, npm, git, tar and the normal
+platform dependency inspector (`otool` or `ldd`) must be available. The server
+package must be writable by the installing account. Setup forwards no instance
+configuration, provider credentials, npm configuration or proxy credentials.
+
+The public server carries a self-contained setup tool and small pinned inputs in
+`dist/vendor/paperclip-runner/cli`; the installed host closure lives in that
+server package's `provider-assets/pi/<platform>`. Setup validates an existing
+closure again before accepting it. A corrupt existing installation is left
+untouched and rejected; reinstall the same Paperclip release into a clean package
+location and repeat setup. Concurrent setup is rejected. Cancellation drains the
+current bounded download/build command before removing its private staging tree;
+allow that cleanup to complete before trying again.
+
+Then select Pi with the exact model
+`openrouter/deepseek/deepseek-v4-flash-0731` and bind an OpenRouter credential
+through the normal provider credential UI. Setup itself makes no model request.
+A missing host closure produces explicit setup guidance. Daytona uses the
+separately built and verified Linux provider pack in its runner image; running
+local setup does not install or qualify a remote image. Published-tar local and
+Daytona startup evidence must bind the final installation candidate, with no
+candidate qualification flags, before a production-readiness claim.

@@ -29,9 +29,9 @@ describe("Pi native Product qualification", () => {
   it("admits explicit local and remote Pi native candidates and discards ambient admission", () => {
     const cell = runnerMatrix.find(row => row.suite.id === "pi-native")!;
     const source = { PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" };
-    expect(JSON.parse(buildRunnerE2EProcessEnvironment(source, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "pi", model: cell.profile.model }]);
+    expect(buildRunnerE2EProcessEnvironment(source, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     const remote = runnerMatrix.find(row => row.suite.id === "pi-native" && row.environment.id === "daytona")!;
-    expect(JSON.parse(buildRunnerE2EProcessEnvironment(source, [remote]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "pi", model: remote.profile.model }]);
+    expect(buildRunnerE2EProcessEnvironment(source, [remote]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     expect(buildRunnerE2EProcessEnvironment(source, []).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     for (const changed of [
       { ...cell, suite: { ...cell.suite, manualOnly: false } },

@@ -1002,7 +1002,10 @@ describe("qualified ACPX runtime sidecar", () => {
     });
   });
 
-  it.each([["claude", "claude-sonnet-5"]])(
+  it.each([
+    ["claude", "claude-sonnet-5"],
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
+  ])(
     "reports the qualified %s profile",
     async (agent, model) => {
       const sidecar = startSidecar();
@@ -1019,7 +1022,6 @@ describe("qualified ACPX runtime sidecar", () => {
   );
 
   it.each([
-    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
     ["cursor", "explicit-cursor-model"],
     ["copilot", "explicit-copilot-model"],
   ] as const)("initializes the declared %s candidate without promoting its profile", async (agent, model) => {

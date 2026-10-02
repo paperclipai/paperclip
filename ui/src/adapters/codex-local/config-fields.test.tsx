@@ -66,7 +66,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("offers qualified Claude and keeps candidate ACP agents visibly disabled", () => {
+  it("offers qualified Claude and Pi and keeps sibling ACP candidates visibly disabled", () => {
     const html = renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
@@ -78,7 +78,8 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain('<option value="claude" selected="">Claude</option>');
     expect(html).toContain('<option value="cursor" disabled="">Cursor — qualification pending</option>');
     expect(html).toContain('<option value="copilot" disabled="">GitHub Copilot — qualification pending</option>');
-    expect(html).toContain('<option value="pi" disabled="">Pi — qualification pending</option>');
+    expect(html).toContain('<option value="pi">Pi</option>');
+    expect(html).not.toContain('<option value="pi" disabled="">');
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");

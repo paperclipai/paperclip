@@ -1,3 +1,6 @@
+import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { installedCliKeys } from "./installed-cli.js";
 import path from "node:path";
 import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
@@ -125,6 +128,10 @@ export function buildRunnerE2EProcessEnvironment(
     if (!admittedSuite || !execution.suite.manualOnly) {
       throw new Error("Candidate qualification requires an explicit provider qualification suite");
     }
+    if (agent === "pi" && QUALIFIED_ACPX_PROFILES.pi.qualificationStatus !== "pending") {
+      if (execution.profile.model !== QUALIFIED_ACPX_PROFILES.pi.qualificationModel) throw new Error("Qualified Pi requires its exact declared model");
+      continue;
+    }
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
     candidates.set(agent, execution.profile.model);
@@ -174,7 +181,7 @@ export function buildPaperclipServerEnvironment(
   ]) {
     delete result[key];
   }
-  for (const key of GENERATED_SERVER_SECRET_KEYS) delete result[key];
+  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys]) delete result[key];
   Object.assign(result, overrides);
   return result;
 }

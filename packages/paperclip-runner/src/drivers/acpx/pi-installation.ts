@@ -60,7 +60,11 @@ export async function verifyPiInstallation(profile: QualifiedAcpxProfile): Promi
       if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(path) !== path) throw new Error("Pi distribution escaped its fixed asset directory");
     }
   };
-  await assertDirectories();
+  try { await assertDirectories(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Pi runtime is not installed on this host; run paperclipai runtime setup pi before selecting Pi");
+    throw error;
+  }
   const metadataPath = join(assets, "pi-distribution.json");
   const metadata = await readDistributionMetadata(metadataPath);
   const targetMetadata = record(metadata.target);

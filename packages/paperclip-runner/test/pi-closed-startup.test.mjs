@@ -14,7 +14,7 @@ if (process.argv[2] === "--pi-no-key-probe") {
   const workspace = join(root, "workspace"); await mkdir(workspace);
   const evidence = []; const started = performance.now();
   const bundle = createCapabilityRunnerdCodexTransport({
-    provider: "acpx", acpxAgent: "pi", acpxCandidateProfile: "pi", acpxPermissionMode: "deny-all",
+    provider: "acpx", acpxAgent: "pi", acpxPermissionMode: "deny-all",
     runnerBinary: daemon, stateDirectory: join(root, "state"),
     environment: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
     onEvidence: value => evidence.push(value),

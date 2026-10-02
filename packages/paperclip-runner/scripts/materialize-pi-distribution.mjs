@@ -109,8 +109,29 @@ export function piDistributionBootstrapSource() {
   ].join("\n");
 }
 
+/** The already hash-verified Node archive also pins setup's package manager. */
+export async function resolvePiBundledNpm(nodeRoot) {
+  const npmRoot = join(nodeRoot, "lib/node_modules/npm");
+  const manifest = join(npmRoot, "package.json");
+  const entry = join(npmRoot, "bin/npm-cli.js");
+  for (const path of [manifest, entry]) {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || await realpath(path) !== path) throw new Error("Pinned Pi npm has an invalid archive entry");
+  }
+  if (JSON.parse(await readFile(manifest, "utf8")).version !== "11.19.0") throw new Error("Pinned Pi Node archive has an unexpected npm version");
+  return entry;
+}
+
 /** Build on the target platform. No lifecycle scripts, model requests, or auth. */
-export async function materializePiDistribution({ outputRoot, nodeExecutable, npmExecutable = "npm" }) {
+export async function materializePiDistribution({ outputRoot, nodeExecutable, npmExecutable = "npm", inputs, checkCancelled = () => {} }) {
+  // Cancellation is observed between bounded subprocesses. A setup signal must
+  // not abandon an npm/tar child while it still owns staging files.
+  const runOwned = async (...args) => { checkCancelled(); const result = await run(...args); checkCancelled(); return result; };
+  checkCancelled();
+  const inputLockDirectory = inputs?.lockDirectory ?? lockDirectory;
+  const inputPatchPath = inputs?.patchPath ?? patchPath;
+  const helperSourcePath = inputs?.helperSourcePath ?? join(packageRoot, "src/drivers/acpx/pi-acp-runtime.ts");
+  const extensionSourcePath = inputs?.extensionSourcePath ?? join(packageRoot, "src/drivers/acpx/pi-runtime-extension.ts");
   if (typeof outputRoot !== "string" || !outputRoot || !isAbsolute(outputRoot)) throw new Error("Pi distribution output must be absolute");
   const output = resolve(outputRoot);
   if (["/", workspaceRoot, packageRoot].includes(output)) throw new Error("Refusing unsafe Pi distribution output");
@@ -123,6 +144,7 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
     const target = `${process.platform}-${process.arch}`;
     const nodePin = PI_NODE_DISTRIBUTIONS[target];
     let node;
+    let bundledNpm;
     if (nodeExecutable) node = await realpath(nodeExecutable);
     else {
       const archiveName = `node-v${PI_NODE_VERSION}-${target}.tar.gz`;
@@ -137,15 +159,16 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
       if (hash(bytes) !== nodePin.archiveSha256) throw new Error("Pi Node archive does not match its release pin");
       const archivePath = join(staging, archiveName); await writeFile(archivePath, bytes);
       const nodeRoot = join(staging, "node-extract"); await mkdir(nodeRoot);
-      await run("tar", ["-xzf", archivePath, "-C", nodeRoot, "--strip-components=2", `node-v${PI_NODE_VERSION}-${target}/bin/node`], { timeout: 30_000 });
-      node = join(nodeRoot, "node");
+      await runOwned("tar", ["-xzf", archivePath, "-C", nodeRoot, "--strip-components=1", `node-v${PI_NODE_VERSION}-${target}/bin/node`, `node-v${PI_NODE_VERSION}-${target}/lib/node_modules/npm`], { timeout: 30_000 });
+      node = join(nodeRoot, "bin/node");
+      bundledNpm = await resolvePiBundledNpm(nodeRoot);
     }
     if (hash(await readFile(node)) !== nodePin.executableSha256 || (await lstat(node)).size !== nodePin.executableSize) throw new Error("Pi Node executable does not match its target release pin");
-    const version = (await run(node, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim();
+    const version = (await runOwned(node, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim();
     if (version !== `v${PI_NODE_VERSION}`) throw new Error("Pi distribution requires exact pinned Node version");
-    if ((await run(node, ["-p", "process.versions.undici"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== PI_DISTRIBUTION_PINS.nodeBundledUndici) throw new Error("Pi Node bundled Undici differs from its reviewed security pin");
+    if ((await runOwned(node, ["-p", "process.versions.undici"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== PI_DISTRIBUTION_PINS.nodeBundledUndici) throw new Error("Pi Node bundled Undici differs from its reviewed security pin");
     await mkdir(runtimeRoot);
-    await Promise.all(["package.json", "package-lock.json"].map((name) => copyFile(join(lockDirectory, name), join(runtimeRoot, name))));
+    await Promise.all(["package.json", "package-lock.json"].map((name) => copyFile(join(inputLockDirectory, name), join(runtimeRoot, name))));
     await writeFile(join(runtimeRoot, ".npmrc"), "registry=https://registry.npmjs.org/\nignore-scripts=true\naudit=false\nfund=false\n");
     await writeFile(join(runtimeRoot, ".npmrc-global"), "");
     const buildHome = join(staging, "build-home"); await mkdir(buildHome);
@@ -153,30 +176,38 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
     // .npmrc. Public registry downloads need no private application credential.
     const environment = Object.fromEntries(["PATH", "LANG", "LC_ALL", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"].flatMap((key) => typeof process.env[key] === "string" ? [[key, process.env[key]]] : []));
     environment.HOME = buildHome;
-    await run(npmExecutable, piDistributionInstallCommand(), { cwd: runtimeRoot, env: environment, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
+    // npm 10 prunes non-host packages bundled by upstream Pi, unlike the npm
+    // 11.19.0 used to qualify this complete closure. Public setup must use the
+    // npm pinned by the verified Node archive, never whichever npm is on PATH.
+    await runOwned(bundledNpm ? node : npmExecutable, [...(bundledNpm ? [bundledNpm] : []), ...piDistributionInstallCommand()], { cwd: runtimeRoot, env: environment, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
     const installedLockBytes = await readFile(join(runtimeRoot, "package-lock.json"));
-    if (!installedLockBytes.equals(await readFile(join(lockDirectory, "package-lock.json")))) throw new Error("Pi installation changed its committed lock");
+    if (!installedLockBytes.equals(await readFile(join(inputLockDirectory, "package-lock.json")))) throw new Error("Pi installation changed its committed lock");
     const lock = JSON.parse(installedLockBytes.toString("utf8"));
     const packageCount = await verifyLockedPiPackageGraph(runtimeRoot, lock);
     const wrapper = join(runtimeRoot, "node_modules/pi-acp");
-    await run("git", ["apply", "--check", patchPath], { cwd: wrapper, env: environment, timeout: 10_000 });
-    await run("git", ["apply", patchPath], { cwd: wrapper, env: environment, timeout: 10_000 });
+    await runOwned("git", ["apply", "--check", inputPatchPath], { cwd: wrapper, env: environment, timeout: 10_000 });
+    await runOwned("git", ["apply", inputPatchPath], { cwd: wrapper, env: environment, timeout: 10_000 });
     const [wrapperBytes, helperBytes, helperSource] = await Promise.all([
       readFile(join(wrapper, "dist/index.js")), readFile(join(wrapper, "dist/paperclip-runtime.js")),
-      readFile(join(packageRoot, "src/drivers/acpx/pi-acp-runtime.ts"), "utf8"),
+      readFile(helperSourcePath, "utf8"),
     ]);
-    const stripped = stripTypeScriptTypes(helperSource).split("\n").map((line) => line.trimEnd()).join("\n");
+    // Installed CLI users may run another supported Node patch. Generate the
+    // exact pinned closure with its verified Node, not the host's TS stripper.
+    const stripPinnedSource = async (path, source) => inputs
+      ? (await runOwned(node, ["--input-type=module", "-e", 'import {readFileSync} from "node:fs"; import {stripTypeScriptTypes} from "node:module"; process.stdout.write(stripTypeScriptTypes(readFileSync(process.argv[1],"utf8")));', path], { env: {}, timeout: buildNodeStartupTimeout(), maxBuffer: 4 * 1024 * 1024 })).stdout
+      : stripTypeScriptTypes(source);
+    const stripped = (await stripPinnedSource(helperSourcePath, helperSource)).split("\n").map((line) => line.trimEnd()).join("\n");
     if (hash(wrapperBytes) !== PI_DISTRIBUTION_PINS.wrapperSha256 || hash(helperBytes) !== PI_DISTRIBUTION_PINS.helperSha256 || helperBytes.toString("utf8") !== stripped) throw new Error("Pi wrapper patch does not match its qualified source");
     await mkdir(join(runtimeRoot, "extensions"));
-    await writeFile(join(runtimeRoot, "extensions/paperclip.js"), stripTypeScriptTypes(await readFile(join(packageRoot, "src/drivers/acpx/pi-runtime-extension.ts"), "utf8")).replace('from "./pi-acp-runtime.js"', 'from "../node_modules/pi-acp/dist/paperclip-runtime.js"'));
+    await writeFile(join(runtimeRoot, "extensions/paperclip.js"), (await stripPinnedSource(extensionSourcePath, await readFile(extensionSourcePath, "utf8"))).replace('from "./pi-acp-runtime.js"', 'from "../node_modules/pi-acp/dist/paperclip-runtime.js"'));
     await mkdir(join(runtimeRoot, "node/bin"), { recursive: true });
     const copiedNode = join(runtimeRoot, "node/bin/node");
     await copyFile(node, copiedNode); await chmod(copiedNode, 0o755);
     const dependencyListing = process.platform === "darwin"
-      ? (await run("/usr/bin/otool", ["-L", copiedNode], { env: {}, timeout: 10_000 })).stdout
-      : (await run("ldd", [copiedNode], { env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 })).stdout;
+      ? (await runOwned("/usr/bin/otool", ["-L", copiedNode], { env: {}, timeout: 10_000 })).stdout
+      : (await runOwned("ldd", [copiedNode], { env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 })).stdout;
     assertPiNodeSystemDependencies(dependencyListing, process.platform);
-    if ((await run(copiedNode, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== version) throw new Error("Copied Pi Node cannot execute after relocation");
+    if ((await runOwned(copiedNode, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== version) throw new Error("Copied Pi Node cannot execute after relocation");
     await rm(buildHome, { recursive: true });
     // npm-generated .bin links and hidden lock metadata are not package payload
     // files. No launch uses PATH; excluding them makes the closure regular-only.
@@ -206,6 +237,7 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
       runtimeRoot: "runtime", nativeClosureSha256, manifest,
     };
     await writeFile(join(staging, "pi-distribution.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+    checkCancelled();
     await rename(staging, output);
     const finalRoot = join(output, "runtime");
     const binding = await verifyPiRuntimeManifest(finalRoot, manifest);
@@ -218,11 +250,12 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
   } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (import.meta.url.endsWith("/materialize-pi-distribution.mjs") && process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const args = process.argv.slice(2).filter((arg) => arg !== "--");
   const outputArgs = args.filter((arg) => !arg.startsWith("--node="));
   const nodeArgs = args.filter((arg) => arg.startsWith("--node="));
   if (outputArgs.length !== 1 || nodeArgs.length > 1) throw new Error("Usage: node scripts/materialize-pi-distribution.mjs /absolute/output-directory [--node=/absolute/portable-node]");
-  const result = await materializePiDistribution({ outputRoot: outputArgs[0], ...(nodeArgs.length ? { nodeExecutable: nodeArgs[0].slice("--node=".length) } : {}) });
-  process.stdout.write(`${JSON.stringify({ outputRoot: result.outputRoot, manifestPath: result.manifestPath, manifestDigest: result.manifestDigest, packageCount: result.metadata.packageCount })}\n`);
+  materializePiDistribution({ outputRoot: outputArgs[0], ...(nodeArgs.length ? { nodeExecutable: nodeArgs[0].slice("--node=".length) } : {}) }).then(result => {
+    process.stdout.write(`${JSON.stringify({ outputRoot: result.outputRoot, manifestPath: result.manifestPath, manifestDigest: result.manifestDigest, packageCount: result.metadata.packageCount })}\n`);
+  }).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

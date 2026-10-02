@@ -1797,3 +1797,62 @@ the evaluated checkout byte for byte. The skill snapshot and provider run eviden
 are retained privately alongside the grading checkpoints for failure diagnosis.
 Claude receives a fresh provider home and config directory inside the disposable
 workspace so a user's installed skill cannot shadow the managed skill under test.
+
+### Published-install Pi lane
+
+The 26 explicit Pi cells can run against an independently installed public CLI
+and server instead of the source CLI. Supply all four reviewed pins:
+`PAPERCLIP_RUNNER_E2E_INSTALLED_CLI` (canonical `paperclipai/dist/index.js`),
+`PAPERCLIP_RUNNER_E2E_INSTALLED_CLI_SHA256` (bare SHA-256),
+`PAPERCLIP_RUNNER_E2E_INSTALLED_SERVER_ROOT` (canonical resolved public server
+package root), and `PAPERCLIP_RUNNER_E2E_INSTALLED_SERVER_SHA256` (its
+`dist/index.js` SHA-256). The CLI must resolve that exact server dependency, with
+matching public package versions. Build/install provenance and the complete
+installed dependency/assets inventory remain separate required evidence; the
+entrypoint checks alone do not prove that closure.
+
+Run the explicit `paperclipai runtime setup pi` for that installation first.
+This lane rejects candidate flags, local/remote daemon overrides, provider asset
+or pack overrides, and Node injection. It launches the installed JavaScript CLI
+without a TypeScript loader, rechecks its pins on controller restart, and records
+`installed-cli-admission.json` in private attempt evidence. It supports only the
+explicit Pi extended, native, controls and warm suites, which require none of the
+source-only response barriers. Cursor/Copilot qualification gates stay intact.
+Pi's historical `qualificationCandidate` fixture selector remains a roster key;
+it no longer grants an opt-in when the source Pi declaration admits normal use.
+
+Installed Pi Daytona cells also require the published plugin fixture inputs
+`PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN` (canonical package root),
+`PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY` (canonical JSON file),
+and `PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY_SHA256`.
+The authority schema `paperclip.e2e.installed-daytona-plugin/v1` pins a canonical
+`graphRoot` and four public packages (`plugin`, `sdk`, `shared`, `daytona`).
+Each has `root`, `packageSha256`, `entry`, and `entrySha256`; `plugin` also has
+`manifestSha256` and `workerSha256`. Roots must be the named packages beneath
+that graph's `node_modules`. The fixture verifies compiled public exports,
+exact dependency versions, resolved package identities, and file pins before
+launch and again immediately before the ordinary `/api/plugins/install` request.
+It records `installed-daytona-plugin-admission.json` privately. Missing pins in
+installed Daytona mode fail; they never select the source plugin as a fallback.
+Local cells need no Daytona plugin. Source-development lanes retain their
+existing fixture path. These entrypoint checks do not replace the separately
+required tar provenance and complete installed dependency inventory audit.
+The fixture inputs do not reach the production server environment.
+
+Before a paid installed local cell, use the same launcher and WebServer chain
+without provider work:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs \
+  tests/runner-e2e/launch.ts --installed-startup-only \
+  --id extended-harnesses.runner-acpx-pi.local.hello-complete \
+  --max-automatic-retries 0
+```
+
+This mode requires the reviewed installed CLI pins, rejects provider credential
+inputs, skips local credential-file loading, and runs only health, browser UI,
+and zero-company checks. It retains separate private startup evidence and cannot
+produce a passing provider case. Existing process, IPC, and scratch cleanup stay
+in force. The installed lane invokes Playwright's public JavaScript bin directly
+with the current Node; pnpm's generated bin shim would inject `NODE_PATH` into
+the WebServer. Arbitrary ambient `NODE_OPTIONS` and `NODE_PATH` remain rejected.

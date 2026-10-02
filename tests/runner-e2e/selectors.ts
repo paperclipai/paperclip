@@ -5,6 +5,7 @@ export interface RunnerSelectorOptions {
   all: boolean;
   list: boolean;
   matrixJson: boolean;
+  installedStartupOnly?: boolean;
   ids: string[];
   suites: string[];
   groups: string[];
@@ -52,6 +53,7 @@ export function parseRunnerSelectors(
     if (flag === "--all") options.all = true;
     else if (flag === "--list") options.list = true;
     else if (flag === "--matrix-json") options.matrixJson = true;
+    else if (flag === "--installed-startup-only") options.installedStartupOnly = true;
     else if (flag === "--headed") options.headed = true;
     else if (flag === "--ui") options.ui = true;
     else if (flag === "--debug") options.debug = true;
