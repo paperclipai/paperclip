@@ -155,14 +155,48 @@ failure cannot reactivate host or legacy credentials.
 A Claude invocation's private home also replaces the host's Claude user
 settings source, so the deny-side runner gates registered there would otherwise
 not load. The invocation carries two keys of the host `settings.json` into its
-private config dir and nothing else: `hooks` and `permissions.deny`. Both can
-only refuse work the run would otherwise be allowed to do. `env`, `apiKeyHelper`
+private config dir and nothing else: `hooks` and `permissions.deny`. Both only
+narrow the set of tool calls the run can complete. `env`, `apiKeyHelper`
 and `permissions.defaultMode` stay on the host, because they could re-inject a
 provider credential the private home exists to isolate or widen the run's
 permission posture. A declared gate that cannot be carried, and a carried hook
 whose command names a local file that is not executable, fail the invocation:
 an absent security boundary is reported, not skipped. A host with no
-`settings.json` declares no gate and carries nothing.
+`settings.json` declares no gate and carries nothing. A declared `hooks` block is
+carried whole, including handlers that have no command to check.
+
+Narrowing describes the run's permissions, not what a hook does. A carried
+`type: "command"` hook is a host-authored program Claude executes on every
+matching tool call, inside the run — with the run's working directory, and with
+the selected connection's credential in the environment it inherits. Carrying one
+trusts its author with both. That author is the host operator, who already owns
+the server process, the file the credential is written into, and the same hook in
+their own non-managed sessions; it is not trust extended to the agent, the
+company, or the connection owner. None of those can write the host
+`settings.json`, and agent runtime configuration cannot choose which settings
+file is read: the gate source comes from the server process environment only,
+because a configured `CLAUDE_CONFIG_DIR` is overridden by the managed home when
+the run's environment is built, so honouring it could only ever carry less. An
+operator who does not want their hooks running in managed invocations removes
+them from the user settings source.
+
+Carrying is scoped to the `claude_local` adapter, whose CLI and ACP lanes read
+their user settings from the managed config dir (`--setting-sources user` for a
+managed connection). A Paperclip runner driving Claude is excluded: its ACPX
+driver repoints `CLAUDE_CONFIG_DIR` at a per-run agent home of its own, and
+Claude Managed is an API lane with no settings source, so seeding there would
+report a gate that cannot load. Runner invocations gate at the runner's own
+approval boundary.
+
+A remote execution target stages the private config dir into its sandbox and
+repoints `CLAUDE_CONFIG_DIR` at the materialized copy, so the carried file
+arrives but nothing else from the host does. A carried hook command that is one
+absolute server path is therefore unreachable there: the run fails with
+`hook_command_not_portable` once the target is known, and the adapter test
+reports the same condition as a failing `ai_connection_gate_not_portable` check
+instead of probing ungated. A command resolved through `PATH` or written as a
+shell snippet stays the environment's business, as it does on the host. Deny
+rules are strings Claude matches itself and cross with the file.
 
 A subscription invocation takes no lease. Two invocations of one grant, from
 the same or a different provider account, run at the same time. At cleanup,

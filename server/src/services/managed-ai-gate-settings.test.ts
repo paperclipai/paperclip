@@ -3,8 +3,10 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import {
+  assertManagedAiGateReachesRemoteTarget,
   collectHookCommands,
   hookCommandLocalPath,
+  hostOnlyHookCommandPaths,
   isManagedAiGateUnreachableError,
   resolveHostClaudeSettingsDir,
   runReadsClaudeUserSettings,
@@ -171,6 +173,26 @@ describe("managed AI gate settings", () => {
     expect(result.hookCommands).toHaveLength(2);
   });
 
+  it("carries a hooks block whose handlers have no command to check", async () => {
+    // Whether the gate is carried must not depend on it naming a path this
+    // module knows how to verify. A prompt-type PreToolUse handler is still a
+    // declared gate, and dropping it would start the run ungated.
+    await writeHostSettings({
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "prompt", prompt: "Refuse main writes" }] }],
+      },
+    });
+
+    const result = await seedManagedAiGateSettings({ providerHome, hostSettingsDir: hostDir });
+
+    expect(result.settingsPath).toBe(path.join(providerHome, "settings.json"));
+    expect(result.hookCommands).toEqual([]);
+    const written = JSON.parse(await readFile(result.settingsPath!, "utf8")) as Record<string, unknown>;
+    expect(written.hooks).toEqual({
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "prompt", prompt: "Refuse main writes" }] }],
+    });
+  });
+
   describe("selectManagedAiGateSettings", () => {
     it("ignores a hooks block that is not an object", () => {
       expect(selectManagedAiGateSettings({ hooks: "all of them" }).settings).toEqual({});
@@ -222,36 +244,71 @@ describe("managed AI gate settings", () => {
   });
 
   describe("resolveHostClaudeSettingsDir", () => {
-    it("prefers the adapter-configured dir, then the inherited one, then the home default", () => {
-      expect(
-        resolveHostClaudeSettingsDir({ CLAUDE_CONFIG_DIR: "/inherited" }, { CLAUDE_CONFIG_DIR: "/configured" }),
-      ).toBe("/configured");
-      expect(resolveHostClaudeSettingsDir({ CLAUDE_CONFIG_DIR: "/inherited" }, { HOME: "/x" })).toBe(
-        "/inherited",
-      );
-      expect(resolveHostClaudeSettingsDir({ CLAUDE_CONFIG_DIR: "   " }, {})).toBe(
+    it("reads the server process environment, then the home default", () => {
+      expect(resolveHostClaudeSettingsDir({ CLAUDE_CONFIG_DIR: "/inherited" })).toBe("/inherited");
+      expect(resolveHostClaudeSettingsDir({ CLAUDE_CONFIG_DIR: "   " })).toBe(
         path.join(os.homedir(), ".claude"),
       );
-      expect(resolveHostClaudeSettingsDir({}, null)).toBe(path.join(os.homedir(), ".claude"));
+      expect(resolveHostClaudeSettingsDir({})).toBe(path.join(os.homedir(), ".claude"));
+    });
+
+    it("takes only one argument, so agent config cannot name the gate source", () => {
+      // A configured CLAUDE_CONFIG_DIR is overridden by the managed home when
+      // the run's env is built, so letting it choose the gate source would be a
+      // one-way bypass: point it at a dir with no settings.json, carry no gate.
+      expect(resolveHostClaudeSettingsDir.length).toBe(1);
     });
   });
 
   describe("runReadsClaudeUserSettings", () => {
-    it("is true for the Claude adapter and for a Claude-backed paperclip runner", () => {
-      expect(runReadsClaudeUserSettings("claude_local", {})).toBe(true);
-      expect(runReadsClaudeUserSettings("paperclip_runner", { provider: "claude" })).toBe(true);
-      expect(
-        runReadsClaudeUserSettings("paperclip_runner", { provider: "acpx", acpxAgent: "claude" }),
-      ).toBe(true);
+    it("is true for the Claude adapter, whose provider reads the managed config dir", () => {
+      expect(runReadsClaudeUserSettings("claude_local")).toBe(true);
     });
 
-    it("is false for a runner that never reads a Claude user settings source", () => {
-      expect(runReadsClaudeUserSettings("codex_local", {})).toBe(false);
-      expect(runReadsClaudeUserSettings("paperclip_runner", { provider: "codex" })).toBe(false);
-      expect(
-        runReadsClaudeUserSettings("paperclip_runner", { provider: "acpx", acpxAgent: "grok" }),
-      ).toBe(false);
-      expect(runReadsClaudeUserSettings("paperclip_runner", {})).toBe(false);
+    it("is false for a paperclip runner, which builds its own agent home", () => {
+      // drivers/acpx/runtime-sandbox.ts repoints CLAUDE_CONFIG_DIR at a per-run
+      // agent home unconditionally, and Claude Managed is an API lane with no
+      // settings source at all. Seeding for either would report a dead gate as
+      // a live one.
+      expect(runReadsClaudeUserSettings("paperclip_runner")).toBe(false);
+      expect(runReadsClaudeUserSettings("codex_local")).toBe(false);
+    });
+  });
+
+  describe("assertManagedAiGateReachesRemoteTarget", () => {
+    it("fails a remote run whose carried hook names a server-only path", () => {
+      const error = (() => {
+        try {
+          assertManagedAiGateReachesRemoteTarget({
+            hookCommands: ["/opt/flow/hooks/merge-gate.sh --strict", "rtk hook claude"],
+            environmentName: "prod-sandbox",
+          });
+          return null;
+        } catch (thrown: unknown) {
+          return thrown;
+        }
+      })();
+
+      expect(isManagedAiGateUnreachableError(error)).toBe(true);
+      if (!isManagedAiGateUnreachableError(error)) throw error ?? new Error("no throw");
+      expect(error.reason).toBe("hook_command_not_portable");
+      expect(error.detail).toEqual(["/opt/flow/hooks/merge-gate.sh"]);
+      expect(error.message).toContain("prod-sandbox");
+    });
+
+    it("leaves a PATH-resolved hook to the remote environment, and passes with no hooks", () => {
+      expect(() =>
+        assertManagedAiGateReachesRemoteTarget({ hookCommands: ["rtk hook claude"] }),
+      ).not.toThrow();
+      expect(() => assertManagedAiGateReachesRemoteTarget({ hookCommands: [] })).not.toThrow();
+    });
+  });
+
+  describe("hostOnlyHookCommandPaths", () => {
+    it("names every carried hook command that is one absolute server path", () => {
+      expect(hostOnlyHookCommandPaths(collectHookCommands(GATE_HOOKS))).toEqual([
+        "/opt/flow/hooks/merge-gate.sh",
+      ]);
     });
   });
 });

@@ -500,13 +500,21 @@ describe("managed AI connections", () => {
       if (process.getuid?.() !== 0)
         await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow(/not an executable file/);
       await chmod(hookPath, 0o755);
-      const runtime = await prepareManagedAiRuntime(db, runInput);
+      // The agent's own config names a config dir that holds no settings.json.
+      // It must not become the gate source: the run's env overrides that key
+      // with the managed home regardless, so honouring it would carry no gate
+      // and change nothing else about the run.
+      const agentChosenDir = path.join(home, "agent-chosen-empty-dir");
+      await mkdir(agentChosenDir, { recursive: true });
+      const runtime = await prepareManagedAiRuntime(db, { ...runInput, config: { env: { CLAUDE_CONFIG_DIR: agentChosenDir } } });
       try {
         const configDir = String((runtime.config.env as Record<string, unknown>).CLAUDE_CONFIG_DIR);
+        expect(configDir).not.toBe(agentChosenDir);
         const carried = JSON.parse(await readFile(path.join(configDir, "settings.json"), "utf8")) as Record<string, unknown>;
         expect(carried.hooks).toEqual({ PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookPath }] }] });
         expect(carried.permissions).toEqual({ deny: ["Bash(gh pr merge:*)"] });
         expect(Object.keys(carried).sort()).toEqual(["hooks", "permissions"]);
+        expect(runtime.gate?.hookCommands).toEqual([hookPath]);
       } finally {
         await runtime.cleanup();
       }

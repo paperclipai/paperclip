@@ -20,8 +20,20 @@ import { HttpError } from "../errors.js";
  * host settings file would hand the run the host's `env`/`apiKeyHelper` (which
  * can re-inject a provider credential and defeat the isolation) and the host's
  * `permissions.defaultMode` (which can widen the run's posture). `hooks` and
- * `permissions.deny` can only ever refuse more work than the run would
- * otherwise be allowed, so they are safe to inherit and unsafe to lose.
+ * `permissions.deny` only ever narrow the set of tool calls the run is allowed
+ * to complete, so they are safe to inherit and unsafe to lose.
+ *
+ * "Narrowing" is a statement about the run's permissions, not about what a hook
+ * does. A `type: "command"` hook is a host-authored program that Claude executes
+ * on every matching tool call, inside the run — so with the run's cwd, the run's
+ * environment and therefore the selected connection's credential in that
+ * environment. Carrying one is trusting its author with that. The trust is
+ * sound because the author is the host operator: the same party that owns the
+ * server process, the file the credential is decrypted into, and the hook
+ * registered for their own non-managed sessions. It is not a trust extension to
+ * the agent, the company, or the connection owner — none of those can write the
+ * host `settings.json`, and agent runtime config deliberately cannot choose
+ * which settings file is read (see `resolveHostClaudeSettingsDir`).
  *
  * Then assert it. A gate that fails to arrive must fail the run, because a
  * security boundary that is absent should not be silently absent.
@@ -36,7 +48,9 @@ export type ManagedAiGateFailureReason =
   /** The gate was selected but is not present in the file the run will read. */
   | "gate_not_carried"
   /** A carried hook names a local script that the run cannot execute. */
-  | "hook_command_unreachable";
+  | "hook_command_unreachable"
+  /** A carried hook names a server path, and the run executes on a remote target that cannot see it. */
+  | "hook_command_not_portable";
 
 export const MANAGED_AI_GATE_UNREACHABLE_CODE = "managed_ai_gate_unreachable";
 
@@ -86,38 +100,50 @@ function nonEmpty(value: unknown): string | null {
 }
 
 /**
- * The settings source the run would have read if the managed home had not
- * repointed `CLAUDE_CONFIG_DIR`: the adapter-configured directory first (the
- * operator named it for this agent), then the directory the server process
+ * The host's Claude user settings source: the directory the server process
  * itself runs with, then the Claude default.
+ *
+ * Only the server process environment decides this. Agent adapter config is
+ * deliberately not consulted, even though it can carry a `CLAUDE_CONFIG_DIR`.
+ * `managedAiHomeEnvironment` is spread last when the run's env is built, so a
+ * configured `CLAUDE_CONFIG_DIR` never changes where the run reads settings
+ * from. Honouring it here would let agent config repoint the *gate source* at a
+ * directory with no `settings.json`, carry no gate, and change nothing else
+ * about the run — a one-way bypass. The host gate is a property of the host.
  */
-export function resolveHostClaudeSettingsDir(
-  processEnv: NodeJS.ProcessEnv,
-  configuredEnv?: Record<string, unknown> | null,
-): string {
-  const configured = nonEmpty(configuredEnv?.CLAUDE_CONFIG_DIR);
-  if (configured) return path.resolve(configured);
+export function resolveHostClaudeSettingsDir(processEnv: NodeJS.ProcessEnv): string {
   const inherited = nonEmpty(processEnv.CLAUDE_CONFIG_DIR);
   if (inherited) return path.resolve(inherited);
   return path.join(os.homedir(), ".claude");
 }
 
 /**
- * True when the run's runner reads a Claude user settings source, and so when
- * the host's Claude gate applies to it. Mirrors the adapter resolution in
- * `isAiConnectionCompatible`: a `paperclip_runner` agent is a Claude runner
- * only through its configured provider.
+ * True when the run's provider process reads its user settings from the managed
+ * config dir this module seeds — the only runner shape the carried gate can
+ * reach.
+ *
+ * That is the `claude_local` adapter. Its CLI and ACP lanes both inherit
+ * `CLAUDE_CONFIG_DIR` from the managed environment and, for a managed
+ * connection, launch Claude with `--setting-sources user`, so the file written
+ * here is the run's whole settings source.
+ *
+ * `paperclip_runner` is deliberately excluded even when it drives Claude.
+ * Seeding the managed dir would be a no-op it reported as a live gate:
+ *
+ * - `provider: "acpx"`, `acpxAgent: "claude"` — the runner builds its own
+ *   per-run agent home and sets `CLAUDE_CONFIG_DIR` to it unconditionally
+ *   (`paperclip-runner/src/drivers/acpx/runtime-sandbox.ts`), overriding the
+ *   managed value. It writes its own `settings.json` there, with no `hooks`.
+ * - `provider: "claude"` — Claude Managed is an API lane with no Claude Code
+ *   settings source and no hook mechanism at all; its environment is built from
+ *   a fixed key allowlist that does not include `CLAUDE_CONFIG_DIR`.
+ *
+ * Runner runs gate at the runner's own authenticated approval boundary instead.
+ * Carrying the host hooks into the runner's agent home is a separate change in
+ * that package, not something this module can assert from the server.
  */
-export function runReadsClaudeUserSettings(
-  adapterType: string,
-  config: Record<string, unknown>,
-): boolean {
-  if (adapterType === "claude_local") return true;
-  if (adapterType !== "paperclip_runner") return false;
-  return (
-    config.provider === "claude" ||
-    (config.provider === "acpx" && config.acpxAgent === "claude")
-  );
+export function runReadsClaudeUserSettings(adapterType: string): boolean {
+  return adapterType === "claude_local";
 }
 
 /** Every `type: "command"` hook command in a Claude `hooks` block, in declaration order. */
@@ -171,7 +197,11 @@ export function selectManagedAiGateSettings(hostSettings: unknown): ManagedAiGat
 
   const hooks = asObject(host.hooks);
   const hookCommands = collectHookCommands(hooks);
-  if (hooks && hookCommands.length > 0) settings.hooks = hooks;
+  // Carry a declared hooks block whole, whatever handler types it holds. Only
+  // the reachability check cares about command hooks; whether the gate is
+  // carried must not depend on it having a path we know how to check. A block
+  // of non-command handlers is still a declared gate.
+  if (hooks && Object.keys(hooks).length > 0) settings.hooks = hooks;
 
   const denyRules = (asObject(host.permissions)?.deny ?? []) as unknown;
   const deny = Array.isArray(denyRules)
@@ -268,4 +298,56 @@ export async function seedManagedAiGateSettings(input: {
     hookCommands: selection.hookCommands,
     denyRules: selection.denyRules,
   };
+}
+
+/**
+ * The second half of the assertion, for a run that does not execute on this
+ * server.
+ *
+ * `seedManagedAiGateSettings` runs before the execution target is known, and
+ * checks the hook commands it carries against this server's filesystem. For a
+ * remote target that check proves nothing: the Claude ACP lane stages the
+ * managed config dir into the sandbox and repoints `CLAUDE_CONFIG_DIR` at the
+ * materialized copy, so the carried `settings.json` does arrive, but nothing
+ * else on the host does. A hook command naming an absolute server path is then
+ * provably unreachable — the sandbox never sees that path — and Claude would
+ * start with a gate it cannot execute.
+ *
+ * So fail the run, with the same rule the local check uses: a hook command that
+ * is exactly one absolute path must be reachable where the run will execute, and
+ * a command resolved through `PATH` or written as a shell snippet stays the
+ * runner's business (the sandbox image may well provide it).
+ *
+ * `permissions.deny` needs no equivalent: deny rules are strings Claude matches
+ * itself, so they cross into the sandbox intact with the file.
+ */
+export function hostOnlyHookCommandPaths(hookCommands: readonly string[]): string[] {
+  return hookCommands
+    .map((command) => hookCommandLocalPath(command))
+    .filter((localPath): localPath is string => localPath !== null);
+}
+
+export function managedAiGateNotPortableMessage(
+  hostOnlyPaths: readonly string[],
+  environmentName?: string | null,
+): string {
+  const where = environmentName
+    ? `the remote environment ${environmentName}`
+    : "a remote environment";
+  return `The runner gate hook ${hostOnlyPaths.join(", ")} is a path on the Paperclip server, and this run executes in ${where}, which cannot see it, so the gate would not run. Install the hook in that environment, or run this agent on the server host.`;
+}
+
+/** Throwing form, for the run path. The adapter test reports a failing check instead. */
+export function assertManagedAiGateReachesRemoteTarget(input: {
+  hookCommands: readonly string[];
+  /** Named in the failure so the operator knows which environment to repair. */
+  environmentName?: string | null;
+}): void {
+  const hostOnly = hostOnlyHookCommandPaths(input.hookCommands);
+  if (hostOnly.length === 0) return;
+  throw new ManagedAiGateUnreachableError(
+    "hook_command_not_portable",
+    managedAiGateNotPortableMessage(hostOnly, input.environmentName),
+    hostOnly,
+  );
 }
