@@ -20,6 +20,8 @@ export interface CodexAppServerDriverOptions {
   /** Per-run reasoning effort sent with each Codex turn, including resumed turns. */
   reasoningEffort?: string;
   approvalPolicy?: "never" | "on-request" | "untrusted";
+  /** Paperclip runtime instructions. Codex receives these as additive developer
+   * instructions; the historical option name remains compatible with callers. */
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
   /** Private instruction directory registered by the control plane for this run. */

@@ -572,7 +572,7 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it("places Paperclip runtime instructions in Codex's system channel and enables only selected skill instructions", async () => {
+  it("adds Paperclip developer instructions without replacing the Codex base and enables selected skills", async () => {
     const transport = new FakeCodexTransport();
     const baseInstructions = [
       "You are running as a Paperclip agent.",
@@ -592,12 +592,13 @@ describe("Codex app-server Codex driver", () => {
 
     const threadStart = transport.calls.find((call) => call.method === "thread/start");
     expect(threadStart?.params).toMatchObject({
-      baseInstructions,
+      developerInstructions: baseInstructions,
       config: {
         "skills.include_instructions": true,
         include_apps_instructions: false,
       },
     });
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
     expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(baseInstructions);
   });
 
