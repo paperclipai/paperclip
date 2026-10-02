@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { activityLog, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
@@ -847,9 +847,19 @@ export function projectRoutes(db: Db) {
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     if (deleteFiles) {
       assertBoard(req);
+      await db.transaction(async (tx) => {
+        await tx
+          .update(projects)
+          .set({ status: "deleting", updatedAt: new Date() })
+          .where(and(eq(projects.id, existing.id), eq(projects.companyId, existing.companyId)));
+      });
       try {
         await stopProjectDeletionActivity(existing);
       } catch (err) {
+        await db
+          .update(projects)
+          .set({ status: existing.status, updatedAt: new Date() })
+          .where(and(eq(projects.id, existing.id), eq(projects.status, "deleting")));
         if (err instanceof Error && err.message.startsWith("Timed out waiting for heartbeat run ")) {
           res.status(409).json({
             error: "Project activity could not be stopped. The project was not deleted; retry after its active runs stop.",
@@ -859,9 +869,18 @@ export function projectRoutes(db: Db) {
         throw err;
       }
     }
-    const project = await svc.remove(existing.id, {
-      deleteFiles,
-    });
+    let project;
+    try {
+      project = await svc.remove(existing.id, { deleteFiles });
+    } catch (err) {
+      if (deleteFiles) {
+        await db
+          .update(projects)
+          .set({ status: existing.status, updatedAt: new Date() })
+          .where(and(eq(projects.id, existing.id), eq(projects.status, "deleting")));
+      }
+      throw err;
+    }
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
