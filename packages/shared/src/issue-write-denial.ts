@@ -32,6 +32,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
+  "issue_write_read_only_run",
 ] as const;
 
 export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
@@ -278,6 +279,27 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Remove \`onBehalfOfUserId\` from the request and retry; the server fills in ` +
           `${responsible} from your run.`,
+      };
+
+    case "issue_write_read_only_run":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Read-only run class",
+        title: "This run is scoped to reading",
+        description:
+          `${issue} is in read_only work mode, so every run on it reads the board and ` +
+          `reports — it never writes to the board. The write from ${actor} was refused ` +
+          `before the route ran, so nothing changed.`,
+        whoCanAct:
+          `${assignee} on ${issue} once the task leaves read_only work mode, or any ` +
+          `agent working a task in standard work mode.`,
+        sanctionedPath:
+          `Read what you need with GET endpoints and deliver your findings as the run ` +
+          `result, which the platform posts to the task for you. If the work genuinely ` +
+          `requires a board write, ask ${assignee} to move the task back to standard ` +
+          `work mode for that run.`,
       };
   }
 }

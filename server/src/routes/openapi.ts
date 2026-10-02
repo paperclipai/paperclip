@@ -5479,6 +5479,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/status-digest",
+  tags: ["dashboard"],
+  summary: "Get the cheap status digest for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/recovery-observability",
   tags: ["dashboard"],
   summary: "Get recovery observability report",
