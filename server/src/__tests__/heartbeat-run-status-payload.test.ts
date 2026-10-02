@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildHeartbeatRunStatusLiveEventPayload } from "../services/heartbeat.js";
+import {
+  buildHeartbeatRunStatusLiveEventPayload,
+  buildRunEventRuntimeProgress,
+} from "../services/heartbeat.js";
 
 function run(status: string, resultJson: Record<string, unknown> | null) {
   return {
@@ -80,6 +83,22 @@ describe("buildHeartbeatRunStatusLiveEventPayload", () => {
     );
     expect(
       buildHeartbeatRunStatusLiveEventPayload(projection).contextSource,
+    ).toBeNull();
+  });
+});
+
+describe("buildRunEventRuntimeProgress", () => {
+  it("does not let a JEV shadow receipt replace live adapter progress", () => {
+    expect(
+      buildRunEventRuntimeProgress({
+        eventType: "jev.shadow.issue_lane",
+        message: "JEV shadow issue-lane suggestion recorded",
+        payload: {
+          suggestedLane: "engineering",
+          modelVersion: "jev-1.13.0",
+        },
+        at: new Date("2026-10-02T08:00:00.000Z"),
+      }),
     ).toBeNull();
   });
 });

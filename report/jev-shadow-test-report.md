@@ -88,11 +88,25 @@ the awaited dispatch path. Live p50/p95 remains unmeasured.
 - The mock reports 25 input and 5 output tokens per successful request solely to
   verify receipt accounting; those are fixtures, not a billing estimate.
 
+## Independent review and follow-up
+
+Claude Code completed an independent integration and data-boundary review. The
+review found no material security or authority-boundary defects.
+
+A later PR review found that the new run-log event initially flowed through the
+generic runtime-progress projection. That could replace the visible adapter
+activity message with the JEV receipt message. The event now returns no runtime
+progress projection, while it remains persisted in the local run log. A focused
+regression test proves this behavior.
+
 ## Verification commands
 
 ```text
 pnpm exec vitest run server/src/services/jev-decision-adapter.test.ts server/src/__tests__/heartbeat-auto-checkout.test.ts
   PASS: 19 tests
+
+pnpm exec vitest run server/src/__tests__/heartbeat-run-status-payload.test.ts
+  PASS: 12 tests
 
 node server/node_modules/typescript/bin/tsc --noEmit -p server/tsconfig.json
   PASS

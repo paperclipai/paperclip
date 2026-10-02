@@ -8484,7 +8484,7 @@ function readLiveRunAssistantSnippet(
   return null;
 }
 
-function buildRunEventRuntimeProgress(input: {
+export function buildRunEventRuntimeProgress(input: {
   eventType: string;
   message: string | null;
   payload: Record<string, unknown> | null;
@@ -8493,7 +8493,8 @@ function buildRunEventRuntimeProgress(input: {
   const normalizedEventType = input.eventType.toLowerCase();
   if (
     normalizedEventType === "lifecycle" ||
-    normalizedEventType === "adapter.invoke"
+    normalizedEventType === "adapter.invoke" ||
+    normalizedEventType === "jev.shadow.issue_lane"
   ) {
     return null;
   }
