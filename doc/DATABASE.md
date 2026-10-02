@@ -243,6 +243,20 @@ These rows are company-scoped and user-scoped. A missing row means the user is j
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
 
+## Cost event rate-card backfill
+
+`cost_events.rate_card_cents` records the notional list-price cost of a run, separate from `cost_cents` (cash actually billed). Rows written before the rate card existed are not repriced by `pnpm db:migrate`; the historical backfill is a separate, opt-in step that operators run once after migrating:
+
+```sh
+# dry run: prints the planned updates without writing
+pnpm --filter @paperclipai/db backfill:cost-event-rate-card
+
+# apply
+pnpm --filter @paperclipai/db backfill:cost-event-rate-card --apply
+```
+
+The script never changes `cost_cents`, writes `rate_card_cents = NULL` with `pricing_methodology = 'unpriced'` for models the rate card cannot price, and is idempotent. Rows the migration flagged as `pre_cache_write_aware` keep that flag, because their cache-write tokens were folded into `input_tokens` and the rate-card figure is only a lower bound.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.
