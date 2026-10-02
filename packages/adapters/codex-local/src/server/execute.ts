@@ -766,6 +766,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       codexHome: effectiveCodexHome,
       apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
       gateways: managedMcpGateways,
+      removeUnmanagedServers: configuredCodexHome === null || configuredHomeIsManaged,
     });
     if (managedMcpGateways.length > 0) {
       await onLog(
