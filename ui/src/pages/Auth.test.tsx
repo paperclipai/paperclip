@@ -141,12 +141,11 @@ describe("AuthPage", () => {
     await act(() => root.unmount());
   });
 
-  it("renders sign-in while deployment metadata is loading", async () => {
+  it("does not render an auth form while deployment metadata is loading", async () => {
     healthMock.mockReturnValue(new Promise(() => {}));
     const { root } = await mount();
-    expect(container.querySelector("form")).not.toBeNull();
-    expect(container.textContent).toContain("Create one");
-    expect(container.textContent).not.toContain("Loading");
+    expect(container.querySelector("form")).toBeNull();
+    expect(container.textContent).toContain("Loading");
     await act(() => root.unmount());
   });
 
