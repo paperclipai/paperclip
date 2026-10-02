@@ -4,7 +4,7 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -24,6 +24,7 @@ import { validateAiApiKey } from "../routes/ai-connections.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
 let home: string;
+let hostClaudeDir: string;
 const companyId = randomUUID();
 const otherCompanyId = randomUUID();
 const agentId = randomUUID();
@@ -36,6 +37,13 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
+  // A managed AI run carries the host's deny-side Claude gate into its private
+  // config dir, so point the host settings source at a fixture dir. A real
+  // ~/.claude/settings.json on the machine running these tests must not change
+  // what they observe.
+  hostClaudeDir = path.join(home, "host-claude");
+  await mkdir(hostClaudeDir, { recursive: true });
+  vi.stubEnv("CLAUDE_CONFIG_DIR", hostClaudeDir);
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
   db = createDb(database.connectionString);
   service = aiConnectionService(db);
@@ -465,6 +473,54 @@ describe("managed AI connections", () => {
     await newer.cleanup();
     const stored = await service.credential(await service.select({ ...runInput, userId }));
     expect(stored).toBe(auth("newer", now + 2 * 60 * 60 * 1000));
+  });
+  it("carries the host runner gate into the managed Claude config dir, and refuses the run when the gate cannot run", async () => {
+    const userId = "runner-gate-user";
+    const gateAgentId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: gateAgentId, companyId, name: "Gate carrier", adapterType: "claude_local" });
+    await service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Runner gate account", apiKey: "fixture", agentIds: [gateAgentId], allAgents: false }, "fixture-runner-gate-key");
+    const hookPath = path.join(home, "merge-gate.sh");
+    await writeFile(hookPath, "#!/bin/sh\nexit 0\n");
+    await chmod(hookPath, 0o644);
+    await writeFile(path.join(hostClaudeDir, "settings.json"), JSON.stringify({
+      // Host-only keys that must not reach the run: PATH and apiKeyHelper can
+      // re-inject a provider credential the managed home exists to isolate,
+      // and defaultMode would widen the run's permission posture.
+      env: { PATH: "/host/only" },
+      apiKeyHelper: "/host/only/print-a-key.sh",
+      permissions: { defaultMode: "bypassPermissions", deny: ["Bash(gh pr merge:*)"] },
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookPath }] }] },
+    }));
+    const runInput = { companyId, agentId: gateAgentId, adapterType: "claude_local", binding, responsibleUserId: userId, config: {} };
+    try {
+      // The gate hook is declared but not executable, so the run must not
+      // start ungated. Root ignores the executable bit, so only a non-root
+      // runner can observe this half.
+      if (process.getuid?.() !== 0)
+        await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow(/not an executable file/);
+      await chmod(hookPath, 0o755);
+      // The agent's own config names a config dir that holds no settings.json.
+      // It must not become the gate source: the run's env overrides that key
+      // with the managed home regardless, so honouring it would carry no gate
+      // and change nothing else about the run.
+      const agentChosenDir = path.join(home, "agent-chosen-empty-dir");
+      await mkdir(agentChosenDir, { recursive: true });
+      const runtime = await prepareManagedAiRuntime(db, { ...runInput, config: { env: { CLAUDE_CONFIG_DIR: agentChosenDir } } });
+      try {
+        const configDir = String((runtime.config.env as Record<string, unknown>).CLAUDE_CONFIG_DIR);
+        expect(configDir).not.toBe(agentChosenDir);
+        const carried = JSON.parse(await readFile(path.join(configDir, "settings.json"), "utf8")) as Record<string, unknown>;
+        expect(carried.hooks).toEqual({ PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookPath }] }] });
+        expect(carried.permissions).toEqual({ deny: ["Bash(gh pr merge:*)"] });
+        expect(Object.keys(carried).sort()).toEqual(["hooks", "permissions"]);
+        expect(runtime.gate?.hookCommands).toEqual([hookPath]);
+      } finally {
+        await runtime.cleanup();
+      }
+    } finally {
+      await rm(path.join(hostClaudeDir, "settings.json"), { force: true });
+    }
   });
   it("discards a credential write-back when the grant is revoked while the run is open", async () => {
     const userId = "revoked-write-back-user";
