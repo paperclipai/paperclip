@@ -55,8 +55,19 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
     const cleanups = [
       () => db.delete(issueThreadInteractions),
       () => db.delete(activityLog),
+      // Release the issue -> run references first. Both columns are `on delete
+      // set null`, so `delete from heartbeat_runs` otherwise locks the
+      // referencing `issues` rows from inside its own FK pass — taking
+      // heartbeat_runs before issues, while the wake run still in flight holds
+      // the issue row and wants the run row via `issuesSvc.checkout`. That is a
+      // deadlock cycle, and because the run is fire-and-forget its loss was
+      // invisible: the suite stayed green while the aborted run left no status
+      // behind at all.
+      () => db.update(issues).set({ checkoutRunId: null, executionRunId: null }),
       () => db.delete(heartbeatRuns),
       () => db.delete(agentWakeupRequests),
+      // Same again for a run row that landed after the first pass.
+      () => db.update(issues).set({ checkoutRunId: null, executionRunId: null }),
       () => db.delete(heartbeatRuns),
       () => db.delete(issues),
       () => db.delete(companyMemberships),
