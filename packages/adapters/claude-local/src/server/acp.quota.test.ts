@@ -145,9 +145,9 @@ it.each([
     errorMessage: `ACP agent reported a terminal limit failure.\n${title}`,
     errorCode: "provider_quota",
     errorFamily: "provider_quota",
-    resultJson: { errorFamily: "provider_quota" },
+    retryNotBefore: "2026-07-15T20:30:00.000Z",
+    resultJson: { errorFamily: "provider_quota", retryNotBefore: "2026-07-15T20:30:00.000Z" },
   });
-  expect(result.retryNotBefore).toBeUndefined();
   expect(result.errorMessage).toContain(title);
   expect(result.resultJson?.terminalSessionFailure).toMatchObject({ category: "limit", title });
   expect(result.summary).not.toContain(title);
@@ -172,6 +172,18 @@ it.each([
   expect(result.resultJson?.terminalSessionFailure).toMatchObject({ category, title });
   expect(result.summary).not.toContain(title);
   expect(logs).toContain(title);
+});
+
+it("prefers a parsed reset time over the fallback default wait", () => {
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "The Claude account has no available quota.",
+    details: "You've hit your session limit · resets 4:30pm (America/Chicago)",
+  }, now)).toEqual({
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-07-15T21:30:00.000Z",
+  });
 });
 
 it("does not infer quota from the historical generic terminal-limit error", () => {

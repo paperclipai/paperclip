@@ -316,6 +316,8 @@ async function prepareClaudeRemoteManagedHome(
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
+const CLAUDE_QUOTA_FALLBACK_DEFAULT_BACKOFF_MS = 30 * 60 * 1000;
+
 export function classifyClaudeTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
@@ -328,7 +330,13 @@ export function classifyClaudeTerminalSessionFailure(
   // title is available. It does not match the CLI's usage-limit wording.
   const isQuotaFallback = failure.title === "The Claude account has no available quota.";
   if (!isQuotaFallback && !isClaudeProviderQuotaError(surface)) return null;
-  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  // The fallback carries no reset time. Without a retryNotBefore the server
+  // retries on its short default and every wake burns a run against a quota
+  // that needs hours to reset, so wait a default interval instead.
+  const retryNotBefore = (
+    extractClaudeRetryNotBefore(surface, now) ??
+    (isQuotaFallback ? new Date(now.getTime() + CLAUDE_QUOTA_FALLBACK_DEFAULT_BACKOFF_MS) : null)
+  )?.toISOString();
   return {
     errorCode: "provider_quota",
     errorFamily: "provider_quota",
