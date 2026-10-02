@@ -2115,7 +2115,13 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it("uses provider structure rather than prose length to select a post-tool answer", async () => {
+  it.each([
+    "final-after-tool-commentary",
+    "final-after-tool-commentary-repeat-terminal",
+    "final-after-tool-commentary-retry-terminal",
+    "final-after-tool-commentary-delayed-terminal",
+  ])(
+    "uses provider structure rather than prose length to select a post-tool answer (%s)", async (prompt) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
     const workspace = await mkdtemp(
@@ -2137,7 +2143,7 @@ describe("OpenCodeServerDriver", () => {
       workingDirectory: workspace,
     });
     await session.startTurn({
-      message: { role: "user", text: "final-after-tool-commentary" },
+      message: { role: "user", text: prompt },
     });
     const events = await collectTurnEvents(session.events());
     const finalMessages = events.filter(
