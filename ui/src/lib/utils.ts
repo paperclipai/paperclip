@@ -37,8 +37,8 @@ export function formatCents(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
+  return n.toLocaleString("en-US", options);
 }
 
 /**

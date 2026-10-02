@@ -22,16 +22,19 @@ import {
   aiConnectionMetadataSchema,
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
+  supportsAiConnectionUsage,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
   type AiManagedConnectionSummary,
+  type AiConnectionUsage,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -132,6 +135,7 @@ export function aiConnectionService(db: Db) {
           grantId: grant.id,
           companyId,
           ...metadata.data,
+          usageProbeSupported: supportsAiConnectionUsage(metadata.data.provider, metadata.data.method),
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
@@ -207,6 +211,29 @@ export function aiConnectionService(db: Db) {
           set: { grantId, updatedAt: new Date() },
         });
     });
+  }
+  /** On-demand account observation for either runner; never probes ambient CLI auth. */
+  async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
+    if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
+    const candidates = (await rows(companyId)).filter((row) => row.connection.id === connectionId && (!grantId || row.grant.id === grantId));
+    const audience = await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId));
+    const visible = candidates.filter(({ grant }) => canUseCredential(grant, userId, audience.filter((member) => member.grantId === grant.id)));
+    if (!visible.length) throw notFound("AI connection not found");
+    if (visible.length > 1) throw unprocessable("Choose a credential grant for this usage check");
+    const row = visible[0]!;
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success) throw notFound("AI connection not found");
+    const identity = { connectionId: row.connection.id, grantId: row.grant.id, ...metadata.data };
+    const empty = { ...identity, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" ||
+      row.connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(row.connection.config)) {
+      return { ...empty, status: "unavailable", errorCode: "connection_unavailable", message: "Reconnect or enable this AI connection before checking usage." };
+    }
+    if (!supportsAiConnectionUsage(metadata.data.provider, metadata.data.method)) {
+      return { ...identity, ...await probeAiConnectionUsage(metadata.data, "") };
+    }
+    const value = await credential(row);
+    return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
   }
   async function select(input: {
     companyId: string;
@@ -394,6 +421,8 @@ export function aiConnectionService(db: Db) {
       throw unprocessable("Reconnect this AI account", {
         code: "ai_connection_credential_missing",
       });
+    if (row.grant.kind === "user" && secret.scope !== "user")
+      throw forbidden("Credential ownership mismatch");
     const context = {
       consumerType: "tool_connection" as const,
       consumerId: row.connection.id,
@@ -819,5 +848,5 @@ export function aiConnectionService(db: Db) {
       });
     });
   }
-  return { list, select, credential, save, setDefault, membership, markAuthenticationFailed };
+  return { list, select, credential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

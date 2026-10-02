@@ -172,6 +172,7 @@ export interface AiManagedConnectionSummary {
   isDefault: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
+  usageProbeSupported?: boolean;
 }
 export interface AiConnectionList {
   currentUserId: string;

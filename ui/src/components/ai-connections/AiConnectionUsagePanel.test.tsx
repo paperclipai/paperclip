@@ -1,0 +1,72 @@
+// @vitest-environment jsdom
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { AiManagedConnectionSummary, AiConnectionUsage } from "@paperclipai/shared";
+import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
+
+const api = vi.hoisted(() => ({ probeUsage: vi.fn() }));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: api }));
+const account: AiManagedConnectionSummary = { id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription", name: "My Claude", ownership: "personal", isDefault: true, status: "connected" };
+let root: ReturnType<typeof createRoot>;
+let host: HTMLDivElement;
+let client: QueryClient;
+beforeEach(() => {
+  vi.resetAllMocks();
+  client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+});
+afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
+function render(value = account) {
+  flushSync(() => root.render(<QueryClientProvider client={client}><AiConnectionUsagePanel key={value.id} account={value} /></QueryClientProvider>));
+}
+const click = () => flushSync(() => host.querySelector("button")!.click());
+it("checks only on demand and replaces a successful observation with a failed probe", async () => {
+  const observation: AiConnectionUsage = { ...account, connectionId: account.id, status: "ok", checkedAt: "2026-10-02T12:00:00Z", source: "anthropic_oauth", planType: null,
+    overage: { enabled: false, available: false, unlimited: null, used: null, limit: null, remaining: null, balance: null, unit: "cents" },
+    limits: [{ id: "five_hour", label: "5 hour limit", scope: null, windowDurationSeconds: 18000, resetsAt: null,
+      usedPercent: 100, remainingPercent: 0, used: null, limit: null, remaining: null, unit: "percent", limitReached: true, allowed: null }],
+  };
+  api.probeUsage.mockResolvedValue(observation);
+  render();
+  expect(api.probeUsage).not.toHaveBeenCalled();
+  click();
+  await vi.waitFor(() => expect(host.textContent).toContain("100% used"));
+  expect(api.probeUsage).toHaveBeenCalledWith("company", "connection", "grant");
+  expect(host.textContent).toContain("Limit reached");
+  expect(host.textContent).toContain("Overage is unavailable");
+  api.probeUsage.mockResolvedValue({ ...observation, status: "error", limits: [], overage: null, message: "The provider rate limited the usage check. Try again later." });
+  click();
+  await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("rate limited"));
+  expect(host.textContent).not.toContain("100% used");
+  expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(0);
+});
+it("clears the prior account's snapshot when changing accounts", async () => {
+  api.probeUsage.mockResolvedValue({ status: "error", message: "Old account failure" });
+  render(); click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Old account failure"));
+  render({ ...account, id: "other", grantId: "other-grant" });
+  expect(host.textContent).not.toContain("Old account failure");
+  expect(api.probeUsage).toHaveBeenCalledTimes(1);
+});
+it("does not round almost-exhausted usage up to an exhausted allowance", async () => {
+  api.probeUsage.mockResolvedValue({ status: "ok", checkedAt: "2026-10-02T12:00:00Z", overage: { balance: 0.00001, unit: "USD" },
+    limits: [{ id: "five_hour", label: "5 hour limit", usedPercent: 99.99999, remainingPercent: 0.00001,
+      limitReached: false, allowed: null, windowDurationSeconds: 18000, resetsAt: null, limit: 1, remaining: 0.0000001, unit: "USD" }],
+  });
+  render(); click();
+  await vi.waitFor(() => expect(host.textContent).toContain("99.99999% used"));
+  expect(host.textContent).toContain("0.00001% remaining");
+  expect(host.textContent).toContain("0.0000001 USD remaining");
+  expect(host.textContent).toContain("0.00001 USD balance");
+  expect(host.textContent).not.toContain("Limit reached");
+});
+it("explains unsupported methods and disables checks for a revoked grant", () => {
+  render({ ...account, method: "api_key" });
+  expect(host.textContent).toContain("unavailable through this sign-in method");
+  expect(host.querySelector("button")).toBeNull();
+  render({ ...account, status: "revoked" });
+  expect(host.querySelector("button")?.disabled).toBe(true);
+  expect(api.probeUsage).not.toHaveBeenCalled();
+});
