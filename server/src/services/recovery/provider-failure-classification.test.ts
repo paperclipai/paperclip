@@ -172,4 +172,91 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toBeNull();
   });
+
+  it("routes a typed ACP access failure to a configuration blocker", () => {
+    // auth_required is the only producer of category `access`. Nothing but a
+    // human sign-in clears it, so the issue must be blocked, not re-dispatched.
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "acpx_turn_failed",
+        error:
+          "ACP agent reported a terminal access failure.\nSign in to continue using Claude.",
+        resultJson: {
+          terminalSessionFailure: {
+            category: "access",
+            title: "Sign in to continue using Claude.",
+          },
+        },
+      }),
+    ).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it("reads the access category from the legacy flattened sentence", () => {
+    // A run recorded before resultJson.terminalSessionFailure existed.
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "adapter_failed",
+        error: "ACP agent reported a terminal access failure.",
+        resultJson: null,
+      }),
+    ).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it.each(["connection", "service", "request", "unknown"])(
+    "leaves typed ACP category %s on its bounded continuation retry",
+    (category) => {
+      expect(
+        classifyAdapterFailureForRecovery({
+          errorCode: "acpx_turn_failed",
+          error: `ACP agent reported a terminal ${category} failure.`,
+          resultJson: { terminalSessionFailure: { category } },
+        }),
+      ).toBeNull();
+      // The bound is already there: one attempt, no indefinite re-dispatch.
+      expect(
+        classifyContinuationFailure({ errorCode: "acpx_turn_failed" }),
+      ).toMatchObject({ kind: "default", maxAttempts: 1 });
+    },
+  );
+
+  it("does not infer a quota hold from a typed ACP service failure", () => {
+    // The provider diagnostic can mention a limit without being a quota reset.
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "acpx_turn_failed",
+        error:
+          "ACP agent reported a terminal service failure.\nHTTP 529: overloaded_error, usage limit reached downstream",
+        resultJson: { terminalSessionFailure: { category: "service" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("still honours the adapter's own provider_quota conversion for category limit", () => {
+    const now = new Date("2026-10-01T13:18:00.000Z");
+    expect(
+      classifyAdapterFailureForRecovery(
+        {
+          errorCode: "provider_quota",
+          error:
+            "ACP agent reported a terminal limit failure.\nYou've hit your session limit · resets 4:30pm (UTC)",
+          resultJson: { terminalSessionFailure: { category: "limit" } },
+        },
+        now,
+      ),
+    ).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-10-01T16:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("leaves an acpx_turn_failed run with no typed category unclassified", () => {
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "acpx_turn_failed",
+        error: "the acpx child exited with code 7",
+        resultJson: null,
+      }),
+    ).toBeNull();
+  });
 });
