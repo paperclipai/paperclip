@@ -1,13 +1,71 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-export function materializePublishManifest(pkg) {
+// Workspace roots declared in pnpm-workspace.yaml. Scanned to resolve each
+// workspace:* dependency to *its own* published version rather than the
+// consuming package's version -- packages are not required to share a
+// lockstep version number (e.g. @paperclipai/plugin-sdk is 1.0.0 while most
+// other workspace packages track the date-based CLI version).
+const WORKSPACE_GLOB_ROOTS = [
+  "packages",
+  "packages/adapters",
+  "packages/plugins",
+  "packages/plugins/examples",
+  "server",
+  "ui",
+  "cli",
+];
+
+let cachedWorkspaceVersionMap = null;
+
+function readPackageNameAndVersion(packageJsonPath) {
+  try {
+    const raw = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    if (typeof raw.name === "string" && typeof raw.version === "string") {
+      return [raw.name, raw.version];
+    }
+  } catch {
+    // Not a readable/parseable package.json; ignore.
+  }
+  return null;
+}
+
+export function buildWorkspaceVersionMap(root = repoRoot) {
+  if (cachedWorkspaceVersionMap) return cachedWorkspaceVersionMap;
+  const versionMap = new Map();
+
+  for (const globRoot of WORKSPACE_GLOB_ROOTS) {
+    const dirPath = resolve(root, globRoot);
+    const directPackageJson = resolve(dirPath, "package.json");
+    if (existsSync(directPackageJson)) {
+      const entry = readPackageNameAndVersion(directPackageJson);
+      if (entry) versionMap.set(entry[0], entry[1]);
+      continue;
+    }
+    let children;
+    try {
+      children = readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const child of children) {
+      if (!child.isDirectory()) continue;
+      const entry = readPackageNameAndVersion(resolve(dirPath, child.name, "package.json"));
+      if (entry) versionMap.set(entry[0], entry[1]);
+    }
+  }
+
+  cachedWorkspaceVersionMap = versionMap;
+  return versionMap;
+}
+
+export function materializePublishManifest(pkg, versionMap = buildWorkspaceVersionMap()) {
   const publishConfig = pkg.publishConfig ?? {};
   const publishManifest = { ...pkg };
 
@@ -22,7 +80,8 @@ export function materializePublishManifest(pkg) {
         if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
         const range = specifier.slice("workspace:".length);
         const prefix = range === "^" || range === "~" ? range : "";
-        return [name, `${prefix}${pkg.version}`];
+        const resolvedVersion = versionMap.get(name) ?? pkg.version;
+        return [name, `${prefix}${resolvedVersion}`];
       }),
     );
   }

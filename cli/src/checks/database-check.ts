@@ -13,19 +13,27 @@ function isInsideOsTmpDir(targetPath: string): boolean {
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
-    if (!config.database.connectionString) {
+    // config.database.connectionString is the plaintext config-file field.
+    // Deployments that keep the connection string out of config.json instead
+    // rely on DATABASE_URL from the instance .env file (loaded by
+    // loadPaperclipEnvFile() earlier in run/doctor bootstrap) -- mirror the
+    // same fallback the running server itself uses in server/src/config.ts
+    // (`process.env.DATABASE_URL ?? fileDbUrl`), so this check doesn't fail
+    // for a setup the actual server would start up under just fine.
+    const connectionString = config.database.connectionString ?? process.env.DATABASE_URL;
+    if (!connectionString) {
       return {
         name: "Database",
         status: "fail",
         message: "PostgreSQL mode selected but no connection string configured",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section database`",
+        repairHint: "Run `paperclipai configure --section database`, or set DATABASE_URL in the instance .env file",
       };
     }
 
     try {
       const { createDb } = await import("@paperclipai/db");
-      const db = createDb(config.database.connectionString);
+      const db = createDb(connectionString);
       await db.execute("SELECT 1");
       return {
         name: "Database",

@@ -45,6 +45,7 @@ import {
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
+import { resolveClaudeApiKeyHelperKey } from "./api-key.js";
 import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
@@ -160,12 +161,14 @@ export function buildClaudeAcpConfig(
  * Classify billing the same way the Claude CLI lane does so ACP runs land in
  * the cost ledger with a real provider/billingType instead of acpx/unknown.
  * Host env only counts for local execution targets; remote targets see just
- * the adapter-config env.
+ * the adapter-config env. When no API key is present in env, fall back to the
+ * apiKeyHelper command (settings.json) so post-cutover API-key billing is not
+ * misclassified as subscription.
  */
-export function resolveClaudeAcpBillingIdentity(
+export async function resolveClaudeAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
-): { provider: string; biller: string; billingType: AdapterBillingType } {
+): Promise<{ provider: string; biller: string; billingType: AdapterBillingType }> {
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -180,11 +183,16 @@ export function resolveClaudeAcpBillingIdentity(
   };
   const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
   const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
-  const billingType: AdapterBillingType = bedrock
-    ? "metered_api"
-    : readEnvValue("ANTHROPIC_API_KEY")
-    ? "api"
-    : "subscription";
+  let billingType: AdapterBillingType;
+  if (bedrock) {
+    billingType = "metered_api";
+  } else if (readEnvValue("ANTHROPIC_API_KEY")) {
+    billingType = "api";
+  } else if (considerHostEnv && (await resolveClaudeApiKeyHelperKey())) {
+    billingType = "api";
+  } else {
+    billingType = "subscription";
+  }
   return {
     provider: "anthropic",
     biller: bedrock ? "aws_bedrock" : "anthropic",

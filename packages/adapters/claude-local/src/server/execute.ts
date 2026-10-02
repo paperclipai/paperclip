@@ -88,6 +88,7 @@ import {
   minimumClaudeCliVersionForModel,
   readClaudeCommandVersion,
 } from "./cli-capabilities.js";
+import { resolveClaudeApiKeyHelperKey } from "./api-key.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -162,9 +163,16 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
-function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+async function resolveClaudeBillingType(
+  env: Record<string, string>,
+): Promise<"api" | "subscription" | "metered_api"> {
   if (isBedrockAuth(env)) return "metered_api";
-  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+  if (hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY")) return "api";
+  // Post-cutover: when ANTHROPIC_API_KEY is no longer exported into the child
+  // env, Claude still resolves the key via apiKeyHelper. Mirror that here for
+  // billing attribution only — the key never enters the child environment.
+  const helperKey = await resolveClaudeApiKeyHelperKey();
+  return helperKey ? "api" : "subscription";
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -490,7 +498,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
   const model = resolveClaudeModel(config.model, modelEnv);
-  const billingType = resolveClaudeBillingType(effectiveEnv);
+  const billingType = await resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
+import { resolveClaudeApiKeyHelperKey } from "./api-key.js";
 
 const ANTHROPIC_MODELS_ENDPOINT = "/v1/models";
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -58,9 +59,12 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]);
 }
 
-function resolveAnthropicApiKey(): string | null {
+function resolveAnthropicApiKey(): Promise<string | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  return apiKey && apiKey.length > 0 ? apiKey : null;
+  if (apiKey && apiKey.length > 0) return Promise.resolve(apiKey);
+  // Post-cutover: ANTHROPIC_API_KEY is no longer exported; resolve the key via
+  // the settings.json apiKeyHelper so live /v1/models discovery keeps working.
+  return resolveClaudeApiKeyHelperKey();
 }
 
 function resolveAnthropicBaseUrl(): string {
@@ -112,7 +116,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
   if (isBedrockEnv()) return dedupeModels(BEDROCK_MODELS);
 
   const fallback = dedupeModels(DIRECT_MODELS);
-  const apiKey = resolveAnthropicApiKey();
+  const apiKey = await resolveAnthropicApiKey();
   if (!apiKey) return fallback;
 
   const now = Date.now();

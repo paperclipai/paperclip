@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { resolveClaudeApiKeyHelperKey } from "./api-key.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -571,13 +572,17 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     errors.push(formatProviderError("Claude CLI /usage", error));
   }
 
-  if (hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") && !authDescription) {
+  // Post-cutover, API-key billing may be configured via the settings.json
+  // apiKeyHelper rather than the ANTHROPIC_API_KEY env var. Treat either as
+  // "API-key auth with no subscription session" for quota error attribution.
+  const apiKeyConfigured = hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") || Boolean(await resolveClaudeApiKeyHelperKey());
+  if (apiKeyConfigured && !authDescription) {
     return {
       provider: "anthropic",
       ok: false,
       error:
         errors[0]
-        ?? "ANTHROPIC_API_KEY is set and no local Claude subscription session is available for quota polling",
+        ?? "Anthropic API key is set and no local Claude subscription session is available for quota polling",
       windows: [],
     };
   }

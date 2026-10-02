@@ -1512,6 +1512,7 @@ describe("resolveClaudeAcpBillingIdentity", () => {
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
   const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
   const originalBedrockBase = process.env.ANTHROPIC_BEDROCK_BASE_URL;
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
 
   afterEach(() => {
     if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -1520,38 +1521,72 @@ describe("resolveClaudeAcpBillingIdentity", () => {
     else process.env.CLAUDE_CODE_USE_BEDROCK = originalBedrock;
     if (originalBedrockBase === undefined) delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     else process.env.ANTHROPIC_BEDROCK_BASE_URL = originalBedrockBase;
+    if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
   });
 
-  it("classifies an adapter-config API key as api billing", () => {
+  it("classifies an adapter-config API key as api billing", async () => {
     expect(
-      resolveClaudeAcpBillingIdentity({ config: { env: { ANTHROPIC_API_KEY: "sk-ant-test" } } }),
+      await resolveClaudeAcpBillingIdentity({ config: { env: { ANTHROPIC_API_KEY: "sk-ant-test" } } }),
     ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "api" });
   });
 
-  it("classifies Bedrock auth as metered_api billed to aws_bedrock", () => {
+  it("classifies Bedrock auth as metered_api billed to aws_bedrock", async () => {
     expect(
-      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } }),
+      await resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } }),
     ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
   });
 
-  it("falls back to subscription without API-key or Bedrock auth", () => {
+  it("falls back to subscription without API-key or Bedrock auth", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
-    expect(resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
-      provider: "anthropic",
-      biller: "anthropic",
-      billingType: "subscription",
-    });
+    // Isolate CLAUDE_CONFIG_DIR so this does not fall through to a real
+    // ~/.claude/settings.json apiKeyHelper on the host running the test.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-acp-no-helper-"));
+    process.env.CLAUDE_CONFIG_DIR = root;
+    try {
+      expect(await resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+        provider: "anthropic",
+        biller: "anthropic",
+        billingType: "subscription",
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
-  it("ignores host env for remote execution targets", () => {
+  it("ignores host env for remote execution targets", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
     expect(
-      resolveClaudeAcpBillingIdentity({
+      (await resolveClaudeAcpBillingIdentity({
         config: {},
         executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
-      } as never).billingType,
+      } as never)).billingType,
     ).toBe("subscription");
+  });
+
+  it("classifies an apiKeyHelper key as api billing for local targets", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-acp-helper-"));
+    const configDir = path.join(root, "claude");
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, "settings.json"),
+      JSON.stringify({ apiKeyHelper: "printf 'sk-ant-from-helper\\n'" }),
+      "utf8",
+    );
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    try {
+      expect(await resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+        provider: "anthropic",
+        biller: "anthropic",
+        billingType: "api",
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 });
