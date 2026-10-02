@@ -80,7 +80,20 @@ it("keeps provider admission and unknown overage availability distinct from exha
   });
   render(); click();
   await vi.waitFor(() => expect(host.textContent).toContain("Limit reached · Usage allowed"));
-  expect(host.textContent).toContain("Plan usage · 5h");
+  expect(host.textContent).toContain("Plan usage · Primary · 5h");
   expect(host.textContent).toContain("On · Availability unknown");
   expect(host.textContent).not.toContain("Provider denies");
+});
+it("shows explicit denial and distinguishes equal-duration provider windows", async () => {
+  const window = { scope: null, windowDurationSeconds: 18000, resetsAt: null, used: null, limit: null, remaining: null, unit: "percent" };
+  api.probeUsage.mockResolvedValue({ status: "ok", checkedAt: "2026-10-02T12:00:00Z", overage: null,
+    limits: [
+      { ...window, id: "primary", label: "Plan usage · Primary", usedPercent: 100, remainingPercent: 0, limitReached: true, allowed: false },
+      { ...window, id: "secondary", label: "Plan usage · Secondary", usedPercent: 50, remainingPercent: 50, limitReached: false, allowed: true },
+    ],
+  });
+  render(); click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Blocked"));
+  expect(host.querySelector('[aria-label="Plan usage · Primary · 5h: 100%"]')).not.toBeNull();
+  expect(host.querySelector('[aria-label="Plan usage · Secondary · 5h: 50%"]')).not.toBeNull();
 });

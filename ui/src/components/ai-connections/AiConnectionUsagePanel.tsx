@@ -16,7 +16,7 @@ function limitLabel(window: AiConnectionUsageLimit) {
   if (window.windowDurationSeconds == null) return label;
   const hours = window.windowDurationSeconds / 3600;
   const period = hours === 168 ? "Weekly" : `${usageNumber(hours)}h`;
-  if (/\b(?:Primary|Secondary)$/.test(label)) return label.replace(/\b(?:Primary|Secondary)$/, period);
+  if (/\b(?:Primary|Secondary)$/.test(label)) return `${label} · ${period}`;
   if ((hours === 168 && /weekly/i.test(label)) || label.split(/[\s·()]+/).includes(period)) return label;
   return `${label} · ${period}`;
 }
@@ -32,8 +32,8 @@ function limitValue(window: AiConnectionUsageLimit) {
 
 function limitDetails(window: AiConnectionUsageLimit) {
   const details: string[] = [];
-  if (window.limitReached === true) details.push("Limit reached");
-  else if (window.allowed === false) details.push("Blocked");
+  if (window.allowed === false) details.push("Blocked");
+  else if (window.limitReached === true) details.push("Limit reached");
   if (window.allowed === true && (window.limitReached === true || window.usedPercent == null)) details.push("Usage allowed");
   if (window.used == null || window.limit == null) {
     if (window.remaining != null) details.push(`${amount(window.remaining, window.unit)} left`);
