@@ -162,6 +162,34 @@ const mockAdapterExecute = vi.hoisted(() =>
   })),
 );
 
+// Lets a test make the recovery cycle pre-check miss a cycle, as if the blocker
+// graph changed between the pre-check and the write.
+const cyclePreCheckOverride = vi.hoisted(() => ({
+  current: null as
+    | null
+    | ((companyId: string, issueId: string, candidateIssueIds: string[]) => Promise<string[]> | null),
+}));
+vi.mock("../services/issues.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issues.js")>(
+    "../services/issues.js",
+  );
+  return {
+    ...actual,
+    issueService: (...args: Parameters<typeof actual.issueService>) => {
+      const svc = actual.issueService(...args);
+      return {
+        ...svc,
+        findCycleFormingBlockerIds: (
+          companyId: string,
+          issueId: string,
+          candidateIssueIds: string[],
+        ) =>
+          cyclePreCheckOverride.current?.(companyId, issueId, candidateIssueIds) ??
+          svc.findCycleFormingBlockerIds(companyId, issueId, candidateIssueIds),
+      };
+    },
+  };
+});
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
@@ -7412,6 +7440,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         }),
       ],
     });
+  });
+
+  it("isolates a cycle that forms after the recovery pre-check", async () => {
+    const racing = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const healthy = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const followUpChildId = randomUUID();
+    const healthyChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: followUpChildId,
+        companyId: racing.companyId,
+        parentId: racing.issueId,
+        title: "Follow-up that waits on the parent",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: healthyChildId,
+        companyId: healthy.companyId,
+        parentId: healthy.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId: racing.companyId,
+      issueId: racing.issueId,
+      relatedIssueId: followUpChildId,
+      type: "blocks",
+    });
+
+    // The pre-check sees no cycle for the racing issue, so the cycle is only
+    // found by the write, which rejects it with a 422.
+    cyclePreCheckOverride.current = (_companyId, issueId) =>
+      issueId === racing.issueId ? Promise.resolve([]) : null;
+    try {
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.failed).toBe(1);
+      expect(result.waitingOnReviewResolved).toBe(1);
+      expect(result.issueIds).toEqual([healthy.issueId]);
+    } finally {
+      cyclePreCheckOverride.current = null;
+    }
+
+    await expect(
+      sourceBlockerIssueIds(racing.companyId, racing.issueId),
+    ).resolves.toEqual([]);
+    await expect(
+      sourceBlockerIssueIds(racing.companyId, followUpChildId),
+    ).resolves.toEqual([racing.issueId]);
+    await expect(
+      sourceBlockerIssueIds(healthy.companyId, healthy.issueId),
+    ).resolves.toEqual([healthyChildId]);
   });
 
   it("falls through to disposition repair when the only open sub-task waits on the parent", async () => {
