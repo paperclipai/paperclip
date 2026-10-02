@@ -730,6 +730,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+// Redaction applied to a single string leaf inside a sanitized payload.
+// Exported so write paths can recognize their own GET-side redaction: a
+// submitted value that equals the redacted rendering of the stored value is
+// the client echoing the redacted view back, not a new value.
+export function redactSanitizedTextLeaf(value: string): string {
+  return JWT_VALUE_RE.test(value) && !isPublicExecutorToolSelector(value)
+    ? REDACTED_EVENT_VALUE
+    : redactSensitiveText(value);
+}
+
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   // Adapter diagnostics are provider-controlled text. Secret-bearing header or
@@ -738,9 +748,7 @@ function sanitizeValue(value: unknown): unknown {
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
   if (typeof value === "string") {
-    return JWT_VALUE_RE.test(value) && !isPublicExecutorToolSelector(value)
-      ? REDACTED_EVENT_VALUE
-      : redactSensitiveText(value);
+    return redactSanitizedTextLeaf(value);
   }
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) {

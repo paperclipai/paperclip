@@ -137,6 +137,7 @@ import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
+  redactSanitizedTextLeaf,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -3160,26 +3161,97 @@ export function agentRoutes(
     };
   }
 
-  function restoreRedactedAgentEnv(
+  function restoreRedactedAgentConfig(
     requestedConfig: Record<string, unknown>,
     existingConfig: Record<string, unknown>,
+    opts?: { restoreExtraArgs?: boolean },
   ): Record<string, unknown> {
-    const requestedEnv = asRecord(requestedConfig.env);
+    let restoredConfig = requestedConfig;
+    const requestedEnv = asRecord(restoredConfig.env);
     const existingEnv = asRecord(existingConfig.env);
-    if (!requestedEnv || !existingEnv) return requestedConfig;
-
-    const restoredEnv = { ...requestedEnv };
-    for (const [key, value] of Object.entries(requestedEnv)) {
-      const binding = asRecord(value);
-      if (
-        binding?.type === "plain"
-        && binding.value === REDACTED_EVENT_VALUE
-        && Object.prototype.hasOwnProperty.call(existingEnv, key)
-      ) {
-        restoredEnv[key] = existingEnv[key];
+    if (requestedEnv && existingEnv) {
+      const restoredEnv = { ...requestedEnv };
+      for (const [key, value] of Object.entries(requestedEnv)) {
+        const binding = asRecord(value);
+        if (
+          binding?.type === "plain"
+          && binding.value === REDACTED_EVENT_VALUE
+          && Object.prototype.hasOwnProperty.call(existingEnv, key)
+        ) {
+          restoredEnv[key] = existingEnv[key];
+        }
       }
+      restoredConfig = { ...restoredConfig, env: restoredEnv };
     }
-    return { ...requestedConfig, env: restoredEnv };
+
+    // Free-text redaction also rewrites sensitive-looking `extraArgs` items in
+    // GET responses. Without a restore pass, a read-modify-write (including
+    // the board UI's save flow) persists the "***REDACTED***" rendering and
+    // silently breaks the stored command line (e.g. a Codex sandbox lock).
+    // Skipped on adapter switches: hidden values from the old adapter must
+    // not transfer into a different harness.
+    if (
+      opts?.restoreExtraArgs !== false
+      && Array.isArray(restoredConfig.extraArgs)
+      && Array.isArray(existingConfig.extraArgs)
+    ) {
+      const existingExtraArgs = existingConfig.extraArgs as unknown[];
+      // Unchanged save: every submitted item equals the redacted rendering of
+      // the stored item at the same position, so positions are provably
+      // untouched and the whole array can be restored verbatim - even when
+      // distinct secrets render identically.
+      const unchangedSave =
+        (restoredConfig.extraArgs as unknown[]).length === existingExtraArgs.length
+        && (restoredConfig.extraArgs as unknown[]).every((item, index) =>
+          typeof item === "string"
+          && typeof existingExtraArgs[index] === "string"
+          && redactSanitizedTextLeaf(existingExtraArgs[index] as string) === item);
+      if (unchangedSave) {
+        return { ...restoredConfig, extraArgs: [...existingExtraArgs] };
+      }
+      const usedStoredIndexes = new Set<number>();
+      // Returns the matching index, null when nothing renders to the item, or
+      // "ambiguous" when several unused stored items render to it. Clients
+      // edit extraArgs positionally (insert/remove), so a redacted item may
+      // sit at a different index than the stored one; several distinct
+      // secrets can also redact to the same text, and guessing would
+      // silently swap them.
+      const findStoredIndex = (item: string): number | null | "ambiguous" => {
+        let match: number | null = null;
+        for (let index = 0; index < existingExtraArgs.length; index += 1) {
+          if (usedStoredIndexes.has(index)) continue;
+          const stored = existingExtraArgs[index];
+          if (typeof stored !== "string" || redactSanitizedTextLeaf(stored) !== item)
+            continue;
+          if (match !== null) return "ambiguous";
+          match = index;
+        }
+        return match;
+      };
+      restoredConfig = {
+        ...restoredConfig,
+        extraArgs: (restoredConfig.extraArgs as unknown[]).map((item) => {
+          if (typeof item !== "string") return item;
+          // An item identical to the redacted rendering of a stored value
+          // means the client echoed the GET response back unchanged; restore
+          // the stored value. Anything else is a real edit and is kept.
+          const storedIndex = findStoredIndex(item);
+          if (storedIndex === "ambiguous") {
+            // Persisting the submitted placeholder here would corrupt the
+            // stored command line (and can also destroy the surviving
+            // secret), so refuse the save and ask the operator to re-enter
+            // the affected values.
+            throw unprocessable(
+              "Two or more saved extraArgs values redact to the same text, so this change cannot be applied safely. Re-enter the affected values.",
+            );
+          }
+          if (storedIndex === null) return item;
+          usedStoredIndexes.add(storedIndex);
+          return existingExtraArgs[storedIndex];
+        }),
+      };
+    }
+    return restoredConfig;
   }
 
   function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
@@ -3469,7 +3541,7 @@ export function agentRoutes(
           throw unprocessable("Re-enter environment values when testing a different adapter");
         }
         adapterConfigForTest = canRestoreEnv
-          ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
+          ? restoreRedactedAgentConfig(inputAdapterConfig, savedAgent.adapterConfig)
           : inputAdapterConfig;
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -5493,7 +5565,9 @@ export function agentRoutes(
         await assertCanManageInstructionsPath(req, existing);
       }
       let rawEffectiveAdapterConfig = requestedAdapterConfig
-        ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
+        ? restoreRedactedAgentConfig(requestedAdapterConfig, existingAdapterConfig, {
+            restoreExtraArgs: !changingAdapterType,
+          })
         : changingAdapterType ? {} : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
