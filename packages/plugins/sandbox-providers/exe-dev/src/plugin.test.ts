@@ -353,7 +353,7 @@ describe("exe.dev sandbox provider plugin", () => {
     expect(lease).toMatchObject({ providerLeaseId: "paperclip-env1-run1" });
   });
 
-  it("warns that exe.dev cp ignores VM creation settings when sourceVm is set", async () => {
+  it("rejects VM creation settings that exe.dev cp cannot apply when sourceVm is set", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "exe-dev",
       config: {
@@ -365,9 +365,9 @@ describe("exe.dev sandbox provider plugin", () => {
       },
     });
 
-    expect(result?.ok).toBe(true);
-    expect(result?.warnings).toContain(
-      "sourceVm copies an existing VM with `exe.dev cp`, which does not accept image, env, setupScript; these settings are ignored.",
+    expect(result?.ok).toBe(false);
+    expect(result?.errors).toContain(
+      "sourceVm copies an existing VM with `exe.dev cp`, which cannot apply image, env, setupScript. Clear these settings or clear sourceVm.",
     );
   });
 

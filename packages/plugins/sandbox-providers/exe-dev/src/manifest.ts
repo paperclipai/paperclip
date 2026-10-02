@@ -103,7 +103,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             title: "Source VM",
             description:
-              "Name of an existing exe.dev VM to copy for each run with `exe.dev cp`, disk and config included. Leave blank to create a fresh VM with `exe.dev new`. Your API token must allow `cp`: tokens list their permitted commands, and one without `cp` fails with a 403. When set, image, command, env, integrations, tags, setup script, prompt, and comment are ignored.",
+              "Name of an existing exe.dev VM to copy for each run with `exe.dev cp`, disk and config included. Leave blank to create a fresh VM with `exe.dev new`. Your API token must allow `cp`: tokens list their permitted commands, and one without `cp` fails with a 403. When set, leave image, command, env, integrations, tags, setup script, prompt, and comment empty: `cp` cannot apply them, and saving fails until they are cleared.",
             "x-paperclip-advanced": true,
             "x-paperclip-group": "VM creation",
           },

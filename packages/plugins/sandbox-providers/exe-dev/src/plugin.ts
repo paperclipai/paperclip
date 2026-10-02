@@ -801,8 +801,8 @@ const plugin = definePlugin({
         prompt: config.prompt,
       }).filter(([, value]) => value).map(([key]) => key);
       if (ignored.length > 0) {
-        warnings.push(
-          `sourceVm copies an existing VM with \`exe.dev cp\`, which does not accept ${ignored.join(", ")}; these settings are ignored.`,
+        errors.push(
+          `sourceVm copies an existing VM with \`exe.dev cp\`, which cannot apply ${ignored.join(", ")}. Clear these settings or clear sourceVm.`,
         );
       }
     }
