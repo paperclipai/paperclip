@@ -6,6 +6,10 @@ method's exact requested scopes, supported actions, restrictions, sources and
 verification limits. AI runtime authentication and chat/channel setup are
 separate contracts and were not changed.
 
+Methods reviewed after this audit carry their own `reviewedAt` date in the same
+ledger; the counts above are not restated. Later additions: [Neon](./NEON.md)
+(`mcp-oauth`, `mcp-api-key`; 2026-10-02).
+
 ## Shared credential failure
 
 Zapier's secret URL exposed a shared ownership/resolution problem. The same

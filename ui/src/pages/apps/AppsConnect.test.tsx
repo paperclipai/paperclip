@@ -59,6 +59,7 @@ const ASANA_MANAGED = {
 };
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
+const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -1840,6 +1841,48 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
+    mockParams.appKey = "neon";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });
+    await render();
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Neon")?.getAttribute("aria-checked")).toBe("true");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(container.textContent).toContain("Pin to project ID");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional Neon project ID"]')).toBeTruthy();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    // The key is the only required input on this method: Connect waits for it
+    // and for nothing else, since both narrowing controls are optional.
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "napi_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "neon",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "napi_test-key" },
+      configValues: { readOnly: false },
+    }));
   });
 
   it("connects PostHog without a project ID and keeps optional controls advanced", async () => {

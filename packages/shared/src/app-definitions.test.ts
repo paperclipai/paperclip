@@ -262,7 +262,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(49);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(50);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -426,15 +426,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 52 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 53 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(52);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(53);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 52);
+    ).toHaveProperty("size", 53);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -728,7 +728,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(59);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -936,6 +936,81 @@ describe("AppDefinition catalog", () => {
       expect(method.configRequirements).toBeUndefined();
       expect(method.requiredResourceFilters).toBeUndefined();
       expect(method.guidanceMd).toContain("optional advanced controls");
+    }
+  });
+  it("connects Neon's hosted server with optional project pinning and read-only mode", () => {
+    const neon = APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+    expect(neon).toMatchObject({
+      name: "Neon",
+      categories: ["data"],
+      urlPatterns: ["https://mcp.neon.tech/*"],
+      docsUrl: "https://neon.com/docs/ai/neon-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+      branding: { logoUrl: "/brands/apps/neon.png" },
+    });
+    expect(neon.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "neon")).toBe(true);
+    expect(neon.methods.map((candidate) => candidate.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-key",
+    ]);
+    const [oauth, apiKey] = neon.methods;
+    expect(oauth).toMatchObject({
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      requiredResourceFilters: ["project"],
+      defaults: {
+        serverUrl: "https://mcp.neon.tech/mcp",
+        scopesHint: ["read", "write"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.neon.tech/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://console.neon.tech/app/settings/api-keys",
+      },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    for (const method of neon.methods) {
+      // Nothing is required on the default path: both narrowing controls are
+      // optional and folded under Advanced, and the provider enforces them.
+      expect(method.tenantFields?.map((field) => field.key)).toEqual([
+        "projectId",
+        "readOnly",
+      ]);
+      expect(method.tenantFields?.every((field) => field.advanced && !field.required)).toBe(true);
+      expect(method.tenantFields?.[0]).toMatchObject({
+        type: "text",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      });
+      expect(method.tenantFields?.[1]).toMatchObject({
+        type: "checkbox",
+        defaultValue: false,
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      });
+      expect(method.warnings?.length).toBe(2);
     }
   });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
