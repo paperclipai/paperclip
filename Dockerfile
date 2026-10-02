@@ -253,7 +253,9 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # the variant. An entry containing `/` is a path relative to packages/plugins/;
 # a bare name means sandbox-providers/<name>. Only what managed deployments
 # actually auto-install belongs here — every entry adds its node_modules
-# to the image. Growing the list is a one-line workflow change.
+# to the image. Build paths do not register runtime auto-install keys: a custom
+# distribution/<name> also needs the image-owned distribution/catalog.json with
+# its final bundle digest. Managed plugins.autoInstall selects the catalog key.
 FROM build AS cloud-plugins
 ARG CLOUD_BUNDLED_PLUGINS="daytona"
 RUN set -eu; \

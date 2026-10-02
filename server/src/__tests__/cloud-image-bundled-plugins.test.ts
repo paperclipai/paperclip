@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BUNDLED_PLUGIN_CATALOG } from "../services/bundled-plugins.js";
+import { BUNDLED_PLUGIN_CATALOG, resolveBundledPluginInstalls } from "../services/bundled-plugins.js";
+import { distributionBundleDigest } from "../services/distribution-plugin-catalog.js";
 
 /**
  * Drift guard for the explicit preview image (Dockerfile `cloud` target).
@@ -35,12 +36,12 @@ const dockerfileDefault = parseList(
 );
 
 describe("cloud image bundled plugins", () => {
-  function runPluginBuild(names: string) {
+  function runPluginBuild(names: string, inspect?: (directory: string) => void) {
     const directory = mkdtempSync(path.join(tmpdir(), "cloud-plugin-paths-"));
     try {
       // Traversal destinations exist, so rejection cannot pass only because a
       // directory is missing. The installer must never see those entries.
-      for (const relative of ["sandbox-providers/daytona", "examples/search", "sandbox-providers/examples", "escape"]) {
+      for (const relative of ["sandbox-providers/daytona", "examples/search", "distribution/search", "sandbox-providers/examples", "escape"]) {
         mkdirSync(path.join(directory, "packages/plugins", relative), { recursive: true });
       }
       const bin = path.join(directory, "bin");
@@ -53,7 +54,7 @@ test "$1" = "-C"
 printf '%s:%s\\n' "$2" "$3" >> "$PLUGIN_TEST_CALLS"
 if [ "$3" = "build" ]; then
   mkdir -p "$2/dist"
-  touch "$2/dist/manifest.js"
+  touch "$2/dist/manifest.js" "$2/dist/worker.js"
 fi
 `, { mode: 0o755 });
       const command = dockerfile.match(/FROM build AS cloud-plugins\nARG CLOUD_BUNDLED_PLUGINS="[^\n]*"\nRUN ([\s\S]*?\n  done)/)?.[1];
@@ -61,6 +62,7 @@ fi
       const calls = path.join(directory, "calls");
       const result = spawnSync("sh", ["-c", command!], { cwd: directory, encoding: "utf8",
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUD_BUNDLED_PLUGINS: names, PLUGIN_TEST_CALLS: calls } });
+      if (result.status === 0) inspect?.(directory);
       return { status: result.status, stderr: result.stderr,
         calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [] };
     } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -75,6 +77,30 @@ fi
       "packages/plugins/examples/search:install", "packages/plugins/examples/search:build",
     ]);
     expect(dockerfile).toContain("COPY --chown=node:node --from=cloud-plugins /app/packages/plugins /app/packages/plugins\n");
+  });
+
+  it("resolves a built non-provider through the image-owned catalog used at startup", () => {
+    const result = runPluginBuild("distribution/search", (directory) => {
+      const catalogRoot = realpathSync(path.join(directory, "packages/plugins"));
+      const bundle = path.join(catalogRoot, "distribution/search");
+      writeFileSync(path.join(bundle, "package.json"), JSON.stringify({
+        name: "@example/search", version: "1.0.0",
+        paperclipPlugin: { manifest: "dist/manifest.js", worker: "dist/worker.js" },
+      }));
+      const options = { catalogRoot, env: {}, enforceCatalogRoot: true };
+      // Build selectors are paths; managed autoInstall selects catalog keys.
+      expect(() => resolveBundledPluginInstalls(["search"], options)).toThrow("not in the bundled catalog");
+      writeFileSync(path.join(catalogRoot, "distribution/catalog.json"), JSON.stringify({
+        schemaVersion: 1, plugins: [{ key: "search", pluginKey: "example.search",
+          version: "1.0.0", directory: "search", digest: distributionBundleDigest(bundle) }],
+      }));
+      expect(resolveBundledPluginInstalls(["search"], options)).toMatchObject([
+        { key: "search", pluginKey: "example.search", localPath: bundle,
+          distribution: { entrypoints: { worker: "dist/worker.js" } } },
+      ]);
+      expect(() => resolveBundledPluginInstalls(["distribution/search"], options)).toThrow("not in the bundled catalog");
+    });
+    expect(result.status).toBe(0);
   });
 
   it.each(["../escape", "examples/../../escape"])("rejects traversal before installation: %s", (name) => {
