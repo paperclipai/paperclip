@@ -1,4 +1,4 @@
-import { and, count, eq, gte, isNull } from "drizzle-orm";
+import { and, count, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -11,8 +11,9 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 /**
  * A service key never owns a run, so it cannot be given a per-run budget. It is
  * a long-lived identity serving many independent inbound events rather than one
- * agent turn, so it gets a rolling window instead: the same shape of backstop,
- * sized to an hour of inbound traffic rather than to a single heartbeat.
+ * agent turn, so each key gets a rolling window instead: the same shape of
+ * backstop, sized to an hour of inbound traffic rather than to a single
+ * heartbeat.
  */
 export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT = 60;
 export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS = 60 * 60 * 1000;
@@ -193,12 +194,16 @@ export async function observeCrossIssueInfluence(
  * Observes one cross-issue influence attempt by a service key — an integration
  * that speaks for an agent but never owns a heartbeat run.
  *
- * There is no run row to lock, so the serialization the run counter gets for
- * free is replaced by the transaction plus the rolling-window count: two
- * concurrent attempts can both read the same prior count and both land, so the
- * window is a backstop against sustained traffic, not an exact quota. That is
- * the same guarantee the run counter offers once enforcement is on, and it is
- * what the cap is for — a rate limit, not a permission decision.
+ * There is no run row whose lock would serialize concurrent attempts, so the
+ * transaction takes a per-window advisory lock instead: count-then-insert is
+ * atomic per (company, agent, key) and a burst arriving at the cap cannot
+ * read the same prior count and all land.
+ *
+ * The window is scoped to the service key that carried the write. An agent
+ * can be spoken for by several integrations, and one of them filling its
+ * budget must not 429 another's otherwise-authorized replies. A caller with
+ * no key identity falls back to the agent-wide window — the stricter shared
+ * bucket, never a fresh one.
  *
  * Unlike the run path there is no source issue to compare against, so every
  * attempt is charged; a service key has no "own" issue to write to for free.
@@ -208,6 +213,7 @@ export async function observeServiceKeyCrossIssueInfluence(
   input: {
     companyId: string;
     agentId: string;
+    serviceKeyId: string | null;
     responsibleUserId?: string | null;
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
@@ -219,6 +225,9 @@ export async function observeServiceKeyCrossIssueInfluence(
   const windowStart = new Date(now.getTime() - CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS);
 
   return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${
+      `cross-issue-influence:service-key:${input.companyId}:${input.agentId}:${input.serviceKeyId ?? "unkeyed"}`
+    }, 0))`);
     const priorCount = await tx
       .select({ count: count() })
       .from(activityLog)
@@ -228,6 +237,9 @@ export async function observeServiceKeyCrossIssueInfluence(
         isNull(activityLog.runId),
         eq(activityLog.action, CROSS_ISSUE_INFLUENCE_ACTIVITY),
         gte(activityLog.createdAt, windowStart),
+        input.serviceKeyId === null
+          ? undefined
+          : sql`${activityLog.details} ->> 'serviceKeyId' = ${input.serviceKeyId}`,
       ))
       .then((rows) => Number(rows[0]?.count ?? 0));
     const decision = evaluateCrossIssueInfluenceLimit({
@@ -251,6 +263,7 @@ export async function observeServiceKeyCrossIssueInfluence(
       details: {
         kind: input.kind,
         actorScope: "service_key",
+        serviceKeyId: input.serviceKeyId,
         sourceIssueId: null,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
@@ -270,6 +283,7 @@ export async function observeServiceKeyCrossIssueInfluence(
       runId: null,
       agentId: input.agentId,
       actorScope: "service_key",
+      serviceKeyId: input.serviceKeyId,
       targetIssueId: input.targetIssueId,
       kind: input.kind,
       count: decision.count,

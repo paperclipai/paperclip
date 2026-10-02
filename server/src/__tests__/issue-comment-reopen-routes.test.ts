@@ -2674,6 +2674,7 @@ describe.sequential("issue comment reopen routes", () => {
         agentId: routerAgentId,
         companyId: "company-1",
         source: "agent_key",
+        keyId: "key-router-1",
         keyScope: { kind: "service" },
         runId: undefined,
       }),
@@ -2692,6 +2693,7 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         companyId: "company-1",
         agentId: routerAgentId,
+        serviceKeyId: "key-router-1",
         targetIssueId: "11111111-1111-4111-8111-111111111111",
         kind: "comment",
       }),

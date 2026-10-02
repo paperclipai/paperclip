@@ -3819,7 +3819,10 @@ export function issueRoutes(
     // it derives the source issue. Never trust the API-key run header by itself.
     const decision = runId
       ? await observeCrossIssueInfluence(db, { ...observation, runId })
-      : await observeServiceKeyCrossIssueInfluence(db, observation);
+      : await observeServiceKeyCrossIssueInfluence(db, {
+          ...observation,
+          serviceKeyId: req.actor.keyId ?? null,
+        });
     if (!decision || decision.allowed) return true;
 
     const labels = await issueWriteDenialLabels(req, {

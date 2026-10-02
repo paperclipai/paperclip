@@ -17,6 +17,8 @@ function counterDb(
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
   const tx = {
+    // The service-key path opens with a transaction-scoped advisory lock.
+    execute: async () => undefined,
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
@@ -222,6 +224,7 @@ describe("cross-issue influence limit for run-less service keys", () => {
   const serviceInput = {
     companyId: "22222222-2222-4222-8222-222222222222",
     agentId: "33333333-3333-4333-8333-333333333333",
+    serviceKeyId: "66666666-6666-4666-8666-666666666666",
     targetIssueId: "55555555-5555-4555-8555-555555555555",
     targetIssueIdentifier: "STA-8192",
     kind: "comment" as const,
@@ -266,6 +269,7 @@ describe("cross-issue influence limit for run-less service keys", () => {
         entityId: serviceInput.targetIssueId,
         details: expect.objectContaining({
           actorScope: "service_key",
+          serviceKeyId: serviceInput.serviceKeyId,
           sourceIssueId: null,
           targetIssueIdentifier: "STA-8192",
           windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
