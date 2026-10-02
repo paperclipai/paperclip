@@ -378,6 +378,36 @@ describe("AgentProviderConnection reuse", () => {
     });
     expect(host.textContent).toContain("New subscription login");
   });
+  it("lets a visible saved subscription be used without opening the provider first", async () => {
+    const { test, connected } = await mount("codex_local", false, true, true);
+    expect(host.querySelector("select")).not.toBeNull();
+    const use = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Use saved subscription"),
+    )!;
+    expect(use.disabled).toBe(false);
+    click("Use saved subscription");
+    await vi.waitFor(() =>
+      expect(connected).toHaveBeenCalledWith({
+        env: {
+          CODEX_HOME: { type: "secret_ref", secretId: "codex-home", version: "latest" },
+        },
+      }),
+    );
+    expect(test).toHaveBeenCalledWith(connected.mock.calls[0][0]);
+  });
+  it("still requires opening the provider before starting a new subscription login", async () => {
+    await mount("codex_local", false, true, true);
+    flushSync(() => {
+      const select = host.querySelector("select")!;
+      select.value = "";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const primary = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Connect"),
+    )!;
+    expect(primary.disabled).toBe(true);
+    expect(mocks.loginPanel).not.toHaveBeenCalled();
+  });
   it.each(["claude_local", "codex_local"] as const)(
     "passes a personal reference without credentials for %s",
     async (adapter) => {
