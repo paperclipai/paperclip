@@ -31,6 +31,8 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  /** Authenticated runner identity after deferred managed-session creation. */
+  providerSessionIdentity?(): { driverSessionId: string; providerSessionId: string | null } | null;
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(

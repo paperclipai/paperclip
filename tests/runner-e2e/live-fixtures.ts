@@ -1,3 +1,4 @@
+import { prepareOpenAiHostedFixture } from "./openai-managed-fixture.js";
 import path from "node:path";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
@@ -280,6 +281,15 @@ export async function setupLiveFixtures(input: {
       const company = value<CompanyRecord>(resolved, "company");
       const environment = value<EnvironmentRecord>(resolved, "environment");
       const secretRefs = value<SecretReferenceMap>(resolved, "secrets");
+      if (execution.profile.provider === "openai_managed") {
+        const hosted = execution.suite.id === "openai-managed-hosted";
+        if (hosted) await prepareOpenAiHostedFixture(input.workspacePath);
+        await api.post(`/api/companies/${company.id}/remote-agent-profiles`, {
+          profileKey: execution.profile.id, displayName: execution.profile.label, service: "openai_agents_api",
+          credentialSecretId: secretRefs.OPENAI_API_KEY!.secretId, enabled: true, retentionAcknowledged: true, qualification: {},
+          configuration: { defaultModel: execution.profile.model, apiRevision: "agents=v1", reasoningEffort: "medium", environment: hosted ? { type: "openai_hosted", container_size: "medium", network: { access: "disabled" } } : { type: "none" }, maxEstimatedSessionCostUsd: 2, timeoutSeconds: 180 },
+        });
+      }
       const agent = execution.profile.buildAgent({
         environmentId: environment.id,
         environmentFixtureId: execution.environment.id,
@@ -307,11 +317,11 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.environment.configurationKey === "warm-reuse-v1"
+  if (execution.suite.id === "openai-managed-hosted" || execution.environment.configurationKey === "warm-reuse-v1"
     || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",
-      dependencies: ["company", "environment"],
+      dependencies: ["company", "environment", ...(execution.suite.id === "openai-managed-hosted" ? ["agent"] : [])],
       async setup(resolved) {
         const company = value<CompanyRecord>(resolved, "company");
         const environment = value<EnvironmentRecord>(resolved, "environment");

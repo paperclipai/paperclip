@@ -11,7 +11,8 @@
     "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
     "cumulative": { "$ref": "#/$defs/measurement" },
     "runDeltaAvailable": { "type": "boolean" },
-    "runDelta": { "$ref": "#/$defs/measurement" }
+    "runDelta": { "anyOf": [{ "$ref": "#/$defs/measurement" }, { "type": "null" }] },
+    "costSource": { "enum": ["provider_reported", "paperclip_estimate", "unknown"] }
   },
   "additionalProperties": false,
   "$defs": {
@@ -24,8 +25,8 @@
         "cacheReadTokens": { "type": "integer", "minimum": 0 },
         "cacheWriteTokens": { "type": "integer", "minimum": 0 },
         "activeSeconds": { "type": "number", "minimum": 0 },
-        "requests": { "type": "integer", "minimum": 0 },
-        "providerCostUsd": { "type": "number", "minimum": 0 }
+        "requests": { "type": ["integer", "null"], "minimum": 0 },
+        "providerCostUsd": { "type": ["number", "null"], "minimum": 0 }
       },
       "additionalProperties": false
     }

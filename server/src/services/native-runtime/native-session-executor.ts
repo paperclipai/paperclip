@@ -1558,6 +1558,8 @@ function nativeSessionWorkspaceScope(execution: NativeExecutionInput) {
 
 function nativeProviderSessionScope(execution: NativeExecutionInput) {
   switch (execution.provider.kind) {
+    case "openai_managed":
+      return { kind: execution.provider.kind, profileId: execution.provider.openaiProfile.profileId };
     case "claude_managed":
       return {
         kind: execution.provider.kind,
@@ -5427,6 +5429,7 @@ function runnerProviderStateFilename(execution: NativeExecutionInput): string {
       return "codex-provider-state.json";
     case "acpx":
       return "acpx-provider-state.json";
+    case "openai_managed":
     case "claude_managed":
     case "aws_agentcore":
       return "managed-provider-state.json";
@@ -5541,6 +5544,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         providerSessionIdentity: null,
       };
     }
+    case "openai_managed":
     case "claude_managed":
     case "aws_agentcore": {
       const descriptor = record(state.descriptor);
@@ -7433,6 +7437,7 @@ async function executePaperclipNativeSessionWithinScope(
   if (
     input.execution.provider.kind !== "codex" &&
     input.execution.provider.kind !== "opencode" &&
+    input.execution.provider.kind !== "openai_managed" &&
     input.execution.provider.kind !== "claude_managed" &&
     input.execution.provider.kind !== "aws_agentcore" &&
     input.execution.provider.kind !== "acpx"
@@ -8613,6 +8618,11 @@ async function executePaperclipNativeSessionWithinScope(
         expectedCurrentWakeComments,
       );
     }
+    if (native.terminal.runTerminalState === "succeeded" && input.execution.provider.kind === "openai_managed" && input.execution.provider.openaiProfile.environment.type === "openai_hosted") {
+      const { finalizeOpenAiHostedWorkspace } = await import("./openai-hosted-workspace.js");
+      const cleanupWarning = await finalizeOpenAiHostedWorkspace({ db: input.db, execution: input.execution, stateRoot: runnerdStateRoot(input.execution), apiKey: input.runnerEnvironment?.OPENAI_API_KEY ?? "" });
+      if (cleanupWarning) await input.onLog?.("stderr", `[paperclip-runner] ${cleanupWarning}\n`);
+    }
     await leaseRenewal.stop();
     await trace.record({
       name: "native.result.finalize",
@@ -9289,7 +9299,7 @@ export function nativeUsageCostUsd(
   // The ACP normalization contract fills absent per-turn cost with zero and
   // reports actual cost cumulatively. Until it carries an authoritative run
   // delta with provenance, neither value is a candidate's billed USD receipt.
-  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
+  if (provider?.kind === "openai_managed" || (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent))) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const direct =
@@ -10784,8 +10794,10 @@ async function createRunnerdBackendWithinSessionClaim(
         : undefined,
     workMode: input.execution.task.workMode,
     workspaceRoot: remoteTarget?.remoteCwd ?? input.execution.workspace.cwd,
-    executionTargetKind: target.kind,
-    readRemoteWorkspaceFile: remoteTarget && remoteCommandRunner
+    executionTargetKind: input.execution.provider.kind === "openai_managed" ? "remote" : target.kind,
+    readRemoteWorkspaceFile: input.execution.provider.kind === "openai_managed" && input.execution.provider.openaiProfile.environment.type === "openai_hosted"
+      ? async () => { throw new Error("OpenAI publishes files after the turn. Save deliverables under /workspace/outputs and finish the turn."); }
+      : remoteTarget && remoteCommandRunner
       ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
       : undefined,
     currentWakeComments: currentWakeComments ?? undefined,
@@ -10822,6 +10834,9 @@ async function createRunnerdBackendWithinSessionClaim(
     input.durableEnvironmentLeaseId ??
     input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  const openaiHostedProfile = input.execution.provider.kind === "openai_managed" && input.execution.provider.openaiProfile.environment.type === "openai_hosted"
+    ? await (await import("./openai-hosted-workspace.js")).prepareOpenAiHostedWorkspace({ execution: input.execution, stateRoot: root, apiKey: input.runnerEnvironment?.OPENAI_API_KEY ?? "" })
+    : null;
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
@@ -12479,6 +12494,7 @@ async function createRunnerdBackendWithinSessionClaim(
             ? "codex"
             : input.execution.provider.kind === "opencode"
               ? "opencode"
+              : input.execution.provider.kind === "openai_managed" ? "openai_managed"
               : input.execution.provider.kind === "claude_managed"
                 ? "claude_managed"
                 : input.execution.provider.kind === "aws_agentcore"
@@ -12510,6 +12526,7 @@ async function createRunnerdBackendWithinSessionClaim(
               opencodePermissionMode: input.execution.provider.permissionMode,
             }
           : {}),
+        ...(input.execution.provider.kind === "openai_managed" ? { openaiProfile: { ...(openaiHostedProfile ?? input.execution.provider.openaiProfile), model: input.execution.provider.model } } : {}),
         ...(input.execution.provider.kind === "claude_managed"
           ? {
               managedProfile: {

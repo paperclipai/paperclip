@@ -4125,3 +4125,29 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 });
+
+
+describe("OpenAI deferred managed session identity", () => {
+  const alias = `pending_${"a".repeat(64)}`;
+  const options = { driverIdentity: { kind: "openai_agents_api", displayName: "OpenAI Managed Agent", version: "agents=v1" } };
+  it("keeps the logical thread stable while persisting the real session, then rejects rebinding", async () => {
+    const transport = new FakeCodexTransport(alias, alias);
+    let remote = alias;
+    Object.assign(transport, { providerSessionIdentity: () => ({ driverSessionId: alias, providerSessionId: remote }) });
+    const session = await makeDriver([transport], options).openSession({ runId: "run-openai", normalizedSessionId: "session-openai", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect((await session.snapshot()).providerSessionId).toBe(alias);
+      remote = "sess_created";
+      expect(await session.snapshot()).toMatchObject({ driverSessionId: alias, providerSessionId: remote });
+      remote = "sess_unrelated";
+      await expect(session.snapshot()).rejects.toThrow("outside initial creation");
+    } finally { await session.close(); }
+  });
+  it("recovers a provisional checkpoint on the same thread after the provider created the session", async () => {
+    const initial = await makeDriver([new FakeCodexTransport(alias, alias)], options).openSession({ runId: "run-openai", normalizedSessionId: "session-openai", workingDirectory: TEST_WORKING_DIRECTORY });
+    const checkpoint = await initial.snapshot(); await initial.close();
+    const recovered = await makeDriver([new FakeCodexTransport(alias, "sess_created")], options).recoverSession(checkpoint);
+    expect(recovered.recovered).toBe(true);
+    if (recovered.recovered) { expect((await recovered.session.snapshot()).providerSessionId).toBe("sess_created"); await recovered.session.close(); }
+  });
+});

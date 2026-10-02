@@ -377,3 +377,8 @@ The explicit-only Product E2E `confirmation-replies` suite tests conversational
 approval and rejection, persisted message provenance, approval before execution,
 ambiguous proposals, and the existing card-click path with native Claude/Codex.
 See the [suite contract](../tests/runner-e2e/README.md#conversational-confirmation-replies-explicit-only).
+
+OpenAI Agents API candidate integration and qualification are documented in
+[OpenAI managed agents](openai-managed-agents.md). The tools-only and hosted
+protocol lanes reuse the Claude managed 35-case roster; the separate manual
+product suites verify production control-plane workflows and hosted file return.

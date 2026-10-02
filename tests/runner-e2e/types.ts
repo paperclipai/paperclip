@@ -123,6 +123,7 @@ export type Matcher =
   | { kind: "runtime_mode"; expected: RunnerGeneration }
   | { kind: "environment"; expected: RunnerEnvironmentId }
   | { kind: "file_exists"; path: string }
+  | { kind: "file_sha256"; path: string; expected: string }
   | { kind: "file_exact"; path: string; expected: string }
   | { kind: "file_contains"; path: string; expected: string }
   | { kind: "artifact_exists"; name: string; mimeType?: string }

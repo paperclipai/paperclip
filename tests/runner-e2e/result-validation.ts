@@ -133,6 +133,7 @@ const matcher: Rule = (value, at) => {
     runtime_mode: shape({ expected: oneOf("legacy", "native") }),
     environment: shape({ expected: oneOf("local", "daytona") }),
     file_exists: shape({ path: string }),
+    file_sha256: shape({ path: string, expected: string }),
     file_exact: shape({ path: string, expected: string }),
     file_contains: shape({ path: string, expected: string }),
     artifact_exists: shape({ name: string, mimeType: optional(string) }),

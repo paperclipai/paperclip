@@ -7,8 +7,24 @@ use crate::provider_bridge::{AuthorizedTool, ToolResult};
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
+    OpenaiManaged,
     ClaudeManaged,
     AwsAgentcore,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenAiManagedProviderConfig {
+    pub model: String,
+    pub profile_id: String,
+    pub api_revision: String,
+    pub reasoning_effort: String,
+    pub environment: Value,
+    pub max_estimated_session_cost_usd: f64,
+    pub timeout_seconds: u32,
+    pub instructions: String,
+    #[serde(default)]
+    pub runtime_context: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -73,7 +89,7 @@ pub enum ProviderRuntimeIdentity {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ProviderEvent {
     ToolCall {
         call_id: String,
@@ -155,5 +171,12 @@ pub trait Provider {
     fn read(&mut self) -> Result<Value, LocalRunnerError>;
     fn poll(&mut self) -> Result<Option<ProviderEvent>, LocalRunnerError>;
     fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError>;
+    /// Confirm a previously submitted result from the provider's durable history.
+    /// Must never execute the application action again or replay an ambiguous POST.
+    fn reconcile_tool_result(&mut self, _result: &ToolResult) -> Result<(), LocalRunnerError> {
+        Err(LocalRunnerError::invalid(
+            "provider cannot reconcile ambiguous tool delivery",
+        ))
+    }
     fn shutdown(&mut self) -> Result<(), LocalRunnerError>;
 }

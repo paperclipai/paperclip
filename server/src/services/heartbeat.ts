@@ -260,6 +260,7 @@ import {
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  assertOpenAiProfileRecoveryBinding,
   projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
@@ -23388,7 +23389,7 @@ export function heartbeatService(
         });
         const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
           ? adapter.supportsInstructionsBundle === true
-          : !["claude_managed_agents_api", "aws_agentcore_harness_api"].includes(nativeRuntimeResolution.profile.backend);
+          : !["openai_agents_api", "claude_managed_agents_api", "aws_agentcore_harness_api"].includes(nativeRuntimeResolution.profile.backend);
         if (hasInstructionFilesystem) {
           try {
             // Missing contract fields on a restored session mean the deployed
@@ -23655,7 +23656,12 @@ export function heartbeatService(
             isNativeSessionId(taskNativeSessionId)
               ? taskSessionForRun.lastRunId
               : null;
-          const resumableTaskSessionId = taskResumeRunId
+          const openaiRuntimeProfile = nativeRuntimeResolution.profile.backend === "openai_agents_api"
+            ? await remoteAgentProfileService(db).requireRunnable(agent.companyId, readNonEmptyString(parseObject(agent.adapterConfig).openaiProfileId) ?? "", "openai_agents_api") : null;
+          // Hosted inputs are immutable. Each new run stages the current task
+          // worktree into a new hosted session; same-run recovery keeps its ID.
+          const openaiHostedWorkspace = parseObject(openaiRuntimeProfile?.configuration.environment).type === "openai_hosted";
+          const resumableTaskSessionId = openaiHostedWorkspace ? null : taskResumeRunId
             ? taskNativeSessionId
             : (legacyRetrySessionId ?? null);
           const requestedNativeSessionId =
@@ -23761,6 +23767,10 @@ export function heartbeatService(
                 executionTargetKind: executionTarget?.kind ?? "local",
               });
             }
+            if (nativeExecution.provider.kind === "openai_managed") {
+              const recoveryProfile = await remoteAgentProfileService(db).requireRunnable(agent.companyId, nativeExecution.provider.openaiProfile.profileId, "openai_agents_api");
+              assertOpenAiProfileRecoveryBinding({ adapterConfig: agent.adapterConfig, snapshot: nativeExecution.provider.openaiProfile, stored: recoveryProfile });
+            }
             if (nativeExecution.provider.kind === "claude_managed") {
               const recoveryProfile = await managedAgentProfileService(
                 db,
@@ -23822,6 +23832,10 @@ export function heartbeatService(
                       : [],
                 });
             const runnerAdapterConfig = parseObject(agent.adapterConfig);
+            const openaiProfile = openaiRuntimeProfile;
+            if (openaiProfile && parseObject(parseObject(runnerAdapterConfig.env).OPENAI_API_KEY).secretId !== openaiProfile.credentialSecretId) {
+              throw new ConfigurationIncompleteFailure("configuration incomplete: OpenAI profile credential must be bound at env.OPENAI_API_KEY", { configurationIncomplete: { reason: "openai_profile_secret_binding_mismatch", companyId: agent.companyId, agentId: agent.id, profileId: openaiProfile.id, requiredEnvKeys: ["OPENAI_API_KEY"] } });
+            }
             const managedProfile =
               nativeRuntimeResolution.profile.backend ===
               "claude_managed_agents_api"
@@ -23986,6 +24000,7 @@ export function heartbeatService(
                             issueAssigneeOverrides?.adapterConfig,
                           )
                         : agent.adapterConfig,
+                      openaiProfile,
                       managedProfile,
                       agentCoreProfile,
                     }),

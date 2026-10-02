@@ -242,6 +242,14 @@ function managedExecution(
   };
 }
 
+function openaiExecution(hosted = false): NativeExecutionInput {
+  const base = execution({ kind: "openai_managed", model: "gpt-6-astra", openaiProfile: {
+    profileId: "profile", apiRevision: "agents=v1", reasoningEffort: "medium", timeoutSeconds: 180, maxEstimatedSessionCostUsd: 2,
+    environment: hosted ? { type: "openai_hosted", container_size: "medium", network: { access: "disabled" } } : { type: "none" },
+  } });
+  return { ...base, session: { ...base.session, driverKind: "openai_agents_api" } };
+}
+
 describe("native backend factory", () => {
   it("constructs the Codex backend without starting its transport", async () => {
     const backend = createNativeSessionBackend(execution(), {
@@ -363,6 +371,7 @@ describe("native backend factory", () => {
     ["OpenCode", opencodeExecution()],
     ["ACPX Codex", acpxExecution("codex")],
     ["ACPX Claude", acpxExecution("claude")],
+    ["OpenAI tools-only", openaiExecution()],
   ])(
     "opens %s planning runs through the runner-managed plan contract",
     async (_label, input) => {
@@ -404,6 +413,11 @@ describe("native backend factory", () => {
       await session.close({ reason: "test complete" });
     },
   );
+
+  it("does not advertise writable hosted OpenAI sessions as planning capable", async () => {
+    const backend = createNativeSessionBackend(openaiExecution(true), { codexTransportFactory: () => new FakeCodexTransport() });
+    await expect(backend.descriptor()).resolves.toMatchObject({ capabilities: { collaborationModes: ["default"] } });
+  });
 
   it.each([
     [

@@ -25,9 +25,10 @@ use crate::durable::{
     DurableRunnerError, EventPriority, PolledEvent,
 };
 use crate::managed_provider::{
-    AwsAgentCoreProviderConfig, ClaudeManagedProviderConfig, ClaudeManagedSkillRef, Provider,
-    ProviderEvent, ProviderRuntimeIdentity,
+    AwsAgentCoreProviderConfig, ClaudeManagedProviderConfig, ClaudeManagedSkillRef,
+    OpenAiManagedProviderConfig, Provider, ProviderEvent, ProviderRuntimeIdentity,
 };
+use crate::openai_managed_provider::OpenAiManagedProvider;
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedTool, AuthorizedToolSet,
     PendingToolCall, ToolResult, MAX_PENDING_CALLS, TOOL_SET_SCHEMA,
@@ -70,6 +71,7 @@ struct CompletionContractBinding {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ManagedProviderKind {
+    OpenaiManaged,
     ClaudeManaged,
     AwsAgentcore,
 }
@@ -77,6 +79,7 @@ enum ManagedProviderKind {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", content = "config", rename_all = "snake_case")]
 enum ManagedProviderDescriptor {
+    OpenaiManaged(OpenAiManagedProviderConfig),
     ClaudeManaged(ClaudeManagedProviderConfig),
     AwsAgentcore(AwsAgentCoreProviderConfig),
 }
@@ -92,6 +95,11 @@ impl ManagedProviderDescriptor {
             .ok_or_else(|| DurableRunnerError::invalid("managed provider kind is required"))?;
         let value = Value::Object(object);
         match kind.as_str() {
+            "openai_managed" => serde_json::from_value(value)
+                .map(Self::OpenaiManaged)
+                .map_err(|_| {
+                    DurableRunnerError::invalid("OpenAI managed provider descriptor is invalid")
+                }),
             "claude_managed" => serde_json::from_value(value)
                 .map(Self::ClaudeManaged)
                 .map_err(|error| {
@@ -114,6 +122,7 @@ impl ManagedProviderDescriptor {
 
     fn kind(&self) -> ManagedProviderKind {
         match self {
+            Self::OpenaiManaged(_) => ManagedProviderKind::OpenaiManaged,
             Self::ClaudeManaged(_) => ManagedProviderKind::ClaudeManaged,
             Self::AwsAgentcore(_) => ManagedProviderKind::AwsAgentcore,
         }
@@ -121,6 +130,7 @@ impl ManagedProviderDescriptor {
 
     fn provider_label(&self) -> &'static str {
         match self {
+            Self::OpenaiManaged(_) => "openai_managed",
             Self::ClaudeManaged(_) => "claude_managed",
             Self::AwsAgentcore(_) => "aws_agentcore",
         }
@@ -128,6 +138,7 @@ impl ManagedProviderDescriptor {
 
     fn display_name(&self) -> &'static str {
         match self {
+            Self::OpenaiManaged(_) => "OpenAI Managed Agent",
             Self::ClaudeManaged(_) => "Claude Managed Agent",
             Self::AwsAgentcore(_) => "AWS AgentCore Harness",
         }
@@ -135,6 +146,7 @@ impl ManagedProviderDescriptor {
 
     fn driver(&self) -> &'static str {
         match self {
+            Self::OpenaiManaged(_) => "openai_agents_api",
             Self::ClaudeManaged(_) => "claude_managed_agents_api",
             Self::AwsAgentcore(_) => "aws_agentcore_harness_api",
         }
@@ -142,6 +154,7 @@ impl ManagedProviderDescriptor {
 
     fn version(&self) -> &str {
         match self {
+            Self::OpenaiManaged(config) => &config.api_revision,
             Self::ClaudeManaged(config) => &config.agent_version,
             Self::AwsAgentcore(config) => &config.qualification_revision,
         }
@@ -149,6 +162,7 @@ impl ManagedProviderDescriptor {
 
     fn model(&self) -> &str {
         match self {
+            Self::OpenaiManaged(config) => &config.model,
             Self::ClaudeManaged(config) => &config.model,
             Self::AwsAgentcore(config) => &config.model,
         }
@@ -159,6 +173,8 @@ impl ManagedProviderDescriptor {
             !value.trim().is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
         };
         match self {
+            Self::OpenaiManaged(config) => crate::openai_managed_provider::validate_config(config)
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
             Self::ClaudeManaged(config) => {
                 if config.model != QUALIFIED_CLAUDE_MODEL
                     || config.beta_version != QUALIFIED_CLAUDE_BETA
@@ -250,6 +266,7 @@ impl ManagedProviderDescriptor {
 
     fn set_budget(&mut self, value: f64) {
         match self {
+            Self::OpenaiManaged(config) => config.max_estimated_session_cost_usd = value,
             Self::ClaudeManaged(config) => config.max_session_list_cost_usd = value,
             Self::AwsAgentcore(config) => config.max_estimated_session_cost_usd = value,
         }
@@ -306,6 +323,20 @@ impl ManagedProviderFactory for DefaultManagedProviderFactory {
         pending_claude_skill_cleanup: Option<&[ClaudeManagedSkillRef]>,
     ) -> Result<Box<dyn Provider>, ManagedProviderStartError> {
         match descriptor {
+            ManagedProviderDescriptor::OpenaiManaged(config) => OpenAiManagedProvider::start(
+                config,
+                tools,
+                ownership_scope,
+                resume_session_id,
+                resume_event_cursor,
+                resume_usage,
+            )
+            .map(|provider| Box::new(provider) as Box<dyn Provider>)
+            .map_err(|error| {
+                ManagedProviderStartError::plain(DurableRunnerError::invalid(format!(
+                    "failed to start OpenAI managed provider: {error}"
+                )))
+            }),
             ManagedProviderDescriptor::ClaudeManaged(config) => ClaudeManagedProvider::start(
                 config,
                 tools,
@@ -514,7 +545,8 @@ impl ManagedDurableState {
                 })
         };
         let valid_claude_managed_skills = match &self.descriptor {
-            ManagedProviderDescriptor::AwsAgentcore(_) => {
+            ManagedProviderDescriptor::AwsAgentcore(_)
+            | ManagedProviderDescriptor::OpenaiManaged(_) => {
                 self.claude_managed_skills.is_none() && self.claude_managed_skill_cleanup.is_none()
             }
             ManagedProviderDescriptor::ClaudeManaged(descriptor) => {
@@ -572,6 +604,9 @@ impl ManagedDurableState {
             || !valid_claude_managed_skills
             || match self.descriptor.kind() {
                 ManagedProviderKind::ClaudeManaged => self.provider_usage.is_some(),
+                ManagedProviderKind::OpenaiManaged => {
+                    self.provider_usage.as_ref().is_some_and(|v| !v.is_object())
+                }
                 ManagedProviderKind::AwsAgentcore => {
                     if matches!(self.lifecycle.as_str(), "prepared" | "session_opening") {
                         self.provider_usage
@@ -754,7 +789,9 @@ impl ManagedProviderCommandExecutor {
         ) {
             return Ok(());
         }
-        if !state.ambiguous_tool_deliveries.is_empty() {
+        if !state.ambiguous_tool_deliveries.is_empty()
+            && state.descriptor.kind() != ManagedProviderKind::OpenaiManaged
+        {
             return Err(DurableRunnerError::invalid(
                 "managed tool-result delivery is ambiguous; recovery refuses to redeliver it",
             ));
@@ -825,6 +862,22 @@ impl ManagedProviderCommandExecutor {
                 ))
             })?;
         }
+        let ambiguous = self
+            .state
+            .as_ref()
+            .expect("managed state exists")
+            .ambiguous_tool_deliveries
+            .clone();
+        for (call_id, result) in ambiguous {
+            provider.reconcile_tool_result(&result).map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "managed result reconciliation failed: {error}"
+                ))
+            })?;
+            let state = self.state.as_mut().expect("managed state exists");
+            state.pending_tool_calls.remove(&call_id);
+            state.ambiguous_tool_deliveries.remove(&call_id);
+        }
         let session_id = provider.session_identity().to_owned();
         let runtime = provider.runtime_identity();
         let state = self
@@ -840,7 +893,11 @@ impl ManagedProviderCommandExecutor {
         state.push(NormalizedProviderEvent {
             event_type: "session.resumed".to_owned(),
             priority: EventPriority::P0,
-            payload: session_event_payload(&state.descriptor, &runtime),
+            payload: session_event_payload(
+                &state.descriptor,
+                &runtime,
+                &state.normalized_session_id,
+            ),
         })?;
         self.provider = Some(provider);
         self.refresh_provider_checkpoint();
@@ -1084,7 +1141,8 @@ impl ManagedProviderCommandExecutor {
         state.provider_session_id = Some(session_id.clone());
         state.active_turn_id = None;
         state.lifecycle = "session_open".to_owned();
-        let payload = session_event_payload(&state.descriptor, &runtime);
+        let payload =
+            session_event_payload(&state.descriptor, &runtime, &state.normalized_session_id);
         let provider_label = state.descriptor.provider_label();
         let driver = state.descriptor.driver();
         let version = state.descriptor.version().to_owned();
@@ -1160,12 +1218,14 @@ impl ManagedProviderCommandExecutor {
             .provider
             .as_mut()
             .expect("managed provider exists before turn start")
-            .start_turn(text, "", &turn_id)
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!(
-                    "managed turn start is ambiguous and recovery must reconcile it: {error}"
-                ))
-            })?;
+            .start_turn(text, "", &turn_id);
+        self.refresh_provider_checkpoint();
+        self.save_state()?;
+        let response = response.map_err(|error| {
+            DurableRunnerError::invalid(format!(
+                "managed turn start is ambiguous and recovery must reconcile it: {error}"
+            ))
+        })?;
         let state = self
             .state
             .as_mut()
@@ -1173,11 +1233,27 @@ impl ManagedProviderCommandExecutor {
         state.lifecycle = "turn_active".to_owned();
         self.refresh_provider_checkpoint();
         self.save_state()?;
-        Ok(CommandExecution::result(json!({
-            "status": "started",
-            "providerTurnId": turn_id,
-            "providerResponse": sanitize_value(&response),
-        })))
+        let state = self
+            .state
+            .as_ref()
+            .expect("managed state exists after start");
+        let events = if state.descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+            vec![(
+                "session.started".into(),
+                EventPriority::P0,
+                session_event_payload(
+                    &state.descriptor,
+                    &self.provider.as_ref().unwrap().runtime_identity(),
+                    &state.normalized_session_id,
+                ),
+            )]
+        } else {
+            vec![]
+        };
+        Ok(CommandExecution {
+            result: json!({ "status": "started", "providerTurnId": turn_id, "providerResponse": sanitize_value(&response) }),
+            events,
+        })
     }
 
     fn interrupt_turn(&mut self, reason: &str) -> Result<CommandExecution, DurableRunnerError> {
@@ -1307,7 +1383,7 @@ impl ManagedProviderCommandExecutor {
             "status": state.lifecycle,
             "provider": state.descriptor.provider_label(),
             "driver": state.descriptor.driver(),
-            "driverSessionId": state.provider_session_id,
+            "driverSessionId": state.provider_session_id.as_ref().map(|id| managed_driver_session_id(&state.descriptor, &state.normalized_session_id, id)),
             "providerSessionId": state.provider_session_id,
             "sessionId": state.provider_session_id,
             "providerAccountSessionId": state.provider_session_id,
@@ -1348,6 +1424,19 @@ impl ManagedProviderCommandExecutor {
                     ))
                 })?;
         } else if let Some(provider) = self.provider.as_mut() {
+            if provider.kind() == crate::managed_provider::ProviderKind::OpenaiManaged {
+                if let Some(turn) = self
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.active_turn_id.as_deref())
+                {
+                    provider.interrupt_turn(turn).map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "OpenAI close cancellation unconfirmed: {error}"
+                        ))
+                    })?;
+                }
+            }
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!("managed session close failed: {error}"))
             })?;
@@ -1590,7 +1679,17 @@ impl ManagedProviderCommandExecutor {
         Ok(())
     }
 
-    fn fail_provider(&mut self, message: String) -> Result<(), DurableRunnerError> {
+    fn fail_provider(&mut self, mut message: String) -> Result<(), DurableRunnerError> {
+        if let (Some(provider), Some(state)) = (self.provider.as_mut(), self.state.as_ref()) {
+            if state.descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+                if let Some(turn) = state.active_turn_id.as_deref() {
+                    if provider.interrupt_turn(turn).is_err() {
+                        message.push_str("; remote cancellation unconfirmed; inspect the retained OpenAI session");
+                    }
+                }
+            }
+        }
+        self.refresh_provider_checkpoint();
         self.provider = None;
         let state = self
             .state
@@ -1820,6 +1919,13 @@ fn semantic_input_event(
 }
 
 fn terminal_events(state: &ManagedDurableState, event_type: &str) -> Vec<NormalizedProviderEvent> {
+    // OpenAI uses the explicit paperclip_finish/paperclip_block contract. The
+    // controller owns its accepted result and run terminal. Synthesizing another
+    // claim from the final prose conflicts with that result (and could falsely
+    // claim completion when the agent never submitted a completion tool).
+    if state.descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+        return Vec::new();
+    }
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
@@ -1938,7 +2044,7 @@ fn managed_usage_event(
         })
         .unwrap_or(0.0)
         .max(0.0);
-    let measurement = json!({
+    let mut measurement = json!({
         "inputTokens": integer("inputTokens", "input_tokens"),
         "outputTokens": integer("outputTokens", "output_tokens"),
         "cacheReadTokens": integer("cacheReadInputTokens", "cache_read_input_tokens"),
@@ -1947,6 +2053,10 @@ fn managed_usage_event(
         "requests": usage_request_count(params).unwrap_or(0),
         "providerCostUsd": provider_cost_usd,
     });
+    if descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+        measurement["requests"] = Value::Null;
+        measurement["providerCostUsd"] = Value::Null;
+    }
     NormalizedProviderEvent {
         event_type: "usage.reported".to_owned(),
         priority: EventPriority::P0,
@@ -1958,14 +2068,28 @@ fn managed_usage_event(
             "cumulative": measurement,
             "runDeltaAvailable": false,
             "runDelta": Value::Null,
-            "costSource": if descriptor.kind() == ManagedProviderKind::AwsAgentcore { "paperclip_estimate" } else { "provider_reported" },
+            "costSource": if descriptor.kind() == ManagedProviderKind::AwsAgentcore { "paperclip_estimate" } else if descriptor.kind() == ManagedProviderKind::OpenaiManaged { "unknown" } else { "provider_reported" },
         }),
+    }
+}
+
+fn managed_driver_session_id(
+    descriptor: &ManagedProviderDescriptor,
+    normalized: &str,
+    remote: &str,
+) -> String {
+    if descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+        use sha2::{Digest, Sha256};
+        format!("pending_{:x}", Sha256::digest(normalized.as_bytes()))
+    } else {
+        remote.to_owned()
     }
 }
 
 fn session_event_payload(
     descriptor: &ManagedProviderDescriptor,
     runtime: &ProviderRuntimeIdentity,
+    normalized_session_id: &str,
 ) -> Value {
     let session_id = match runtime {
         ProviderRuntimeIdentity::RemoteService {
@@ -1973,6 +2097,8 @@ fn session_event_payload(
             ..
         } => provider_session_id,
     };
+    let driver_session_id =
+        managed_driver_session_id(descriptor, normalized_session_id, session_id);
     json!({
         "provider": descriptor.provider_label(),
         "driver": descriptor.driver(),
@@ -1985,7 +2111,7 @@ fn session_event_payload(
             "providerSessionId": session_id,
         },
         "runtimeIdentity": runtime,
-        "threadId": session_id,
+        "threadId": driver_session_id,
         "providerSessionId": session_id,
         "sessionId": session_id,
         "providerAccountSessionId": session_id,
@@ -2182,6 +2308,9 @@ mod tests {
                         config.max_estimated_session_cost_usd
                     }
                     ManagedProviderDescriptor::ClaudeManaged(_) => 1.0,
+                    ManagedProviderDescriptor::OpenaiManaged(config) => {
+                        config.max_estimated_session_cost_usd
+                    }
                 },
             }))
         }
@@ -2576,9 +2705,65 @@ mod tests {
                     provider_session_id: "session-17".to_owned(),
                     process_id: None,
                 },
+                "normalized-test",
             )
             .pointer("/providerDescriptor/providerVersion"),
             Some(&json!("17"))
+        );
+    }
+
+    #[test]
+    fn openai_provider_terminal_never_fabricates_a_completion_claim() {
+        let descriptor = ManagedProviderDescriptor::parse(json!({
+            "kind":"openai_managed", "model":"gpt-6-astra", "profileId":"profile",
+            "apiRevision":"agents=v1", "reasoningEffort":"medium", "environment":{"type":"none"},
+            "maxEstimatedSessionCostUsd":2.0, "timeoutSeconds":180, "instructions":"Work"
+        }))
+        .unwrap();
+        let mut state = ManagedDurableState::new(
+            "run".into(),
+            "session".into(),
+            descriptor,
+            authorized_tool_set(&agentcore_prepare_payload()).unwrap(),
+            Some(CompletionContractBinding {
+                revision: "contract-1".into(),
+                criterion_ids: vec!["requested-work".into()],
+            }),
+        );
+        state.last_agent_message = Some("I completed the work".into());
+        for status in ["turn.completed", "turn.failed", "turn.cancelled"] {
+            assert!(terminal_events(&state, status).is_empty());
+        }
+    }
+
+    #[test]
+    fn openai_driver_identity_stays_stable_when_remote_session_is_created() {
+        let descriptor = ManagedProviderDescriptor::OpenaiManaged(OpenAiManagedProviderConfig {
+            model: "gpt-6-astra".into(),
+            profile_id: "profile".into(),
+            api_revision: "agents=v1".into(),
+            reasoning_effort: "medium".into(),
+            environment: json!({"type":"none"}),
+            max_estimated_session_cost_usd: 2.0,
+            timeout_seconds: 180,
+            instructions: "Work".into(),
+            runtime_context: None,
+        });
+        let before = managed_driver_session_id(&descriptor, "normalized", "pending_initial");
+        let payload = session_event_payload(
+            &descriptor,
+            &ProviderRuntimeIdentity::RemoteService {
+                service: "openai_agents_api".into(),
+                provider_session_id: "remote-opaque-id".into(),
+                process_id: None,
+            },
+            "normalized",
+        );
+        assert_eq!(payload["threadId"], before);
+        assert_eq!(payload["sessionId"], "remote-opaque-id");
+        assert_ne!(
+            managed_driver_session_id(&descriptor, "another", "remote-opaque-id"),
+            before
         );
     }
 

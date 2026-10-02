@@ -571,7 +571,8 @@ export const providerDescriptorSchema = {
         "opencode",
         "claude_managed",
         "aws_agentcore",
-        "acpx"
+        "acpx",
+        "openai_managed"
       ]
     },
     "driver": {
@@ -580,7 +581,8 @@ export const providerDescriptorSchema = {
         "opencode_server",
         "claude_managed_agents_api",
         "aws_agentcore_harness_api",
-        "acpx_runtime"
+        "acpx_runtime",
+        "openai_agents_api"
       ]
     },
     "model": {
@@ -604,7 +606,8 @@ export const providerDescriptorSchema = {
     "service": {
       "enum": [
         "anthropic_managed_agents",
-        "aws_bedrock_agentcore_harness"
+        "aws_bedrock_agentcore_harness",
+        "openai_agents_api"
       ]
     },
     "providerSessionId": {
@@ -765,6 +768,19 @@ export const providerDescriptorSchema = {
               "const": "local_process"
             }
           }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "openai_managed"
+            },
+            "driver": {
+              "const": "openai_agents_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
         }
       ]
     },
@@ -869,6 +885,28 @@ export const providerDescriptorSchema = {
           "agentServerVersion",
           "acpxRecordId",
           "agentProcessId"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "openai_managed"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "properties": {
+          "service": {
+            "const": "openai_agents_api"
+          }
+        },
+        "required": [
+          "service"
         ]
       }
     }
@@ -2481,7 +2519,21 @@ export const usageSchema = {
       "type": "boolean"
     },
     "runDelta": {
-      "$ref": "#/$defs/measurement"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/measurement"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "costSource": {
+      "enum": [
+        "provider_reported",
+        "paperclip_estimate",
+        "unknown"
+      ]
     }
   },
   "additionalProperties": false,
@@ -2519,11 +2571,17 @@ export const usageSchema = {
           "minimum": 0
         },
         "requests": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "providerCostUsd": {
-          "type": "number",
+          "type": [
+            "number",
+            "null"
+          ],
           "minimum": 0
         }
       },

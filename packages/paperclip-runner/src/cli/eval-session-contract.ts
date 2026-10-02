@@ -1,3 +1,4 @@
+import { parseOpenAiManagedProfile, type OpenAiManagedProfile } from "../drivers/openai-managed/config.js";
 import type {
   CapabilityLiveSessionSnapshot,
   CreateCapabilityLiveSessionInput,
@@ -5,6 +6,7 @@ import type {
 import type { QualifiedAcpxAgent } from "../drivers/acpx/qualified-profiles.js";
 import {
   estimateModelCostNanodollars,
+  estimateOpenAiManagedCost,
   type EstimatedModelCost,
 } from "../evals/model-pricing.js";
 
@@ -16,12 +18,14 @@ export const EVAL_SESSION_ARTIFACT_SCHEMA =
 export type EvalSessionProvider =
   | "codex"
   | "opencode"
+  | "openai_managed"
   | "claude_managed"
   | "aws_agentcore"
   | "acpx";
 export type EvalSessionDriver =
   | "codex_app_server"
   | "opencode_server"
+  | "openai_agents_api"
   | "claude_managed_agents_api"
   | "aws_agentcore_harness_api"
   | "acpx_runtime";
@@ -69,6 +73,7 @@ export interface EvalSessionRequest {
   driver?: EvalSessionDriver;
   opencodeVersion?: string;
   acpxAgent?: QualifiedAcpxAgent;
+  openaiProfile?: OpenAiManagedProfile;
   managedProfile?: EvalSessionManagedProfile;
   agentCoreProfile?: EvalSessionAgentCoreProfile;
   runnerd: { path: string; sha256: string };
@@ -85,7 +90,7 @@ export interface EvalSessionRequest {
 
 export interface EvalSessionUsage {
   agentTurns: number;
-  providerRequests: number;
+  providerRequests: number | null;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -124,6 +129,7 @@ export function expectedEvalSessionDriver(
 ): EvalSessionDriver {
   return provider === "opencode"
     ? "opencode_server"
+    : provider === "openai_managed" ? "openai_agents_api"
     : provider === "claude_managed"
       ? "claude_managed_agents_api"
       : provider === "aws_agentcore"
@@ -230,6 +236,7 @@ export function parseEvalSessionRequest(
   if (
     providerValue !== "codex" &&
     providerValue !== "opencode" &&
+    providerValue !== "openai_managed" &&
     providerValue !== "claude_managed" &&
     providerValue !== "aws_agentcore" &&
     providerValue !== "acpx"
@@ -265,6 +272,8 @@ export function parseEvalSessionRequest(
   if (candidate && options.candidateProfile !== acpxAgent) {
     throw new Error("Candidate ACPX profiles require an explicit matching --candidate-profile diagnostic flag");
   }
+  const openaiProfile = provider === "openai_managed" ? parseOpenAiManagedProfile(input.openaiProfile) : undefined;
+  if (provider !== "openai_managed" && input.openaiProfile != null) throw new Error("openaiProfile requires provider openai_managed");
   const managedProfileInput = input.managedProfile === null
     ? undefined
     : input.managedProfile;
@@ -303,6 +312,7 @@ export function parseEvalSessionRequest(
   const sessionInput = object(input.session, "request.session");
   const session = sessionInput as unknown as CreateCapabilityLiveSessionInput;
   const model = text(input.model, "request.model");
+  if (provider === "openai_managed" && model !== "gpt-6-astra") throw new Error("OpenAI managed evals require exact model gpt-6-astra");
   if (provider === "claude_managed" && model !== "claude-sonnet-5") {
     throw new Error("Claude Managed evals require exact model claude-sonnet-5");
   }
@@ -337,6 +347,7 @@ export function parseEvalSessionRequest(
     ...(typeof input.opencodeVersion === "string"
       ? { opencodeVersion: text(input.opencodeVersion, "request.opencodeVersion") }
       : {}),
+    ...(openaiProfile === undefined ? {} : { openaiProfile }),
     ...(acpxAgent === undefined ? {} : { acpxAgent }),
     ...(managedProfile === undefined ? {} : { managedProfile }),
     ...(agentCoreProfile === undefined ? {} : { agentCoreProfile }),
@@ -393,11 +404,15 @@ export function evalSessionUsage(
   if (unique.size === 0) {
     throw new Error("completed turn omitted usage accounting");
   }
-  const candidate = snapshot.config?.provider === "acpx"
+  const managedOpenAi = snapshot.config?.provider === "openai_managed";
+  if (managedOpenAi && totals.inputTokens + totals.outputTokens <= 0) throw new Error("completed turn omitted usable OpenAI token accounting");
+  const candidate = managedOpenAi || snapshot.config?.provider === "acpx"
     && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
   let estimate: EstimatedModelCost | null;
   try {
-    estimate = estimateModelCostNanodollars(model, totals);
+    estimate = managedOpenAi
+      ? estimateOpenAiManagedCost(totals, snapshot.config.openaiProfile?.environment ?? { type: "none" })
+      : estimateModelCostNanodollars(model, totals);
   } catch (error) {
     // An exact candidate model can be advertised before our pricing catalog
     // contains it. Preserve unpriced usage for billing reconciliation instead
@@ -407,6 +422,7 @@ export function evalSessionUsage(
   }
   return {
     ...totals,
+    providerRequests: managedOpenAi ? null : totals.providerRequests,
     // Candidate ACP adapters do not supply authenticated USD receipts. The
     // shared legacy ledger fills absent cost with zero, so its numeric value
     // cannot establish an invoice amount for these profiles.

@@ -1,3 +1,5 @@
+import { parseOpenAiManagedProfile, type OpenAiManagedProfile } from "../../vendor/paperclip-runner/index.js";
+import { isDeepStrictEqual } from "node:util";
 import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -31,6 +33,7 @@ export type QualifiedPaperclipRunnerAcpxAgent =
 type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate;
 
 export type PaperclipRunnerProviderProfile =
+  | { provider: "openai_managed"; backend: "openai_agents_api"; openaiProfileId: string; model: string; maxEstimatedSessionCostUsd: number | null }
   | {
       provider: "codex";
       backend: "codex_app_server";
@@ -63,6 +66,7 @@ export type PaperclipRunnerProviderProfile =
     };
 
 export type PaperclipRunnerNativeProviderInput =
+  | { provider: "openai_managed"; model: string; openaiProfile: OpenAiManagedProfile }
   | {
       provider: "codex";
       model: string | null;
@@ -369,6 +373,14 @@ export function resolvePaperclipRunnerProviderProfile(
     };
   }
 
+  if (candidate === "openai_managed") {
+    const openaiProfileId = optionalString(config.openaiProfileId);
+    if (!openaiProfileId) throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_profile_required", "Select a company OpenAI managed profile.");
+    if (config.openaiRetentionAcknowledged !== true) throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_retention_required", "Acknowledge OpenAI session and artifact retention before running.");
+    if (model !== null && model !== "gpt-6-astra") throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_model_invalid", "OpenAI managed profiles currently use gpt-6-astra.");
+    return { provider: "openai_managed", backend: "openai_agents_api", openaiProfileId, model: "gpt-6-astra",
+      maxEstimatedSessionCostUsd: positiveNumberOrNull(config.maxEstimatedSessionCostUsd, "paperclip_runner_openai_budget_invalid", "OpenAI estimated budget must be positive.") };
+  }
   if (candidate === "claude_managed") {
     const managedProfileId = optionalString(config.managedProfileId);
     if (!managedProfileId) {
@@ -492,6 +504,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
     defaultModel: string;
     defaultMaxListCostCents: number;
   } | null;
+  openaiProfile?: { id: string; profileKey: string; configuration: Record<string, unknown> } | null;
   agentCoreProfile?: {
     id: string;
     profileKey: string;
@@ -526,6 +539,18 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
         config.acpxPermissionMode,
       ) as "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all",
     };
+  }
+  if (profile.provider === "openai_managed") {
+    const stored = input.openaiProfile;
+    if (!stored || ![stored.id, stored.profileKey].includes(profile.openaiProfileId)) throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_profile_mismatch", "OpenAI profile does not match the agent selection.");
+    const { defaultModel, ...configuration } = stored.configuration;
+    if (defaultModel !== profile.model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_model_mismatch", "OpenAI model does not match the company profile.");
+    if (profile.maxEstimatedSessionCostUsd !== null && profile.maxEstimatedSessionCostUsd > Number(configuration.maxEstimatedSessionCostUsd)) {
+      throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_budget_exceeds_profile", "The agent budget cannot exceed its company OpenAI profile ceiling.");
+    }
+    const openaiProfile = parseOpenAiManagedProfile({ ...configuration, profileId: stored.id,
+      maxEstimatedSessionCostUsd: profile.maxEstimatedSessionCostUsd ?? configuration.maxEstimatedSessionCostUsd });
+    return { provider: "openai_managed", model: profile.model, openaiProfile };
   }
   if (profile.provider === "claude_managed") {
     const stored = input.managedProfile;
@@ -699,4 +724,15 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
     ) as "never" | "on-request" | "untrusted",
     ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
   };
+}
+
+export function assertOpenAiProfileRecoveryBinding(input: {
+  adapterConfig: unknown; snapshot: OpenAiManagedProfile;
+  stored: { id: string; profileKey: string; configuration: Record<string, unknown>; credentialSecretId: string | null };
+}): void {
+  const resolved = resolvePaperclipRunnerNativeProviderInput({ backend: "openai_agents_api", adapterConfig: input.adapterConfig, openaiProfile: input.stored });
+  const binding = asRecord(asRecord(asRecord(input.adapterConfig).env).OPENAI_API_KEY);
+  if (resolved.provider !== "openai_managed" || !isDeepStrictEqual(resolved.openaiProfile, input.snapshot) || !input.stored.credentialSecretId || binding.secretId !== input.stored.credentialSecretId) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_openai_recovery_binding_mismatch", "OpenAI recovery requires the same company profile, configuration, and credential binding.");
+  }
 }

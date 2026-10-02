@@ -1,5 +1,5 @@
 export type PaperclipRunnerProvider =
-  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  "codex" | "opencode" | "openai_managed" | "claude_managed" | "aws_agentcore" | "acpx";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
@@ -89,6 +89,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
       },
     ],
   },
+  openai_managed: { configurable: false, defaultMode: "provider-managed", options: [], description: "OpenAI runs the managed Codex harness with the selected sandbox policy and Paperclip authorization." },
   claude_managed: {
     configurable: false,
     defaultMode: "provider-managed",
@@ -145,6 +146,7 @@ export function isPaperclipRunnerProvider(
   return (
     value === "codex" ||
     value === "opencode" ||
+    value === "openai_managed" ||
     value === "claude_managed" ||
     value === "aws_agentcore" ||
     value === "acpx"

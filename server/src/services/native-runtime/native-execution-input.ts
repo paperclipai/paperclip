@@ -63,13 +63,14 @@ export function buildNativeExecutionInput(input: {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "codex" | "opencode" | "openai_managed" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
   codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   model?: string | null;
+  openaiProfile?: Extract<NativeExecutionInputV5["provider"], { kind: "openai_managed" }>["openaiProfile"];
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
     { kind: "claude_managed" }
@@ -228,6 +229,7 @@ export function buildNativeExecutionInput(input: {
       normalizedSessionId: input.normalizedSessionId,
       driverKind: input.provider === "opencode"
         ? "opencode_server"
+        : input.provider === "openai_managed" ? "openai_agents_api"
         : input.provider === "claude_managed"
           ? "claude_managed_agents_api"
           : input.provider === "aws_agentcore"
@@ -238,7 +240,7 @@ export function buildNativeExecutionInput(input: {
       protocolVersion: 1,
       lifecyclePolicy: input.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     },
-    provider: input.provider === "claude_managed"
+    provider: input.provider === "openai_managed" ? { kind: "openai_managed", model: input.model, openaiProfile: input.openaiProfile } : input.provider === "claude_managed"
       ? {
           kind: "claude_managed",
           model: input.model,

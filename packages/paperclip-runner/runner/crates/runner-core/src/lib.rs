@@ -18,6 +18,7 @@ pub mod local_runner;
 pub mod managed_provider;
 pub mod managed_provider_backend;
 pub mod native_provider_backend;
+pub mod openai_managed_provider;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;

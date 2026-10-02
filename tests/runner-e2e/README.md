@@ -1486,3 +1486,13 @@ the evaluated checkout byte for byte. The skill snapshot and provider run eviden
 are retained privately alongside the grading checkpoints for failure diagnosis.
 Claude receives a fresh provider home and config directory inside the disposable
 workspace so a user's installed skill cannot shadow the managed skill under test.
+
+### OpenAI managed candidates
+
+The manual-only `openai-managed-tools` suite exercises response, plan revision
+and acceptance, and Ask-mode answers. `openai-managed-hosted` runs code in an
+OpenAI sandbox and verifies exact text, binary SHA-256, task completion, and a
+persisted output attachment after importing edits into an isolated Git worktree.
+Both need `OPENAI_API_KEY`; neither runs in the default matrix. The harness sets
+candidate admission only in its isolated server. See
+[OpenAI managed setup and limitations](../../doc/openai-managed-agents.md).

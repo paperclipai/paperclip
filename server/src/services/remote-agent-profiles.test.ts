@@ -573,3 +573,20 @@ describe("remote agent profile metadata validation", () => {
     ).rejects.toThrow("does not match its qualified revision");
   });
 });
+
+describe("OpenAI managed profiles", () => {
+  const configuration = { defaultModel: "gpt-6-astra", apiRevision: "agents=v1", reasoningEffort: "medium", environment: { type: "none" }, maxEstimatedSessionCostUsd: 2, timeoutSeconds: 180 };
+  it("requires a credential owned by this company", async () => {
+    await expect(remoteAgentProfileService(dbReturningNoRows()).upsert(COMPANY_ID, remoteInput({ service: "openai_agents_api", credentialSecretId: OTHER_COMPANY_SECRET_ID, configuration, qualification: {} }))).rejects.toThrow("Company credential secret not found");
+  });
+  it("binds the revision to environment and timeout policy", () => {
+    const input = { service: "openai_agents_api" as const, configuration, retentionAcknowledged: true, qualification: {} };
+    const original = computeRemoteAgentProfileRevision(input);
+    expect(computeRemoteAgentProfileRevision({ ...input, configuration: { ...configuration, timeoutSeconds: 179 } })).not.toBe(original);
+    expect(computeRemoteAgentProfileRevision({ ...input, configuration: { ...configuration, environment: { type: "openai_hosted", container_size: "medium", network: { access: "disabled" } } } })).not.toBe(original);
+  });
+  it("refuses production use without qualification", async () => {
+    const service = remoteAgentProfileService(dbReturningFirstRow({ id: OTHER_COMPANY_SECRET_ID, companyId: COMPANY_ID, profileKey: "openai", service: "openai_agents_api", enabled: true, retentionAcknowledged: true, qualifiedAt: null, configuration }));
+    await expect(service.requireQualified(COMPANY_ID, "openai", "openai_agents_api")).rejects.toThrow("not enabled and qualified");
+  });
+});

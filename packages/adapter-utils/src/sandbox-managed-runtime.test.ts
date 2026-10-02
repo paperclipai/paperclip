@@ -835,6 +835,47 @@ describe("sandbox managed runtime", () => {
     },
   );
 
+  it.each(["symlink", "file"])("rejects a deletion batch before removing files when an ancestor becomes a %s", async (kind) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-delete-batch-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local");
+    const remote = path.join(root, "remote");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(local, "z"), { recursive: true });
+    await mkdir(outside);
+    await writeFile(path.join(outside, "entry.txt"), "protected\n");
+    await git(local, ["init"]);
+    await git(local, ["config", "user.name", "Paperclip Test"]);
+    await git(local, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(local, "a.txt"), "first\n");
+    await writeFile(path.join(local, "z", "entry.txt"), "last\n");
+    await git(local, ["add", "."]);
+    await git(local, ["commit", "-m", "base"]);
+    await rm(path.join(local, "a.txt"));
+    await rm(path.join(local, "z", "entry.txt"));
+    const client = makeFilesystemClient();
+    const run = client.run.bind(client);
+    let injected = false;
+    client.run = async (command, options) => {
+      if (command.includes("xargs -0 -r -n 64")) {
+        injected = true;
+        await rm(path.join(remote, "z"), { recursive: true, force: true });
+        if (kind === "symlink") await symlink(outside, path.join(remote, "z"));
+        else await writeFile(path.join(remote, "z"), "blocked\n");
+      }
+      return run(command, options);
+    };
+    await expect(prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "sandbox-1", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: local,
+    })).rejects.toThrow();
+    expect(injected).toBe(true);
+    expect(await readFile(path.join(outside, "entry.txt"), "utf8")).toBe("protected\n");
+    expect(await readFile(path.join(remote, "a.txt"), "utf8")).toBe("first\n");
+  });
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);

@@ -471,3 +471,15 @@ describe("eval-session budget settlement", () => {
     }
   });
 });
+
+
+it("does not fabricate OpenAI request counts or billed cost from the legacy ledger", () => {
+  const snapshot = { config: { provider: "openai_managed" }, usageLedger: [{ receiptId: "openai-usage", providerCalls: 1, providerRequests: 0, inputTokens: 1000, outputTokens: 100, cachedInputTokens: 100, reasoningTokens: 0, costNanodollars: 0 }] } as unknown as CapabilityLiveSessionSnapshot;
+  expect(evalSessionUsage("gpt-6-astra", snapshot)).toMatchObject({ providerRequests: null, providerReportedCostNanodollars: null, providerReportedCostProvenance: "unavailable", costCoverage: "estimated" });
+  expect(evalSessionUsage("gpt-6-astra", snapshot).estimatedCostNanodollars).toBeGreaterThan(0);
+});
+
+it("rejects a fabricated all-zero OpenAI usage receipt", () => {
+  const snapshot = { config: { provider: "openai_managed" }, usageLedger: [{ receiptId: "unknown", providerCalls: 1, providerRequests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, costNanodollars: 0 }] } as unknown as CapabilityLiveSessionSnapshot;
+  expect(() => evalSessionUsage("gpt-6-astra", snapshot)).toThrow("usable OpenAI token accounting");
+});

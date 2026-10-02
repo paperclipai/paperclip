@@ -177,6 +177,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "codexPermissionMode",
     "opencodePermissionMode",
     "acpxPermissionMode",
+    "openaiProfileId",
+    "openaiRetentionAcknowledged",
     "managedProfileId",
     "managedAgentsRetentionAcknowledged",
     "maxSessionListCostUsd",
@@ -238,6 +240,12 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
           model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),
+    ...(provider === "openai_managed" ? {
+      openaiProfileId: typeof schemaValues.openaiProfileId === "string" ? schemaValues.openaiProfileId.trim() : "",
+      model: configuredModel || "gpt-6-astra",
+      maxEstimatedSessionCostUsd: Number.isFinite(maxEstimatedSessionCostUsd) && maxEstimatedSessionCostUsd > 0 ? maxEstimatedSessionCostUsd : 1,
+      openaiRetentionAcknowledged: schemaValues.openaiRetentionAcknowledged === true,
+    } : {}),
     ...(provider === "claude_managed"
       ? {
           ...(managedProfileId ? { managedProfileId } : {}),

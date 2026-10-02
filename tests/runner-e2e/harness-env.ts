@@ -111,6 +111,11 @@ export function buildRunnerE2EProcessEnvironment(
   // Discard ambient admission. Only explicit candidate cells authorize the
   // exact model in their isolated server; credentials still use company secrets.
   delete result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+  delete result.PAPERCLIP_OPENAI_MANAGED_QUALIFICATION;
+  if (executions.some((entry) => entry.profile.provider === "openai_managed")) {
+    if (executions.some((entry) => entry.profile.provider === "openai_managed" && (!entry.suite.manualOnly || !["openai-managed-tools", "openai-managed-hosted"].includes(entry.suite.id)))) throw new Error("OpenAI qualification requires its explicit suite");
+    result.PAPERCLIP_OPENAI_MANAGED_QUALIFICATION = "1";
+  }
   const candidates = new Map<string, string>();
   for (const execution of executions) {
     const agent = execution.profile.qualificationCandidate;

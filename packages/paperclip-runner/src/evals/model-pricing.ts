@@ -10,6 +10,7 @@ interface TokenRatesUsdPerMillion {
 // Source: https://developers.openai.com/api/docs/models
 const RATES: Readonly<Record<string, TokenRatesUsdPerMillion>> = Object.freeze({
   "gpt-5.4-mini": { input: 0.75, cachedInput: 0.075, output: 4.5 },
+  "gpt-6-astra": { input: 10, cachedInput: 1, output: 50 },
   "gpt-5.5": { input: 5, cachedInput: 0.5, output: 30 },
   "gpt-5.6-sol": { input: 5, cachedInput: 0.5, output: 30 },
   "gpt-5.6-terra": { input: 2, cachedInput: 0.2, output: 12 },
@@ -30,7 +31,7 @@ const RATES: Readonly<Record<string, TokenRatesUsdPerMillion>> = Object.freeze({
 
 export interface EstimatedModelCost {
   estimatedCostNanodollars: number;
-  pricingVersion: typeof MODEL_PRICING_VERSION;
+  pricingVersion: typeof MODEL_PRICING_VERSION | "openai-managed-conservative-2026-09-30-v2";
   ratesUsdPerMillionTokens: TokenRatesUsdPerMillion;
 }
 
@@ -47,4 +48,18 @@ export function estimateModelCostNanodollars(
       + usage.outputTokens * rates.output * 1_000,
   );
   return { estimatedCostNanodollars, pricingVersion: MODEL_PRICING_VERSION, ratesUsdPerMillionTokens: { ...rates } };
+}
+
+/** Estimate only: reserve one hour of hosted container use plus long-context
+ * rates. Known cache hits use cached pricing; other input reserves cache writes.
+ * Source: https://developers.openai.com/api/docs/pricing. Never an invoice receipt. */
+export function estimateOpenAiManagedCost(usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number },
+  environment: { type: string; container_size?: string }): EstimatedModelCost & { containerReservationNanodollars: number } {
+  const containerReservationNanodollars = environment.type === "openai_hosted"
+    ? ({ small: 90_000_000, medium: 360_000_000, large: 1_440_000_000 }[environment.container_size ?? ""] ?? (() => { throw new Error("OpenAI container pricing unavailable"); })()) : 0;
+  const cachedInput = Number.isSafeInteger(usage.cachedInputTokens) && usage.cachedInputTokens! >= 0 && usage.cachedInputTokens! <= usage.inputTokens
+    ? usage.cachedInputTokens! : 0;
+  return { estimatedCostNanodollars: Math.round(((usage.inputTokens - cachedInput) * 25 + cachedInput * 2 + usage.outputTokens * 75) * 1_000) + containerReservationNanodollars,
+    containerReservationNanodollars, pricingVersion: "openai-managed-conservative-2026-09-30-v2",
+    ratesUsdPerMillionTokens: { input: 25, cachedInput: 2, output: 75 } };
 }

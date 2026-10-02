@@ -1,3 +1,4 @@
+import { isOpenAiSessionCreation } from "../openai-managed/identity.js";
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
 import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
@@ -79,7 +80,20 @@ export class CodexHarnessSession
     return { steering: this.capabilities.steering, queuedFollowUp: false };
   }
 
+  #refreshManagedSessionIdentity(): void {
+    if (this.driverKind !== "openai_agents_api") return;
+    const identity = this.transport.providerSessionIdentity?.();
+    if (!identity) return;
+    if (identity.driverSessionId !== this.opened.threadId
+      || (identity.providerSessionId !== this.opened.providerSessionId
+        && !isOpenAiSessionCreation(this.opened.threadId, this.opened.providerSessionId, identity.providerSessionId))) {
+      throw new HarnessReconciliationError("managed session identity changed outside initial creation");
+    }
+    this.opened.providerSessionId = identity.providerSessionId;
+  }
+
   ids(): ReturnType<HarnessSession["ids"]> {
+    this.#refreshManagedSessionIdentity();
     return {
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
@@ -672,6 +686,7 @@ export class CodexHarnessSession
         "thread/read returned a different driver session",
       );
     }
+    this.#refreshManagedSessionIdentity();
     const providerSessionId = text(thread.sessionId);
     if (
       this.opened.providerSessionId !== null &&
@@ -784,6 +799,7 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    this.#refreshManagedSessionIdentity();
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,

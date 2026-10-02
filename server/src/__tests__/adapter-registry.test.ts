@@ -258,6 +258,7 @@ describe("server adapter registry", () => {
   });
 
   it.each([
+    ["openai_managed", { openaiProfileId: "openai-primary", openaiRetentionAcknowledged: true }, "openai_managed_profile_selected"],
     ["claude_managed", {
       managedProfileId: "managed-primary",
       managedAgentsRetentionAcknowledged: true,
@@ -507,4 +508,9 @@ describe("resolveExternalAdapterRegistration", () => {
 
     expect(resolved.sessionManagement).toBeUndefined();
   });
+});
+
+it("uses runnerd for OpenAI managed profiles without probing or installing a local Codex CLI", () => {
+  const adapter = requireServerAdapter("paperclip_runner");
+  expect(adapter.getRuntimeCommandSpec?.({ provider: "openai_managed" })).toEqual({ command: "paperclip-runnerd", detectCommand: null, installCommand: null });
 });

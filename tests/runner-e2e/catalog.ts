@@ -1,4 +1,5 @@
 import { chatConfirmationTasks } from "./chat-cases.js";
+import { OPENAI_MANAGED_MODEL } from "../../packages/paperclip-runner/src/drivers/openai-managed/config.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
@@ -1075,7 +1076,45 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
   ],
 };
 
+function openAiManagedProfile(hosted: boolean): RunnerProfileFixture {
+  const id = hosted ? "runner-openai-hosted" : "runner-openai-tools";
+  return {
+    id, label: hosted ? "OpenAI Hosted" : "OpenAI Tools", generation: "native", groups: ["native"],
+    adapterType: "paperclip_runner", provider: "openai_managed", model: OPENAI_MANAGED_MODEL,
+    modelQualification: { source: "candidate_runner_profile", qualificationId: `openai-agents-v1-${hosted ? "hosted" : "tools"}` },
+    credential: "OPENAI_API_KEY", supportedEnvironments: ["local"], expectedRuntimeMode: "native",
+    expectedRuntimeMetadata: { adapterType: "paperclip_runner", provider: "openai_managed" },
+    buildAgent(input) { return commonAgent(input, id, "paperclip_runner", {
+      provider: "openai_managed", model: OPENAI_MANAGED_MODEL, openaiProfileId: id,
+      openaiRetentionAcknowledged: true, maxEstimatedSessionCostUsd: 2, lifecycleMode: "per_turn",
+      env: { OPENAI_API_KEY: requiredSecret(input, "OPENAI_API_KEY") },
+    }); },
+  };
+}
+const openAiHostedTask: RunnerTaskFixture = {
+  id: "workspace-return", label: "Hosted workspace return", groups: [], workMode: "standard", flow: "single_turn", expectedRunCount: 1,
+  attemptTimeoutMs: { local: 480_000, daytona: 480_000 }, expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: (nonce) => `OpenAI hosted workspace ${nonce}`,
+  buildPrompt: (nonce) => `In /workspace/project, read seed.txt and replace its contents with OPENAI_RETURN_${nonce} followed by a newline. Create binary.bin containing bytes 0, 1, 2, 255. Run python3 /workspace/paperclip-export.py before finishing. Use paperclip_finish with the current completion contract. Your final answer must be exactly OPENAI_RETURN_${nonce}. Do not push or create a pull request.`,
+  buildVisibleMarker: (nonce) => `OPENAI_RETURN_${nonce}`,
+  buildMatchers: (nonce) => [
+    { kind: "file_exact", path: "seed.txt", expected: `OPENAI_RETURN_${nonce}\n` },
+    { kind: "file_sha256", path: "binary.bin", expected: "3d1f57c984978ef98a18378c8166c1cb8ede02c03eeb6aee7e2f121dfeee3e56" },
+    { kind: "artifact_exists", name: "paperclip-workspace.json", mimeType: "application/json" },
+    { kind: "message_exact", expected: `OPENAI_RETURN_${nonce}` },
+    { kind: "issue_status", expected: "done" }, { kind: "run_status", expected: "succeeded" },
+  ],
+};
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  { id: "openai-managed-tools", label: "OpenAI Managed Tools", manualOnly: true,
+    description: "OpenAI Agents API response, planning approval, and question workflows on the production control plane.",
+    groups: ["native"], profiles: [openAiManagedProfile(false)], environments: [localEnvironment], tasks: runnerTasks,
+    expectedMatrixSize: runnerTasks.length, definitionMetadata: { version: 1, apiRevision: "agents=v1", environment: "none", scheduling: "explicit-only", estimatedSessionCeilingUsd: 2 } },
+  { id: "openai-managed-hosted", label: "OpenAI Managed Hosted Workspace", manualOnly: true,
+    description: "OpenAI-hosted coding, binary return, and persisted downloadable output in an isolated task worktree.",
+    groups: ["native"], profiles: [openAiManagedProfile(true)], environments: [localEnvironment], tasks: [openAiHostedTask],
+    expectedMatrixSize: 1, definitionMetadata: { version: 1, apiRevision: "agents=v1", environment: "openai_hosted", network: "disabled", scheduling: "explicit-only", estimatedSessionCeilingUsd: 2 } },
   {
     id: "blocker-guidance", label: "Direct blocker handling", manualOnly: true,
     description: "Human authority, hiring permissions, and requester scope under the production coordination skill.",

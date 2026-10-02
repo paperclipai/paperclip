@@ -27,6 +27,7 @@ function runtimeInput(
   entryPath: string,
 ): NativeExecutionInput {
   return {
+    provider: { kind: "codex" },
     runtimeContext: {
       prompt: { text: "Paperclip runtime." },
       instructions: { bundle: { rootPath }, entryPath },
@@ -76,6 +77,17 @@ describe("native runtime context files", () => {
     expect(constraints).toContain("register_deliverable");
     expect(constraints).toContain("deliverable:");
     expect(constraints).toContain("download link");
+  });
+
+  it("defers hosted publication until the turn ends and does not advertise a local writable agent home", () => {
+    const input = runtimeInput("/bundle", "AGENTS.md") as any;
+    input.provider = { kind: "openai_managed", openaiProfile: { environment: { type: "openai_hosted" } } };
+    input.runtimeContext.instructions.workingCopy = { kind: "agent_files", rootPath: "/controller/private", entryPath: "AGENTS.md" };
+    const constraints = nativeTaskConstraints(input).join("\n");
+    expect(constraints).toContain("after the provider turn ends");
+    expect(constraints).toContain("paperclip-export.py");
+    expect(constraints).not.toContain("/controller/private");
+    expect(constraints).not.toContain("use register_deliverable before paperclip_finish");
   });
 
   it("marks only authoritative answered-question envelopes as resolved in the outer task", () => {

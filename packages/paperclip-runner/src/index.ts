@@ -77,3 +77,5 @@ export * from "./generated/capability-contract.js";
 export * from "./semantic-tools/index.js";
 export * as acceptedCapabilitySemanticTools from "./semantic-tools/index.js";
 export * from "./compatibility.js";
+export { parseOpenAiManagedProfile, parseOpenAiManagedEnvironment, OPENAI_AGENTS_API_REVISION, OPENAI_MANAGED_MODEL } from "./drivers/openai-managed/config.js";
+export type { OpenAiManagedProfile, OpenAiManagedEnvironment } from "./drivers/openai-managed/config.js";

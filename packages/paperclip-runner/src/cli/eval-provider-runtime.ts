@@ -6,7 +6,7 @@ import type { CapabilityRunnerdCodexTransportOptions } from "../live/runnerd-cod
 
 /** The direct fixture harness uses the same unattended policy as Runner E2E. */
 export function evalProviderTransportOptions(
-  provider: "codex" | "opencode" | "acpx" | "claude_managed" | "aws_agentcore",
+  provider: "codex" | "opencode" | "acpx" | "openai_managed" | "claude_managed" | "aws_agentcore",
   turnTimeoutMs = 120_000,
 ): Pick<CapabilityRunnerdCodexTransportOptions,
   "codexCommand" | "acpxPermissionMode" | "acpxPermissionModePinned" | "turnStartTimeoutMs"

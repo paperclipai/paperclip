@@ -11,12 +11,13 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import { companySecrets } from "./company_secrets.js";
 import { companies } from "./companies.js";
 
 /**
  * Company-scoped, non-secret snapshots of qualified remote runner resources.
  * AWS AgentCore authentication uses the runner environment's workload identity;
- * the profile stores no credential reference or credential material.
+ * OpenAI profiles reference a company secret; credential material is never stored here.
  */
 export const remoteAgentProfiles = pgTable(
   "remote_agent_profiles",
@@ -28,6 +29,7 @@ export const remoteAgentProfiles = pgTable(
     profileKey: text("profile_key").notNull(),
     displayName: text("display_name").notNull(),
     service: text("service").notNull(),
+    credentialSecretId: uuid("credential_secret_id").references(() => companySecrets.id, { onDelete: "restrict" }),
     configuration: jsonb("configuration").$type<Record<string, unknown>>().notNull().default({}),
     enabled: boolean("enabled").notNull().default(false),
     retentionAcknowledged: boolean("retention_acknowledged").notNull().default(false),
@@ -45,7 +47,11 @@ export const remoteAgentProfiles = pgTable(
     ),
     serviceCheck: check(
       "remote_agent_profiles_service_check",
-      sql`${table.service} = 'aws_bedrock_agentcore_harness'`,
+      sql`${table.service} IN ('aws_bedrock_agentcore_harness', 'openai_agents_api')`,
+    ),
+    credentialServiceCheck: check(
+      "remote_agent_profiles_credential_service_check",
+      sql`(${table.service} = 'aws_bedrock_agentcore_harness' AND ${table.credentialSecretId} IS NULL) OR (${table.service} = 'openai_agents_api' AND ${table.credentialSecretId} IS NOT NULL)`,
     ),
     qualifiedRevisionCheck: check(
       "remote_agent_profiles_qualified_revision_check",

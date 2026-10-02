@@ -10,6 +10,8 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  OpenAiManagedProfile,
+  OpenAiManagedEnvironment,
   PaperclipJsonValue,
   PaperclipQuestionResponse,
   PaperclipSemanticActionBinding,
@@ -130,3 +132,5 @@ export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailur
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+
+export const parseOpenAiManagedProfile = runner.parseOpenAiManagedProfile;

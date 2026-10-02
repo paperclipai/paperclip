@@ -1,12 +1,14 @@
+import { parseOpenAiManagedProfile } from "../vendor/paperclip-runner/index.js";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { remoteAgentProfiles } from "@paperclipai/db";
+import { remoteAgentProfiles, companySecrets } from "@paperclipai/db";
 
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   AGENTCORE_QUALIFIED_MODEL,
   AGENTCORE_QUALIFICATION_SUITE,
   assertAgentCoreQualification,
+  assertOpenAiManagedQualification,
   assertProfileMetadataContainsNoSecrets,
   computeQualifiedProfileRevision,
   isQualifiedProfileRevision,
@@ -14,7 +16,7 @@ import {
 
 export { assertProfileMetadataContainsNoSecrets } from "./provider-profile-qualification.js";
 
-export type RemoteAgentService = "aws_bedrock_agentcore_harness";
+export type RemoteAgentService = "aws_bedrock_agentcore_harness" | "openai_agents_api";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface RemoteAgentProfileInput {
@@ -22,6 +24,7 @@ export interface RemoteAgentProfileInput {
   displayName: string;
   service: RemoteAgentService;
   configuration: Record<string, unknown>;
+  credentialSecretId?: string | null;
   enabled: boolean;
   retentionAcknowledged: boolean;
   qualification?: Record<string, unknown>;
@@ -55,6 +58,16 @@ const AGENTCORE_CONFIGURATION_KEYS = new Set([
 ]);
 
 function validateConfiguration(service: RemoteAgentService, configuration: Record<string, unknown>) {
+  if (service === "openai_agents_api") {
+    assertProfileMetadataContainsNoSecrets(configuration, "OpenAI configuration");
+    const { defaultModel, ...profile } = configuration;
+    if (defaultModel !== "gpt-6-astra") throw unprocessable("OpenAI managed model must be gpt-6-astra");
+    try {
+      const parsed = parseOpenAiManagedProfile({ ...profile, profileId: "validation" });
+      if (parsed.environment.type === "openai_hosted" && parsed.environment.files !== undefined) throw new Error("Initial files must be staged by the controller, not stored in a reusable profile");
+    } catch (error) { throw unprocessable(error instanceof Error ? error.message : "OpenAI profile is invalid"); }
+    return;
+  }
   if (service !== "aws_bedrock_agentcore_harness") {
     throw unprocessable("Unsupported remote agent service");
   }
@@ -124,7 +137,7 @@ export function computeRemoteAgentProfileRevision(input: {
     "qualificationRevision",
     "eventExpiryDays",
   ];
-  const immutableConfiguration = Object.fromEntries(
+  const immutableConfiguration = input.service === "openai_agents_api" ? input.configuration : Object.fromEntries(
     immutableConfigurationKeys.map((key) => [key, input.configuration[key]]),
   );
   return computeQualifiedProfileRevision({
@@ -203,7 +216,7 @@ export function remoteAgentProfileService(db: Db) {
       throw conflict("Remote Agent profile configuration is not qualified");
     }
     try {
-      assertAgentCoreQualification(profile.configuration, profile.qualification, { required: true });
+      (profile.service === "openai_agents_api" ? assertOpenAiManagedQualification : assertAgentCoreQualification)(profile.configuration, profile.qualification, { required: true });
     } catch {
       throw conflict("Remote Agent profile qualification attestation is invalid");
     }
@@ -223,8 +236,15 @@ export function remoteAgentProfileService(db: Db) {
   }
 
   async function upsert(companyId: string, input: RemoteAgentProfileInput) {
-    if ("credentialSecretId" in (input as unknown as Record<string, unknown>)) {
+    if (input.service !== "openai_agents_api" && "credentialSecretId" in (input as unknown as Record<string, unknown>)) {
       throw unprocessable("AWS AgentCore profiles use workload identity, not a credential secret");
+    }
+    if (input.service === "openai_agents_api") {
+      const secretId = required(input.credentialSecretId, "OpenAI credential secret");
+      if (!UUID_RE.test(secretId)) throw unprocessable("OpenAI credential secret ID is invalid");
+      const [secret] = await db.select({ id: companySecrets.id }).from(companySecrets)
+        .where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"))).limit(1);
+      if (!secret) throw notFound("Company credential secret not found");
     }
     const profileKey = required(input.profileKey, "Profile key");
     if (UUID_RE.test(profileKey)) {
@@ -241,10 +261,10 @@ export function remoteAgentProfileService(db: Db) {
     if (input.enabled && !input.retentionAcknowledged) {
       throw unprocessable("Enabling a remote agent requires retention acknowledgement");
     }
-    const qualificationAttested = assertAgentCoreQualification(
+    const qualificationAttested = (input.service === "openai_agents_api" ? assertOpenAiManagedQualification : assertAgentCoreQualification)(
       configuration,
       qualification,
-      { required: input.enabled },
+      { required: input.enabled && !(input.service === "openai_agents_api" && process.env.PAPERCLIP_OPENAI_MANAGED_QUALIFICATION === "1") },
     );
 
     const existing = await getByProfileKey(companyId, profileKey);
@@ -264,6 +284,7 @@ export function remoteAgentProfileService(db: Db) {
       profileKey,
       displayName,
       service: input.service,
+      credentialSecretId: input.service === "openai_agents_api" ? input.credentialSecretId! : null,
       configuration,
       enabled: input.enabled,
       retentionAcknowledged: input.retentionAcknowledged,
@@ -286,5 +307,13 @@ export function remoteAgentProfileService(db: Db) {
     return row!;
   }
 
-  return { list, get, requireQualified, upsert };
+  async function requireRunnable(companyId: string, profileIdOrKey: string, service: RemoteAgentService) {
+    if (service !== "openai_agents_api" || process.env.PAPERCLIP_OPENAI_MANAGED_QUALIFICATION !== "1") return requireQualified(companyId, profileIdOrKey, service);
+    const profile = await get(companyId, profileIdOrKey);
+    if (!profile || profile.service !== service) throw notFound("Remote Agent profile not found");
+    if (!profile.enabled || !profile.retentionAcknowledged || !profile.credentialSecretId) throw conflict("Experimental OpenAI profile requires enablement, retention acknowledgement, and a credential");
+    validateConfiguration(service, profile.configuration);
+    return profile;
+  }
+  return { list, get, requireQualified, requireRunnable, upsert };
 }

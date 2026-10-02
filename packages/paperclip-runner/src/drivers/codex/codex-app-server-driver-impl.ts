@@ -1,3 +1,4 @@
+import { isOpenAiSessionCreation } from "../openai-managed/identity.js";
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
@@ -440,6 +441,8 @@ export class CodexAppServerDriver implements HarnessDriver {
       if (
         snapshot.providerSessionId &&
         opened.providerSessionId !== snapshot.providerSessionId
+        && !(this.#options.driverIdentity?.kind === "openai_agents_api"
+          && isOpenAiSessionCreation(opened.threadId, snapshot.providerSessionId, opened.providerSessionId))
       ) {
         await cancellation.wait(cancellation.close());
         return {

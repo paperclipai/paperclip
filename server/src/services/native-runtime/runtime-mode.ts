@@ -48,6 +48,7 @@ export type NativeRuntimeResolution =
         backend:
           | "codex_app_server"
           | "opencode_server"
+          | "openai_agents_api"
           | "claude_managed_agents_api"
           | "aws_agentcore_harness_api"
           | "acpx_runtime";
@@ -238,6 +239,7 @@ export function resolveHeartbeatRuntimeMode(input: {
     reason: "explicit_paperclip_runner",
     provider: resolution.profile.backend === "opencode_server"
       ? "opencode"
+      : resolution.profile.backend === "openai_agents_api" ? "openai_managed"
       : resolution.profile.backend === "claude_managed_agents_api"
         ? "claude_managed"
         : resolution.profile.backend === "aws_agentcore_harness_api"
@@ -288,6 +290,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
       const driverKind = input.persisted.driverKind;
       const backend = driverKind === "opencode_server"
         ? "opencode_server"
+        : driverKind === "openai_agents_api" ? "openai_agents_api"
         : driverKind === "claude_managed_agents_api"
           ? "claude_managed_agents_api"
           : driverKind === "aws_agentcore_harness_api"

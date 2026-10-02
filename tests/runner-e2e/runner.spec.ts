@@ -4,6 +4,7 @@ import { runsCompletionUpdateProbe, completionQualityControls, completionQuality
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { readOpenAiHostedArtifact } from "./openai-managed-fixture.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
@@ -567,6 +568,7 @@ for (const execution of executions) {
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
+    let downloadedHostedArtifact: Awaited<ReturnType<typeof readOpenAiHostedArtifact>> | undefined;
     const completionQuality: CompletionQualityRecord[] = [];
     const completionEvidence = async (name: string, data: unknown) => {
       await writeSanitizedJson(snapshotsDir, name, data, secrets);
@@ -2098,16 +2100,26 @@ for (const execution of executions) {
             ]),
         ),
       );
+      const fileHashes = Object.fromEntries(await Promise.all(taskMatchers
+        .filter((matcher) => matcher.kind === "file_sha256")
+        .map(async (matcher) => [matcher.path, await readFile(path.isAbsolute(matcher.path) ? matcher.path : path.join(workspacePath, matcher.path))
+          .then((bytes) => createHash("sha256").update(bytes).digest("hex")).catch(() => undefined)])));
       if (execution.suite.id === "api-response-reading") {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
         await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+      }
+      if (execution.suite.id === "openai-managed-hosted") {
+        downloadedHostedArtifact = await readOpenAiHostedArtifact(api, issue.id, run.id);
+        await writeSanitizedJson(snapshotsDir, "downloaded-hosted-artifact.json", downloadedHostedArtifact, secrets);
       }
       matcherResults = await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
             ...matcherObservation,
             files: fileObservations,
+            fileHashes,
+            artifacts: downloadedHostedArtifact ? [downloadedHostedArtifact] : undefined,
             // Multi-run tasks intentionally retain earlier waiting/revision
             // replies. Exact completion text belongs to the chronological
             // final run, while occurrence checks still span every agent
@@ -2565,6 +2577,11 @@ for (const execution of executions) {
         .getByTestId("task-chat-agent-bubble");
       if (execution.suite.id === "task-titles") {
         await expect(page.getByRole("heading", { name: issue.title.trim(), exact: true })).toBeVisible();
+      }
+      if (downloadedHostedArtifact) {
+        const outputLink = page.getByRole("link", { name: "Open paperclip-workspace.json", exact: true }).first();
+        await expect(outputLink).toBeVisible({ timeout: 30_000 });
+        await expect(outputLink).toHaveAttribute("href", `/api/attachments/${downloadedHostedArtifact.attachmentId}/content`);
       }
       if (execution.suite.id === "api-response-reading") {
         // File delivery renders a card instead of an exact summary bubble.

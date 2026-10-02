@@ -241,6 +241,10 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("does not match");
     expect(() => parseNativeExecutionInput({
       ...claudeManaged,
+      session: { ...claudeManaged.session, driverKind: "openai_agents_api" },
+    })).toThrow("driverKind");
+    expect(() => parseNativeExecutionInput({
+      ...claudeManaged,
       provider: {
         ...claudeManaged.provider,
         managedProfile: { ...claudeManaged.provider.managedProfile, betaVersion: "future-beta" },

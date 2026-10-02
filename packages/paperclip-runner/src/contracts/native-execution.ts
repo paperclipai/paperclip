@@ -1,3 +1,4 @@
+import { parseOpenAiManagedProfile, type OpenAiManagedProfile } from "../drivers/openai-managed/config.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
@@ -99,6 +100,7 @@ export interface NativeAcpxProfileSnapshot {
 }
 
 export type NativeProviderConfig =
+  | { kind: "openai_managed"; model: string; openaiProfile: OpenAiManagedProfile }
   | { kind: "codex"; model: string | null; approvalPolicy?: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode?: NativeOpenCodePermissionMode }
   | {
@@ -131,7 +133,7 @@ export type NativeProviderConfig =
 export type NativeProviderConfigV4 =
   | { kind: "codex"; model: string | null; approvalPolicy: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode: NativeOpenCodePermissionMode }
-  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" }>
+  | Extract<NativeProviderConfig, { kind: "openai_managed" | "claude_managed" | "aws_agentcore" }>
   | {
       kind: "acpx";
       agent: NativeAcpxAgent;
@@ -169,7 +171,7 @@ export interface NativeExecutionInputV1 {
   };
   session: {
     normalizedSessionId: string | null;
-    driverKind: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
+    driverKind: "codex_app_server" | "opencode_server" | "openai_agents_api" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
     protocolVersion: 1;
     lifecyclePolicy: NativeSessionLifecyclePolicy;
   };
@@ -398,6 +400,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     (
       session.driverKind !== "codex_app_server"
       && session.driverKind !== "opencode_server"
+      && session.driverKind !== "openai_agents_api"
       && session.driverKind !== "claude_managed_agents_api"
       && session.driverKind !== "aws_agentcore_harness_api"
       && session.driverKind !== "acpx_runtime"
@@ -437,6 +440,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (
     provider.kind !== "codex"
     && provider.kind !== "opencode"
+    && provider.kind !== "openai_managed"
     && provider.kind !== "claude_managed"
     && provider.kind !== "aws_agentcore"
     && provider.kind !== "acpx"
@@ -445,7 +449,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
   exactKeys(
     provider,
-    provider.kind === "claude_managed"
+    provider.kind === "openai_managed" ? ["kind", "model", "openaiProfile"] : provider.kind === "claude_managed"
       ? ["kind", "model", "managedProfile", "maxSessionListCostUsd"]
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
@@ -461,6 +465,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (
     (provider.kind === "codex" && session.driverKind !== "codex_app_server")
     || (provider.kind === "opencode" && session.driverKind !== "opencode_server")
+    || (provider.kind === "openai_managed" && session.driverKind !== "openai_agents_api")
     || (provider.kind === "claude_managed" && session.driverKind !== "claude_managed_agents_api")
     || (provider.kind === "aws_agentcore" && session.driverKind !== "aws_agentcore_harness_api")
     || (provider.kind === "acpx" && session.driverKind !== "acpx_runtime")
@@ -474,7 +479,10 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
   let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
-  if (provider.kind === "claude_managed") {
+  if (provider.kind === "openai_managed") {
+    if (providerModel !== "gpt-6-astra") throw new NativeExecutionInputError("OpenAI managed model must be gpt-6-astra");
+    parsedProvider = { kind: "openai_managed", model: providerModel, openaiProfile: parseOpenAiManagedProfile(provider.openaiProfile) };
+  } else if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
     }
@@ -827,7 +835,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     return {
       schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V1,
       task: structuredClone(input.task),
-      workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+      workspace: input.provider.kind === "openai_managed" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
         ? null
         : { cwd: input.workspace.cwd },
       completionContract: structuredClone(input.completionContract.contract),
@@ -853,7 +861,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       },
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
-      workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      workspace: input.provider.kind === "openai_managed" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
       completionContract: {
         ...structuredClone(input.completionContract.contract),
         criteria: input.completionContract.contract.criteria.map((criterion) => {
@@ -876,7 +884,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     },
     executionMode: input.executionMode,
     planningContext: structuredClone(input.planningContext),
-    workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+    workspace: input.provider.kind === "openai_managed" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
       ? null
       : { cwd: input.workspace.cwd },
     completionContract: structuredClone(input.completionContract.contract),

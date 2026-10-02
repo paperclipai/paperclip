@@ -165,3 +165,30 @@ export function computeQualifiedProfileRevision(
 export function isQualifiedProfileRevision(value: unknown): value is string {
   return typeof value === "string" && SHA256_RE.test(value);
 }
+
+
+/** Validate a company board operator's attestation, as for Claude and AgentCore.
+ * This is a full-control operator assertion, not a signed external test receipt.
+ * Agents cannot create profiles; the board must inspect the retained evidence.
+ * OpenAI does not expose a pinned harness release.
+ */
+export function assertOpenAiManagedQualification(
+  configuration: Record<string, unknown>, qualification: Record<string, unknown>, options: { required: boolean },
+): boolean {
+  if (Object.keys(qualification).length === 0) {
+    if (options.required) throw unprocessable("OpenAI managed qualification evidence is required before production enablement");
+    return false;
+  }
+  assertExactKeys(qualification, ["suite", "probedAt", "paperclipSha", "evalsSha", "runnerSha256", "configurationSha256", "passedCases", "totalCases"], "OpenAI qualification");
+  assertProfileMetadataContainsNoSecrets(qualification, "OpenAI qualification");
+  assertIsoTimestamp(qualification.probedAt, "qualification.probedAt");
+  const environment = configuration.environment as Record<string, unknown> | undefined;
+  if (qualification.suite !== (environment?.type === "openai_hosted" ? "openai-managed-hosted-v1" : "openai-managed-tools-v1")
+    || qualification.passedCases !== 35 || qualification.totalCases !== 35
+    || !/^[a-f0-9]{40}$/.test(String(qualification.paperclipSha)) || !/^[a-f0-9]{40}$/.test(String(qualification.evalsSha))
+    || !isQualifiedProfileRevision(qualification.runnerSha256)
+    || qualification.configurationSha256 !== computeQualifiedProfileRevision(configuration)) {
+    throw unprocessable("OpenAI qualification must bind the exact configuration and passing 35-case roster to both builds");
+  }
+  return true;
+}

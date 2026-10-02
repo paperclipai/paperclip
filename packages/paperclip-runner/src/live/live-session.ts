@@ -1,3 +1,4 @@
+import { parseOpenAiManagedProfile, type OpenAiManagedProfile } from "../drivers/openai-managed/config.js";
 import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -129,11 +130,12 @@ export interface CapabilityLiveSessionConfigSnapshot {
   /** Exact model requested by the caller; omitted only for legacy interactive sessions. */
   requestedModel?: string;
   /** Safe harness identity used by server-side projections and eval metadata. */
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
-  driver?: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
+  provider?: "codex" | "opencode" | "openai_managed" | "claude_managed" | "aws_agentcore" | "acpx";
+  driver?: "codex_app_server" | "opencode_server" | "openai_agents_api" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
   providerVersion?: string | null;
   acpxAgent?: QualifiedAcpxAgent;
   acpxProfile?: QualifiedAcpxProfile;
+  openaiProfile?: OpenAiManagedProfile;
   managedProfile?: {
     profileId: string;
     anthropicAgentId: string;
@@ -321,9 +323,10 @@ export interface CapabilityLiveSessionSnapshot {
 export interface CreateCapabilityLiveSessionInput {
   seed?: CapabilityFixtureSeed | CapabilityFixtureState;
   workingDirectory?: string;
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "codex" | "opencode" | "openai_managed" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: QualifiedAcpxAgent;
   requestedModel?: string;
+  openaiProfile?: OpenAiManagedProfile;
   managedProfile?: CapabilityLiveSessionConfigSnapshot["managedProfile"];
   agentCoreProfile?: CapabilityLiveSessionConfigSnapshot["agentCoreProfile"];
   scenario?: CapabilitySemanticScenarioPolicy;
@@ -618,7 +621,8 @@ export function assertCapabilityLiveSessionSnapshot(
     persistedProvider !== undefined &&
     persistedProvider !== "codex" &&
     persistedProvider !== "opencode" &&
-    persistedProvider !== "claude_managed"
+    persistedProvider !== "openai_managed"
+    && persistedProvider !== "claude_managed"
     && persistedProvider !== "aws_agentcore"
     && persistedProvider !== "acpx"
   ) {
@@ -627,6 +631,7 @@ export function assertCapabilityLiveSessionSnapshot(
   const provider = persistedProvider ?? "codex";
   const expectedDriver = provider === "opencode"
     ? "opencode_server"
+    : provider === "openai_managed" ? "openai_agents_api"
     : provider === "claude_managed" ? "claude_managed_agents_api"
     : provider === "aws_agentcore" ? "aws_agentcore_harness_api"
     : provider === "acpx" ? "acpx_runtime" : "codex_app_server";
@@ -644,7 +649,7 @@ export function assertCapabilityLiveSessionSnapshot(
     if (provider === "opencode" && !requestedModel.includes("/")) {
       throw new Error("capability_live_checkpoint_corrupt: invalid OpenCode model");
     }
-  } else if (provider === "opencode" || provider === "claude_managed" || provider === "aws_agentcore" || provider === "acpx") {
+  } else if (provider === "openai_managed" || provider === "opencode" || provider === "claude_managed" || provider === "aws_agentcore" || provider === "acpx") {
     throw new Error(`capability_live_checkpoint_corrupt: missing ${provider === "opencode" ? "OpenCode" : provider === "claude_managed" ? "Claude Agent" : provider === "aws_agentcore" ? "AWS AgentCore" : "ACPX"} model`);
   }
   if (provider === "acpx") {
@@ -657,6 +662,7 @@ export function assertCapabilityLiveSessionSnapshot(
       throw new Error("capability_live_checkpoint_corrupt: ACPX profile drift");
     }
   }
+  if (provider === "openai_managed") parseOpenAiManagedProfile(config.openaiProfile);
   if (provider === "claude_managed") {
     const profile = record(config.managedProfile);
     for (const field of ["profileId", "anthropicAgentId", "agentVersion", "environmentId"] as const) {
@@ -905,6 +911,7 @@ export class CapabilityLiveSessionService {
       && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
+    if (input.provider === "openai_managed") parseOpenAiManagedProfile(input.openaiProfile);
     if (input.provider === "claude_managed" && !input.managedProfile) {
       throw new Error("Claude Managed live sessions require a qualified managed profile");
     }
@@ -912,7 +919,7 @@ export class CapabilityLiveSessionService {
       throw new Error("AWS AgentCore live sessions require a qualified AgentCore profile");
     }
     if (
-      (input.provider === "claude_managed" || input.provider === "aws_agentcore") &&
+      (input.provider === "openai_managed" || input.provider === "claude_managed" || input.provider === "aws_agentcore") &&
       !input.requestedModel?.trim()
     ) {
       throw new Error("Managed live sessions require an explicit qualified model");
@@ -959,6 +966,7 @@ export class CapabilityLiveSessionService {
         provider: input.provider ?? "codex",
         driver: input.provider === "opencode"
           ? "opencode_server"
+          : input.provider === "openai_managed" ? "openai_agents_api"
           : input.provider === "claude_managed"
             ? "claude_managed_agents_api"
             : input.provider === "aws_agentcore"
@@ -966,6 +974,7 @@ export class CapabilityLiveSessionService {
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
           ? "1.18.32"
+          : input.provider === "openai_managed" ? "agents=v1"
           : input.provider === "claude_managed"
             ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
@@ -975,6 +984,7 @@ export class CapabilityLiveSessionService {
           acpxAgent: acpxProfile.agent,
           acpxProfile: structuredClone(acpxProfile),
         }),
+        ...(input.openaiProfile === undefined ? {} : { openaiProfile: parseOpenAiManagedProfile(input.openaiProfile) }),
         ...(input.managedProfile === undefined
           ? {}
           : { managedProfile: structuredClone(input.managedProfile) }),
@@ -1864,7 +1874,7 @@ export class CapabilityLiveSession {
       receiptId: `${turnId}:usage`,
       turnId,
       providerCalls: 1,
-      providerRequests: Math.max(1, finalUsage.providerRequests),
+      providerRequests: this.#config.provider === "openai_managed" ? 0 : Math.max(1, finalUsage.providerRequests),
       inputTokens: finalUsage.inputTokens,
       outputTokens: finalUsage.outputTokens,
       cachedInputTokens: finalUsage.cachedInputTokens,
@@ -2143,7 +2153,7 @@ export class CapabilityLiveSession {
     maxSessionListCostUsd: number,
   ): Promise<CapabilityLiveSessionSnapshot> {
     if (
-      (this.#config.provider !== "claude_managed" &&
+      (this.#config.provider !== "openai_managed" && this.#config.provider !== "claude_managed" &&
         this.#config.provider !== "aws_agentcore") ||
       this.#transport === null
     ) {
@@ -2175,7 +2185,7 @@ export class CapabilityLiveSession {
 
   async deleteManagedRemoteSession(): Promise<CapabilityLiveSessionSnapshot> {
     if (
-      (this.#config.provider !== "claude_managed" &&
+      (this.#config.provider !== "openai_managed" && this.#config.provider !== "claude_managed" &&
         this.#config.provider !== "aws_agentcore") ||
       this.#transport === null
     ) {
@@ -2384,6 +2394,7 @@ export class CapabilityLiveSession {
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
       } : {}),
+      ...(provider === "openai_managed" && this.#config.openaiProfile ? { openaiProfile: { ...this.#config.openaiProfile, model: this.#config.requestedModel ?? "gpt-6-astra" } } : {}),
       ...(provider === "claude_managed" && this.#config.managedProfile
         ? {
             managedProfile: {
@@ -2422,6 +2433,10 @@ export class CapabilityLiveSession {
       },
       onEvidence: (evidence) => {
         this.#processEvidence = structuredClone(evidence);
+        if (this.#config.provider === "openai_managed" && evidence.providerService === "openai_agents_api") {
+          if (evidence.providerSessionId) this.#providerSessionId = evidence.providerSessionId;
+          if (evidence.driverSessionId) this.#providerThreadId = evidence.driverSessionId;
+        }
         this.#transportOptions.onEvidence?.(evidence);
       },
     });

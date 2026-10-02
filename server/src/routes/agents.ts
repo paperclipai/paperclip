@@ -2229,7 +2229,9 @@ export function agentRoutes(
       }
       throw error;
     }
-    if (profile.provider === "claude_managed") {
+    if (profile.provider === "openai_managed") {
+      await remoteAgentProfileService(db).requireRunnable(companyId, profile.openaiProfileId, "openai_agents_api");
+    } else if (profile.provider === "claude_managed") {
       await managedAgentProfileService(db).requireQualified(
         companyId,
         profile.managedProfileId,
@@ -3256,6 +3258,10 @@ export function agentRoutes(
     }
     if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {
       throw unprocessable("Unknown Paperclip Runner provider");
+    }
+    if (type === "paperclip_runner" && provider === "openai_managed") {
+      res.json([{ id: "gpt-6-astra", label: "GPT-6 Astra · OpenAI Managed" }]);
+      return;
     }
     const modelAdapterType = type === "paperclip_runner"
       ? provider === "acpx" || provider === "claude_managed" ? "claude_local"

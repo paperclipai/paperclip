@@ -1,3 +1,4 @@
+import { OpenAiManagedProfileField } from "./openai-managed-profile-field";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -205,6 +206,7 @@ export function CodexLocalConfigFields({
               const model =
                 provider === "opencode"
                   ? defaultOpenCodeRunnerModel
+                  : provider === "openai_managed" ? "gpt-6-astra"
                   : provider === "claude_managed"
                     ? defaultClaudeManagedModel
                     : provider === "aws_agentcore"
@@ -232,6 +234,7 @@ export function CodexLocalConfigFields({
           >
             <option value="codex">Codex</option>
             <option value="opencode">OpenCode 1.18.32</option>
+            <option value="openai_managed">OpenAI Managed (experimental)</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
             <option value="acpx">ACP agents</option>
@@ -255,6 +258,28 @@ export function CodexLocalConfigFields({
             </option>)}
           </select>
         </Field>
+      )}
+      {runnerManaged && runnerProvider === "openai_managed" && (
+        <>
+          <OpenAiManagedProfileField value={String(runnerSchemaValue("openaiProfileId", ""))} onSelect={(profileId, secretId, hosted) => {
+            const binding = { type: "secret_ref", secretId, version: "latest" };
+            if (isCreate) {
+              set!({ adapterSchemaValues: { ...values!.adapterSchemaValues, openaiProfileId: profileId, openaiRetentionAcknowledged: true, ...(hosted ? { lifecycleMode: "per_turn" } : {}) }, envBindings: { ...values!.envBindings, OPENAI_API_KEY: binding } });
+            } else {
+              mark("adapterConfig", "openaiProfileId", profileId);
+              mark("adapterConfig", "openaiRetentionAcknowledged", true);
+              mark("adapterConfig", "env", { ...eff("adapterConfig", "env", config.env as Record<string, unknown> ?? {}), OPENAI_API_KEY: binding });
+              if (hosted) mark("adapterConfig", "lifecycleMode", "per_turn");
+            }
+          }} />
+          <Field label="Estimated session ceiling (USD)" hint="Paperclip cancels when observed usage reaches this estimate. OpenAI does not offer a session dollar hard stop; usage can arrive late.">
+            <DraftNumberInput value={Number(runnerSchemaValue("maxEstimatedSessionCostUsd", 1))} min={0.01}
+              onCommit={(value) => updateRunnerSchemaValue("maxEstimatedSessionCostUsd", value)} immediate className={inputClass} />
+          </Field>
+          <ToggleField label="Acknowledge OpenAI retention" hint="OpenAI stores session history and published artifacts. Paperclip keeps its own copies of returned work."
+            checked={runnerSchemaValue("openaiRetentionAcknowledged", false) === true}
+            onChange={(value) => updateRunnerSchemaValue("openaiRetentionAcknowledged", value)} />
+        </>
       )}
       {runnerManaged && runnerProvider === "claude_managed" && (
         <>

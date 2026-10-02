@@ -11,7 +11,7 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function remoteAgentService(value: unknown): RemoteAgentService {
-  if (value !== "aws_bedrock_agentcore_harness") {
+  if (value !== "aws_bedrock_agentcore_harness" && value !== "openai_agents_api") {
     throw unprocessable("Unsupported remote agent service");
   }
   return value;
@@ -22,13 +22,14 @@ function profileInput(value: unknown): RemoteAgentProfileInput {
     throw unprocessable("Remote Agent profile body is required");
   }
   const body = value as Record<string, unknown>;
-  if ("credentialSecretId" in body) {
+  if (body.service !== "openai_agents_api" && "credentialSecretId" in body) {
     throw unprocessable("AWS AgentCore profiles use workload identity, not a credential secret");
   }
   return {
     profileKey: String(body.profileKey ?? ""),
     displayName: String(body.displayName ?? ""),
     service: remoteAgentService(body.service),
+    ...(body.service === "openai_agents_api" ? { credentialSecretId: typeof body.credentialSecretId === "string" ? body.credentialSecretId : null } : {}),
     configuration:
       body.configuration
       && typeof body.configuration === "object"

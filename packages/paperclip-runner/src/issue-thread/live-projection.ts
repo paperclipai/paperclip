@@ -757,6 +757,7 @@ export function projectCapabilityIssueThread(
   const agentLabel = mode === "live"
     ? snapshot.config.provider === "claude_managed" || snapshot.config.driver === "claude_managed_agents_api"
       ? "Claude Agent"
+      : snapshot.config.provider === "openai_managed" ? "OpenAI Managed"
       : snapshot.config.provider === "aws_agentcore" || snapshot.config.driver === "aws_agentcore_harness_api"
         ? "Real AWS AgentCore"
       : snapshot.config.provider === "opencode" || snapshot.config.driver === "opencode_server"

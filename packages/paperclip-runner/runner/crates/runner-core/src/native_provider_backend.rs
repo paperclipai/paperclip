@@ -166,7 +166,7 @@ impl NativeProviderCommandExecutor {
                 &self.state_dir,
                 &self.config,
             )),
-            "claude_managed" | "aws_agentcore" => SelectedExecutor::Managed(
+            "claude_managed" | "aws_agentcore" | "openai_managed" => SelectedExecutor::Managed(
                 ManagedProviderCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             _ => {

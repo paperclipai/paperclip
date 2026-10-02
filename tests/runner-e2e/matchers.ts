@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import type { Matcher } from "./types.js";
@@ -27,6 +28,7 @@ export interface MatcherObservation {
   runtimeMode?: string;
   environment?: string;
   files?: Record<string, string>;
+  fileHashes?: Record<string, string | undefined>;
   artifacts?: Array<{ name: string; mimeType?: string }>;
   json?: unknown;
 }
@@ -132,6 +134,12 @@ export async function evaluateMatcher(
       actual = undefined;
       passed = false;
     }
+  } else if (matcher.kind === "file_sha256") {
+    try {
+      actual = observation.fileHashes ? observation.fileHashes[matcher.path]
+        : createHash("sha256").update(await readFile(matcher.path)).digest("hex");
+      passed = typeof actual === "string" && actual === matcher.expected;
+    } catch { passed = false; }
   } else if (matcher.kind === "artifact_exists") {
     actual = observation.artifacts ?? [];
     passed = (observation.artifacts ?? []).some(

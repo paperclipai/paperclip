@@ -698,6 +698,24 @@ it("waits for a fresh empty provider suffix after a confirmed drain receipt", as
   expect(commands).toHaveLength(2);
 });
 
+it("bounds drain commands while remote cancellation and accounting take a minute", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const commands: { commandId: string; status: string; result: unknown }[] = [];
+  try {
+    const waiting = runnerdRecoveryInternals.awaitProviderDrainBarrier({
+      readProviderState: () => ({ pendingEventCount: 0, activeProviderTurnId: Date.now() < 60_000 ? "remote-turn" : null, providerSettled: Date.now() >= 60_000 }),
+      semanticResultsSettled: () => true, commands: () => commands,
+      queueDrain: (commandId) => {
+        if (commands.length >= 500) throw new Error("Durable PRP command journal bound exceeded.");
+        commands.push({ commandId, status: "completed", result: { result: { retainedEventsDrained: Date.now() >= 60_000 } } });
+      }, pump: () => undefined, deadline: 100_000,
+    });
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(await waiting).toBe(true);
+    expect(commands.length).toBeLessThan(100);
+  } finally { vi.useRealTimers(); }
+});
+
 it("refuses a reusable close checkpoint when the local provider snapshot is unreadable", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-close-unreadable-"),
@@ -1258,10 +1276,18 @@ it("reserves a bounded suspension window after close preparation", () => {
   expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 10_000)).toEqual({
     preparationDeadline: 8_500,
     closeDeadline: 11_000,
+    providerDrainLimitMs: 5_000,
   });
   expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 400)).toEqual({
     preparationDeadline: 1_200,
     closeDeadline: 1_400,
+    providerDrainLimitMs: 5_000,
+  });
+  expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, undefined, "openai_managed")).toEqual({
+    preparationDeadline: 98_500, closeDeadline: 101_000, providerDrainLimitMs: 100_000,
+  });
+  expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 400, "openai_managed")).toEqual({
+    preparationDeadline: 1_200, closeDeadline: 1_400, providerDrainLimitMs: 400,
   });
 });
 
@@ -1907,6 +1933,18 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
       PATH: "/Users/tester/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
     }),
   ).toEqual(["/opt/homebrew", "/usr/local"]);
+});
+
+it.each(["none", "openai_hosted"] as const)("only advertises OpenAI planning with a tools-only environment (%s)", async (type) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-openai-plan-mode-"));
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "openai_managed", stateDirectory: root,
+    openaiProfile: { profileId: "profile", model: "gpt-6-astra", apiRevision: "agents=v1", reasoningEffort: "medium", maxEstimatedSessionCostUsd: 2, timeoutSeconds: 180,
+      environment: type === "none" ? { type } : { type, container_size: "medium", network: { access: "disabled" } } },
+  });
+  try {
+    const result = await transport.request("collaborationMode/list", {});
+    expect(result).toMatchObject({ data: type === "none" ? [{ mode: "plan", model: "runner-managed" }] : [] });
+  } finally { await transport.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 it("denies the isolated Codex home without denying a remote execution workspace", () => {

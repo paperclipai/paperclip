@@ -1,0 +1,22 @@
+{
+  "configuration": {
+    "defaultModel": "gpt-6-astra",
+    "apiRevision": "agents=v1",
+    "reasoningEffort": "medium",
+    "environment": {
+      "type": "none"
+    },
+    "maxEstimatedSessionCostUsd": 2,
+    "timeoutSeconds": 180
+  },
+  "qualification": {
+    "suite": "openai-managed-tools-v1",
+    "probedAt": "2026-10-01T04:35:55.943Z",
+    "paperclipSha": "729635993266681766a4fa1cd507727c13342b6c",
+    "evalsSha": "efd1c6f0ce07b4cbca7db6ed6aae76f6de9d2e56",
+    "runnerSha256": "sha256:c680e650963f4e908fe31c458ead5c8a8b63e5add441ee1f280a187f737d51b4",
+    "configurationSha256": "sha256:28806f23fa0f6fe5f60feaf8ba12fdb9b0062d289bab4038808593d52664d930",
+    "passedCases": 35,
+    "totalCases": 35
+  }
+}

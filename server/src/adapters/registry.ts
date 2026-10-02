@@ -369,7 +369,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       timedOut: false,
       errorMessage: message,
       errorCode: "paperclip_runner_coordinator_required",
-      provider: ctx.config.provider === "opencode"
+      provider: ctx.config.provider === "openai_managed" ? "openai" : ctx.config.provider === "opencode"
         ? "opencode"
         : ctx.config.provider === "claude_managed"
           ? "anthropic"
@@ -445,6 +445,17 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         };
       }
     }
+    if (profile.provider === "openai_managed") {
+      return {
+        adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+        checks: [
+          { code: "openai_managed_profile_selected", level: "info" as const,
+            message: `OpenAI profile ${profile.openaiProfileId} is selected. Company qualification and credential binding are checked before execution.` },
+          { code: "openai_managed_live_access_unverified", level: "warn" as const,
+            message: "Live Agents API access is unverified. The session budget is an estimate and usage can arrive late." },
+        ],
+      };
+    }
     if (profile.provider === "claude_managed") {
       return {
         adapterType: "paperclip_runner",
@@ -507,7 +518,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
+  getRuntimeCommandSpec: (config) => config.provider === "openai_managed"
+    || config.provider === "claude_managed"
     || config.provider === "aws_agentcore"
     || config.provider === "acpx"
     ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
@@ -519,7 +531,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.156.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, OpenAI Managed (experimental), Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -530,6 +542,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         options: [
           { value: "codex", label: "Codex" },
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
+          { value: "openai_managed", label: "OpenAI Managed (experimental)" },
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
           { value: "acpx", label: "ACP agents" },
@@ -584,6 +597,16 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       },
       {
+        key: "openaiProfileId", label: "OpenAI managed profile", type: "text" as const, required: true,
+        hint: "Company-scoped qualified profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "openai_managed" } },
+      },
+      {
+        key: "openaiRetentionAcknowledged", label: "Acknowledge OpenAI retention", type: "toggle" as const, default: false,
+        hint: "OpenAI retains session history and published files.",
+        meta: { visibleWhen: { key: "provider", value: "openai_managed" } },
+      },
+      {
         key: "managedProfileId",
         label: "Managed Agent profile",
         type: "text" as const,
@@ -620,8 +643,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         label: "Estimated session ceiling (USD)",
         type: "number" as const,
         default: 1,
-        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
-        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+        hint: "Paperclip estimate; managed providers do not provide a per-session currency hard stop.",
+        meta: { visibleWhen: { key: "provider", values: ["aws_agentcore", "openai_managed"] } },
       },
       {
         key: "maxIterations",

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { deleteOpenAiQualificationSession } from "../drivers/openai-managed/cleanup.js";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -183,6 +184,7 @@ export function evalSessionProviderVersion(
       request.model,
     ).acpxVersion;
   }
+  if (request.provider === "openai_managed") return "agents=v1";
   if (request.provider === "claude_managed") {
     return request.managedProfile!.agentVersion;
   }
@@ -362,6 +364,15 @@ export async function runEvalSessionCli(
   let session: CapabilityLiveSession | null = null;
   let turn: CapabilityLiveTurnResult | null = null;
   let snapshot: CapabilityLiveSessionSnapshot | null = null;
+  let openaiRemoteDeleted = false;
+  let openaiCleanupError: string | null = null;
+  const cleanupOpenai = async () => {
+    if (openaiRemoteDeleted || requestedProvider !== "openai_managed" || request.openaiProfile?.environment.type !== "openai_hosted" || !snapshot?.providerSessionId || snapshot.providerSessionId.startsWith("pending_")) return;
+    try {
+      await deleteOpenAiQualificationSession(snapshot.providerSessionId, process.env.OPENAI_API_KEY ?? "");
+      openaiRemoteDeleted = true;
+    } catch (error) { openaiCleanupError = error instanceof Error ? error.message : "OpenAI cleanup unconfirmed"; }
+  };
 
   try {
     // PR3 expands this same service input with the two qualified remote
@@ -374,6 +385,7 @@ export async function runEvalSessionCli(
       ...(requestedProvider === "acpx"
         ? { acpxAgent: request.acpxAgent ?? "codex" }
         : { acpxAgent: undefined }),
+      ...(request.openaiProfile === undefined ? {} : { openaiProfile: request.openaiProfile }),
       ...(request.managedProfile === undefined
         ? {}
         : { managedProfile: request.managedProfile }),
@@ -403,6 +415,8 @@ export async function runEvalSessionCli(
     );
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
+    await cleanupOpenai();
+    if (openaiCleanupError && accountingError === null) accountingError = new EvalSessionBudgetError(openaiCleanupError, true);
 
     await writeFile(cli.outputPath, `${JSON.stringify({
       schema: "paperclip-runner/eval-session-artifact/v1",
@@ -415,6 +429,7 @@ export async function runEvalSessionCli(
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
       providerSessionId: snapshot.providerSessionId,
+      ...(requestedProvider === "openai_managed" ? { openaiProfile: request.openaiProfile, hostedHarnessVersion: null, retainedSession: !openaiRemoteDeleted && Boolean(snapshot?.providerSessionId && !snapshot.providerSessionId.startsWith("pending_")), retainedSessionStatus: openaiRemoteDeleted ? "deleted" : "retained", remoteDeleted: openaiRemoteDeleted, cleanupError: openaiCleanupError, usageAvailability: { modelRequests: "unavailable", providerCost: "unavailable", tokens: "best_effort" } } : {}),
       ...(requestedProvider === "claude_managed"
         ? {
             managedProfile: request.managedProfile,
@@ -479,6 +494,7 @@ export async function runEvalSessionCli(
       }
       snapshot = session.snapshot();
     }
+    await cleanupOpenai();
     const usage = usageIfAvailable(request, snapshot);
     await writeFile(cli.outputPath, `${JSON.stringify({
       schema: "paperclip-runner/eval-session-artifact/v1",
@@ -493,6 +509,7 @@ export async function runEvalSessionCli(
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
       providerSessionId: snapshot?.providerSessionId ?? null,
+      ...(requestedProvider === "openai_managed" ? { openaiProfile: request.openaiProfile, hostedHarnessVersion: null, retainedSession: !openaiRemoteDeleted && Boolean(snapshot?.providerSessionId && !snapshot.providerSessionId.startsWith("pending_")), retainedSessionStatus: openaiRemoteDeleted ? "deleted" : "retained", remoteDeleted: openaiRemoteDeleted, cleanupError: openaiCleanupError, usageAvailability: { modelRequests: "unavailable", providerCost: "unavailable", tokens: "best_effort" } } : {}),
       ...(requestedProvider === "claude_managed"
         ? {
             managedProfile: request.managedProfile,
