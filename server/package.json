@@ -13,7 +13,8 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./pubsub-identity": "./src/services/pubsub-identity.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +22,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./pubsub-identity": {
+        "types": "./dist/services/pubsub-identity.d.ts",
+        "import": "./dist/services/pubsub-identity.js"
       }
     },
     "main": "./dist/index.js",

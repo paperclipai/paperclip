@@ -1560,6 +1560,16 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
+
+  "GET /api/pubsub/trust",
+  "POST /api/pubsub/trust",
+  "DELETE /api/pubsub/trust/{peerInstanceId}",
+  "GET /api/pubsub/subscriptions",
+  "POST /api/pubsub/subscriptions",
+  "DELETE /api/pubsub/subscriptions/{id}",
+  "POST /api/pubsub/observers",
+  "DELETE /api/pubsub/observers/{agentId}",
+  "POST /api/companies/{companyId}/issues/{issueId}/review-escalation",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -1569,6 +1579,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
+  "GET /api/pubsub/identity",
 ]);
 
 const CREATED_OPERATIONS = new Set([
@@ -11503,6 +11514,159 @@ for (const [method, path, body] of experimentalApiPaths) {
   });
 }
 
+
+// ─── PubSub (native opt-in cross-instance messaging) ─────────────────────────
+
+// The cross-instance `POST /api/pubsub/deliver` endpoint is deliberately absent
+// from this document: it is authenticated by the sender instance's Ed25519
+// signature rather than a board/agent credential. The openapi-routes test
+// carries it as an explicit coverage exclusion.
+const pubsubCompanyIdQuery = z.object({
+  companyId: z.string().guid().describe("Company scope"),
+});
+const pubsubPageQuery = pubsubCompanyIdQuery.extend({
+  limit: z.coerce.number().int().min(1).max(100).optional().describe("Page size (1-100)"),
+  after: z.string().min(1).max(1024).optional().describe("Opaque pagination cursor"),
+});
+const pubsubHistoryQuery = pubsubPageQuery.extend({
+  topic: z.string().min(1).describe("Topic to read archived history for"),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/pubsub/identity",
+  tags: ["pubsub"],
+  summary: "Get this instance's PubSub identity",
+  query: pubsubCompanyIdQuery,
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/pubsub/trust",
+  tags: ["pubsub"],
+  summary: "List PubSub trust grants for the company",
+  query: pubsubCompanyIdQuery,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/pubsub/trust",
+  tags: ["pubsub"],
+  summary: "Grant PubSub trust for a peer instance",
+  body: z.object({
+    companyId: z.string().guid(),
+    peerInstanceId: z.string().guid(),
+    peerCompanyId: z.string().guid(),
+    publicKey: z.string().min(1).describe("Peer Ed25519 SPKI public key (PEM)"),
+    url: z.string().min(1).describe("Peer delivery endpoint (origin or /api/pubsub/deliver)"),
+    topics: z.array(z.string().min(1)).min(1),
+  }),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/pubsub/trust/{peerInstanceId}",
+  tags: ["pubsub"],
+  summary: "Revoke PubSub trust for a peer instance",
+  body: pubsubCompanyIdQuery,
+  responses: { 204: r.noContent, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/pubsub/subscriptions",
+  tags: ["pubsub"],
+  summary: "List PubSub subscriptions for the company",
+  query: pubsubCompanyIdQuery,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/pubsub/subscriptions",
+  tags: ["pubsub"],
+  summary: "Subscribe the company to a peer topic",
+  body: z.object({
+    companyId: z.string().guid(),
+    peerInstanceId: z.string().guid(),
+    topic: z.string().min(1),
+  }),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/pubsub/subscriptions/{id}",
+  tags: ["pubsub"],
+  summary: "Remove a PubSub subscription",
+  body: pubsubCompanyIdQuery,
+  responses: { 204: r.noContent, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/pubsub/publish",
+  tags: ["pubsub"],
+  summary: "Publish a PubSub message to trusted peers",
+  body: z.object({
+    companyId: z.string().guid(),
+    topic: z.string().min(1),
+    payload: z.unknown().describe("JSON payload (canonicalized; bounded at 64 KiB)"),
+  }),
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/pubsub/inbox",
+  tags: ["pubsub"],
+  summary: "List the company's unacked PubSub inbox",
+  query: pubsubPageQuery,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/pubsub/inbox/{id}/ack",
+  tags: ["pubsub"],
+  summary: "Acknowledge an inbound PubSub message",
+  body: pubsubCompanyIdQuery,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/pubsub/history",
+  tags: ["pubsub"],
+  summary: "List archived PubSub history for a topic",
+  query: pubsubHistoryQuery,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/pubsub/observers",
+  tags: ["pubsub"],
+  summary: "Grant an agent read-only PubSub observer access",
+  body: z.object({
+    companyId: z.string().guid(),
+    agentId: z.string().guid(),
+  }),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/pubsub/observers/{agentId}",
+  tags: ["pubsub"],
+  summary: "Remove PubSub observer access for an agent",
+  body: pubsubCompanyIdQuery,
+  responses: { 204: r.noContent, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{issueId}/review-escalation",
+  tags: ["issues", "pubsub"],
+  summary: "Re-publish the newest terminal transition on an issue as a review-required task event",
+  body: z.object({
+    reason: z.string().trim().max(500).optional(),
+  }),
+  responses: {
+    202: r.ok(z.object({ id: z.string().guid(), queued: z.boolean() })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound,
+    503: { description: "PubSub is disabled on this instance" },
+  },
+});
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

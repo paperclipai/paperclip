@@ -1,5 +1,11 @@
 # @paperclipai/db
 
+## Unreleased
+
+### Minor Changes
+
+- Add the native PubSub schema: `pubsub_trust`, `pubsub_subscriptions`, `pubsub_messages`, `pubsub_outbox`, `pubsub_nonces`, `pubsub_observers`, and `pubsub_activity_receipts` (migrations `0294`/`0295`), with company-cascading foreign keys and history/inbox/wake/outbox indexes. Purely additive; existing tables are untouched.
+
 ## 0.3.1
 
 ### Patch Changes

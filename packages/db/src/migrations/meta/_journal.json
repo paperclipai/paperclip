@@ -2045,6 +2045,20 @@
       "when": 1790796608171,
       "tag": "0293_broad_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1790808269310,
+      "tag": "0294_cloudy_leopardon",
+      "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1790808269311,
+      "tag": "0295_cultured_inertia",
+      "breakpoints": true
     }
   ]
 }

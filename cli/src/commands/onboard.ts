@@ -1,6 +1,7 @@
 import * as p from "@clack/prompts";
 import path from "node:path";
 import pc from "picocolors";
+import { ensurePubsubIdentity } from "@paperclipai/server/pubsub-identity";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -113,6 +114,12 @@ function parseBooleanFromEnv(rawValue: string | undefined): boolean | null {
   if (lower === "true" || lower === "1" || lower === "yes") return true;
   if (lower === "false" || lower === "0" || lower === "no") return false;
   return null;
+}
+
+async function ensureOnboardPubsubIdentity() {
+  if (process.env.PAPERCLIP_PUBSUB_ENABLED !== "true") return;
+  const identity = await ensurePubsubIdentity(process.env.PAPERCLIP_PUBSUB_IDENTITY_PATH);
+  p.log.info(`PubSub instance identity: ${identity.instanceId}`);
 }
 
 async function runOnboardedForeground(configPath: string): Promise<void> {
@@ -464,6 +471,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     } else if (keyResult.status === "existing") {
       p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
     }
+    await ensureOnboardPubsubIdentity();
 
     p.note(
       [
@@ -726,6 +734,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   writeConfig(config, opts.config, {
     invalidBackupPath,
   });
+  await ensureOnboardPubsubIdentity();
 
   if (tc) trackInstallCompleted(tc, {
     adapterType: server.deploymentMode,

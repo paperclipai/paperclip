@@ -17,6 +17,10 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
+import { pubsubDeliveryRoutes, pubsubRoutes } from "./routes/pubsub.js";
+import { createPubsubService } from "./services/pubsub.js";
+import { createPubsubWake } from "./services/pubsub-wake.js";
+import { startPubsubActivityWorker } from "./services/pubsub-activity.js";
 import {
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
@@ -484,6 +488,7 @@ export async function createApp(
     companyDeletionEnabled: boolean;
     announcements?: { enabled: boolean; feedUrl: string };
     instanceId?: string;
+    pubsubIdentityPath?: string;
     hostVersion?: string;
     localPluginDir?: string;
     pluginMigrationDb?: Db;
@@ -557,6 +562,21 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const connectionIntentHeartbeat = heartbeatService(db, {
+    pluginWorkerManager: workerManager,
+  });
+  const pubsub = process.env.PAPERCLIP_PUBSUB_ENABLED === "true"
+    ? createPubsubService(db, {
+        identityPath: opts.pubsubIdentityPath ?? process.env.PAPERCLIP_PUBSUB_IDENTITY_PATH,
+        wake: createPubsubWake(db, connectionIntentHeartbeat),
+      })
+    : null;
+  if (pubsub) {
+    await pubsub.identity();
+    app.locals.pubsub = pubsub;
+    app.use(pubsubDeliveryRoutes(pubsub));
+  }
   app.use(cloudRuntimeIdentityMiddleware(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
@@ -579,10 +599,6 @@ export async function createApp(
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
-  const connectionIntentHeartbeat = heartbeatService(db, {
-    pluginWorkerManager: workerManager,
-  });
   const chatChannels = chatChannelService(db, {
     deferWebhookProcessing: true,
     heartbeat: connectionIntentHeartbeat,
@@ -642,6 +658,7 @@ export async function createApp(
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
+  if (pubsub) api.use("/pubsub", pubsubRoutes(db, pubsub));
   api.use(
     "/health",
     healthRoutes(db, {
@@ -1309,6 +1326,8 @@ export async function createApp(
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
+  const stopPubsub = pubsub ? await pubsub.start() : null;
+  const stopPubsubActivity = pubsub ? startPubsubActivityWorker(db, pubsub) : null;
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
   // instead of starting a second teardown.
@@ -1316,6 +1335,8 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = (async () => {
+      await stopPubsubActivity?.();
+      await stopPubsub?.();
       // The scheduler tick queries the database. Stop it here, inside the
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();

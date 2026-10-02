@@ -62,6 +62,7 @@ const apiPrefixes: Record<string, string> = {
   "plugins.ts": "/api",
   "projects.ts": "/api",
   "project-tools.ts": "/api",
+  "pubsub.ts": "/api/pubsub",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
@@ -97,6 +98,10 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // board API document, while this exact exclusion keeps route coverage honest.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
+  // The cross-instance delivery endpoint is authenticated by the sender's
+  // Ed25519 signature rather than a board/agent credential; it intentionally
+  // stays out of the public board API document.
+  "POST /api/pubsub/deliver",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
@@ -139,6 +144,9 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
     return routePath;
   }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
+  if (file === "pubsub.ts" && routePath.startsWith("/api/pubsub/")) {
     return routePath;
   }
   if (

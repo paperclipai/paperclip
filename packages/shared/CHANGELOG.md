@@ -1,5 +1,11 @@
 # @paperclipai/shared
 
+## Unreleased
+
+### Minor Changes
+
+- Add the native PubSub protocol contract: bounded topic/envelope schemas, deterministic canonical JSON, Ed25519 envelope sign/verify helpers, topic wildcard matching, and P2P endpoint-binding checks shared by the server and future fleet consumers. Includes bounded admission, retention, and wake-cooldown constants (`PUBSUB_PEER_MAX_RATE_MESSAGES`, `PUBSUB_MAX_PENDING_*`, `PUBSUB_NONCE_RETENTION_MS`, `PUBSUB_INBOUND_RETENTION_MS`, `PUBSUB_WAKE_COOLDOWN_MS`, `PUBSUB_DELIVERY_MAX_ATTEMPTS`) shared by the server and future fleet consumers.
+
 ## 0.3.1
 
 ### Patch Changes

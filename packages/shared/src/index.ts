@@ -1,3 +1,4 @@
+export * from "./pubsub.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,

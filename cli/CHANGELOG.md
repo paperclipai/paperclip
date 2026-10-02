@@ -1,5 +1,11 @@
 # paperclipai
 
+## Unreleased
+
+### Patch Changes
+
+- `paperclip onboard` now creates the instance's native PubSub identity when `PAPERCLIP_PUBSUB_ENABLED=true`, so the signing key exists before any peer needs it. No change to onboarding when the flag is unset.
+
 ## 0.3.1
 
 ### Patch Changes

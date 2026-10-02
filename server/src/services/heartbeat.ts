@@ -7705,6 +7705,24 @@ export async function buildPaperclipWakePayload(input: {
     input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY],
   );
   const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
+  // Native PubSub wakes store the delivered envelope under pubsubMessage.
+  // Project it so the wake payload and adapter prompts surface the
+  // triggering message's identity, sender, and content.
+  const pubsubMessageInput = parseObject(input.contextSnapshot.pubsubMessage);
+  const pubsubMessageId = readNonEmptyString(pubsubMessageInput.id);
+  const pubsubMessage = pubsubMessageId
+    ? {
+        messageId: pubsubMessageId,
+        topic: readNonEmptyString(pubsubMessageInput.topic),
+        payload: pubsubMessageInput.payload ?? null,
+        sender: {
+          instance: readNonEmptyString(pubsubMessageInput.fromInstance),
+          company: readNonEmptyString(pubsubMessageInput.fromCompany),
+          agent: readNonEmptyString(pubsubMessageInput.fromAgent),
+          role: readNonEmptyString(pubsubMessageInput.fromRole),
+        },
+      }
+    : null;
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -7728,7 +7746,8 @@ export async function buildPaperclipWakePayload(input: {
     commentIds.length === 0 &&
     Object.keys(executionStage).length === 0 &&
     !issueSummary &&
-    !agentMessageText
+    !agentMessageText &&
+    !pubsubMessage
   )
     return null;
 
@@ -8085,6 +8104,7 @@ export async function buildPaperclipWakePayload(input: {
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
+    pubsubMessage,
     recovery:
       !executionAlreadyReconciled && (recoveryAction || recoveryCause)
         ? {

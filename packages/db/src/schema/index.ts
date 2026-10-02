@@ -1,3 +1,12 @@
+export {
+  pubsubTrust,
+  pubsubSubscriptions,
+  pubsubMessages,
+  pubsubOutbox,
+  pubsubNonces,
+  pubsubObservers,
+  pubsubActivityReceipts,
+} from "./pubsub.js";
 export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
 export { companyTransferRuns } from "./company_transfer_runs.js";

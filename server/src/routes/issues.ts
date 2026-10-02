@@ -36,6 +36,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { PubsubService } from "../services/pubsub.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -8345,6 +8346,122 @@ export function issueRoutes(
     const count = await svc.count(companyId, blockedCountFilters);
     res.json({ count });
   });
+
+  // Operator-triggered review escalation: re-publishes the issue's last
+  // terminal/blocked status transition on fleet.task.review so receiving
+  // fleet peers wake their CEO for review. The activity journal sweeps the
+  // fleet.task.* journal topics without wakes, so the escalation must not
+  // ride on them. The transition is only published while the issue is still
+  // in that state: a reopened or otherwise moved issue is rejected (400)
+  // rather than escalating a status the issue no longer has. Idempotent per
+  // (issueId, last transition) through the journal event anchor and the
+  // pubsubActivityReceipts dedupe: repeated calls return the existing
+  // publication without a new outbox row.
+  const reviewEscalationBodySchema = z.object({
+    reason: z.string().trim().max(500).optional(),
+  });
+
+  router.post(
+    "/companies/:companyId/issues/:issueId/review-escalation",
+    validate(reviewEscalationBodySchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(req.params.issueId as string),
+        "Issue not found",
+      );
+      if (!issue) return;
+      if (issue.companyId !== companyId) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      // The anchor is the most recent issue.updated journal row that carries a
+      // real transition into a terminal/blocked status. The SQL clause narrows
+      // to rows whose journaled status target is terminal across the three
+      // journal shapes (route updates journal changes.status, the native
+      // committer journals fromStatus/toStatus, plugin updates journal patch);
+      // the JS check mirrors the activity journal worker's normalization, so
+      // the escalation references exactly the transition the journal published.
+      const candidates = await db.select().from(activityLog).where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issue.id),
+        eq(activityLog.action, "issue.updated"),
+        sql`coalesce(
+          ${activityLog.details} -> 'changes' -> 'status' ->> 'to',
+          ${activityLog.details} ->> 'toStatus',
+          ${activityLog.details} -> 'patch' ->> 'status',
+          ${activityLog.details} ->> 'status'
+        ) in ('done', 'blocked', 'cancelled')`,
+      )).orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(100);
+      const normalizeTransition = (details: Record<string, unknown> | null) => {
+        const value = details ?? {};
+        const changes = value.changes as Record<string, { from?: unknown; to?: unknown }> | undefined;
+        const patch = value.patch as Record<string, unknown> | undefined;
+        const previous = value._previous as Record<string, unknown> | undefined;
+        return {
+          to: changes?.status?.to ?? value.status ?? value.toStatus ?? patch?.status,
+          from: changes?.status?.from ?? previous?.status ?? value.fromStatus,
+        };
+      };
+      const anchor = candidates
+        .map((row) => ({ row, transition: normalizeTransition(row.details) }))
+        .find((entry) => (entry.transition.to === "done" || entry.transition.to === "blocked" || entry.transition.to === "cancelled")
+          && (entry.transition.from === undefined || entry.transition.from === null || entry.transition.from !== entry.transition.to));
+      if (!anchor) {
+        throw badRequest("Issue has no done/blocked/cancelled transition to review-escalate");
+      }
+      // The escalation publishes the anchor transition's status as
+      // review-required, so it is only valid while the issue is still in that
+      // state: a reopened (or otherwise moved) issue must not wake a peer CEO
+      // to review a status the issue no longer has.
+      if (issue.status !== anchor.transition.to) {
+        throw badRequest(`Issue is no longer in the ${anchor.transition.to} state being escalated; it is now ${issue.status}`);
+      }
+      const pubsub = req.app.locals.pubsub as PubsubService | undefined;
+      if (!pubsub) throw new HttpError(503, "PubSub is disabled on this instance");
+      const reason = req.body.reason?.trim();
+      const result = await pubsub.publishActivity(anchor.row.id, {
+        companyId: issue.companyId,
+        agentId: null,
+        role: "system",
+        topic: "fleet.task.review",
+        payload: {
+          eventId: anchor.row.id,
+          issueId: issue.id,
+          identifier: issue.identifier ?? null,
+          status: anchor.transition.to as string,
+          review: "required",
+          reason: reason ?? null,
+          createdAt: anchor.row.createdAt.toISOString(),
+        },
+      });
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.review_escalated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          topic: "fleet.task.review",
+          status: anchor.transition.to as string,
+          anchorEventId: anchor.row.id,
+          messageId: result.id,
+          reason: reason ?? null,
+        },
+      });
+      res.status(202).json(result);
+    },
+  );
 
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
