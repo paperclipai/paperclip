@@ -1,5 +1,5 @@
 import type { Request, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -44,19 +44,44 @@ export function readOnlyRunDenialCode() {
 }
 
 /**
- * Resolve whether a verified active agent run belongs to the read-only class.
- *
- * A persistent agent API key is not a run credential. For a mutation it must
- * therefore carry an active run id that belongs to that same agent. Otherwise a
- * read-only runner could simply omit the header or borrow another run id. A
- * signed agent JWT already binds its subject and run id in auth middleware, but
- * it is still checked against the run row here so a completed run cannot write.
+ * Signed JWTs bind one run. Persistent keys do not: preserve their non-run
+ * contract, but deny all writes while this agent has any active read-only run.
+ * The agent-wide restriction is intentional because a key cannot distinguish
+ * a concurrent CLI client from a runner omitting or spoofing its header.
  */
 export async function evaluateReadOnlyRunMutation(
   db: Db,
-  input: { companyId: string; agentId: string; runId: string | null | undefined },
+  input: { companyId: string; agentId: string; runId: string | null | undefined; source?: string },
 ): Promise<ReadOnlyRunDecision> {
-  if (!input.runId || !isUuidLike(input.companyId) || !isUuidLike(input.agentId) || !isUuidLike(input.runId)) {
+  if (!isUuidLike(input.companyId) || !isUuidLike(input.agentId)) {
+    return { denied: true, reason: "run_identity_required", issueId: null, issueIdentifier: null };
+  }
+
+  if (input.source === "agent_key") {
+    const activeRuns = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "running"),
+      ));
+    const issueIds = [...new Set(activeRuns.map((run) => readRunSourceIssueId(run.contextSnapshot))
+      .filter((id): id is string => !!id && isUuidLike(id)))];
+    if (issueIds.length === 0) return { denied: false, reason: "no_run" };
+    const readOnlyIssues = await db.select({
+      id: issues.id, identifier: issues.identifier, workMode: issues.workMode,
+    }).from(issues).where(and(
+      eq(issues.companyId, input.companyId),
+      inArray(issues.id, issueIds),
+      eq(issues.workMode, READ_ONLY_WORK_MODE),
+    ));
+    const issue = readOnlyIssues.find((row) => row.workMode === READ_ONLY_WORK_MODE);
+    return issue
+      ? { denied: true, reason: "read_only", issueId: issue.id, issueIdentifier: issue.identifier ?? null }
+      : { denied: false, reason: "not_read_only" };
+  }
+
+  if (!input.runId || !isUuidLike(input.runId)) {
     return { denied: true, reason: "run_identity_required", issueId: null, issueIdentifier: null };
   }
 
@@ -113,7 +138,7 @@ export function readOnlyRunGuard(db: Db): RequestHandler {
 
     let decision: ReadOnlyRunDecision;
     try {
-      decision = await evaluateReadOnlyRunMutation(db, { companyId, agentId, runId });
+      decision = await evaluateReadOnlyRunMutation(db, { companyId, agentId, runId, source: req.actor.source });
     } catch (err) {
       // A transient failed lookup is not proof of a writable run. Do not let a
       // recovered route query turn a read-only execution into a board write.

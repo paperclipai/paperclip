@@ -16,6 +16,7 @@ const STANDARD_ISSUE = "66666666-6666-4666-8666-666666666666";
 
 type Scripted = {
   run?: Record<string, unknown> | null;
+  runs?: Record<string, unknown>[];
   issue?: Record<string, unknown> | null;
   error?: Error;
 };
@@ -26,17 +27,15 @@ function stubDb(script: Scripted) {
   const db = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
-        where: () => ({
-          then: (resolve: (rows: unknown[]) => unknown) => {
-            if (script.error) return Promise.reject(script.error);
-            if ("workMode" in selection) {
-              queries.push("issue");
-              return resolve(script.issue === undefined ? [] : script.issue ? [script.issue] : []);
-            }
-            queries.push("run");
-            return resolve(script.run === undefined ? [] : script.run ? [script.run] : []);
-          },
-        }),
+        where: () => {
+          if (script.error) return Promise.reject(script.error);
+          if ("workMode" in selection) {
+            queries.push("issue");
+            return Promise.resolve(script.issue ? [script.issue] : []);
+          }
+          queries.push("run");
+          return Promise.resolve(script.runs ?? (script.run ? [script.run] : []));
+        },
       }),
     }),
   };
@@ -143,8 +142,22 @@ describe("readOnlyRunGuard", () => {
     expect(calls.mutations).toBe(0);
   });
 
+  it("allows a persistent key outside a heartbeat without requiring a run id", async () => {
+    const { db } = stubDb({});
+    const calls = { mutations: 0 };
+    const app = guardApp(db, { ...agentActor, runId: undefined }, calls);
+    const response = await request(app)
+      .post(`/api/issues/${STANDARD_ISSUE}/comments`)
+      .send({ body: "CLI write outside a heartbeat" });
+    expect(response.status).toBe(201);
+    expect(calls.mutations).toBe(1);
+  });
+
   it("cannot bypass the guard by omitting the run id", async () => {
-    const { db, queries } = stubDb({});
+    const { db, queries } = stubDb({
+      run: runRow(READ_ONLY_ISSUE),
+      issue: { id: READ_ONLY_ISSUE, identifier: "TASK-1", workMode: "read_only" },
+    });
     const calls = { mutations: 0 };
     const app = guardApp(db, { ...agentActor, runId: undefined }, calls);
 
@@ -153,9 +166,43 @@ describe("readOnlyRunGuard", () => {
       .send({ body: "attempted bypass" });
 
     expect(response.status).toBe(403);
-    expect(response.body.details.code).toBe("issue_write_run_identity_required");
+    expect(response.body.details.code).toBe("issue_write_read_only_run");
     expect(calls.mutations).toBe(0);
-    expect(queries).toEqual([]);
+    expect(queries).toEqual(["run", "issue"]);
+  });
+
+  it.each([undefined, OTHER_RUN, "not-a-uuid", RUN])(
+    "cannot bypass a persistent-key read-only run with header %s",
+    async (runId) => {
+      const { db } = stubDb({
+        runs: [runRow(STANDARD_ISSUE, { id: OTHER_RUN }), runRow(READ_ONLY_ISSUE)],
+        issue: { id: READ_ONLY_ISSUE, identifier: "TASK-1", workMode: "read_only" },
+      });
+      const calls = { mutations: 0 };
+      const response = await request(guardApp(db, { ...agentActor, runId }, calls))
+        .post(`/api/issues/${STANDARD_ISSUE}/comments`).send({ body: "spoofed header" });
+      expect(response.status).toBe(403);
+      expect(response.body.details.code).toBe("issue_write_read_only_run");
+      expect(calls.mutations).toBe(0);
+    },
+  );
+
+  it("preserves non-run persistent-key writes with an unverified audit header", async () => {
+    const { db } = stubDb({});
+    const calls = { mutations: 0 };
+    const response = await request(guardApp(db, agentActor, calls))
+      .post(`/api/issues/${STANDARD_ISSUE}/comments`).send({ body: "pipeline write" });
+    expect(response.status).toBe(201);
+    expect(calls.mutations).toBe(1);
+  });
+
+  it("still requires an active run for a signed JWT", async () => {
+    const { db } = stubDb({});
+    const calls = { mutations: 0 };
+    const response = await request(guardApp(db, { ...agentActor, source: "agent_jwt" }, calls))
+      .post(`/api/issues/${STANDARD_ISSUE}/comments`).send({ body: "expired run" });
+    expect(response.status).toBe(403);
+    expect(calls.mutations).toBe(0);
   });
 
   it("fails closed when the identity lookup errors and never runs the route", async () => {
