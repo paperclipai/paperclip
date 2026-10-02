@@ -2,12 +2,11 @@ import type { AskUserQuestionsAnswer, AskUserQuestionsPayload, PaperclipQuestion
 import { parsePaperclipQuestionResponse, type PaperclipQuestionResponse } from "../vendor/paperclip-runner/index.js";
 import { validateQuestionPatterns } from "./question-pattern-validation.js";
 
-/** Validate storage answers against the persisted canonical form before resolution. */
-export async function parseQuestionInteractionAnswers(
+function prepareQuestionInteractionAnswers(
   questionSet: PaperclipQuestionSetPayload,
   answers: readonly AskUserQuestionsAnswer[],
   storageQuestions: AskUserQuestionsPayload["questions"],
-): Promise<PaperclipQuestionResponse> {
+) {
   const answerByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer]));
   const response: PaperclipQuestionResponse = {
     schema: "paperclip.question_response.v1",
@@ -63,6 +62,25 @@ export async function parseQuestionInteractionAnswers(
     const text = question.answerMode === "text" ? answer?.text : answer?.customText;
     return pattern !== undefined && text !== undefined ? [{ questionId: question.id, pattern, text }] : [];
   });
+  return { parsed, checks };
+}
+
+/** Validate untrusted answers before persistence, including bounded patterns. */
+export async function parseQuestionInteractionAnswers(
+  questionSet: PaperclipQuestionSetPayload,
+  answers: readonly AskUserQuestionsAnswer[],
+  storageQuestions: AskUserQuestionsPayload["questions"],
+): Promise<PaperclipQuestionResponse> {
+  const { parsed, checks } = prepareQuestionInteractionAnswers(questionSet, answers, storageQuestions);
   await validateQuestionPatterns(checks);
   return parsed;
+}
+
+/** Saved answers already passed pattern validation; delivery must not depend on worker capacity. */
+export function parseSavedQuestionInteractionAnswers(
+  questionSet: PaperclipQuestionSetPayload,
+  answers: readonly AskUserQuestionsAnswer[],
+  storageQuestions: AskUserQuestionsPayload["questions"],
+): PaperclipQuestionResponse {
+  return prepareQuestionInteractionAnswers(questionSet, answers, storageQuestions).parsed;
 }
