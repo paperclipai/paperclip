@@ -204,16 +204,14 @@ function parseBinaryResponse(res: IncomingMessage, callback: (error: Error | nul
   res.on("error", callback);
 }
 
-describe("normalizeIssueAttachmentMaxBytes", () => {
-  it("keeps the process-level attachment cap as the final cap", async () => {
+describe("MAX_ATTACHMENT_BYTES", () => {
+  it("reads the deployment-level attachment cap from the environment", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
     process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = "5";
     vi.resetModules();
     try {
-      const { normalizeIssueAttachmentMaxBytes } = await import("../attachment-types.js");
-      expect(normalizeIssueAttachmentMaxBytes(null)).toBe(5);
-      expect(normalizeIssueAttachmentMaxBytes(10)).toBe(5);
-      expect(normalizeIssueAttachmentMaxBytes(3)).toBe(3);
+      const { MAX_ATTACHMENT_BYTES } = await import("../attachment-types.js");
+      expect(MAX_ATTACHMENT_BYTES).toBe(5);
     } finally {
       if (previous === undefined) {
         delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -255,7 +253,6 @@ describe("issue attachment routes", () => {
     });
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
-      attachmentMaxBytes: 1024 * 1024 * 1024,
     });
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
@@ -293,6 +290,58 @@ describe("issue attachment routes", () => {
       }),
     );
     expect(res.body.contentType).toBe("application/zip");
+  });
+
+  it("removes a newly stored object when attachment registration is rejected", async () => {
+    const storage = createStorageService();
+    const { HttpError } = await vi.importActual<
+      typeof import("../errors.js")
+    >("../errors.js");
+    mockIssueService.createAttachment.mockRejectedValue(
+      new HttpError(422, "Attachment selection limit reached", {
+        code: "chat_attachment_selection_limit_exceeded",
+      }),
+    );
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(
+        "/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments",
+      )
+      .attach("file", Buffer.from("overflow"), {
+        filename: "overflow.txt",
+        contentType: "text/plain",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "Attachment selection limit reached",
+      details: { code: "chat_attachment_selection_limit_exceeded" },
+    });
+    expect(storage.deleteObject).toHaveBeenCalledWith(
+      "company-1",
+      "issues/11111111-1111-4111-8111-111111111111/overflow.txt",
+    );
+  });
+
+  it("retains a stored object when attachment registration has an ambiguous server error", async () => {
+    const storage = createStorageService();
+    mockIssueService.createAttachment.mockRejectedValue(
+      new Error("connection lost after commit"),
+    );
+
+    const app = await createApp(storage);
+    await request(app)
+      .post(
+        "/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments",
+      )
+      .attach("file", Buffer.from("ambiguous"), {
+        filename: "ambiguous.txt",
+        contentType: "text/plain",
+      })
+      .expect(500);
+
+    expect(storage.deleteObject).not.toHaveBeenCalled();
   });
 
   it("accepts default video uploads for issue attachments", async () => {
@@ -437,7 +486,7 @@ describe("issue attachment routes", () => {
     expect(res.body.contentType).toBe("application/octet-stream");
   });
 
-  it("enforces the process-level issue attachment limit even when the company limit allows more", async () => {
+  it("bounds an issue attachment by the deployment-level limit", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
@@ -455,30 +504,11 @@ describe("issue attachment routes", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    expect(res.body.error).toBe("Attachment is larger than the 10 MB limit");
     expect(storage.__calls.putFile).toBeUndefined();
-  });
-
-  it("enforces the configured per-company issue attachment limit", async () => {
-    const storage = createStorageService();
-    mockCompanyService.getById.mockResolvedValue({
-      id: "company-1",
-      attachmentMaxBytes: 4,
-    });
-    mockIssueService.getById.mockResolvedValue({
-      id: "11111111-1111-4111-8111-111111111111",
-      companyId: "company-1",
-      identifier: "PAP-1",
-    });
-
-    const app = await createApp(storage);
-    const res = await request(app)
-      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
-      .attach("file", Buffer.from("large"), { filename: "large.txt", contentType: "text/plain" });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 4 bytes");
-    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    // The deployment cap is the only limit left. The route no longer reads a
+    // per-company override, so it never loads the company to size an upload.
+    expect(mockCompanyService.getById).not.toHaveBeenCalled();
   });
 
   it("serves html attachments as downloads with nosniff", async () => {
@@ -515,6 +545,36 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  it("declares utf-8 for inline markdown attachments", async () => {
+    const storage = createStorageService(Buffer.from("# Hello\n"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("text/markdown", "notes.md"),
+      byteSize: 8,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("keeps the charset declaration on forced markdown downloads", async () => {
+    const storage = createStorageService(Buffer.from("# Hello\n"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("text/markdown", "notes.md"),
+      byteSize: 8,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content?download=1");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="notes.md"');
+  });
+
   it("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));
@@ -527,6 +587,46 @@ describe("issue attachment routes", () => {
       undefined,
       'inline; filename="preview.png"',
     ]).toContain(res.headers["content-disposition"]);
+  });
+
+  it.each([
+    {
+      filename: '猫 "chart"; 100%.png',
+      contentType: "image/png",
+      filenameParameters: String.raw`filename="? \"chart\"; 100%.png"; filename*=UTF-8''%E7%8C%AB%20%22chart%22%3B%20100%25.png`,
+    },
+    {
+      filename: 'report "final"; 100%.pdf',
+      contentType: "application/pdf",
+      filenameParameters: String.raw`filename="report \"final\"; 100%.pdf"`,
+    },
+  ].flatMap((file) => [false, true].flatMap((download) =>
+    [false, true].map((range) => ({ ...file, download, range })),
+  )))("preserves disposition filenames: $filename (download=$download, range=$range)", async ({
+    filename, contentType, filenameParameters, download, range,
+  }) => {
+    const bytes = Buffer.from([0, 255, 128, 10, 13, 42]);
+    const storage = createStorageService(bytes);
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment(contentType, filename),
+      byteSize: bytes.length,
+    });
+    const app = await createApp(storage);
+    const downloadRequest = request(app)
+      .get(`/api/attachments/attachment-1/content${download ? "?download=1" : ""}`)
+      .buffer(true)
+      .parse(parseBinaryResponse);
+    if (range) downloadRequest.set("Range", "bytes=1-3");
+    const res = await downloadRequest;
+
+    expect(res.status).toBe(range ? 206 : 200);
+    expect(res.headers["content-disposition"]).toBe(`${download ? "attachment" : "inline"}; ${filenameParameters}`);
+    expect(res.headers["content-type"]).toBe(contentType);
+    expect(res.headers["content-length"]).toBe(String(range ? 3 : bytes.length));
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers["content-range"]).toBe(range ? "bytes 1-3/6" : undefined);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.body).toEqual(range ? bytes.subarray(1, 4) : bytes);
   });
 
   it("serves video attachments inline with byte-range support", async () => {

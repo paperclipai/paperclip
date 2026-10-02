@@ -214,6 +214,7 @@ Slot types describe where a component mounts. Most values also exist as launcher
 | `settingsPage` | Global | — |
 | `dashboardWidget` | Global | — |
 | `globalToolbarButton` | Global | — |
+| `appShellOverlay` (slot only) | Signed-in application shell | — |
 | `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
 | `taskDetailView` | Entity | (task/issue context) |
 | `commentAnnotation` | Entity | `comment` |
@@ -1297,3 +1298,10 @@ const server = await startPluginDevServer({ rootDir: process.cwd() });
 Dev server endpoints:
 - `GET /__paperclip__/health` returns `{ ok, rootDir, uiDir }`
 - `GET /__paperclip__/events` streams `reload` SSE events on UI build changes
+
+### Persistent application shell contributions
+
+An `appShellOverlay` slot uses `ui.action.register` and the standard
+`PluginWidgetProps` context. It survives navigation and unmounts on account or
+company changes, sign-out and onboarding. Plugins own panel accessibility and
+request cleanup. See [the distribution and lifecycle contract](../../../doc/plugins/DISTRIBUTION-PLUGINS.md).

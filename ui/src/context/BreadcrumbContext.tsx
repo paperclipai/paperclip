@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode, type MouseEventHandler } from "react";
 
 export interface Breadcrumb {
   label: string;
   href?: string;
+  /** Optional handler for preserving local work before navigating. */
+  onClick?: MouseEventHandler<HTMLAnchorElement>;
   /**
    * Optional task identifier (e.g. "PAP-1204") rendered in gray monospace
    * between the leading glyph and the label.
@@ -16,13 +18,26 @@ export interface Breadcrumb {
    * a primitive that changes only when the rendered `leading` should change.
    */
   leadingKey?: string;
+  /** Optional action beside the label, outside the breadcrumb link. */
+  trailing?: ReactNode;
+  /** Stable identity for the action, following leadingKey semantics. */
+  trailingKey?: string;
 }
 
 interface BreadcrumbContextValue {
   breadcrumbs: Breadcrumb[];
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
+  breadcrumbToolbar: ReactNode | null;
+  setBreadcrumbToolbar: (node: ReactNode | null) => void;
+  breadcrumbPanelControl: BreadcrumbPanelControl | null;
+  setBreadcrumbPanelControl: (control: BreadcrumbPanelControl | null) => void;
   mobileToolbar: ReactNode | null;
   setMobileToolbar: (node: ReactNode | null) => void;
+}
+
+export interface BreadcrumbPanelControl {
+  open: boolean;
+  onToggle: () => void;
 }
 
 interface BreadcrumbProviderProps {
@@ -38,9 +53,11 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   for (let index = 0; index < left.length; index += 1) {
     if (
       left[index]?.label !== right[index]?.label
+      || left[index]?.onClick !== right[index]?.onClick
       || left[index]?.href !== right[index]?.href
       || left[index]?.identifier !== right[index]?.identifier
       || left[index]?.leadingKey !== right[index]?.leadingKey
+      || left[index]?.trailingKey !== right[index]?.trailingKey
     ) {
       return false;
     }
@@ -59,6 +76,9 @@ export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName?: stri
 
 export function BreadcrumbProvider({ children, companyName }: BreadcrumbProviderProps) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
+  const [breadcrumbToolbar, setBreadcrumbToolbarState] = useState<ReactNode | null>(null);
+  const [breadcrumbPanelControl, setBreadcrumbPanelControlState] =
+    useState<BreadcrumbPanelControl | null>(null);
   const [mobileToolbar, setMobileToolbarState] = useState<ReactNode | null>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
@@ -69,12 +89,31 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
     setMobileToolbarState(node);
   }, []);
 
+  const setBreadcrumbToolbar = useCallback((node: ReactNode | null) => {
+    setBreadcrumbToolbarState(node);
+  }, []);
+
+  const setBreadcrumbPanelControl = useCallback((control: BreadcrumbPanelControl | null) => {
+    setBreadcrumbPanelControlState(control);
+  }, []);
+
   useEffect(() => {
     document.title = buildDocumentTitle(breadcrumbs, companyName);
   }, [breadcrumbs, companyName]);
 
   return (
-    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, mobileToolbar, setMobileToolbar }}>
+    <BreadcrumbContext.Provider
+      value={{
+        breadcrumbs,
+        setBreadcrumbs,
+        breadcrumbToolbar,
+        setBreadcrumbToolbar,
+        breadcrumbPanelControl,
+        setBreadcrumbPanelControl,
+        mobileToolbar,
+        setMobileToolbar,
+      }}
+    >
       {children}
     </BreadcrumbContext.Provider>
   );

@@ -270,7 +270,7 @@ describe("readZipArchive", () => {
 
   it("bounds a highly compressible DEFLATE entry at the per-entry decompressed limit", async () => {
     // Compresses tiny but expands to 8 KiB; a 1 KiB cap must reject it before it
-    // materializes. Real packages sit far under the 256 MB production default.
+    // materializes. Real packages sit far under the 512 MB production default.
     const bomb = new TextEncoder().encode("a".repeat(8 * 1024));
     const archive = buildZip([{ path: "bomb.txt", bytes: bomb, method: 8 }], "paperclip-demo");
     await expect(

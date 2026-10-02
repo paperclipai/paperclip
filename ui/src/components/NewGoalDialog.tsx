@@ -27,7 +27,7 @@ import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 
 const levelLabels: Record<string, string> = {
-  company: "Company",
+  company: "Organization",
   team: "Team",
   agent: "Agent",
   task: "Task",
@@ -70,7 +70,7 @@ export function NewGoalDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "goals/drafts");
     },
   });
@@ -124,7 +124,7 @@ export function NewGoalDialog() {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
-                {selectedCompany.name.slice(0, 3).toUpperCase()}
+                {selectedCompany.issuePrefix}
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>

@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "opencode_local";
 export const label = "OpenCode";
 
@@ -55,6 +53,18 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
+  { id: "openai/gpt-6-astra", label: "openai/gpt-6-astra" },
+  { id: "openai/gpt-6-sol", label: "openai/gpt-6-sol" },
+  { id: "openai/gpt-6-luna", label: "openai/gpt-6-luna" },
+  { id: "openai/gpt-5.6-sol", label: "openai/gpt-5.6-sol" },
+  { id: "openai/gpt-5.6-terra", label: "openai/gpt-5.6-terra" },
+  { id: "openai/gpt-5.6-luna", label: "openai/gpt-5.6-luna" },
+  { id: "anthropic/claude-opus-5-5", label: "anthropic/claude-opus-5-5" },
+  { id: "anthropic/claude-opus-5", label: "anthropic/claude-opus-5" },
+  { id: "anthropic/claude-fable-5-1", label: "anthropic/claude-fable-5-1" },
+  { id: "anthropic/claude-sonnet-5", label: "anthropic/claude-sonnet-5" },
+  { id: "google/gemini-3.8-flash", label: "google/gemini-3.8-flash" },
+  { id: "xai/grok-4.7", label: "xai/grok-4.7" },
   { id: "openai/gpt-5.5", label: "openai/gpt-5.5" },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
   { id: "openai/gpt-5.4-mini", label: "openai/gpt-5.4-mini" },
@@ -62,41 +72,6 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
 ];
-
-export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
-
-// The "cheap" budget profile (used for recovery retries and other low-cost lanes).
-// Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
-// routing through a gateway that does not serve that model (e.g. an EU LLM gateway)
-// can point the budget lane at a gateway-served model instead -- otherwise recovery
-// retries fail with "model not found". PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
-// PAPERCLIP_OPENCODE_SMALL_MODEL (the auxiliary/title model) is reused as a sensible
-// fallback so a single setting covers both budget lanes. The default keeps the
-// upstream behaviour (with the Codex `variant: "low"`).
-//
-// This module is shared client/server code (the UI imports it for
-// DEFAULT_OPENCODE_LOCAL_MODEL etc.), so it must not touch the global `process`
-// unguarded: in the browser (Vite dev middleware serves it untransformed)
-// a bare `process.env` throws ReferenceError at module load and takes the whole
-// app down. Guard with `typeof process` and fall back to an empty env.
-export function buildOpenCodeModelProfiles(
-  env: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
-): AdapterModelProfileDefinition[] {
-  const override = (env.PAPERCLIP_OPENCODE_CHEAP_MODEL ?? env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
-  return [
-    {
-      key: "cheap",
-      label: "Cheap",
-      description: "Budget lane model for recovery retries and other low-cost tasks.",
-      adapterConfig: override
-        ? { model: override }
-        : { model: DEFAULT_OPENCODE_CHEAP_MODEL, variant: "low" },
-      source: "adapter_default",
-    },
-  ];
-}
-
-export const modelProfiles: AdapterModelProfileDefinition[] = buildOpenCodeModelProfiles();
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -117,7 +92,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
-- dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
+- dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config with \`permission=allow\` for all tools and connections; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -137,6 +112,6 @@ Notes:
   writing an opencode.json config file into the project working directory. Model \
   selection is passed via the --model CLI flag instead.
 - When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
-  runtime config with \`permission.external_directory=allow\` so headless runs do \
+  runtime config with \`permission=allow\` so headless runs do \
   not stall on approval prompts.
 `;

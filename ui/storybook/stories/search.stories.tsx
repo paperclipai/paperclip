@@ -6,7 +6,6 @@ import type {
   CompanySearchZeroResults,
 } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
-import { IssueGroupHeader } from "@/components/IssueGroupHeader";
 import { Input } from "@/components/ui/input";
 import { PageTabBar, type PageTabItem } from "@/components/PageTabBar";
 import { MatchSourceChip } from "@/components/search/MatchSourceChip";
@@ -296,58 +295,11 @@ function SearchPagePreview({
           <div className="flex items-center justify-between py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
             <span>{response.results.length} results · sorted by relevance</span>
           </div>
-          <section aria-label="Issues" className="flex flex-col">
-            <IssueGroupHeader
-              label="Issues"
-              trailing={
-                <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                  {fixtureResults.length}
-                </span>
-              }
-              className="pt-2 pb-1 text-[11px] tracking-wider text-muted-foreground"
-            />
-            <div className="flex flex-col gap-y-1">
-              {fixtureResults.map((result) => (
-                <SearchResultRow
-                  key={result.id}
-                  result={result}
-                  agentsById={agentsById}
-                />
-              ))}
-            </div>
-          </section>
-          <section aria-label="Agents" className="mt-6 flex flex-col">
-            <IssueGroupHeader
-              label="Agents"
-              trailing={
-                <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                  {fixtureAgents.length}
-                </span>
-              }
-              className="pt-2 pb-1 text-[11px] tracking-wider text-muted-foreground"
-            />
-            <div className="flex flex-col gap-y-1">
-              {fixtureAgents.map((result) => (
-                <SearchResultRow key={result.id} result={result} />
-              ))}
-            </div>
-          </section>
-          <section aria-label="Projects" className="mt-6 flex flex-col">
-            <IssueGroupHeader
-              label="Projects"
-              trailing={
-                <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                  {fixtureProjects.length}
-                </span>
-              }
-              className="pt-2 pb-1 text-[11px] tracking-wider text-muted-foreground"
-            />
-            <div className="flex flex-col gap-y-1">
-              {fixtureProjects.map((result) => (
-                <SearchResultRow key={result.id} result={result} />
-              ))}
-            </div>
-          </section>
+          <div className="flex flex-col gap-y-1">
+            {response.results.map((result) => (
+              <SearchResultRow key={result.id} result={result} agentsById={agentsById} />
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -770,7 +722,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Full search page surfaces and Command K Search-all handoff. Reuses StatusIcon, StatusBadge, Identity, IssueGroupHeader, and PageTabBar; adds MatchSourceChip + SearchResultRow.",
+          "Full search page surfaces and Command K Search-all handoff. Reuses StatusIcon, StatusBadge, Identity and PageTabBar; adds MatchSourceChip + SearchResultRow.",
       },
     },
   },

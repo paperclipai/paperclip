@@ -5,9 +5,11 @@ base_cwd="${PAPERCLIP_WORKSPACE_BASE_CWD:?PAPERCLIP_WORKSPACE_BASE_CWD is requir
 worktree_cwd="${PAPERCLIP_WORKSPACE_CWD:?PAPERCLIP_WORKSPACE_CWD is required}"
 paperclip_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
 paperclip_instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
+default_source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
 paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 worktree_env_path="$paperclip_dir/.env"
+seed_manifest_path="$paperclip_dir/seed-manifest.json"
 seed_pending_marker_path="$paperclip_dir/seed-pending"
 seed_complete_marker_path="$paperclip_dir/seed-complete"
 worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
@@ -39,14 +41,65 @@ if [[ ! -d "$worktree_cwd" ]]; then
   exit 1
 fi
 
-source_config_path="${PAPERCLIP_CONFIG:-}"
-if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
-  source_config_path="$base_cwd/.paperclip/config.json"
+canonical_base_cwd="$(cd "$base_cwd" && pwd -P)"
+if [[ -L "$canonical_base_cwd/.paperclip" && ! -d "$canonical_base_cwd/.paperclip" ]]; then
+  # A broken link hides whatever it points at, so the config below would read as absent
+  # on a workspace that is malformed rather than plain. Refuse instead of falling back.
+  echo "Registered base project workspace .paperclip is a broken symlink: $canonical_base_cwd/.paperclip" >&2
+  exit 1
 fi
-if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+source_config_path="$canonical_base_cwd/.paperclip/config.json"
+source_config_origin="base project workspace"
+if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+  # A base workspace that is a plain checkout carries no instance config of its own.
+  # Fall back to the control plane's own registered instance config, which is process
+  # state this workspace cannot rewrite.
+  source_config_path="${PAPERCLIP_CONFIG:-$default_source_config_path}"
+  source_config_origin="control-plane instance"
+  # Environment-configured servers need no local instance config. A new plain
+  # checkout can still prepare dependencies without inventing a seed source.
+  # The Docker image sets PAPERCLIP_CONFIG to this default even without a file.
+  # Custom sources and existing development instances must still fail closed.
+  if [[ "$source_config_path" == "$default_source_config_path" && ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+    source_required=0
+    for target_state in "$worktree_config_path" "$worktree_env_path" "$seed_manifest_path" "$seed_pending_marker_path" "$seed_complete_marker_path"; do
+      if [[ -e "$target_state" || -L "$target_state" ]]; then
+        source_required=1
+      fi
+    done
+    if [[ "$source_required" -eq 0 ]]; then
+      # Do not mistake a broken or aliased parent path for an absent instance.
+      source_parent="$(dirname "$source_config_path")"
+      while [[ ! -e "$source_parent" && ! -L "$source_parent" ]]; do
+        source_parent="$(dirname "$source_parent")"
+      done
+      if [[ ! -d "$source_parent" || -L "$source_parent" || "$(cd "$source_parent" && pwd -P)" != "$source_parent" ]]; then
+        echo "Registered Paperclip seed source config has a non-canonical parent: $source_config_path" >&2
+        exit 1
+      fi
+      echo "No local Paperclip seed source config; preparing checkout dependencies without a seeded development instance." >&2
+      source_config_path=""
+    fi
+  fi
 fi
-source_env_path="$(dirname "$source_config_path")/.env"
+if [[ -n "$source_config_path" ]]; then
+  if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
+    if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+      echo "Registered Paperclip seed source config is unavailable ($source_config_origin): $source_config_path" >&2
+      echo "For a seeded development instance, configure a canonical config for that registered source before retrying." >&2
+    else
+      echo "Registered Paperclip seed source config is not a canonical file ($source_config_origin): $source_config_path" >&2
+      echo "Repair the registered source path; symlinks and non-regular files are not accepted." >&2
+    fi
+    exit 1
+  fi
+  canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
+  if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
+    echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
+    exit 1
+  fi
+  source_env_path="$(dirname "$source_config_path")/.env"
+fi
 
 mkdir -p "$paperclip_dir"
 
@@ -74,6 +127,10 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+  # install. Node 24 reports that call as DEP0169. Remove this flag when the
+  # pinned pnpm no longer calls url.parse() in that path.
+  local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   # Resolve the real git dir so locking also covers base workspaces that are
   # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
   local repair_lock_dir=""
@@ -96,11 +153,11 @@ repair_base_workspace_install() {
         echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
         exit 0
       fi
-      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 || exit 1
       base_cli_healthy
     )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+    (cd "$base_cwd" && env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
@@ -237,25 +294,93 @@ for (const rawValue of runtimePaths) {
 EOF
 }
 
-write_seed_pending_marker() {
-  SEED_PENDING_MARKER_PATH="$seed_pending_marker_path" \
-  SEED_COMPLETE_MARKER_PATH="$seed_complete_marker_path" \
+reconcile_worktree_deployment_mode() {
   SOURCE_CONFIG_PATH="$source_config_path" \
+  WORKTREE_CONFIG_PATH="$worktree_config_path" \
   node <<'EOF'
 const fs = require("node:fs");
 const path = require("node:path");
 
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const worktreeConfigPath = path.resolve(process.env.WORKTREE_CONFIG_PATH);
+const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8"));
+const worktreeConfig = JSON.parse(fs.readFileSync(worktreeConfigPath, "utf8"));
+const deploymentMode = sourceConfig?.server?.deploymentMode ?? "local_trusted";
+if (deploymentMode !== "local_trusted" && deploymentMode !== "authenticated") {
+  throw new Error(`Registered source has unsupported server.deploymentMode: ${deploymentMode}`);
+}
+const exposure = deploymentMode === "local_trusted"
+  ? "private"
+  : (sourceConfig?.server?.exposure ?? "private");
+const currentServer = worktreeConfig?.server && typeof worktreeConfig.server === "object"
+  ? worktreeConfig.server
+  : {};
+if (currentServer.deploymentMode === deploymentMode && currentServer.exposure === exposure) {
+  process.exit(0);
+}
+
+worktreeConfig.server = {
+  ...currentServer,
+  deploymentMode,
+  exposure,
+};
+if (worktreeConfig.$meta && typeof worktreeConfig.$meta === "object") {
+  worktreeConfig.$meta.updatedAt = new Date().toISOString();
+}
+
+const temporaryPath = `${worktreeConfigPath}.deployment-mode-${process.pid}`;
+try {
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(worktreeConfig, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryPath, worktreeConfigPath);
+} finally {
+  fs.rmSync(temporaryPath, { force: true });
+}
+console.error(`Reconciled isolated Paperclip worktree deployment mode from ${sourceConfigPath}: ${deploymentMode}/${exposure}`);
+EOF
+}
+
+write_seed_pending_manifest() {
+  SEED_MANIFEST_PATH="$seed_manifest_path" \
+  SEED_PENDING_MARKER_PATH="$seed_pending_marker_path" \
+  SEED_COMPLETE_MARKER_PATH="$seed_complete_marker_path" \
+  SOURCE_CONFIG_PATH="$source_config_path" \
+  TARGET_INSTANCE_ID="$worktree_instance_id" \
+  node <<'EOF'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const manifestPath = process.env.SEED_MANIFEST_PATH;
 const pendingPath = process.env.SEED_PENDING_MARKER_PATH;
 const completePath = process.env.SEED_COMPLETE_MARKER_PATH;
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const sourceEnvPath = path.join(path.dirname(sourceConfigPath), ".env");
+let sourceInstanceId = path.basename(path.dirname(sourceConfigPath));
+if (fs.existsSync(sourceEnvPath)) {
+  const match = fs.readFileSync(sourceEnvPath, "utf8").match(/^\s*(?:export\s+)?PAPERCLIP_INSTANCE_ID\s*=\s*["']?([^\s"'#]+)["']?/m);
+  if (match?.[1]) sourceInstanceId = match[1];
+}
 fs.rmSync(completePath, { force: true });
+fs.rmSync(pendingPath, { force: true });
+const at = new Date().toISOString();
 fs.writeFileSync(
-  pendingPath,
+  manifestPath,
   `${JSON.stringify({
-    version: 1,
-    state: "pending",
-    sourceConfigPath: path.resolve(process.env.SOURCE_CONFIG_PATH),
+    version: 2,
+    source: {
+      instanceId: sourceInstanceId,
+      configPath: sourceConfigPath,
+    },
+    snapshotAt: null,
     seedMode: "minimal",
-    createdAt: new Date().toISOString(),
+    migrationRevision: null,
+    targetInstanceId: process.env.TARGET_INSTANCE_ID,
+    phase: "pending",
+    state: "pending",
+    attemptId: crypto.randomUUID(),
+    startedAt: null,
+    finishedAt: null,
+    diagnostics: [{ phase: "pending", status: "succeeded", at }],
   }, null, 2)}\n`,
   { mode: 0o600 },
 );
@@ -521,38 +646,46 @@ main().catch((error) => {
 EOF
 }
 
-if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]] && existing_worktree_config_is_usable; then
-  echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
-else
-  if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
-    echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
-  fi
-  if paperclipai_command_available; then
-    if run_isolated_worktree_init; then
-      :
-    else
-      init_exit_code=$?
-      if [[ "$init_exit_code" -eq 127 ]]; then
-        # Every CLI candidate was unusable (e.g. an unhealthy base install that
-        # the repair could not fix); degrade instead of stranding the run.
-        echo "No usable paperclipai CLI found; writing isolated fallback config without DB seeding." >&2
-        write_fallback_worktree_config
-      else
-        # A CLI that ran and failed signals a real problem; do not paper over
-        # it with an unseeded fallback config.
-        echo "paperclipai worktree init failed (exit $init_exit_code); failing provisioning instead of writing an unseeded fallback config." >&2
-        exit "$init_exit_code"
-      fi
-    fi
+if [[ -n "$source_config_path" ]]; then
+  if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]] && existing_worktree_config_is_usable; then
+    echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
   else
-    echo "paperclipai worktree init unavailable; writing isolated fallback config without DB seeding." >&2
-    write_fallback_worktree_config
+    if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
+      echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
+    fi
+    if paperclipai_command_available; then
+      if run_isolated_worktree_init; then
+        :
+      else
+        init_exit_code=$?
+        if [[ "$init_exit_code" -eq 127 ]]; then
+          # Every CLI candidate was unusable (e.g. an unhealthy base install that
+          # the repair could not fix); degrade instead of stranding the run.
+          echo "No usable paperclipai CLI found; writing isolated fallback config without DB seeding." >&2
+          write_fallback_worktree_config
+        else
+          # A CLI that ran and failed signals a real problem; do not paper over
+          # it with an unseeded fallback config.
+          echo "paperclipai worktree init failed (exit $init_exit_code); failing provisioning instead of writing an unseeded fallback config." >&2
+          exit "$init_exit_code"
+        fi
+      fi
+    else
+      echo "paperclipai worktree init unavailable; writing isolated fallback config without DB seeding." >&2
+      write_fallback_worktree_config
+    fi
+    created_worktree_config=1
   fi
-  created_worktree_config=1
-fi
 
-if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
-  write_seed_pending_marker
+  # The target config can predate a deployment-mode change on the registered
+  # source, and older/fallback CLI writers may default this field independently.
+  # Reconcile it after either create or reuse so the final guest config always
+  # carries the source's deployment/auth contract without replacing its database.
+  reconcile_worktree_deployment_mode
+
+  if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_manifest_path" && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
+    write_seed_pending_manifest
+  fi
 fi
 
 list_base_node_modules_paths() {
@@ -597,6 +730,14 @@ function walk(dir) {
 }
 
 walk(root);
+// package.json is the pnpm 9 patch manifest for this repository. Hash the
+// declared paths, including non-.patch filenames and patches outside patches/.
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+for (const patch of Object.values(manifest.pnpm?.patchedDependencies ?? {})) {
+  if (typeof patch !== "string") throw new Error("Invalid pnpm patch path");
+  const file = path.resolve(root, patch);
+  if (!files.includes(file)) files.push(file);
+}
 files.sort((left, right) => path.relative(root, left).localeCompare(path.relative(root, right)));
 
 const hash = crypto.createHash("sha256");
@@ -673,24 +814,28 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     }
 
     run_pnpm_install() {
-      local stdout_path stderr_path
+      local stdout_path stderr_path exit_code
       stdout_path="$(mktemp)"
       stderr_path="$(mktemp)"
 
       if (
         cd "$worktree_cwd"
-        pnpm install --prod=false "$@"
+        # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+        # install. Node 24 reports that call as DEP0169. Remove this flag
+        # when the pinned pnpm no longer calls url.parse() in that path.
+        NODE_OPTIONS="${NODE_OPTIONS:-} --disable-warning=DEP0169" pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
         rm -f "$stdout_path" "$stderr_path"
         return 0
+      else
+        exit_code=$?
       fi
 
-      local exit_code=$?
       cat "$stdout_path"
       cat "$stderr_path" >&2
-      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+      if grep -Eq "ERR_PNPM_(OUTDATED_LOCKFILE|LOCKFILE_CONFIG_MISMATCH)" "$stdout_path" "$stderr_path"; then
         rm -f "$stdout_path" "$stderr_path"
         return 90
       fi

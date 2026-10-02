@@ -2,10 +2,9 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVoteValue,
 } from "@paperclipai/shared";
-import {
-  BubbleCopyButton,
-  IssueChatFeedbackButtons,
-} from "@/components/AgentBubbleActionRow";
+import { useCopyAction } from "@/lib/use-copy-action";
+import { IssueChatFeedbackButtons } from "@/components/AgentBubbleActionRow";
+import { Check, Copy, X } from "lucide-react";
 
 /** Feedback-vote wiring for an agent bubble, resolved per comment by the host. */
 export interface TaskChatBubbleFeedback {
@@ -22,10 +21,9 @@ export interface TaskChatBubbleFeedback {
  * Compact copy · 👍 · 👎 cluster prepended to an agent bubble's footer line
  * (PAP-413), leading the "✓ Worked · …" turn summary (or the bare timestamp
  * when the reply had no run activity). It reuses the shared
- * {@link BubbleCopyButton} and {@link IssueChatFeedbackButtons} so the
- * redesigned task thread speaks the same footer language as the conference
- * room's {@link AgentBubbleActionRow} without re-declaring their markup; the
- * timestamp stays owned by the summary/bubble, so it is not duplicated here.
+ * {@link IssueChatFeedbackButtons} so the redesigned task thread speaks the
+ * same feedback language as the conference room's {@link AgentBubbleActionRow};
+ * the timestamp stays owned by the summary/bubble, so it is not duplicated here.
  */
 export function TaskChatBubbleActions({
   copyText,
@@ -34,9 +32,28 @@ export function TaskChatBubbleActions({
   copyText: string;
   feedback?: TaskChatBubbleFeedback | null;
 }) {
+  const { copied, failed, copy } = useCopyAction(2000);
+  const label = failed ? "Couldn’t copy message" : "Copy message";
+
   return (
     <div className="flex items-center gap-0.5" data-testid="task-chat-bubble-actions">
-      <BubbleCopyButton copyText={copyText} />
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        title={label}
+        aria-label={label}
+        onClick={() => {
+          void copy(copyText);
+        }}
+      >
+        {copied ? (
+          <Check className="h-3.5 w-3.5" />
+        ) : failed ? (
+          <X className="h-3.5 w-3.5 text-destructive" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" />
+        )}
+      </button>
       {feedback ? (
         <IssueChatFeedbackButtons
           activeVote={feedback.activeVote}

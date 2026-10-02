@@ -386,6 +386,63 @@ function PrimeDeskFixtures({
   return <>{children}</>;
 }
 
+/** Interaction-shaped item carrying the server's effective resolver audience. */
+function interactionRow(
+  id: string,
+  title: string,
+  audience: AttentionItem["resolverAudience"],
+): AttentionItem {
+  return item(id, "issue_thread_interaction", "medium", title, "Confirmation requested on an issue thread.", {
+    inlineResolvable: true,
+    subject: {
+      kind: "interaction",
+      id,
+      companyId,
+      title,
+      identifier: null,
+      status: "pending",
+      href: `/PAP/issues/PAP-1000#interaction-${id}`,
+      metadata: { kind: "request_confirmation", issueId: "issue-1000" },
+    },
+    decisionVerbs: [
+      { id: "accept", label: "Accept", description: null },
+      { id: "reject", label: "Reject", description: null },
+    ],
+    resolverAudience: audience,
+  });
+}
+
+const OPEN_AUDIENCE = {
+  requestedResolverPolicy: "anyone",
+  effectiveResolverPolicy: "anyone",
+  effectiveResolverPolicySource: "requested",
+  resolverPolicyProvenance: "inherited",
+  addresseeAgentId: null,
+  addresseeName: null,
+  createdByAgentId: "agent-coder",
+  createdByAgentName: "ClaudeCoder",
+} as const;
+
+const INTERACTION_AUDIENCE_ITEMS: AttentionItem[] = [
+  interactionRow("interaction-open", "Close the stale watchdog confirmation?", { ...OPEN_AUDIENCE }),
+  interactionRow("interaction-addressed", "Confirm the migration renumber", {
+    ...OPEN_AUDIENCE,
+    addresseeAgentId: "agent-qa",
+    addresseeName: "QA",
+  }),
+  interactionRow("interaction-capped", "Approve the destructive cleanup", {
+    ...OPEN_AUDIENCE,
+    effectiveResolverPolicy: "human_only",
+    effectiveResolverPolicySource: "company_cap",
+  }),
+  interactionRow("interaction-legacy", "Confirm the pre-migration rollout", {
+    ...OPEN_AUDIENCE,
+    requestedResolverPolicy: "not_creator",
+    effectiveResolverPolicy: "not_creator",
+    resolverPolicyProvenance: "legacy_inherited_restriction",
+  }),
+];
+
 const meta: Meta = {
   title: "Pages/Decisions Desk",
   parameters: { layout: "fullscreen" },
@@ -438,7 +495,7 @@ export const AgingShelf: Story = {
 
 /**
  * Screen 2 — a queue page. The queue carries the same toolbar as
- * the desk (filter / group / sort / training), the date-range chips, the arrival
+ * the desk (filter / group / sort), the date-range chips, the arrival
  * timeline groupings ("Decide now" / "New today" / "Earlier") and the aging
  * shelf, above the seed-rules card (with its rewritten copy) and the per-item
  * Exclude-with-reason affordance. Each source-native decision still resolves per
@@ -477,6 +534,33 @@ export const QueuePage: Story = {
         <Routes location="/decisions/queues/prs">
           <Route path="/decisions/queues/:key" element={<DecisionQueuePage />} />
         </Routes>
+      </div>
+    </PrimeDeskFixtures>
+  ),
+};
+
+/**
+ * Collapsed interaction rows, one per resolver audience (PAP-17287). Each row
+ * states who the *server* will let respond before its compact Accept/Reject —
+ * open default, a named addressee, a company cap to human-only, and a
+ * pre-migration card that stays creator-excluded. Check at 1440×900 and 390×844:
+ * the audience must stay legible above the verbs at both widths.
+ */
+export const CollapsedInteractionAudience: Story = {
+  render: () => (
+    <PrimeDeskFixtures>
+      <div className="max-w-3xl space-y-2 p-6">
+        {INTERACTION_AUDIENCE_ITEMS.map((row) => (
+          <AttentionQueueRow
+            key={row.id}
+            item={row}
+            companyId={companyId}
+            agents={AGENTS}
+            expanded={false}
+            onToggleExpand={() => {}}
+            onDismiss={() => {}}
+          />
+        ))}
       </div>
     </PrimeDeskFixtures>
   ),

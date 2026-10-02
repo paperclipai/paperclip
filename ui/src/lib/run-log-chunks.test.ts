@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { RunLogChunk } from "../adapters";
 import {
+  applyRetentionBudget,
   isStructuredStreamingTextDelta,
+  isTrimmedOutputMarkerChunk,
   mergeRunLogChunks,
   parsePersistedLogContent,
   readChunkSeq,
+  TRIMMED_OUTPUT_MARKER_TEXT,
   type ChunkMergeRefs,
   type IncomingRunLogChunk,
 } from "./run-log-chunks";
@@ -126,5 +129,80 @@ describe("mergeRunLogChunks", () => {
     const result = mergeRunLogChunks("r", state, [], refs, 100);
     expect(result.chunks).toBe(state);
     expect(result.changed).toBe(false);
+  });
+
+  it("retains far more than the old 200-chunk cap under a byte budget", () => {
+    const refs = freshRefs();
+    let state: RunLogChunk[] = [];
+    // 500 one-byte delta chunks — the old count cap would have dropped 300 of
+    // them off the top irreversibly. A generous byte budget keeps them all.
+    for (let seq = 1; seq <= 500; seq += 1) {
+      ({ chunks: state } = mergeRunLogChunks("r", state, [seqChunk(seq, "x")], refs, { maxBytes: 10_000 }));
+    }
+    expect(state).toHaveLength(500);
+    expect(state.some(isTrimmedOutputMarkerChunk)).toBe(false);
+    expect(state[0]!.chunk).toBe("x");
+  });
+
+  it("collapses the oldest output behind a single visible marker instead of discarding it", () => {
+    const refs = freshRefs();
+    let state: RunLogChunk[] = [];
+    // Each chunk is 10 units; a 25-unit budget keeps only the newest two.
+    const ten = "0123456789";
+    for (let seq = 1; seq <= 4; seq += 1) {
+      ({ chunks: state } = mergeRunLogChunks("r", state, [seqChunk(seq, ten)], refs, {
+        maxBytes: 25,
+        collapseTrimmed: true,
+      }));
+    }
+    // First element is the marker; the two newest real chunks follow.
+    expect(isTrimmedOutputMarkerChunk(state[0]!)).toBe(true);
+    expect(state[0]!.chunk).toBe(TRIMMED_OUTPUT_MARKER_TEXT);
+    expect(state.slice(1).map((c) => c.seq)).toEqual([3, 4]);
+    // Exactly one marker — repeated trims do not stack markers.
+    expect(state.filter(isTrimmedOutputMarkerChunk)).toHaveLength(1);
+    // Trimmed seq floor tracks the removed records so re-delivery is dropped.
+    expect(refs.trimmedSeqFloorByRun.get("r")).toBe(2);
+  });
+});
+
+describe("applyRetentionBudget", () => {
+  const chunk = (seq: number, text: string): RunLogChunk => ({ ts: `t${seq}`, stream: "stdout", chunk: text, seq });
+
+  it("leaves chunks untouched when within budget", () => {
+    const chunks = [chunk(1, "aa"), chunk(2, "bb")];
+    const result = applyRetentionBudget(chunks, { maxBytes: 100, collapseTrimmed: true });
+    expect(result.chunks).toBe(chunks);
+    expect(result.trimmedSeq).toBeNull();
+  });
+
+  it("keeps the newest chunk even when it alone exceeds the byte budget", () => {
+    const chunks = [chunk(1, "0123456789")];
+    const result = applyRetentionBudget(chunks, { maxBytes: 3, collapseTrimmed: true });
+    expect(result.chunks).toEqual(chunks);
+    expect(result.chunks.some(isTrimmedOutputMarkerChunk)).toBe(false);
+  });
+
+  it("discards silently (no marker) when collapseTrimmed is off", () => {
+    const chunks = [chunk(1, "a"), chunk(2, "b"), chunk(3, "c")];
+    const result = applyRetentionBudget(chunks, { maxChunks: 2 });
+    expect(result.chunks.map((c) => c.chunk)).toEqual(["b", "c"]);
+    expect(result.chunks.some(isTrimmedOutputMarkerChunk)).toBe(false);
+    expect(result.trimmedSeq).toBe(1);
+  });
+
+  it("does not accumulate markers when trimming an already-collapsed window", () => {
+    const first = applyRetentionBudget(
+      [chunk(1, "aa"), chunk(2, "bb"), chunk(3, "cc")],
+      { maxBytes: 3, collapseTrimmed: true },
+    );
+    expect(first.chunks.filter(isTrimmedOutputMarkerChunk)).toHaveLength(1);
+    // Feed the marker-prefixed result back in with more content over budget.
+    const second = applyRetentionBudget(
+      [...first.chunks, chunk(4, "dd")],
+      { maxBytes: 3, collapseTrimmed: true },
+    );
+    expect(second.chunks.filter(isTrimmedOutputMarkerChunk)).toHaveLength(1);
+    expect(second.chunks[0]!.chunk).toBe(TRIMMED_OUTPUT_MARKER_TEXT);
   });
 });

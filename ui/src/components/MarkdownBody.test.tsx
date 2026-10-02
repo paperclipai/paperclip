@@ -15,6 +15,15 @@ import {
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
+import type { WorkspaceFileAvailabilityTarget } from "../lib/workspace-file-availability";
+
+/** Stands in for a server-confirmed openable reference in the issue's workspace. */
+const OPENABLE_AUTO_TARGET: WorkspaceFileAvailabilityTarget = {
+  workspace: "auto",
+  projectId: null,
+  workspaceId: null,
+  projectName: null,
+};
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -109,6 +118,33 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('src="/resolved/images/org-chart.png"');
     expect(html).toContain('alt="Org chart"');
+  });
+
+  it("renders decision images as inert references without resolving or preloading them", () => {
+    const resolveImageSrc = vi.fn((src: string) => `https://resolver.invalid/${src}`);
+    const html = renderMarkdown(
+      '# Plan\n\n**Keep this step.**\n\n![Evidence](https://provider.invalid/track.png "Provider image")\n\n![Relative](images/proof.png)\n\n![Protocol relative](//provider.invalid/other.png)',
+      [], { mediaMode: "reference", resolveImageSrc },
+    );
+
+    expect(html).toContain("<h1>Plan</h1>");
+    expect(html).toContain("<strong>Keep this step.</strong>");
+    expect(html).toContain("Image: Evidence (https://provider.invalid/track.png)");
+    expect(html).toContain('title="Provider image"');
+    expect(html).toContain("Image: Relative (images/proof.png)");
+    expect(html).toContain("Image: Protocol relative (//provider.invalid/other.png)");
+    expect(html).not.toMatch(/<(?:img|link|iframe|video|audio)\b/);
+    expect(resolveImageSrc).not.toHaveBeenCalled();
+  });
+
+  it("keeps diagram source inert in decision media mode", () => {
+    const source = 'flowchart LR\n  A@{ img: "https://provider.invalid/diagram.png" }';
+    const html = renderMarkdown(`\`\`\`mermaid\n${source}\n\`\`\``, [], { mediaMode: "reference" });
+
+    expect(html).toContain('class="language-mermaid"');
+    expect(html).toContain("https://provider.invalid/diagram.png");
+    expect(html).not.toContain('class="paperclip-mermaid"');
+    expect(html).not.toContain("Rendering Mermaid diagram");
   });
 
   it("renders user, agent, project, skill, and routine mentions as chips", () => {
@@ -317,7 +353,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown(
       "- **MP4**: [`videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4`](/PAP/issues/PAP-10306 \"Publish handoff\")",
       [{ identifier: "PAP-10306", status: "in_review", title: "Publish handoff" }],
-      { linkWorkspaceFileRefs: true },
+      { resolveWorkspaceFileRef: () => OPENABLE_AUTO_TARGET },
     );
 
     expect(html).toContain('data-workspace-file-link="true"');
@@ -326,6 +362,49 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("max-w-(--sz-38ch)");
     expect(html).not.toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain('href="/issues/PAP-10306"');
+  });
+
+  it("renders auto-detected workspace paths as plain code without an availability resolver", () => {
+    const html = renderMarkdown("Check `ui/src/pages/IssueDetail.tsx:42` please.");
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).not.toContain("paperclip-workspace-file-link");
+    expect(html).toContain("ui/src/pages/IssueDetail.tsx:42");
+  });
+
+  it("keeps a non-openable auto-detected path as plain code with no chip affordances", () => {
+    const html = renderMarkdown(
+      "Check `ui/src/pages/IssueDetail.tsx:42` please.",
+      [],
+      { resolveWorkspaceFileRef: () => null },
+    );
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).not.toContain('role="button"');
+    expect(html).not.toContain("paperclip-workspace-file-link");
+    expect(html).toContain("<code");
+  });
+
+  it("keeps an explicit markdown link ordinary when its path is not openable", () => {
+    const html = renderMarkdown(
+      "See [`ui/src/a.ts:1`](/PAP/issues/PAP-10306)",
+      [{ identifier: "PAP-10306", status: "todo" }],
+      { resolveWorkspaceFileRef: () => null },
+    );
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).toContain('href="/issues/PAP-10306"');
+  });
+
+  it("promotes an openable auto-detected path to a workspace file chip", () => {
+    const html = renderMarkdown(
+      "Check `ui/src/pages/IssueDetail.tsx:42` please.",
+      [],
+      { resolveWorkspaceFileRef: () => OPENABLE_AUTO_TARGET },
+    );
+
+    expect(html).toContain('data-workspace-file-link="true"');
+    expect(html).toContain('data-workspace-file-path="ui/src/pages/IssueDetail.tsx"');
   });
 
   it("keeps trailing punctuation outside auto-linked issue references", () => {

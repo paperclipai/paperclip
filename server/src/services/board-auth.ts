@@ -13,6 +13,8 @@ import { conflict, forbidden, notFound } from "../errors.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const BOARD_API_KEY_TOUCH_DEBOUNCE_MS = 60_000;
+const BOARD_API_KEY_TOUCH_CACHE_MAX = 1_000;
 
 export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
 
@@ -50,6 +52,20 @@ function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliA
 }
 
 export function boardAuthService(db: Db) {
+  const touchedBoardApiKeys = new Map<string, { completedAt: number | null; inFlight: Promise<void> | null }>();
+
+  function pruneTouchedBoardApiKeys(nowMs: number) {
+    for (const [id, entry] of touchedBoardApiKeys) {
+      if (!entry.inFlight && entry.completedAt !== null && entry.completedAt <= nowMs - BOARD_API_KEY_TOUCH_DEBOUNCE_MS) {
+        touchedBoardApiKeys.delete(id);
+      }
+    }
+    while (touchedBoardApiKeys.size > BOARD_API_KEY_TOUCH_CACHE_MAX) {
+      const oldestId = touchedBoardApiKeys.keys().next().value;
+      if (!oldestId) break;
+      touchedBoardApiKeys.delete(oldestId);
+    }
+  }
   async function resolveBoardAccess(userId: string) {
     const [user, memberships, adminRole] = await Promise.all([
       db
@@ -147,7 +163,28 @@ export function boardAuthService(db: Db) {
   }
 
   async function touchBoardApiKey(id: string) {
-    await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
+    const nowMs = Date.now();
+    pruneTouchedBoardApiKeys(nowMs);
+    const cached = touchedBoardApiKeys.get(id);
+    if (cached?.inFlight) return cached.inFlight;
+    if (cached?.completedAt !== null && cached?.completedAt !== undefined
+      && cached.completedAt > nowMs - BOARD_API_KEY_TOUCH_DEBOUNCE_MS) return;
+
+    const inFlight = db
+      .update(boardApiKeys)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(boardApiKeys.id, id))
+      .then(() => {
+        touchedBoardApiKeys.delete(id);
+        touchedBoardApiKeys.set(id, { completedAt: Date.now(), inFlight: null });
+        pruneTouchedBoardApiKeys(Date.now());
+      })
+      .catch((error) => {
+        if (touchedBoardApiKeys.get(id)?.inFlight === inFlight) touchedBoardApiKeys.delete(id);
+        throw error;
+      });
+    touchedBoardApiKeys.set(id, { completedAt: null, inFlight });
+    return inFlight;
   }
 
   async function revokeBoardApiKey(id: string) {
