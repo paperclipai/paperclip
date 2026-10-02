@@ -193,7 +193,7 @@ test.describe.serial("native chat adapter UI", () => {
         page.getByRole("link", { name: "Connect a channel" }),
       ).toBeVisible();
       await expect(
-        page.getByRole("link", { name: "Channels", exact: true }),
+        page.getByRole("navigation", { name: "Maya navigation" }).getByRole("link", { name: "Channels", exact: true }),
       ).toBeVisible();
       await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
       if (!enabled) {
