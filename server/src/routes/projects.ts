@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
@@ -847,12 +847,21 @@ export function projectRoutes(db: Db) {
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     if (deleteFiles) {
       assertBoard(req);
-      await db.transaction(async (tx) => {
-        await tx
+      const claimed = await db.transaction(async (tx) =>
+        tx
           .update(projects)
           .set({ status: "deleting", updatedAt: new Date() })
-          .where(and(eq(projects.id, existing.id), eq(projects.companyId, existing.companyId)));
-      });
+          .where(and(
+            eq(projects.id, existing.id),
+            eq(projects.companyId, existing.companyId),
+            ne(projects.status, "deleting"),
+          ))
+          .returning({ id: projects.id }),
+      );
+      if (claimed.length === 0) {
+        res.status(409).json({ error: "Project deletion is already in progress." });
+        return;
+      }
       try {
         await stopProjectDeletionActivity(existing);
       } catch (err) {

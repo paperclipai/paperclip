@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -94,7 +96,11 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(
+  database: Record<string, any> = {
+    transaction: async (effect: (tx: unknown) => unknown) => effect({}),
+  },
+) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -111,7 +117,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", projectRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any));
+  app.use("/api", projectRoutes(database as any));
   app.use(errorHandler);
   return app;
 }
@@ -242,5 +248,80 @@ describe("project env routes", () => {
         },
       }),
     );
+  });
+
+  it("allows only one concurrent project deletion claim and restores status after stop failure", async () => {
+    let status = "backlog";
+    let releaseStop!: () => void;
+    let stopStarted!: () => void;
+    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const stopStartedGate = new Promise<void>((resolve) => { stopStarted = resolve; });
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.waitForRunExecutionDrain.mockImplementation(async () => {
+      stopStarted();
+      await stopGate;
+      throw new Error("Timed out waiting for heartbeat run run-1");
+    });
+
+    let selectCount = 0;
+    const query = () => {
+      const rows = selectCount++ === 1 ? [{ id: "run-1" }] : [];
+      return { from: () => ({ where: async () => rows }) };
+    };
+    const update = () => {
+      let nextStatus: string | undefined;
+      return {
+        set: (value: { status: string }) => {
+          nextStatus = value.status;
+          return {
+            where: () => {
+              if (nextStatus !== "deleting" && status === "deleting") status = nextStatus ?? status;
+              return Object.assign(Promise.resolve([]), {
+                returning: async () => {
+                  if (nextStatus === "deleting") {
+                    if (status === "deleting") return [];
+                    status = "deleting";
+                    return [{ id: "project-1" }];
+                  }
+                  return [];
+                },
+              });
+            },
+          };
+        },
+      };
+    };
+    const database = {
+      select: () => query(),
+      update,
+      transaction: async (effect: (tx: unknown) => unknown) => effect({ update }),
+    };
+    const app = await createApp(database);
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const firstDelete = request(baseUrl)
+        .delete("/api/projects/project-1?deleteFiles=true")
+        .then((response) => response);
+      await stopStartedGate;
+
+      const competingDelete = await request(baseUrl).delete("/api/projects/project-1?deleteFiles=true");
+      expect(competingDelete.status).toBe(409);
+      expect(competingDelete.body.error).toContain("already in progress");
+      expect(mockProjectService.remove).not.toHaveBeenCalled();
+
+      releaseStop();
+      const firstResult = await firstDelete;
+      expect(firstResult.status).toBe(409);
+      expect(status).toBe("backlog");
+      expect(mockProjectService.remove).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
   });
 });
