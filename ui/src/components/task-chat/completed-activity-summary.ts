@@ -67,6 +67,13 @@ export function completedActivitySummary(items: Activity[]) {
       } else {
         const p = protocolActivityPresentation(item);
         if (!p) continue;
+        if (item.surface === "provider_activity" && item.family === "provider_notice") {
+          // Reuse only the normalized notice text already available in the row.
+          const summary = item.summary?.trim()
+            || item.details.find((entry) => entry.label === "Summary")?.value.trim();
+          add(summary || "Received a provider update", p.icon, order);
+          continue;
+        }
         const family =
           item.surface === "provider_activity" ? item.family : item.surface;
         const label =
@@ -84,7 +91,6 @@ export function completedActivitySummary(items: Activity[]) {
               safety: "Reviewed safety",
               terminal: "Ran commands",
               wait: "Waited",
-              provider_notice: "Received a provider update",
               workspace_change: "Worked on files",
               workspace_file: "Referenced files",
               resource: "Added resources",

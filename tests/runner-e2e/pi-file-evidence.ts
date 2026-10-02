@@ -58,7 +58,8 @@ export function gradePiCopyback(run: Row, lease: Row, companyId: string, environ
 }
 
 /** Only the common public projection is authority here. Native raw arguments,
- * full diff blocks and typed command exit codes are deliberately not invented. */
+ * full diff blocks and typed command exit codes are deliberately not invented.
+ * The native structured output receipt is distinct from that nullable typed field. */
 export function gradePiFileEvidence(input: {
   nonce: string; companyId: string; issueId: string; agentId: string; run: Row;
   environment: "local" | "daytona"; environmentId: string; lease?: Row;
@@ -84,6 +85,7 @@ export function gradePiFileEvidence(input: {
       && Number.isSafeInteger(row.seq) && row.seq > 0 && !seqs.has(row.seq)
       && typeof e.sourceInstanceId === "string" && e.sourceInstanceId.length > 0
       && Number.isSafeInteger(e.sourceSeq) && e.sourceSeq > (sourceSeqs.get(e.sourceInstanceId) ?? 0)
+      && row.sourceInstanceId === e.sourceInstanceId && row.sourceSeq === e.sourceSeq && row.sourceEventId === e.sourceEventId
       && e.sourceEventId === `${e.sourceInstanceId}:${e.runId}:${e.sourceSeq}` && !seen.has(e.sourceEventId), "foreign, duplicated, or reordered durable evidence");
     seqs.add(row.seq); seen.add(e.sourceEventId); sourceSeqs.set(e.sourceInstanceId, e.sourceSeq);
     return { row, e, p: rec(e.payload) };
@@ -104,20 +106,46 @@ export function gradePiFileEvidence(input: {
       && starts.length === 1 && starts[0]!.row.seq < end.row.seq
       && matches.filter(x => x.e.eventType === "tool.execution.completed").length === 1
       && matches.every(x => x.p.schema === end.p.schema && x.p.name === end.p.name && x.p.operation === end.p.operation
-        && x.p.target === end.p.target && x.e.sourceKind === "runner" && x.e.turnId === end.e.turnId
+        && x.row.seq >= starts[0]!.row.seq && x.row.seq <= end.row.seq
+        && x.e.sourceKind === "runner" && x.e.turnId === end.e.turnId
         && x.e.normalizedSessionId === end.e.normalizedSessionId && x.e.sourceInstanceId === end.e.sourceInstanceId
-        && (x === end || x.p.status === "running")), "incomplete or unsuccessful native tool lifecycle");
-    return starts[0]!;
+        && (x === end || (x.p.status === "running"
+          && ["tool.execution.started", "tool.execution.progressed"].includes(x.e.eventType)))), "incomplete or unsuccessful native tool lifecycle");
+    // Native arguments arrive incrementally. An unresolved target is allowed
+    // only before the first exact target; conflicting or regressed targets fail.
+    let resolved = false;
+    for (const x of matches) {
+      requireEvidence(x.p.target === end.p.target || (!resolved && x.p.target === null), "conflicting native tool target");
+      if (x.p.target !== null) resolved = true;
+    }
+    return { start: starts[0]!, matches };
   }
   lifecycle(edit);
   const validations = tools.filter(x => x.e.eventType === "tool.execution.completed" && x.p.operation === "execute"
-    && x.p.name === c.validationCommand && typeof x.p.output === "string" && x.p.output.includes(c.validationMarker));
+    && x.p.name === "bash");
   requireEvidence(validations.length === 1, "one observed provider validation execution");
-  const validation = validations[0]!, start = lifecycle(validation);
+  const validation = validations[0]!, { start, matches } = lifecycle(validation);
   requireEvidence(start.row.seq > edit.row.seq && validation.e.turnId === edit.e.turnId
     && validation.e.normalizedSessionId === edit.e.normalizedSessionId
     && validation.e.sourceInstanceId === edit.e.sourceInstanceId && validation.p.outputTruncated === false,
   "validation must follow the edit in the same native turn");
+  // The common lifecycle preserves the opening name (bash). ACPX's resolved
+  // command is retained as progress, rather than replacing that stable name.
+  const commandProgress = `${c.validationCommand} (in_progress): ${c.validationCommand}`;
+  const allowedProgress = new Set([`bash (pending): [terminal] ${validation.p.executionId}`,
+    `${c.validationCommand} (pending): ${c.validationCommand}`, commandProgress]);
+  requireEvidence(matches.some(x => x !== validation && x.p.progress === commandProgress)
+    && matches.every(x => x.p.progress === null || allowedProgress.has(x.p.progress)),
+  "exact correlated command progress before completion required");
+  requireEvidence(typeof validation.p.output === "string" && Buffer.byteLength(validation.p.output) <= 16_384,
+    "bounded native validation receipt required");
+  let output: Row = {};
+  try { output = rec(JSON.parse(validation.p.output)); } catch { /* Rejected below; plain marker text is insufficient. */ }
+  const structured = rec(output.structuredContent), expectedOutput = `${c.validationMarker}\n`;
+  requireEvidence(structured.exit_code === 0 && structured.truncated === false && structured.output === expectedOutput
+    && Array.isArray(output.content) && output.content.length === 1
+    && rec(output.content[0]).type === "text" && rec(output.content[0]).text === expectedOutput
+    && (validation.p.exitCode === null || validation.p.exitCode === 0), "successful native structured validation receipt required");
   const attachments = input.attachments.map(rec).filter(a => a.id === input.attachmentId);
   requireEvidence(attachments.length === 1, "one public attachment");
   const a = attachments[0]!;
@@ -144,11 +172,13 @@ export function gradePiFileEvidence(input: {
     validationExecutionId: validation.p.executionId, attachmentId: a.id,
     verification: { kind: "independent_exact_bytes", beforeSha256: sha(c.before), afterSha256: c.sha256,
       downloadedSha256: sha(input.downloadedBytes), byteSize: c.byteSize, providerExecutionStatus: validation.p.status,
-      commandTitle: validation.p.name, nativeFileTarget: edit.p.target,
+      command: c.validationCommand, providerToolName: validation.p.name, commandEvidence: "correlated_native_progress",
+      exitEvidence: "native_structured_output_receipt", nativeStructuredExitCode: structured.exit_code,
+      typedExitCode: validation.p.exitCode, nativeFileTarget: edit.p.target,
       nativeFileAttribution: "workspace_relative_display_target" },
     diff: { source: "independent_seed_and_workspace_bytes", path: c.filename,
       text: `--- ${c.filename}\n+++ ${c.filename}\n@@ -1 +1 @@\n-${c.before.trimEnd()}\n+${c.after.trimEnd()}\n` },
-    limits: ["Validation command title is checked exactly; raw arguments and typed exitCode are not projected, so raw invocation/exit code are not attested.",
+    limits: ["Exact command progress and the native structured output receipt are checked; raw arguments and nullable typed exitCode are not attested by those distinct fields.",
       "Diff is computed from independently checked workspace bytes; it does not qualify native diff presentation or private invocation metadata."],
   };
 }

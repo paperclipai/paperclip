@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 import { gradePiRestartCompletion, observePiRestartPending, runPiPendingControllerRestart } from "./pi-native-restart-flow.js";
 import { validatePrpStructuredRunResult } from "../../packages/paperclip-runner/src/protocol/replay-contract.js";
@@ -48,6 +49,56 @@ function fixture(adapter = "acpx-runtime-sidecar") {
 it.each(["acpx-runtime", "acpx-runtime-sidecar"])("accepts mixed runner/control-plane production completion via %s", adapter => {
   const f = fixture(adapter), pending = observePiRestartPending(f.state, f.events, "company"), proof = f.finish();
   expect(gradePiRestartCompletion(f.state, f.events, pending, "hidden", proof)).toBe(true);
+});
+
+function actualPendingPrefix() {
+  return JSON.parse(readFileSync(new URL("./fixtures/pi-native-restart-actual-prefix.json", import.meta.url), "utf8")) as {
+    state: { issue: Row; runs: Row[]; interactions: Row[] }; events: Row[];
+  };
+}
+
+it.each(["omitted", "null"])("accepts the actual pre-start submission with %s turn ID", representation => {
+  const f = actualPendingPrefix();
+  if (representation === "null") f.events[0]!.payload.prpEvent.turnId = null;
+  expect(observePiRestartPending(f.state, f.events, "company")).toMatchObject({
+    runId: "run", turnId: "turn", nativeSessionId: "session", sourceInstanceId: "runner", createdSourceSeq: 195,
+  });
+});
+
+it.each([
+  ["missing start", (f: ReturnType<typeof actualPendingPrefix>) => { f.events.splice(1, 1); }],
+  ["start without assigned turn", (f: ReturnType<typeof actualPendingPrefix>) => { delete f.events[1]!.payload.prpEvent.turnId; }],
+  ["start with foreign turn", (f: ReturnType<typeof actualPendingPrefix>) => { f.events[1]!.payload.prpEvent.turnId = "other"; }],
+  ["foreign submission turn", (f: ReturnType<typeof actualPendingPrefix>) => { f.events[0]!.payload.prpEvent.turnId = "other"; }],
+  ["foreign submission session", (f: ReturnType<typeof actualPendingPrefix>) => { f.events[0]!.payload.prpEvent.normalizedSessionId = "other"; }],
+  ["foreign submission producer", (f: ReturnType<typeof actualPendingPrefix>) => {
+    Object.assign(f.events[0]!.payload.prpEvent, { sourceInstanceId: "other", sourceEventId: "other:run:6" });
+  }],
+  ["submission after start", (f: ReturnType<typeof actualPendingPrefix>) => {
+    f.events[0]!.seq = 29;
+    Object.assign(f.events[0]!.payload.prpEvent, { sourceSeq: 8, sourceEventId: "runner:run:8" });
+  }],
+  ["start after request", (f: ReturnType<typeof actualPendingPrefix>) => {
+    f.events[1]!.seq = 223;
+    Object.assign(f.events[1]!.payload.prpEvent, { sourceSeq: 196, sourceEventId: "runner:run:196" });
+  }],
+  ["duplicate submission", (f: ReturnType<typeof actualPendingPrefix>) => {
+    const row = structuredClone(f.events[0]!); row.seq = 26;
+    Object.assign(row.payload.prpEvent, { sourceSeq: 7, sourceEventId: "runner:run:7" });
+    Object.assign(f.events[1]!.payload.prpEvent, { sourceSeq: 8, sourceEventId: "runner:run:8" });
+    f.events.push(row);
+  }],
+  ["duplicate start", (f: ReturnType<typeof actualPendingPrefix>) => {
+    const row = structuredClone(f.events[1]!); row.seq = 29;
+    Object.assign(row.payload.prpEvent, { sourceSeq: 8, sourceEventId: "runner:run:8" }); f.events.push(row);
+  }],
+  ["later unbound turn event", (f: ReturnType<typeof actualPendingPrefix>) => {
+    const row = structuredClone(f.events[1]!); row.seq = 29; row.eventType = "turn.progress";
+    Object.assign(row.payload.prpEvent, { eventType: "turn.progress", turnId: null, sourceSeq: 8, sourceEventId: "runner:run:8" }); f.events.push(row);
+  }],
+] as const)("rejects %s around an unbound submission", (_label, mutate) => {
+  const f = actualPendingPrefix(); mutate(f);
+  expect(() => observePiRestartPending(f.state, f.events, "company")).toThrow("Pi native restart");
 });
 
 it.each([

@@ -32,7 +32,7 @@ use crate::provider_bridge::{
 use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
-use crate::qualified_launch::verify_launch_artifact;
+use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
 fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
     matches!(operation_id, "paperclip_finish" | "paperclip_block")
@@ -382,7 +382,11 @@ impl AcpxProviderDescriptor {
                     "ACPX runner launch profile repeats an artifact path",
                 ));
             }
-            let snapshot = verify_launch_artifact(artifact, "ACPX")?;
+            let snapshot = if artifact.path == launch_profile.command {
+                verify_executable_launch_artifact(artifact, "ACPX")?
+            } else {
+                verify_launch_artifact(artifact, "ACPX")?
+            };
             verified.insert(artifact.path.clone(), snapshot);
         }
         let command = verified
@@ -3087,6 +3091,135 @@ mod tests {
         write_artifact(&sidecar, b"modified sidecar", false);
         assert!(descriptor.verified_transport(Some(&profile)).is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    mod darwin_named_transport_cleanup {
+        use super::*;
+
+        struct Fixture {
+            directory: PathBuf,
+            descriptor: AcpxProviderDescriptor,
+            profile: AcpxLaunchProfile,
+        }
+
+        impl Fixture {
+            fn new(label: &str) -> Self {
+                let directory = temporary_directory(label);
+                let command = directory.join("node");
+                let sidecar = directory.join("sidecar.cjs");
+                write_artifact(&command, b"qualified node", true);
+                write_artifact(&sidecar, b"qualified sidecar", false);
+                let args = vec![sidecar.to_string_lossy().into_owned()];
+                let profile = AcpxLaunchProfile {
+                    authority_digest: format!("sha256:{}", "d".repeat(64)),
+                    command: command.clone(),
+                    args: args.clone(),
+                    artifacts: vec![artifact(&command), artifact(&sidecar)],
+                };
+                let mut value = descriptor("codex");
+                value["sidecarCommand"] = json!(command);
+                value["sidecarArgs"] = json!(args);
+                Self {
+                    directory,
+                    descriptor: serde_json::from_value(value).unwrap(),
+                    profile,
+                }
+            }
+
+            fn named_images(&self) -> usize {
+                fs::read_dir(&self.directory)
+                    .unwrap()
+                    .map(|entry| entry.unwrap())
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".paperclip-verified-executable-")
+                    })
+                    .count()
+            }
+
+            fn prove_transport_owns_image(&self) {
+                assert_eq!(self.named_images(), 0);
+                let transport = self
+                    .descriptor
+                    .verified_transport(Some(&self.profile))
+                    .unwrap();
+                assert_eq!(
+                    self.named_images(),
+                    1,
+                    "verification must own one named Node image"
+                );
+                drop(transport);
+                assert_eq!(
+                    self.named_images(),
+                    0,
+                    "dropping unstarted transport must retire its image"
+                );
+            }
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        // File verification only: these tests never start a transport/process.
+        #[test]
+        fn second_artifact_failure_retires_named_executable() {
+            let fixture = Fixture::new("darwin-second-artifact-cleanup");
+            fixture.prove_transport_owns_image();
+            // The command remains valid and first in the profile; the sidecar
+            // fails only after the command's named snapshot has been admitted.
+            write_artifact(
+                &fixture.profile.artifacts[1].path,
+                b"tampered sidecar",
+                false,
+            );
+            let error = fixture
+                .descriptor
+                .verified_transport(Some(&fixture.profile))
+                .err()
+                .unwrap();
+            assert!(error
+                .to_string()
+                .contains("verified process artifact digest mismatch"));
+            assert_eq!(fixture.named_images(), 0);
+            assert_eq!(
+                fs::read(&fixture.profile.command).unwrap(),
+                b"qualified node"
+            );
+        }
+
+        #[test]
+        fn argv_construction_failure_retires_named_executable() {
+            let mut fixture = Fixture::new("darwin-argv-cleanup");
+            fixture.prove_transport_owns_image();
+            // Descriptor and profile agree, so this passes launch binding and
+            // artifact verification, then fails the absolute-argument mapping.
+            let unauthenticated = fixture
+                .directory
+                .join("unauthenticated.cjs")
+                .to_string_lossy()
+                .into_owned();
+            fixture.profile.args.push(unauthenticated.clone());
+            fixture.descriptor.sidecar_args.push(unauthenticated);
+            let error = fixture
+                .descriptor
+                .verified_transport(Some(&fixture.profile))
+                .err()
+                .unwrap();
+            assert!(error
+                .to_string()
+                .contains("does not authenticate an absolute argument"));
+            assert_eq!(fixture.named_images(), 0);
+            assert_eq!(
+                fs::read(&fixture.profile.command).unwrap(),
+                b"qualified node"
+            );
+        }
     }
 
     #[cfg(unix)]

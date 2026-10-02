@@ -314,6 +314,11 @@ resolution, one original successful turn and independently read exact workspace
 JSON prove delivery. A replacement run, replay, cancellation, expiry, rewritten
 request or merely reloaded browser cannot pass. Full states and PRP identities
 stay in private snapshots under the existing publication allowlist.
+The local runner's unique `turn.submitted` receipt may precede assignment of the
+provider turn ID. The oracle accepts that missing ID only before the single
+matching `turn.started` and request creation, with the same session and producer
+and increasing durable/source sequence numbers. Later missing or changed turn
+identities still fail.
 
 ### Pi file editing and registered artifacts
 

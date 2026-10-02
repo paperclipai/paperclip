@@ -9,6 +9,7 @@ import {
   FilePenLine,
   FileText,
   GitBranch,
+  Info,
   ListChecks,
   PackageCheck,
   Search,
@@ -135,7 +136,7 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
     case "wait":
       return { icon: Clock3, runningLabel: "Waiting", completedLabel: "Finished waiting", failedLabel: "Wait failed", interruptedLabel: "Wait stopped", detail };
     case "provider_notice":
-      return { icon: AlertTriangle, runningLabel: "Provider notice", completedLabel: "Provider notice", failedLabel: "Provider error", interruptedLabel: "Provider notice", detail };
+      return { icon: item.status !== "failed" && providerDetail(item, "Severity") === "info" ? Info : AlertTriangle, runningLabel: "Provider notice", completedLabel: "Provider notice", failedLabel: "Provider error", interruptedLabel: "Provider notice", detail };
   }
 }
 

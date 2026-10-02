@@ -69,6 +69,8 @@ it.skipIf(process.platform === "win32")("rejects a FIFO authority without waitin
   const f=await fixture();const p=f.env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY!;await rm(p);execFileSync("/usr/bin/mkfifo",[p],{timeout:5000,env:{}});await expect(verifyInstalledDaytonaPlugin(f.env,[cell])).rejects.toThrow("bounded unlinked regular file");
 });
 it("uses the verified public package in the existing API and rejects changed bytes before any mutation", async () => {
+  // This positive fixture models the sanitized installed launcher, not pnpm's parent environment.
+  vi.stubEnv("NODE_OPTIONS", undefined); vi.stubEnv("NODE_PATH", undefined);
   const f=await fixture(); for(const [k,v]of Object.entries(f.env))vi.stubEnv(k,v!);
   const calls:unknown[]=[];
   const api={async post(url:string,data:unknown){calls.push({url,data});throw new Error("stop-after-public-install");}} as unknown as RunnerApi;
@@ -76,5 +78,17 @@ it("uses the verified public package in the existing API and rejects changed byt
   await expect(setupLiveFixtures(input)).rejects.toThrow("stop-after-public-install");
   expect(calls).toEqual([{url:"/api/plugins/install",data:{packageName:f.authority.plugin.root,isLocalPath:true}}]);
   calls.length=0;await writeFile(join(f.authority.plugin.root,"dist/worker.js"),"// changed");await expect(setupLiveFixtures(input)).rejects.toThrow("reviewed pins");expect(calls).toEqual([]);
+});
+it.each(["NODE_OPTIONS", "NODE_PATH"])("rejects ambient %s before the plugin install API", async (key) => {
+  const f = await fixture();
+  for (const [name, value] of Object.entries(f.env)) vi.stubEnv(name, value!);
+  vi.stubEnv("NODE_OPTIONS", undefined); vi.stubEnv("NODE_PATH", undefined);
+  const post = vi.fn();
+  const api = { post } as unknown as RunnerApi;
+  for (const value of ["", "foreign"]) {
+    vi.stubEnv(key, value);
+    await expect(setupLiveFixtures({ api, execution: cell, executionNonce: "nonce", workspacePath: "/tmp/workspace", credentials: {} })).rejects.toThrow("ambient Node injection");
+    expect(post).not.toHaveBeenCalled();
+  }
 });
 it("keeps fixture authority out of the production server environment", async()=>{const f=await fixture();const env=buildPaperclipServerEnvironment(f.env);for(const k of installedDaytonaPluginKeys)expect(env[k]).toBeUndefined();});

@@ -75,7 +75,9 @@ describe("adapter configuration sections", () => {
     const policy = renderSection(CodexLocalConfigFields, "paperclip_runner", "runPolicy", config);
 
     expect(adapter).toContain('<option value="claude" selected="">Claude</option>');
-    expect(adapter).toContain('<option value="pi" disabled="">Pi — qualification pending</option>');
+    expect(adapter).toContain('<option value="pi">Pi</option>');
+    expect(adapter).toContain('<option value="cursor" disabled="">Cursor — qualification pending</option>');
+    expect(adapter).toContain('<option value="copilot" disabled="">GitHub Copilot — qualification pending</option>');
     expect(adapter).not.toContain("Runner lifecycle");
     expect(policy).toContain("Runner lifecycle");
     expect(policy).not.toContain("ACP agent");

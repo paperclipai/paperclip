@@ -66,7 +66,19 @@ function inspect(state: State, events: readonly Row[], companyId: string, header
     && id(question.id) && question.answerMode === "text" && question.header === header
     && card.payload?.runtimeRequestId === request.requestId && digest(card.payload.questionSet) === digest(questionSet)
     && card.idempotencyKey === `paperclip-runner-question:${run.id}:${request.requestId}`, "canonical Pi input request identity missing");
-  requireProof(rows.filter(x => x.event.turnId != null || x.event.eventType.startsWith("turn.") || x.event.eventType.startsWith("runtime_request.")).every(({ event }) => event.turnId === request.turnId
+  const submitted = rows.filter(x => x.event.eventType === "turn.submitted");
+  const unboundSubmission = submitted.find(x => x.event.turnId == null);
+  if (unboundSubmission) {
+    // The local runner records submission before ACP assigns the provider turn ID.
+    // Only that unique, ordered pre-start receipt may omit the turn identity.
+    const started = rows.filter(x => x.event.eventType === "turn.started");
+    requireProof(submitted.length === 1 && started.length === 1
+      && started[0]!.event.turnId === request.turnId
+      && unboundSubmission.row.seq < started[0]!.row.seq && started[0]!.row.seq < opening.row.seq
+      && unboundSubmission.event.sourceSeq < started[0]!.event.sourceSeq && started[0]!.event.sourceSeq < opening.event.sourceSeq,
+    "unbound submission is not the unique pre-start receipt");
+  }
+  requireProof(rows.filter(x => x.event.turnId != null || x.event.eventType.startsWith("turn.") || x.event.eventType.startsWith("runtime_request.")).every(({ row, event }) => (event.turnId === request.turnId || row === unboundSubmission?.row)
     && event.normalizedSessionId === run.nativeSessionId
     && event.sourceInstanceId === (event.sourceKind === "runner" ? run.runnerInstanceId : `${run.runnerInstanceId}:control`)), "turn, native session or producer was replaced");
   requireProof(rows.filter(x => x.event.sourceKind === "control_plane").every(x => x.event.turnId === request.turnId), "control-plane result belongs to another turn");

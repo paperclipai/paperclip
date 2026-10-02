@@ -359,22 +359,26 @@ test("real pinned Pi tool dispatch admits registered agent files and rejects una
 // This regression crosses Pi 1's real RPC serializer, the owned extension and
 // the patched ACP wrapper. Only an owned loopback HTTP fixture can be reached;
 // dummy authentication is unrelated to any provider account.
-for (const scenario of ["hello", "interleaved-tools", "provider-error", "provider-unknown", "thinking-modes"]) {
+for (const scenario of ["hello", "interleaved-tools", "provider-error", "provider-unknown", "thinking-modes", "warm-recovery", "warm-pending-cancel"]) {
   test(`real Pi 1 serialized RPC ${scenario} through owned ACP/MCP bridge`, { timeout: 30_000 }, async t => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-pi-stream-")));
     let child; let server;
+    const warm = scenario.startsWith("warm-");
+    const retirements = [];
     t.after(async () => {
       if (child) {
         // Loaded-session command updates can still be pending at EOF. Retire
         // through the owned wrapper handler so every native child is awaited.
-        if (scenario === "thinking-modes") child.kill("SIGTERM"); else child.stdin.end();
+        if (scenario === "thinking-modes" || warm) child.kill("SIGTERM"); else child.stdin.end();
         if (child.exitCode === null) { const timer = setTimeout(() => child.kill("SIGTERM"), 3000); await once(child, "exit"); clearTimeout(timer); }
       }
       if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
       try {
         if (child) {
           const retirement = JSON.parse(await readFile(join(root, "owned-retirement.json"), "utf8"));
-          assert.equal(retirement.allOwnedChildrenClosed, true);
+          retirements.push(retirement);
+          assert.ok(retirements.every(value => value.allOwnedChildrenClosed && value.spawnErrors === 0));
+          if (warm) assert.deepEqual(retirements.map(value => value.count), [1, 1]);
           if (scenario === "thinking-modes") { assert.equal(retirement.count, 2); assert.equal(retirement.spawnErrors, 0); }
         }
       } finally { await rm(root, { recursive: true, force: true }); }
@@ -384,17 +388,61 @@ for (const scenario of ["hello", "interleaved-tools", "provider-error", "provide
       ? dirname(process.env.PAPERCLIP_TEST_PI_ACP_PACKAGE)
       : join(dirname(dirname(packageRoot)), "pi-acp");
     const calls = []; const modelRequests = []; const reasoningRequests = [];
+    const agentHomes = [join(root, "run-1-agent"), join(root, "run-2-agent")];
+    if (warm) for (const path of agentHomes) await mkdir(path);
+    const contracts = [
+      { revision: "1", criterionIds: ["objective"] },
+      { revision: "2", criterionIds: ["human_response"] },
+    ];
+    const finishArguments = index => ({
+      reportedWorkDisposition: "needs_review", summary: `WARM_T${index + 1}`,
+      completionClaim: { contractRevision: contracts[index].revision, objectiveSatisfied: true,
+        criteria: [{ criterionId: contracts[index].criterionIds[0], status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      attentionRequests: [{ kind: "review", ownerClass: "human", summary: "Review fixture result" }],
+      evidence: [], verification: [],
+    });
+    let stalledResponse;
     const tools = ["paperclip_get_context", "paperclip_finish"].map(name => ({ name, description: name, inputSchema: { type: "object", properties: {}, additionalProperties: true } }));
     server = createServer(async (request, response) => {
       let body = ""; for await (const chunk of request) { body += chunk; assert.ok(body.length < 1_048_576); }
       const value = JSON.parse(body);
       if (request.url === "/v1/chat/completions") {
-        modelRequests.push(value.model); reasoningRequests.push({ model: value.model, reasoning: value.reasoning }); assert.ok(modelRequests.length <= 3);
+        modelRequests.push(value.model); reasoningRequests.push({ model: value.model, reasoning: value.reasoning }); assert.ok(modelRequests.length <= (warm ? 6 : 3));
         if (scenario.startsWith("provider-")) {
           response.writeHead(scenario === "provider-error" ? 401 : 418, { "content-type": "application/json" });
           response.end(JSON.stringify({ error: { message: "Bearer sensitive-canary /private/sensitive-canary", type: "authentication_error" } })); return;
         }
         const n = modelRequests.length;
+        if (warm) {
+          const index = n <= 3 ? 0 : 1;
+          const step = (n - 1) % 3;
+          const latestUser = value.messages.filter(message => message.role === "user").at(-1);
+          const submitted = JSON.parse(typeof latestUser.content === "string" ? latestUser.content
+            : latestUser.content.filter(block => block.type === "text").map(block => block.text).join(""));
+          assert.deepEqual(submitted.completion, contracts[index]);
+          assert.equal(submitted.events[0].agentHome, agentHomes[index]);
+          const tool = step === 0
+            ? { name: index === 0 ? "write" : "read", arguments: index === 0
+              ? { path: join(agentHomes[index], "memory.txt"), content: "T1 fixture memory\n" }
+              : { path: join(agentHomes[index], "memory.txt") } }
+            : { name: "mcp__paperclip__paperclip_finish", arguments: finishArguments(index) };
+          const chunks = [];
+          if (step < 2) {
+            const args = JSON.stringify(tool.arguments);
+            chunks.push({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `warm_${index}_${step}`, type: "function", function: { name: tool.name, arguments: args.slice(0, 12) } }] } }] });
+            chunks.push({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(12) } }] } }] });
+          } else chunks.push({ choices: [{ index: 0, delta: { content: `WARM_T${index + 1}` } }] });
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.write(chunks.map(chunk => `data: ${JSON.stringify({ id: "offline-warm", ...chunk })}\n\n`).join(""));
+          if (scenario === "warm-pending-cancel" && n === 5) {
+            // A complete JSON argument buffer is still only generation. Withhold
+            // the provider finish marker: the real SDK must not execute it.
+            stalledResponse = response;
+            return;
+          }
+          response.end(`data: ${JSON.stringify({ id: "offline-warm", choices: [{ index: 0, delta: {}, finish_reason: step < 2 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\ndata: [DONE]\n\n`);
+          return;
+        }
         const toolTurn = scenario !== "thinking-modes" && (n === 1 || scenario === "hello" && n === 2);
         const names = scenario === "interleaved-tools" ? tools.map(tool => tool.name) : [n === 1 ? tools[0].name : tools[1].name];
         const chunks = [];
@@ -409,6 +457,11 @@ for (const scenario of ["hello", "interleaved-tools", "provider-error", "provide
       }
       assert.equal(request.url, "/mcp");
       calls.push({ method: value.method, name: value.params?.name, args: value.params?.arguments });
+      if (warm && value.method === "tools/call") {
+        assert.equal(value.params.name, "paperclip_finish");
+        const index = calls.filter(call => call.method === "tools/call").length - 1;
+        assert.deepEqual(value.params.arguments, finishArguments(index));
+      }
       const result = value.method === "initialize"
         ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
         : value.method === "tools/list" ? { tools }
@@ -467,27 +520,40 @@ process.exit = code => {
 process.on("SIGTERM", () => process.exit(143)); process.on("SIGINT", () => process.exit(130));
 await import(${JSON.stringify(pathToFileURL(join(wrapperRoot, "dist/index.js")).href)});
 `);
-    child = spawn(process.execPath, [owner], {
-      cwd: join(root, "workspace"), stdio: "pipe", env: {
-        PATH: "/usr/bin:/bin", HOME: root, PI_CODING_AGENT_DIR: join(root, "agent"), PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0",
-        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_PI_READ_ONLY: "0",
-        PAPERCLIP_PI_NODE_EXECUTABLE: await realpath(process.execPath), PAPERCLIP_PI_ENTRYPOINT: bootstrap, PAPERCLIP_PI_EXTENSION_PATH: extension,
-      },
-    });
-    let buffered = ""; let stderr = ""; let sequence = 0; const pending = new Map(); const notifications = [];
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    const decoder = new StringDecoder("utf8");
-    child.stdout.on("data", chunk => {
-      buffered += decoder.write(chunk);
-      for (;;) {
-        const index = buffered.indexOf("\n"); if (index < 0) break;
-        const message = JSON.parse(buffered.slice(0, index)); buffered = buffered.slice(index + 1);
-        const waiter = pending.get(message.id);
-        if (waiter) { pending.delete(message.id); message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result); }
-        else notifications.push(message);
-      }
-    });
-    child.once("exit", () => { for (const waiter of pending.values()) waiter.reject(new Error(`wrapper exited: ${stderr}`)); pending.clear(); });
+    const launchWrapper = async agentHome => {
+      child = spawn(process.execPath, [owner], {
+        cwd: join(root, "workspace"), stdio: "pipe", env: {
+          PATH: "/usr/bin:/bin", HOME: root, PI_CODING_AGENT_DIR: join(root, "agent"), PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0",
+          PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_PI_READ_ONLY: "0",
+          ...(agentHome ? { PAPERCLIP_PI_AGENT_HOME: agentHome } : {}),
+          PAPERCLIP_PI_NODE_EXECUTABLE: await realpath(process.execPath), PAPERCLIP_PI_ENTRYPOINT: bootstrap, PAPERCLIP_PI_EXTENSION_PATH: extension,
+        },
+      });
+      let buffered = "";
+      child.stderr.on("data", chunk => { stderr += chunk; });
+      const decoder = new StringDecoder("utf8");
+      child.stdout.on("data", chunk => {
+        buffered += decoder.write(chunk);
+        for (;;) {
+          const index = buffered.indexOf("\n"); if (index < 0) break;
+          const message = JSON.parse(buffered.slice(0, index)); buffered = buffered.slice(index + 1);
+          if (warm && message.method === "session/request_permission") {
+            const option = message.params.options.find(value => value.kind === "allow_once");
+            assert.ok(option);
+            const path = message.params.toolCall.rawInput?.path;
+            assert.equal(path, join(agentHome, "memory.txt"));
+            child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { outcome: { outcome: "selected", optionId: option.optionId } } }) + "\n");
+            continue;
+          }
+          const waiter = pending.get(message.id);
+          if (waiter) { pending.delete(message.id); message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result); }
+          else notifications.push(message);
+        }
+      });
+      child.once("exit", () => { for (const waiter of pending.values()) waiter.reject(new Error(`wrapper exited: ${stderr}`)); pending.clear(); });
+    };
+    let stderr = ""; let sequence = 0; const pending = new Map(); const notifications = [];
+    await launchWrapper(warm ? agentHomes[0] : undefined);
     const call = (method, params) => new Promise((resolve, reject) => {
       const id = ++sequence; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`timeout: ${method}`)); }, 15_000);
       pending.set(id, { resolve(value) { clearTimeout(timer); resolve(value); }, reject(error) { clearTimeout(timer); reject(error); } });
@@ -497,6 +563,68 @@ await import(${JSON.stringify(pathToFileURL(join(wrapperRoot, "dist/index.js")).
     const session = await call("session/new", { cwd: join(root, "workspace"), mcpServers: [{ type: "http", name: "paperclip", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: "Bearer 0123456789abcdef0123456789abcdef" }] }] });
     const model = "openrouter/deepseek/deepseek-v4-flash-0731";
     const selected = await call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: model });
+    if (warm) {
+      const low = await call("session/set_config_option", { sessionId: session.sessionId, configId: "thought_level", value: "low" });
+      assert.equal(low.configOptions.find(option => option.id === "thought_level").currentValue, "low");
+      const prompt = index => [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-continuation.v1", completion: contracts[index], events: [{ type: "fixture", agentHome: agentHomes[index] }] }) }];
+      assert.equal((await call("session/prompt", { sessionId: session.sessionId, prompt: prompt(0) })).stopReason, "end_turn");
+      assert.equal(await readFile(join(agentHomes[0], "memory.txt"), "utf8"), "T1 fixture memory\n");
+      const firstUpdates = notifications.map(event => event.params?.update).filter(Boolean);
+      const firstFinish = firstUpdates.find(update => update.sessionUpdate === "tool_call" && update.title === "mcp__paperclip__paperclip_finish");
+      assert.ok(firstFinish);
+      assert.equal(firstUpdates.filter(update => update.toolCallId === firstFinish.toolCallId && update.status === "completed").length, 1);
+      // Product ends the old provider for registered-file collection. Reopen
+      // the saved native session in a fresh wrapper, with the next admitted
+      // AGENT_HOME; the file transfer here models that external sync boundary.
+      const firstClosed = once(child, "close"); child.kill("SIGTERM"); await firstClosed;
+      retirements.push(JSON.parse(await readFile(join(root, "owned-retirement.json"), "utf8")));
+      await writeFile(join(agentHomes[1], "memory.txt"), await readFile(join(agentHomes[0], "memory.txt")));
+      await rm(agentHomes[0], { recursive: true });
+      await launchWrapper(agentHomes[1]);
+      await call("initialize", { protocolVersion: 1, clientCapabilities: {} });
+      const loaded = await call("session/load", { sessionId: session.sessionId, cwd: join(root, "workspace"), mcpServers: [{ type: "http", name: "paperclip", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: "Bearer 0123456789abcdef0123456789abcdef" }] }] });
+      assert.equal(loaded.modes.currentModeId, "low");
+      const secondStart = notifications.length;
+      const second = call("session/prompt", { sessionId: session.sessionId, prompt: prompt(1) });
+      second.catch(() => {}); // Cleanup still drains a failed/pending prompt if an assertion throws.
+      if (scenario === "warm-pending-cancel") {
+        await new Promise((resolve, reject) => {
+          const until = Date.now() + 5000;
+          const check = () => {
+            const updates = notifications.slice(secondStart).map(event => event.params?.update).filter(Boolean);
+            const finish = updates.find(update => update.sessionUpdate === "tool_call" && update.title === "mcp__paperclip__paperclip_finish");
+            if (stalledResponse && finish && updates.some(update => update.toolCallId === finish.toolCallId && JSON.stringify(update.rawInput) === JSON.stringify(finishArguments(1)))) return resolve();
+            if (Date.now() >= until) return reject(new Error("pending-only fixture boundary not observed"));
+            setTimeout(check, 10);
+          }; check();
+        });
+        assert.equal(calls.filter(call => call.method === "tools/call").length, 1, "pending generation cannot invoke the MCP bridge");
+        child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: session.sessionId } }) + "\n");
+        assert.equal((await second).stopReason, "cancelled");
+      } else assert.equal((await second).stopReason, "end_turn");
+      const updates = notifications.slice(secondStart).map(event => event.params?.update).filter(Boolean);
+      assert.ok(modelRequests.every(value => value === "deepseek/deepseek-v4-flash-0731"));
+      const readIds = [...new Set(updates.filter(update => update.rawInput?.path === join(agentHomes[1], "memory.txt")).map(update => update.toolCallId))];
+      assert.equal(readIds.length, 1);
+      const readLifecycle = updates.filter(update => update.toolCallId === readIds[0]);
+      assert.ok(readLifecycle.some(update => update.sessionUpdate === "tool_call" && update.title === "read"));
+      assert.equal(readLifecycle.filter(update => update.status === "failed").length, 0);
+      const readCompleted = readLifecycle.filter(update => update.status === "completed");
+      assert.equal(readCompleted.length, 1);
+      assert.ok(readCompleted[0].content.some(block => block.type === "content" && block.content?.type === "text" && block.content.text.includes("T1 fixture memory")));
+      const secondFinish = updates.find(update => update.sessionUpdate === "tool_call" && update.title === "mcp__paperclip__paperclip_finish");
+      assert.ok(secondFinish); assert.notEqual(secondFinish.toolCallId, firstFinish.toolCallId);
+      const lifecycle = updates.filter(update => update.toolCallId === secondFinish.toolCallId);
+      const executed = scenario === "warm-recovery";
+      assert.equal(lifecycle.some(update => update.status === "in_progress"), executed);
+      assert.equal(lifecycle.filter(update => update.status === "completed").length, executed ? 1 : 0);
+      assert.equal(calls.filter(call => call.method === "tools/call").length, executed ? 2 : 1);
+      assert.equal(modelRequests.length, executed ? 6 : 5);
+      assert.ok(reasoningRequests.every(request => request.reasoning?.effort === "low"));
+      assert.deepEqual(JSON.parse(await readFile(join(root, "network-denial.json"), "utf8")), { deniedBeforeConnect: true, underlyingConnections: 0 });
+      t.diagnostic(JSON.stringify({ scenario, prompts: 2, modelRequests: modelRequests.length, semanticCalls: executed ? 2 : 1, secondFinishStatuses: lifecycle.map(update => update.status), requestedAndEffectiveMode: "low", restoredSession: true, refreshedAgentHome: true, externalConnections: 0 }));
+      return;
+    }
     if (scenario === "thinking-modes") {
       const thought = config => config.configOptions.find(option => option.id === "thought_level");
       assert.equal(thought(selected).currentValue, "high", "native medium default clamps to high for this exact model");

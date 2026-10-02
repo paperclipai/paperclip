@@ -6,21 +6,27 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { collectPiFileEvidence, gradePiCopyback, gradePiFileEvidence, piFileContract, seedPiFile } from "./pi-file-evidence.js";
-import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../../packages/paperclip-runner/src/provider-events.js";
+import { canonicalProviderEventsFromAcpxRuntimeEvent, createAcpxToolEventNormalizer } from "../../packages/paperclip-runner/src/provider-events.js";
 import { safeAcpxLocations } from "../../packages/paperclip-runner/src/drivers/acpx/safe-locations.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerMatrix } from "./catalog.js";
 
 function fixture() {
   const c = piFileContract("fixture"), attachmentId = "12345678-1234-1234-1234-123456789abc";
-  const tool = (seq: number, executionId: string, name: string, operation: string, completed: boolean, target: string | null, output = "") => {
-    // Pi emits absolute edit locations and uses the bash command as title.
-    // Exercise sidecar path normalization followed by the common projection;
-    // direct raw ACP projection would incorrectly lose the workspace target.
-    const canonical = canonicalProviderEventsFromAcpxRuntimeEvent({ type: "tool_call", toolCallId: executionId,
-      tag: completed ? "tool_call_update" : "tool_call", title: name, kind: operation,
-      status: completed ? "completed" : "pending", locations: safeAcpxLocations(target ? [{ path: `/workspace/${target}` }] : [], "/workspace", operation, name), rawOutput: output }, executionId, "turn")[0]!;
+  const normalize = createAcpxToolEventNormalizer();
+  const tool = (seq: number, executionId: string, name: string, operation: string,
+    phase: "start" | "progress" | "end", target: string | null, text = "", rawOutput: unknown = undefined) => {
+    // Sanitized shape of the retained Pi stream: missing opening location,
+    // later resolved edit arguments, and stable bash name with command progress.
+    // This exercises TS normalization/projection, not the Rust implementation.
+    const event = normalize({ type: "tool_call", toolCallId: executionId,
+      tag: phase === "start" ? "tool_call" : "tool_call_update", title: name, kind: operation,
+      status: phase === "end" ? "completed" : phase === "start" ? "pending" : "in_progress",
+      locations: safeAcpxLocations(target ? [{ path: `/workspace/${target}` }] : [], "/workspace", operation, name),
+      text, rawOutput });
+    const canonical = canonicalProviderEventsFromAcpxRuntimeEvent(event, executionId, "turn")[0]!;
     return { companyId: "company", runId: "run", seq, protocolSchemaVersion: 1, eventType: canonical.eventType,
+      sourceInstanceId: "runner", sourceSeq: seq, sourceEventId: `runner:run:${seq}`,
       payload: { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId: "runner",
         sourceSeq: seq, sourceEventId: `runner:run:${seq}`, runId: "run", turnId: "turn", normalizedSessionId: "session", ...canonical } } };
   };
@@ -33,42 +39,70 @@ function fixture() {
       publish: { operationId: "register_deliverable", input: { filename: c.filename, contentRef: c.filename, contentType: "text/plain", byteSize: c.byteSize, sha256: c.sha256 },
         result: { disposition: "applied", commandId: `deliverable-prepared:${attachmentId}`, entityRefs: [attachmentId, "product", "comment"] } },
     } } },
-    events: [tool(1, "edit", "edit", "edit", false, c.filename), tool(2, "edit", "edit", "edit", true, c.filename),
-      tool(3, "validate", c.validationCommand, "execute", false, null), tool(4, "validate", c.validationCommand, "execute", true, null, c.validationMarker)],
+    events: [tool(1, "edit", "edit", "edit", "start", null),
+      tool(2, "edit", "edit", "edit", "progress", c.filename),
+      tool(3, "edit", "edit", "edit", "end", c.filename),
+      tool(4, "validate", "bash", "execute", "start", null, "bash (pending): [terminal] validate"),
+      tool(5, "validate", c.validationCommand, "execute", "progress", null, `${c.validationCommand} (in_progress): ${c.validationCommand}`),
+      tool(6, "validate", c.validationCommand, "execute", "end", null, "", {
+        content: [{ type: "text", text: `${c.validationMarker}\n` }],
+        structuredContent: { output: `${c.validationMarker}\n`, truncated: false, exit_code: 0, wall_time_seconds: 0 },
+      })],
     attachments: [{ id: attachmentId, companyId: "company", issueId: "issue", originatingRunId: "run", createdByAgentId: "agent",
       originalFilename: c.filename, contentType: "text/plain", byteSize: c.byteSize, sha256: c.sha256 }],
     activity: [{ action: "issue.attachment_added", companyId: "company", runId: "run", actorId: "agent", entityId: "issue",
       details: { attachmentId, source: "paperclip_runner_protocol" } }],
   };
 }
+function changeOutput(f: ReturnType<typeof fixture>, change: (output: any) => void) {
+  const p = f.events[5]!.payload.prpEvent.payload, output = JSON.parse(p.output as string);
+  change(output); p.output = JSON.stringify(output);
+}
 describe("Pi edit, validation and public artifact oracle", () => {
+  it("calibrates against the sanitized 44-row actual native stream without regrading the paid attempt", async () => {
+    const retained = JSON.parse(await readFile(new URL("./fixtures/pi-file-evidence-actual-stream.json", import.meta.url), "utf8"));
+    const f = fixture();
+    expect(retained.events).toHaveLength(44);
+    f.events = retained.events.map((x: any) => ({ companyId: "company", runId: "run", seq: x.seq,
+      protocolSchemaVersion: 1, eventType: x.eventType, sourceInstanceId: "runner", sourceSeq: x.sourceSeq,
+      sourceEventId: `runner:run:${x.sourceSeq}`, payload: { prpEvent: {
+        schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId: "runner",
+        sourceSeq: x.sourceSeq, sourceEventId: `runner:run:${x.sourceSeq}`, runId: "run", turnId: "turn",
+        normalizedSessionId: "session", eventType: x.eventType, payload: x.payload,
+      } } }));
+    expect(gradePiFileEvidence(f).verification).toMatchObject({ nativeStructuredExitCode: 0, typedExitCode: null });
+  });
   it("accepts actual correlated lifecycles, independent bytes and a run-bound registered download", () => {
     const result = gradePiFileEvidence(fixture());
     expect(result.passed).toBe(true);
     expect(result.diff.text).toContain("-ready-fixture\n+verified-fixture\n");
     expect(result.limits.join(" ")).toContain("not attested");
     expect(result.verification.providerExecutionStatus).toBe("completed");
-    expect(result.verification.commandTitle).toBe(piFileContract("fixture").validationCommand);
+    expect(result.verification.command).toBe(piFileContract("fixture").validationCommand);
+    expect(result.verification).toMatchObject({ commandEvidence: "correlated_native_progress",
+      exitEvidence: "native_structured_output_receipt", nativeStructuredExitCode: 0, typedExitCode: null });
+    expect(fixture().events.map(e => e.payload.prpEvent.payload.target)).toEqual([null, "extended-fixture.txt", "extended-fixture.txt", null, null, null]);
+    expect(fixture().events.slice(3).every(e => e.payload.prpEvent.payload.name === "bash")).toBe(true);
     expect(result.verification.nativeFileAttribution).toBe("workspace_relative_display_target");
   });
   const mutations: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
     ["absent seed", f => { f.seed = {} as any; }],
     ["wrong final bytes", f => { f.workspaceBytes = Buffer.from("wrong\n"); }],
-    ["final-only write", f => { f.events[0]!.payload.prpEvent.payload.name = "write"; f.events[1]!.payload.prpEvent.payload.name = "write"; }],
-    ["missing edit", f => { f.events = f.events.slice(2); }],
-    ["missing validation", f => { f.events = f.events.slice(0, 2); }],
-    ["echo-only validation", f => { f.events[2]!.payload.prpEvent.payload.name = `echo ${piFileContract("fixture").validationMarker}`; f.events[3]!.payload.prpEvent.payload.name = f.events[2]!.payload.prpEvent.payload.name; }],
-    ["failed validation", f => { f.events[3]!.payload.prpEvent.payload.status = "failed"; }],
+    ["final-only write", f => { f.events[0]!.payload.prpEvent.payload.name = "write"; f.events[2]!.payload.prpEvent.payload.name = "write"; }],
+    ["missing edit", f => { f.events = f.events.slice(3); }],
+    ["missing validation", f => { f.events = f.events.slice(0, 3); }],
+    ["echo-only validation", f => { f.events[3]!.payload.prpEvent.payload.name = `echo ${piFileContract("fixture").validationMarker}`; f.events[5]!.payload.prpEvent.payload.name = f.events[3]!.payload.prpEvent.payload.name; }],
+    ["failed validation", f => { f.events[5]!.payload.prpEvent.payload.status = "failed"; }],
     ["unfinished validation", f => { f.events.pop(); }],
-    ["unrelated validation turn", f => { f.events[2]!.payload.prpEvent.turnId = "other"; f.events[3]!.payload.prpEvent.turnId = "other"; }],
+    ["unrelated validation turn", f => { f.events[3]!.payload.prpEvent.turnId = "other"; f.events[5]!.payload.prpEvent.turnId = "other"; }],
     ["foreign native session", f => { f.run.nativeSessionId = "other"; }],
     ["foreign native producer", f => { f.run.runnerInstanceId = "other"; }],
-    ["foreign event run", f => { f.events[1]!.payload.prpEvent.runId = "other"; }],
-    ["duplicate event", f => { f.events.push(structuredClone(f.events[3]!)); }],
-    ["missing tool start", f => { f.events.splice(2, 1); }],
-    ["truncated validation output", f => { f.events[3]!.payload.prpEvent.payload.outputTruncated = true; }],
-    ["missing native target", f => { f.events[0]!.payload.prpEvent.payload.target = null; f.events[1]!.payload.prpEvent.payload.target = null; }],
-    ["wrong target", f => { f.events[1]!.payload.prpEvent.payload.target = "other.txt"; }],
+    ["foreign event run", f => { f.events[2]!.payload.prpEvent.runId = "other"; }],
+    ["duplicate event", f => { f.events.push(structuredClone(f.events[5]!)); }],
+    ["missing tool start", f => { f.events.splice(3, 1); }],
+    ["truncated validation output", f => { f.events[5]!.payload.prpEvent.payload.outputTruncated = true; }],
+    ["missing native target", f => { f.events[0]!.payload.prpEvent.payload.target = null; f.events[2]!.payload.prpEvent.payload.target = null; }],
+    ["wrong target", f => { f.events[2]!.payload.prpEvent.payload.target = "other.txt"; }],
     ["missing registration", f => { f.run.resultJson.semanticToolReceipts = {} as any; }],
     ["rejected registration", f => { f.run.resultJson.semanticToolReceipts.publish.result.disposition = "denied"; }],
     ["wrong registered hash", f => { f.run.resultJson.semanticToolReceipts.publish.input.sha256 = "wrong"; }],
@@ -79,6 +113,34 @@ describe("Pi edit, validation and public artifact oracle", () => {
     ["wrong download bytes", f => { f.downloadedBytes = Buffer.from("wrong\n"); }],
     ["missing publication activity", f => { f.activity = []; }],
     ["foreign publication run", f => { f.activity[0]!.runId = "other"; }],
+    ["conflicting resolved target", f => { f.events[1]!.payload.prpEvent.payload.target = "other.txt"; }],
+    ["target regresses after resolution", f => { f.events[0]!.payload.prpEvent.payload.target = piFileContract("fixture").filename; f.events[1]!.payload.prpEvent.payload.target = null; }],
+    ["missing terminal target", f => { f.events[2]!.payload.prpEvent.payload.target = null; }],
+    ["absent command proof", f => { f.events[4]!.payload.prpEvent.payload.progress = null; }],
+    ["echo-only command proof", f => { f.events[4]!.payload.prpEvent.payload.progress = "echo PI-VALIDATED-fixture (in_progress): echo PI-VALIDATED-fixture"; }],
+    ["conflicting command before exact proof", f => { f.events[3]!.payload.prpEvent.payload.progress = "node other.js (pending): node other.js"; }],
+    ["late command proof", f => { f.events[5]!.payload.prpEvent.payload.progress = f.events[4]!.payload.prpEvent.payload.progress; f.events[4]!.payload.prpEvent.payload.progress = null; }],
+    ["plain echoed marker output", f => { f.events[5]!.payload.prpEvent.payload.output = piFileContract("fixture").validationMarker; }],
+    ["nonzero native exit", f => { changeOutput(f, o => { o.structuredContent.exit_code = 1; }); }],
+    ["missing native exit", f => { changeOutput(f, o => { delete o.structuredContent.exit_code; }); }],
+    ["truncated native output", f => { changeOutput(f, o => { o.structuredContent.truncated = true; }); }],
+    ["false marker substring", f => { changeOutput(f, o => { o.structuredContent.output = "failed before PI-VALIDATED-fixture\n"; }); }],
+    ["contradictory content", f => { changeOutput(f, o => { o.content[0].text = "failed"; }); }],
+    ["contradictory typed exit", f => { f.events[5]!.payload.prpEvent.payload.exitCode = 1; }],
+    ["foreign command proof execution", f => { f.events[4]!.payload.prpEvent.payload.executionId = "foreign"; }],
+    ["foreign command proof turn", f => { f.events[4]!.payload.prpEvent.turnId = "foreign"; }],
+    ["foreign command proof session", f => { f.events[4]!.payload.prpEvent.normalizedSessionId = "foreign"; }],
+    ["foreign command proof producer", f => {
+      const row = f.events[4]!, e = row.payload.prpEvent;
+      e.sourceInstanceId = row.sourceInstanceId = "foreign"; e.sourceEventId = row.sourceEventId = `foreign:run:${e.sourceSeq}`;
+    }],
+    ["durable source differs from envelope", f => { f.events[4]!.sourceInstanceId = "foreign"; }],
+    ["durable event identity differs from envelope", f => { f.events[4]!.sourceEventId = "runner:run:999"; }],
+    ["durable source sequence differs from envelope", f => { f.events[4]!.sourceSeq = 999; }],
+    ["command proof after terminal", f => {
+      const e = f.events[4]!; f.events.splice(4, 1); e.seq = 7; e.payload.prpEvent.sourceSeq = 7;
+      e.sourceSeq = 7; e.sourceEventId = e.payload.prpEvent.sourceEventId = "runner:run:7"; f.events.push(e);
+    }],
   ];
   it.each(mutations)("rejects %s even when the model claims completion", (_name, change) => {
     const f = fixture(); change(f); expect(() => gradePiFileEvidence(f)).toThrow("Pi file evidence:");

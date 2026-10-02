@@ -231,4 +231,21 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(row?.querySelector("details")).toBeNull();
     expect(row?.querySelector('[aria-expanded]')).toBeNull();
   });
+  it.each([
+    ["info", "informational", "Provider update", "lucide-info"],
+    ["warning", "informational", "Warning", "lucide-triangle-alert"],
+    ["error", "failed", "Error", "lucide-triangle-alert"],
+    ["info", "failed", "Error", "lucide-triangle-alert"],
+  ] as const)("renders %s/%s notice severity without hiding its summary", (severity, status, label, icon) => {
+    const summary = "Pi estimates this turn at $0.000617. Billing cost is unverified.";
+    render({
+      id: "notice", kind: "protocol", surface: "provider_activity", family: "provider_notice",
+      eventType: "provider.notice.recorded", status, title: "Provider notice", summary,
+      details: [{ label: "Severity", value: severity }], steps: [], links: [], children: [],
+    });
+    expect(container.textContent).toContain(label);
+    expect(container.querySelector("p")?.textContent).toBe(summary);
+    expect(container.querySelector('[data-testid="task-chat-protocol-activity-icon"]')?.classList.contains(icon)).toBe(true);
+  });
+
 });

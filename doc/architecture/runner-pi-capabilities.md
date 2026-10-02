@@ -49,7 +49,41 @@ control, and Daytona results must be established independently.
 | Supported thinking levels | `get_available_thinking_levels`; ACP available session modes and `thought_level` choices | Pi reasoning-level configuration | Only the exact qualified model is admitted. Other models and their level sets remain unqualified. |
 | Set and verify thinking level | Native `set_thinking_level`, then `get_state`; ACP `session/set_mode` / config option | Saved agent setting, typed runner input, effective-mode admission | Live setting changes during an active turn are not exposed; a new compatible session is required. |
 | Recover selected level | Native restored state plus explicit effective-level verification | Mode-bound durable session identity | Old profiles and missing or mismatched mode identity cannot reuse a warm session. |
-| Provider notice severity and pricing provenance | `paperclip/pi_notice` and canonical `provider.notice.recorded` | Retained run event and usage metadata | The activity row currently renders a generic provider-update label and warning icon even for informational pricing estimates. P2: render the safe summary and severity; do not imply an estimated price is a bill. |
+| Provider notice severity and pricing provenance | `paperclip/pi_notice` and canonical `provider.notice.recorded` | Retained run event, usage metadata, and safe summary with severity in the activity row | Summary/severity rendering has deterministic coverage; paid visual verification of the rebuilt UI remains pending. Pricing estimates remain distinct from provider billing receipts. |
+
+## Profile-13 qualification checkpoint (2026-10-02)
+
+The installed candidate from source `eac50643213d0902a93a5384bae2f1d6c065c9f2`
+uses Pi 1.0.0, the explicit OpenRouter DeepSeek model above, and verified `low`
+reasoning. Paid local Product E2E passes cover hello, semantic question/answer
+continuation, all four native question forms, and human permission denial with
+no file side effect. The paid extended Runner `get-task-context` case also
+passes through the packaged runner against its authenticated, seeded test
+control plane. Runner protocol evidence does not qualify the Product UI.
+
+Three local attempts remain failed: file-edit validation, pending-input
+controller restart, and three-turn warm continuation. The first two exposed
+assertion gaps: streamed command output supplies the exit receipt, and a
+pre-start submission may precede assignment of the native turn ID. Narrow
+fixture repairs have positive and negative coverage; neither failed attempt
+has been regraded and both require fresh live runs.
+
+The warm attempt completed its first turn and edited files on its second, but
+its final semantic tool stayed pending until the existing deadline. OpenRouter
+metadata joins the exact native session and records the final response as
+cancelled with no finish reason. This supports an unfinished upstream response
+at cancellation; it does not establish why the response stopped progressing.
+A real pinned SDK/wrapper replay proves both restored-session completion with
+the new agent home and completion contract, and safe cancellation when complete
+tool JSON arrives without the provider's stream finish marker. The latter
+executes no semantic mutation. No timeout or runtime policy was changed to make
+that replay pass.
+
+Fresh builds must incorporate the subsequent launch, UI, and fixture fixes.
+macOS Intel startup, the remaining local and Runner cases, Linux/Daytona, and
+final source-wide checks remain qualification gates. The provider remains
+unqualified until that evidence is complete. API-key usage observations cover
+the capped qualification campaign; native pricing estimates are not bills.
 
 ## Historical Pi 1.0 profile-v12 checkpoint (2026-10-02)
 
