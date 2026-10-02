@@ -54,12 +54,22 @@ describe("provider-neutral events", () => {
         classification: "unrelated_information",
         providerMethod: "account/updated",
         expectedThreadId: "root",
-        receivedThreadId: "x".repeat(256),
+        receivedThreadId: "x".repeat(244) + "…[truncated]",
         expectedTurnId: "turn-1",
         receivedTurnId: null,
       },
     });
     expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+    const [unicodeEvent] = canonicalProviderEventsFromCodex("warning", {
+      classification: "unrelated_information",
+      expectedThreadId: "token=not-for-the-log",
+      receivedThreadId: "😀".repeat(300),
+    });
+    expect(unicodeEvent.payload).toMatchObject({
+      expectedThreadId: "token=[REDACTED]",
+      receivedThreadId: "😀".repeat(244) + "…[truncated]",
+      receivedTurnId: null,
+    });
     expect(canonicalProviderEventsFromCodex("error", {
       classification: "unrelated_information",
       message: "Provider connection failed",

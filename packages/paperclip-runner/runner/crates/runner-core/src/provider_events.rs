@@ -1471,6 +1471,23 @@ mod tests {
                 "receivedTurnId": null,
             })
         );
+        let unicode_events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "expectedThreadId": "token=not-for-the-log",
+                "receivedThreadId": "😀".repeat(300),
+            }),
+        );
+        assert_eq!(
+            unicode_events[0].payload["expectedThreadId"],
+            "token=[REDACTED]"
+        );
+        assert_eq!(
+            unicode_events[0].payload["receivedThreadId"],
+            format!("{}…[truncated]", "😀".repeat(244))
+        );
+        assert_eq!(unicode_events[0].payload["receivedTurnId"], Value::Null);
         // Authoritative errors must retain their failure meaning.
         assert_eq!(
             normalize_codex_notification(

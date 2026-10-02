@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactCodexDiagnostic } from "./drivers/codex/app-server-transport.js";
 
 /**
  * Structural subset of an ACP runtime event consumed by the canonical event
@@ -594,8 +595,14 @@ export function canonicalProviderEventsFromCodex(
   const itemId = safeId(text(item.id, text(params.itemId)), "provider-item");
   const completed = method === "item/completed";
   if (method === "warning" && params.classification === "unrelated_information") {
-    const boundedField = (key: string, limit: number) =>
-      typeof params[key] === "string" ? params[key].slice(0, limit) : null;
+    const boundedField = (key: string, limit: number) => {
+      if (typeof params[key] !== "string") return null;
+      const characters = [...redactCodexDiagnostic(params[key])];
+      const marker = "…[truncated]";
+      return characters.length <= limit
+        ? characters.join("")
+        : characters.slice(0, limit - marker.length).join("") + marker;
+    };
     return [{
       eventType: "harness.diagnostic",
       itemId,
