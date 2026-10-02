@@ -228,6 +228,14 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents the status digest company-boundary denial", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/status-digest"].get;
+    expect(operation.responses["200"]).toBeDefined();
+    expect(operation.responses["401"]).toBeDefined();
+    expect(operation.responses["403"]).toBeDefined();
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;
