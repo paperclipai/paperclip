@@ -768,7 +768,7 @@ export function createPostgresRunDispatchAdapter(
         .from(companies)
         .where(eq(companies.id, run.companyId))
         .then((rows) => rows[0] ?? null);
-      if (company?.status !== "active") {
+      if (!company || company.status === "archived") {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
       const factsResult = await loadGateFacts(
