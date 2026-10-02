@@ -281,12 +281,10 @@ const support = await getEmbeddedPostgresTestSupport();
         await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
       }
     });
-    it("discovers all purposes with truthful setup actions and the chat feature gate", async () => {
+    it.each([false, true])("discovers AgentMail with truthful setup actions regardless of the chat setting (%s)", async (enabled) => {
       await resetQuestions();
       const service = connectionIntentService(db);
-      expect((await service.search(claims, "agentmail")).results.some(item => item.service === "agentmail")).toBe(false);
-      await expect(service.request(claims, "agentmail")).rejects.toThrow(/not available/);
-      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: enabled });
       try {
         const result = await service.search(claims, "agentmail");
         expect(result.results[0]?.methods).toEqual([expect.objectContaining({
