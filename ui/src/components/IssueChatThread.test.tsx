@@ -862,6 +862,20 @@ describe("IssueChatThread", () => {
       );
     });
 
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("read_only");
+    expect(container.querySelector('[data-testid="issue-chat-composer-work-mode-chip"]')?.textContent).toContain("Read-only mode");
+
+    act(() => {
+      composer?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          code: "Period",
+          key: ".",
+          metaKey: true,
+        }),
+      );
+    });
+
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
     expect(container.querySelector('[data-testid="issue-chat-composer-work-mode-chip"]')).toBeNull();
 
