@@ -2437,6 +2437,116 @@ describe("Daytona sandbox provider plugin", () => {
       const streamExecParams = (overrides: Record<string, unknown> = {}) =>
         sessionExecParams(overrides);
 
+      // Long-lived healthy streams keep producing output. Quiet streams now
+      // switch to snapshots, which have separate lifetime coverage below.
+      async function streamFor(ms: number, onStderr?: (chunk: string) => void) {
+        const timer = setInterval(() => onStderr?.("."), 10_000);
+        try { await new Promise((resolve) => setTimeout(resolve, ms)); }
+        finally { clearInterval(timer); }
+      }
+
+      it.each(["", "prefix;🙂;"])("recovers unseen output and cancellation from a stuck socket after prefix %j", async (prefix) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        const sandbox = createMockSandbox();
+        let lateOutput!: (chunk: string) => void;
+        let rejectStream!: (error: Error) => void;
+        let snapshots = 0;
+        let cancelled = false;
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (onStdout) {
+              lateOutput = onStdout;
+              onStdout(prefix);
+              return new Promise((_resolve, reject) => { rejectStream = reject; });
+            }
+            snapshots += 1;
+            return { stdout: prefix + "permission;" + (cancelled ? "cancelled;" : ""), stderr: "" };
+          },
+        );
+        sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: cancelled ? 0 : undefined }));
+        mockGet.mockResolvedValue(sandbox);
+        vi.useFakeTimers();
+        try {
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 400 }));
+          let settled = false;
+          void promise?.then(() => { settled = true; });
+          await vi.advanceTimersByTimeAsync(14_999);
+          expect(snapshots).toBe(0);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(snapshots).toBe(1);
+          expect(executionLog).toHaveBeenCalledWith("stdout", "permission;");
+          // The abandoned socket cannot corrupt snapshot cursors or publish
+          // output after the timeout, including a delayed rejection.
+          lateOutput("stale bytes");
+          rejectStream(new Error("late socket failure"));
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(settled).toBe(false);
+          expect(snapshots).toBe(3);
+          cancelled = true;
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(await promise).toMatchObject({ exitCode: 0, timedOut: false, stdout: prefix + "permission;cancelled;" });
+          lateOutput("after settlement");
+          expect(executionLog.mock.calls).toEqual([
+            ...(prefix ? [["stdout", prefix]] : []), ["stdout", "permission;"], ["stdout", "cancelled;"],
+          ]);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(sandbox.process.getSessionCommandLogs.mock.calls.filter((call) => call[2])).toHaveLength(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+          restore();
+        }
+      });
+
+      it.each(["status", "snapshot"])("bounds a stuck %s read after an idle socket without claiming exit", async (stalledRead) => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox();
+        let releaseRead!: () => void;
+        const stalled = new Promise<void>((resolve) => { releaseRead = resolve; });
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        sandbox.process.getSessionCommand.mockImplementation(async () => {
+          if (stalledRead === "status") await stalled;
+          return { exitCode: undefined };
+        });
+        sandbox.process.getSessionCommandLogs.mockImplementation(
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+            if (onStdout) {
+              onStdout("prefix;");
+              return new Promise(() => {});
+            }
+            await stalled;
+            return { stdout: "prefix;late;", stderr: "" };
+          },
+        );
+        mockGet.mockResolvedValue(sandbox);
+        vi.useFakeTimers();
+        try {
+          const promise = plugin.definition.onEnvironmentExecute?.(streamExecParams({ timeoutMs: 400 }));
+          await vi.advanceTimersByTimeAsync(15_400);
+          expect(await promise).toMatchObject({
+            exitCode: null, timedOut: true, stdout: "prefix;",
+            metadata: { timeoutScope: "session_log_observation", commandExitConfirmed: false },
+          });
+          releaseRead();
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(executionLog.mock.calls).toEqual([["stdout", "prefix;"]]);
+          expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          releaseRead();
+          vi.useRealTimers();
+          restore();
+        }
+      });
+
       it("streams ordered stdout and stderr from the callback log form (test_log_stream_delivers_ordered_chunks)", async () => {
         process.env.DAYTONA_API_KEY = "host-key";
         const sandbox = createMockSandbox();
@@ -2575,11 +2685,11 @@ describe("Daytona sandbox provider plugin", () => {
         const sandbox = createMockSandbox();
         let streams = 0;
         sandbox.process.getSessionCommandLogs.mockImplementation(
-          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
             if (!onStdout) return { stdout: "first;last;", stderr: "" };
             streams += 1;
             onStdout("first;");
-            await new Promise((resolve) => setTimeout(resolve, 3_600_000));
+            await streamFor(3_600_000, onStderr);
             if (streams === 1 && ending === "reject") throw new Error("socket error");
             if (streams === 2) onStdout("last;");
           },
@@ -2613,10 +2723,10 @@ describe("Daytona sandbox provider plugin", () => {
         let snapshots = 0;
         let exited = false;
         sandbox.process.getSessionCommandLogs.mockImplementation(
-          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
             if (!onStdout) { snapshots += 1; return { stdout: "partial;", stderr: "" }; }
             onStdout("partial;");
-            if (++streams === 1) await new Promise((resolve) => setTimeout(resolve, 3_600_000));
+            if (++streams === 1) await streamFor(3_600_000, onStderr);
           },
         );
         sandbox.process.getSessionCommand.mockImplementation(async () => ({ exitCode: exited ? 0 : undefined }));
@@ -2644,10 +2754,10 @@ describe("Daytona sandbox provider plugin", () => {
         const sandbox = createMockSandbox();
         let streams = 0;
         sandbox.process.getSessionCommandLogs.mockImplementation(
-          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void, onStderr?: (chunk: string) => void) => {
             if (onStdout) {
               onStdout("partial;");
-              if (++streams === 1 && streamLifetime > 0) await new Promise((resolve) => setTimeout(resolve, streamLifetime));
+              if (++streams === 1 && streamLifetime > 0) await streamFor(streamLifetime, onStderr);
               throw new Error("socket error");
             }
             return { stdout: "partial;", stderr: "" };
