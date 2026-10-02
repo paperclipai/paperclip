@@ -2732,6 +2732,7 @@ export function createPluginWorkerHandle(
             request.id,
             errorCodeForWorkerHostError(err),
             errorMessage,
+            err instanceof JsonRpcCallError ? err.data : undefined,
           ),
         );
       } catch {

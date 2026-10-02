@@ -116,6 +116,10 @@ When an action or data handler throws a `JsonRpcCallError` from
 when the handler lets a failed host API call propagate. Callers can inspect
 structured data instead of parsing the message.
 
+The host-to-worker bridge also preserves data explicitly carried by a
+`JsonRpcCallError` from a host handler. Its existing host error-code allowlist
+still applies. Other host exceptions do not expose incidental `data` properties.
+
 Only include data intended for the RPC caller. Arbitrary properties on other
 exceptions are not serialized. Environment provider calls retain their separate
 cleanup-envelope rules. This worker RPC behavior does not define how an HTTP
