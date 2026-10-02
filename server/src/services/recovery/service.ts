@@ -533,10 +533,43 @@ const PROVIDER_QUOTA_ERROR_RE =
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
+// A terminal ACP session failure is reported with a typed category. The
+// claude-local adapter converts category `limit` into errorCode
+// `provider_quota`, so a quota hold already reaches the monitor path below.
+// Category `access` has no such conversion: it arrives as `acpx_turn_failed`,
+// which this classifier does not accept, so the issue gets no recovery policy
+// and is re-dispatched into a credential wall only a human sign-in can clear.
+// `access` has a single producer in the Claude ACP failure policy table
+// (`auth_required`, suggested action `login`) — an engine prerequisite the same
+// engine cannot repair by retrying, which is what `configuration_incomplete`
+// already means here.
+const ACP_TERMINAL_FAILURE_ERROR_CODES = new Set([
+  "adapter_failed",
+  "acpx_turn_failed",
+]);
+// Retained for a run whose adapter predates `resultJson.terminalSessionFailure`
+// and recorded only the flattened sentence.
+const ACP_TERMINAL_FAILURE_RE =
+  /\bACP agent reported a terminal (connection|access|limit|service|request|unknown) failure\b/i;
+
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
   | { kind: "configuration_incomplete" }
   | null;
+
+function acpTerminalSessionFailureCategory(
+  latestRun: Pick<NonNullable<LatestIssueRun>, "errorCode">,
+  error: string,
+  resultJson: Record<string, unknown>,
+): string | null {
+  if (!ACP_TERMINAL_FAILURE_ERROR_CODES.has(latestRun.errorCode ?? "")) {
+    return null;
+  }
+  const typed = parseObject(resultJson.terminalSessionFailure);
+  const category = readNonEmptyString(typed.category)?.toLowerCase();
+  if (category) return category;
+  return error.match(ACP_TERMINAL_FAILURE_RE)?.[1]?.toLowerCase() ?? null;
+}
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
@@ -630,7 +663,8 @@ export function classifyAdapterFailureForRecovery(
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    latestRun.errorCode !== "acpx_turn_failed"
   ) {
     return null;
   }
@@ -640,6 +674,21 @@ export function classifyAdapterFailureForRecovery(
     latestRun.error ?? "",
     JSON.stringify(resultJson),
   ].join("\n");
+  // Checked before the prose patterns: the typed category is authoritative, and
+  // `access` must not fall through to the unclassified re-dispatch path.
+  const acpCategory = acpTerminalSessionFailureCategory(
+    latestRun,
+    error,
+    resultJson,
+  );
+  if (acpCategory === "access") return { kind: "configuration_incomplete" };
+  if (acpCategory !== null && acpCategory !== "limit") {
+    // connection/service/request/unknown keep their existing bounded
+    // `classifyContinuationFailure` retry. They are neither quota holds nor
+    // configuration blockers, and inferring one from provider prose here would
+    // misroute an ordinary transport fault.
+    return null;
+  }
   if (
     latestRun.errorCode === "configuration_incomplete" ||
     CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)
@@ -1659,7 +1708,7 @@ export function recoveryService(
         `The native run reported a blocker. The original request and assignee are preserved; no automatic continuation was started.\n\nUnblock request: ${proof.action}`,
         {},
         {
-          authorType: "system",
+          authorType: "***REDACTED***",
           presentation: compactRecoveryPresentation(
             "Waiting for the current request to be unblocked",
           ),
@@ -2752,7 +2801,7 @@ export function recoveryService(
       }),
       {},
       {
-        authorType: "system",
+        authorType: "***REDACTED***",
         presentation: compactRecoveryPresentation(
           "Recovery: recovery attempt failed — remains blocked",
         ),
@@ -2938,7 +2987,7 @@ export function recoveryService(
         "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
       {
-        authorType: "system",
+        authorType: "***REDACTED***",
         presentation: compactRecoveryPresentation(
           "Recovery: waiting on dependencies — moved to blocked",
         ),
@@ -3614,7 +3663,7 @@ export function recoveryService(
       ].join("\n"),
       {},
       {
-        authorType: "system",
+        authorType: "***REDACTED***",
         presentation: compactRecoveryPresentation(
           "Agent needs attention",
         ),
@@ -4069,7 +4118,7 @@ export function recoveryService(
             notice.body,
             {},
             {
-              authorType: "system",
+              authorType: "***REDACTED***",
               presentation: notice.presentation,
               metadata: notice.metadata,
             },
@@ -4080,7 +4129,7 @@ export function recoveryService(
             escalationNotice.body,
             {},
             {
-              authorType: "system",
+              authorType: "***REDACTED***",
               presentation: escalationNotice.presentation,
               metadata: escalationNotice.metadata,
             },
