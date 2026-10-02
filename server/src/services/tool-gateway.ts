@@ -8696,7 +8696,7 @@ export function createToolGatewayService(
       gatewayPublicId?: string | null;
       bearerToken: string;
       callerHeaders?: Record<string, string | string[] | undefined>;
-    }): Promise<ToolGatewayDescriptor[]> {
+    }): Promise<{ tools: ToolGatewayDescriptor[]; allowedActions: ToolMcpGatewayTokenAction[] }> {
       const session = await namedGatewaySessionFromBearer({
         gatewayId: input.gatewayId ?? null,
         gatewayPublicId: input.gatewayPublicId ?? null,
@@ -8720,7 +8720,7 @@ export function createToolGatewayService(
           visibleTools: tools.map((tool) => tool.name),
         },
       });
-      return tools;
+      return { tools, allowedActions: normalizeGatewayTokenActions(session.gatewayTokenAllowedActions) };
     },
 
     async executeContextForNamedGateway(input: {

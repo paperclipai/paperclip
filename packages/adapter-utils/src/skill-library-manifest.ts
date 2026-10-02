@@ -41,7 +41,15 @@ export function buildSkillLibraryManifestMarkdown(input: {
         const detail = entry.missingDetail ? sanitizeManifestText(entry.missingDetail, 200) : "";
         return `- ${key} — enabled but unavailable${detail ? `: ${detail}` : ""}`;
       }
-      return `- ${key} — ${enabled ? "enabled" : "installed, not enabled for you"}`;
+      if (enabled) {
+        // The Skill tool takes the runtime name (often a hashed
+        // `slug--hash` directory), not the library key. Without the mapping
+        // the model invokes the key verbatim and records "Unknown skill".
+        const runtimeName = sanitizeManifestText(entry.runtimeName, 200);
+        const invokeHint = runtimeName ? ` (invoke as \`${runtimeName}\`)` : "";
+        return `- ${key}${invokeHint} — enabled`;
+      }
+      return `- ${key} — installed, not enabled for you`;
     });
   return [
     "## Company skill library",

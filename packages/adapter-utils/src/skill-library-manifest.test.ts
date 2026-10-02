@@ -35,14 +35,14 @@ describe("buildSkillLibraryManifestMarkdown", () => {
 
     expect(manifest).toContain("## Company skill library");
     expect(manifest).toContain("- acme/tools/wireframe — installed, not enabled for you");
-    expect(manifest).toContain("- paperclipai/paperclip/paperclip — enabled");
+    expect(manifest).toContain("- paperclipai/paperclip/paperclip (invoke as `paperclip`) — enabled");
     expect(manifest).toContain(
       "- acme/tools/broken — enabled but unavailable: Failed to materialize skill files: SKILL.md copy is missing.",
     );
     // Key-sorted body, regardless of input order.
     const brokenIndex = manifest!.indexOf("acme/tools/broken");
     const wireframeIndex = manifest!.indexOf("acme/tools/wireframe");
-    const coreIndex = manifest!.indexOf("paperclipai/paperclip/paperclip —");
+    const coreIndex = manifest!.indexOf("paperclipai/paperclip/paperclip (invoke as");
     expect(brokenIndex).toBeLessThan(wireframeIndex);
     expect(wireframeIndex).toBeLessThan(coreIndex);
 
@@ -91,5 +91,42 @@ describe("buildSkillLibraryManifestMarkdown", () => {
     });
     expect(enabled).not.toBe(base);
     expect(grown).not.toBe(base);
+  });
+
+  it("renders the invocable runtime name for enabled entries with hashed directories", () => {
+    const manifest = buildSkillLibraryManifestMarkdown({
+      entries: [
+        entry({ key: "acme/tools/wireframe", runtimeName: "wireframe--9f3c2a1b" }),
+        entry({ key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip" }),
+      ],
+      desiredSkillKeys: new Set(["acme/tools/wireframe", "paperclipai/paperclip/paperclip"]),
+    });
+
+    expect(manifest).toContain("- acme/tools/wireframe (invoke as `wireframe--9f3c2a1b`) — enabled");
+    expect(manifest).toContain("- paperclipai/paperclip/paperclip (invoke as `paperclip`) — enabled");
+    // Deterministic for identical inputs: the claude-local prompt-bundle
+    // cache key hashes this text.
+    const again = buildSkillLibraryManifestMarkdown({
+      entries: [
+        entry({ key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip" }),
+        entry({ key: "acme/tools/wireframe", runtimeName: "wireframe--9f3c2a1b" }),
+      ],
+      desiredSkillKeys: new Set(["paperclipai/paperclip/paperclip", "acme/tools/wireframe"]),
+    });
+    expect(again).toBe(manifest);
+  });
+
+  it("omits the invoke hint when the runtime name is empty and leaves disabled entries alone", () => {
+    const manifest = buildSkillLibraryManifestMarkdown({
+      entries: [
+        entry({ key: "acme/tools/empty", runtimeName: "" }),
+        entry({ key: "acme/tools/off", runtimeName: "off--9f3c2a1b" }),
+      ],
+      desiredSkillKeys: new Set(["acme/tools/empty"]),
+    });
+
+    expect(manifest).toContain("- acme/tools/empty — enabled");
+    expect(manifest).toContain("- acme/tools/off — installed, not enabled for you");
+    expect(manifest).not.toContain("invoke as ``");
   });
 });

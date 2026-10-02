@@ -617,10 +617,10 @@ describe("PaperclipRunnerToolAuthority", () => {
   });
 
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
-    const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 224 }, (_, i) => ({
+    const listToolsForNamedGateway = vi.fn().mockResolvedValue({ tools: Array.from({ length: 224 }, (_, i) => ({
       name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",
       parametersSchema: { type: "object", properties: {} }, risk: "read",
-    })));
+    })), allowedActions: ["tools/list", "tools/call"] });
     const assignedMcpTools = await createAssignedMcpTools({
       gateway: { listToolsForNamedGateway } as unknown as ToolGatewayService,
       gatewayPublicId: "fixture", bearerToken: "fixture-token",
