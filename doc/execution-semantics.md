@@ -1485,6 +1485,8 @@ proves provider termination and applies pause, budget, approval, dependency,
 and ownership gates. Saved input uses the existing ordered, single-delivery queue;
 prior completed actions and uncertain outcomes remain history. An operator Stop
 or ambiguous historical cancellation does not automatically release that queue.
+Externally bound chat conversations use a new chat message to continue. Their
+recovery notices show that guidance and do not offer the board Continue action.
 
 ### Native finalization recovery display
 

@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
@@ -81,6 +81,11 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const runError = cancellation?.reason ?? (run?.status === "cancelled"
     ? "Execution was cancelled; its source was not recorded."
     : run?.error);
+  const eligibleContinuation = Boolean(run && conversation?.assigneeAgentId === run.agentId &&
+    !["done", "cancelled"].includes(conversation.status) && canContinueCancelledRun(run));
+  const [chatBinding] = eligibleContinuation ? await db.select({ id: chatConversations.id }).from(chatConversations).where(and(
+    eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
+  )).limit(1) : [];
 
   return {
     recoveryActionId: action.id,
@@ -88,11 +93,10 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: action.nextAction,
+    nextAction: chatBinding ? "Send a new chat message to continue this conversation." : action.nextAction,
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
-    canContinue: Boolean(run && conversation?.assigneeAgentId === run.agentId &&
-      !["done", "cancelled"].includes(conversation.status) && canContinueCancelledRun(run)),
+    canContinue: eligibleContinuation && !chatBinding,
     savedMessageCount: saved.length,
   };
 }

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
-  approvals, issueApprovals, issueThreadInteractions,
+  approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, completionContracts, environmentLeases, environments, issueRelations, issueTreeHolds, issueTreeHoldMembers,
 } from "@paperclipai/db";
@@ -383,6 +383,33 @@ const support = await getEmbeddedPostgresTestSupport();
     if (result && !dryRun) await tx.insert(heartbeatRuns).values({ id: f.successorRunId, companyId: f.companyId,
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
+  });
+
+  it("directs external chat cancellations to new chat input instead of a rejected Continue action", async () => {
+    const f = await seed();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", nativeIssueId: null,
+      startedAt: new Date("2026-09-11T08:00:00Z"), resultJson: {
+        acpToolInventoryComplete: true, acpPendingToolCount: 0,
+        cancellation: { source: "provider", expected: false, initiator: { type: "provider" },
+          reason: "Provider cancelled execution", recordedAt: new Date().toISOString() },
+      },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canContinue: true });
+    const applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
+    await db.insert(toolApplications).values({ id: applicationId, companyId: f.companyId, name: "Slack", type: "chat" });
+    await db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId,
+      name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId,
+      provider: "slack", publicId: endpointId, assignedAgentId: f.agentId, status: "active" });
+    await db.insert(chatConversations).values({ companyId: f.companyId, endpointId, issueId: f.issueId,
+      externalConversationId: "channel", externalLabel: "#recovery" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      runId: f.sourceRunId, canContinue: false,
+      nextAction: "Send a new chat message to continue this conversation.",
+    });
   });
 
   it("delivers saved messages once after provider cancellation, preserving source history", async () => {
