@@ -2741,6 +2741,15 @@ describe("comment wake batching", () => {
 
     expect(merged.forceFreshSession).toBe(true);
   });
+
+  it("keeps connection tool refresh intent while allowing harness session recovery", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      { issueId: "issue-1", wakeReason: "issue_commented", refreshTools: true },
+      { issueId: "issue-1", wakeReason: "issue_commented", refreshTools: false },
+    );
+    expect(merged.refreshTools).toBe(true);
+    expect(shouldResetTaskSessionForWake(merged)).toBe(false);
+  });
 });
 
 describe("buildExplicitResumeSessionOverride", () => {

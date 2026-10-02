@@ -254,6 +254,18 @@ impl ManagedProviderDescriptor {
             Self::AwsAgentcore(config) => config.max_estimated_session_cost_usd = value,
         }
     }
+
+    fn immutable_profile(&self) -> Value {
+        let mut value = serde_json::to_value(self).expect("managed descriptor is serializable");
+        if let Some(context) = value
+            .pointer_mut("/config/runtimeContext")
+            .and_then(Value::as_object_mut)
+        {
+            context.remove("mcp");
+            context.remove("aggregateDigest");
+        }
+        value
+    }
 }
 
 #[derive(Debug)]
@@ -959,6 +971,97 @@ impl ManagedProviderCommandExecutor {
         Ok(())
     }
 
+    fn attach(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        if self.state.is_none() {
+            self.prepare(payload)?;
+        } else if payload.get("provider").is_some() {
+            let descriptor = ManagedProviderDescriptor::parse(payload["provider"].clone())?;
+            descriptor.validate()?;
+            let tool_set = authorized_tool_set(payload)?;
+            let contract = completion_contract(payload)?;
+            let state = self.state.as_ref().expect("managed state exists");
+            if state.descriptor.immutable_profile() != descriptor.immutable_profile() {
+                return Err(DurableRunnerError::invalid(
+                    "managed provider immutable profile changed across run attachment",
+                ));
+            }
+            if state.active_turn_id.is_some()
+                || !state.pending_tool_calls.is_empty()
+                || !state.ambiguous_tool_deliveries.is_empty()
+                || state
+                    .pending_events
+                    .iter()
+                    .any(|event| event.event_type != "session.resumed")
+                || !matches!(
+                    state.lifecycle.as_str(),
+                    "prepared" | "session_open" | "suspended"
+                )
+            {
+                return Err(DurableRunnerError::invalid(
+                    "managed run.attach requires an idle session with no pending work",
+                ));
+            }
+            let next_run_id =
+                if let Some(identity) = payload.pointer("/paperclipNextAuthority/identity") {
+                    if identity.get("normalizedSessionId").and_then(Value::as_str)
+                        != Some(self.config.normalized_session_id.as_str())
+                    {
+                        return Err(DurableRunnerError::invalid(
+                            "managed run.attach changed the session identity",
+                        ));
+                    }
+                    Some(
+                        identity
+                            .get("runId")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                DurableRunnerError::invalid("managed run.attach requires runId")
+                            })?
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                };
+            if let Some(provider) = self.provider.as_mut() {
+                provider
+                    .configure_tools(tool_set.operations.clone())
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "managed run.attach could not refresh tools: {error}"
+                        ))
+                    })?;
+            }
+            let state = self.state.as_mut().expect("managed state exists");
+            if let Some(run_id) = next_run_id {
+                // Checkpoint validation must use the attachment's run identity.
+                // The durable runner separately activates the external authority
+                // after this command succeeds, then rotates the full config.
+                state.run_id = run_id.clone();
+                self.config.run_id = run_id;
+            }
+            state.descriptor = descriptor;
+            state.tool_set = tool_set;
+            state.completion_contract = contract;
+            state.last_agent_message = None;
+            state.pending_events.clear();
+            self.save_state()?;
+        }
+        let mut execution = self.open_session()?;
+        let provider = self
+            .state
+            .as_ref()
+            .expect("managed state exists")
+            .descriptor
+            .provider_label();
+        execution.events.push((
+            "run.attached".to_owned(),
+            EventPriority::P0,
+            json!({"provider": provider}),
+        ));
+        Ok(execution)
+    }
+
     fn prepare(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         let descriptor = ManagedProviderDescriptor::parse(
             payload
@@ -1633,24 +1736,7 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
         self.restore()?;
         match command.command_type.as_str() {
             "run.prepare" => self.prepare(&command.payload),
-            "run.attach" => {
-                if self.state.is_none() && command.payload.get("provider").is_some() {
-                    self.prepare(&command.payload)?;
-                }
-                let mut execution = self.open_session()?;
-                let provider = self
-                    .state
-                    .as_ref()
-                    .expect("managed state exists after attach")
-                    .descriptor
-                    .provider_label();
-                execution.events.push((
-                    "run.attached".to_owned(),
-                    EventPriority::P0,
-                    json!({"provider": provider}),
-                ));
-                Ok(execution)
-            }
+            "run.attach" => self.attach(&command.payload),
             "session.open" => self.open_session(),
             "turn.start" => self.start_turn(&command.payload),
             "turn.steer" => Ok(CommandExecution::result(json!({
@@ -2189,6 +2275,7 @@ mod tests {
 
     struct FakeClaudeProvider {
         session_id: String,
+        tools: Vec<AuthorizedTool>,
         skills: Vec<ClaudeManagedSkillRef>,
         destroy_failures: Arc<AtomicUsize>,
     }
@@ -2250,7 +2337,15 @@ mod tests {
         }
 
         fn read(&mut self) -> Result<Value, crate::local_runner::LocalRunnerError> {
-            Ok(json!({}))
+            Ok(json!({"tools": self.tools}))
+        }
+
+        fn configure_tools(
+            &mut self,
+            tools: Vec<AuthorizedTool>,
+        ) -> Result<(), crate::local_runner::LocalRunnerError> {
+            self.tools = tools;
+            Ok(())
         }
 
         fn poll(&mut self) -> Result<Option<ProviderEvent>, crate::local_runner::LocalRunnerError> {
@@ -2294,6 +2389,7 @@ mod tests {
                 .push(resume_claude_managed_skills.map(<[_]>::to_vec));
             Ok(Box::new(FakeClaudeProvider {
                 session_id: resume_session_id.unwrap_or("claude-session-1").to_owned(),
+                tools: _tools,
                 skills: resume_claude_managed_skills
                     .map(<[_]>::to_vec)
                     .unwrap_or_else(|| self.created_skills.clone()),
@@ -2338,6 +2434,7 @@ mod tests {
                 session_id: resume_session_id
                     .unwrap_or("claude-checkpointed-session")
                     .to_owned(),
+                tools: _tools,
                 skills: resume_claude_managed_skills
                     .map(<[_]>::to_vec)
                     .unwrap_or_else(|| self.skills.clone()),
@@ -2446,6 +2543,112 @@ mod tests {
                 },
             },
         })
+    }
+
+    #[test]
+    fn attach_refreshes_tools_in_the_same_session_and_preserves_profile_fences() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-managed-refresh-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_factory(
+            &directory,
+            &config,
+            Box::new(FakeClaudeFactory {
+                observed_resume_skills: Arc::new(Mutex::new(Vec::new())),
+                created_skills: vec![
+                    ClaudeManagedSkillRef {
+                        skill_id: "skill_instructions".to_owned(),
+                        version: "v1".to_owned(),
+                    },
+                    ClaudeManagedSkillRef {
+                        skill_id: "skill_custom".to_owned(),
+                        version: "v1".to_owned(),
+                    },
+                ],
+                destroy_failures: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        let mut payload = claude_prepare_payload();
+        payload["provider"]["runtimeContext"]["mcp"] = json!({"digest": "before"});
+        payload["provider"]["runtimeContext"]["aggregateDigest"] = json!("before");
+        executor.prepare(&payload).unwrap();
+        executor.open_session().unwrap();
+        let session_id = executor.state.as_ref().unwrap().provider_session_id.clone();
+        let operations = vec![AuthorizedTool {
+            operation_id: "github.search".to_owned(),
+            version: 1,
+            description: "Search repositories".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        }];
+        payload["authorizedTools"] = json!({"schema": TOOL_SET_SCHEMA, "schemaVersion": 1,
+            "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(), "operations": operations});
+        payload["provider"]["runtimeContext"]["mcp"] = json!({"digest": "after"});
+        payload["provider"]["runtimeContext"]["aggregateDigest"] = json!("after");
+        let mut invalid = payload.clone();
+        invalid["provider"]["instructions"] = json!("different instructions");
+        assert!(executor.attach(&invalid).is_err());
+        let mut invalid_identity = payload.clone();
+        invalid_identity["paperclipNextAuthority"] = json!({"identity": {
+            "normalizedSessionId": "another-session", "runId": "next-run"
+        }});
+        assert!(executor.attach(&invalid_identity).is_err());
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"],
+            json!([])
+        );
+        executor.state.as_mut().unwrap().active_turn_id = Some("active".to_owned());
+        assert!(executor.attach(&payload).is_err());
+        executor.state.as_mut().unwrap().active_turn_id = None;
+        payload["paperclipNextAuthority"] = json!({"identity": {
+            "normalizedSessionId": config.normalized_session_id, "runId": "next-run"
+        }});
+        executor.attach(&payload).unwrap();
+        let mut next_config = config.clone();
+        next_config.run_id = "next-run".to_owned();
+        executor.rotate_authority(&next_config);
+        assert_eq!(
+            executor.state.as_ref().unwrap().provider_session_id,
+            session_id
+        );
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"][0]["operationId"],
+            "github.search"
+        );
+        executor
+            .state
+            .as_ref()
+            .unwrap()
+            .validate(&next_config)
+            .unwrap();
+        // Reopening the durable checkpoint keeps both the conversation and the
+        // refreshed catalog. Removing tools is a replacement, not a merge.
+        executor.suspend().unwrap();
+        executor.restore_provider_if_needed().unwrap();
+        assert_eq!(
+            executor.state.as_ref().unwrap().provider_session_id,
+            session_id
+        );
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"][0]["operationId"],
+            "github.search"
+        );
+        payload["authorizedTools"] = claude_prepare_payload()["authorizedTools"].clone();
+        executor.attach(&payload).unwrap();
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"],
+            json!([])
+        );
+        executor
+            .state
+            .as_ref()
+            .unwrap()
+            .validate(&next_config)
+            .unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn managed_failure_event_types(recovery: bool) -> Vec<String> {

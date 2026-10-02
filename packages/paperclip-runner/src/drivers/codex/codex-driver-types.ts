@@ -77,6 +77,7 @@ export interface CodexAppServerDriverOptions {
     usage: boolean;
     reconciliation: boolean;
     dynamicTools: boolean;
+    toolRefreshOnResume: boolean;
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;

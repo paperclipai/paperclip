@@ -3091,6 +3091,9 @@ describe("selectPaperclipTaskMarkdown", () => {
     expect(selectInitialCommunicationGuidance({ paperclipTaskCommunicationGuidance: "  Slack preference  " })).toBe("Slack preference");
     expect(selectInitialCommunicationGuidance(context, { resumedSession: true })).toBe("");
     expect(selectInitialCommunicationGuidance({})).toBe("");
+    const handoffContext = { ...context, paperclipFreshSessionHandoffMarkdown: "Prior goal and approved decisions" };
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: false })).toContain("Prior goal and approved decisions");
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
     expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
     context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;

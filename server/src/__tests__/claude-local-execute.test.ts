@@ -1163,7 +1163,7 @@ describe("claude execute", () => {
     })).toBe(false);
   });
 
-  it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
+  it.each(["unchanged", "added", "removed"])("resumes a stable Claude prompt bundle with %s MCP tools", async (change) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -1265,6 +1265,7 @@ describe("claude execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
+          refreshTools: change !== "unchanged",
           paperclipWake: {
             reason: "issue_commented",
             issue: {
@@ -1296,12 +1297,12 @@ describe("claude execute", () => {
           },
         },
         runtimeMcp: {
-          getServers: () => [{
+          getServers: () => change === "removed" ? [] : [{
             name: "Paperclip projects",
             url: "http://localhost:3100/api/mcp/project-tools",
             connectionId: "paperclip-project-tools",
             token: "next-run-jwt-token",
-          }],
+          }, ...(change === "added" ? [{ name: "GitHub", url: "https://example.test/github/mcp", connectionId: "github", token: "fresh-github-token" }] : [])],
         },
         authToken: "run-jwt-token",
         onLog: async () => {},
@@ -1332,6 +1333,12 @@ describe("claude execute", () => {
       expect(capture1.skillEntries).toContain("paperclip");
       expect(capture2.argv).toContain("--resume");
       expect(capture2.argv).toContain("11111111-1111-4111-8111-111111111111");
+      if (change === "removed") expect(capture2.mcpConfigContents).toBeNull();
+      else {
+        expect(capture2.mcpConfigContents).toContain("next-run-jwt-token");
+        expect(capture2.mcpConfigContents).not.toContain('"run-jwt-token"');
+        if (change === "added") expect(capture2.mcpConfigContents).toContain("fresh-github-token");
+      }
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {

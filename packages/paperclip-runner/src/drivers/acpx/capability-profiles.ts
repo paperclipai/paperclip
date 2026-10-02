@@ -9,6 +9,7 @@ export interface AcpxCapabilityProfile {
   readonly plans: "native" | "cursor-decision" | "semantic-only";
   readonly tools: "authenticated-mcp" | "owned-extension";
   readonly recovery: "session-load" | "unverified";
+  readonly toolRefreshOnResume?: boolean;
   readonly usage: "reported" | "unverified";
   readonly steering: "unsupported" | "owned-extension-pending";
   readonly followUp: "controller-queue" | "owned-extension-pending";
@@ -20,18 +21,21 @@ export interface AcpxCapabilityProfile {
 /** These are runner integration claims, not a proxy for everything a harness can do. */
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
   claude: {
+    toolRefreshOnResume: true,
     displayName: "Claude", qualification: "qualified", models: "explicit-provider-verified",
     permissions: "interactive", questions: "form", plans: "native", tools: "authenticated-mcp",
     recovery: "session-load", usage: "reported", steering: "unsupported", followUp: "controller-queue",
     artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
   },
   codex: {
+    toolRefreshOnResume: true,
     displayName: "Codex", qualification: "qualified", models: "exact-qualified",
     permissions: "runner-policy", questions: "form", plans: "native", tools: "authenticated-mcp",
     recovery: "session-load", usage: "reported", steering: "unsupported", followUp: "controller-queue",
     artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
   },
   grok: {
+    toolRefreshOnResume: true,
     displayName: "Grok Build", qualification: "qualified", models: "explicit-provider-verified",
     permissions: "interactive", questions: "form", plans: "native", tools: "authenticated-mcp",
     recovery: "session-load", usage: "unverified", steering: "unsupported", followUp: "controller-queue",

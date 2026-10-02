@@ -6267,6 +6267,7 @@ describe("executeNativeSession recovery", () => {
             aggregateDigest: canonicalNativeRuntimeContextDigest(context),
           },
           continuationPrompt: "ONLY_NEW_COMMENT",
+          initialCommunicationGuidance: "FRESH_HANDOFF: original goal, prior answers, and next step",
         } as const
       : {
           ...input,
@@ -6280,6 +6281,7 @@ describe("executeNativeSession recovery", () => {
             aggregateDigest: canonicalNativeRuntimeContextDigest(legacyContext),
           },
           continuationPrompt: "ONLY_NEW_COMMENT",
+          initialCommunicationGuidance: "FRESH_HANDOFF: original goal, prior answers, and next step",
         } as const;
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
@@ -6402,7 +6404,7 @@ describe("executeNativeSession recovery", () => {
       completionContract: unknown;
     };
     expect(replacementEnvelope).toMatchObject({
-      task: { prompt: "FULL_ASSIGNMENT_CONTEXT\nCURRENT_EVENT_CONTEXT" },
+      task: { prompt: "FRESH_HANDOFF: original goal, prior answers, and next step\n\nFULL_ASSIGNMENT_CONTEXT\nCURRENT_EVENT_CONTEXT" },
       completionContract: executionInput.completionContract.contract,
     });
     expect(replacementEnvelope.schema).toBe(

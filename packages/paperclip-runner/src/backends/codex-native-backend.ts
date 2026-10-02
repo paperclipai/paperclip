@@ -5,6 +5,7 @@ import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
+  NativeSessionBackendDescriptor,
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
@@ -186,7 +187,9 @@ function createTransportBackedNativeSessionBackend(
       driverIdentity,
       capabilities: isCodex
         ? {}
-        : { steering: false, goals: false, threadLineage: false },
+        : { steering: false, goals: false, threadLineage: false,
+            toolRefreshOnResume: input.provider.kind !== "acpx"
+              || ACPX_CAPABILITY_PROFILES[input.provider.agent].toolRefreshOnResume === true },
       collaborationModes: supportsCollaborativePlanning
         ? ["default", "plan"]
         : ["default"],
@@ -194,6 +197,13 @@ function createTransportBackedNativeSessionBackend(
     }),
     preparedContext ? constraints : undefined,
   );
+}
+
+/** Inspect the selected runnerd harness without starting a provider process. */
+export function describeRunnerdNativeSessionBackend(
+  input: NativeExecutionInput,
+): Promise<NativeSessionBackendDescriptor> {
+  return createTransportBackedNativeSessionBackend(input, {}).descriptor();
 }
 
 /**

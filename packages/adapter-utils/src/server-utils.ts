@@ -2180,7 +2180,10 @@ export function selectInitialCommunicationGuidance(
   options: { resumedSession?: boolean } = {},
 ): string {
   return options.resumedSession === true
-    ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+    ? "" : joinPromptSections([
+        asString(context?.paperclipTaskCommunicationGuidance, "").trim(),
+        asString(context?.paperclipFreshSessionHandoffMarkdown, "").trim(),
+      ]);
 }
 
 // Picks the task-context markdown variant for adapters that inject it into the

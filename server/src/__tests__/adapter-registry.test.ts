@@ -22,6 +22,14 @@ vi.mock("@paperclipai/paperclip-runner/live", () => ({
   probeAcpxGrokInstallation: vi.fn(async () => undefined),
 }));
 
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
+
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
   execute: async () => ({

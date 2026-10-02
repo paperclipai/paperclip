@@ -131,9 +131,9 @@ type Binding = {
   syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   enqueueWakeup?: (agentId: string, options: {
-    source: "assignment";
+    source: "assignment" | "automation";
     triggerDetail: "system";
-    reason: "issue_assigned";
+    reason: "issue_assigned" | "issue_commented";
     payload: Record<string, unknown>;
     idempotencyKey: string;
     requestedByActorType: "agent";
@@ -313,14 +313,14 @@ export class PaperclipRunnerToolAuthority {
             notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
           )).limit(1);
           if (!(await delivered()).length) try { await this.binding.enqueueWakeup(this.binding.agentId, {
-            source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+            source: "automation", triggerDetail: "system", reason: "issue_commented",
             payload: { issueId: this.binding.issueId, mutation: "connection_tools_refreshed" },
             idempotencyKey,
             issueStateGuard: { statuses: ["in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
             requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
-            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, forceFreshSession: true, wakeReason: "issue_assigned", source: "connection_tools.refreshed" },
+            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, refreshTools: true, wakeReason: "issue_commented", source: "connection_tools.refreshed" },
           }); } catch (error) { if (!(await delivered()).length) throw error; }
-          return { ...result, instruction: "Access is already authorized. A fresh continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
+          return { ...result, instruction: "Access is already authorized. A continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
         }
       }
       return result;

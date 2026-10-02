@@ -42,6 +42,15 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describe("wakeConnectionIntentAfterResolution", () => {
+  it("preserves the fresh-session fence for repaired provider authentication", async () => {
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await wakeConnectionIntentAfterResolution({ wakeup } as Parameters<typeof wakeConnectionIntentAfterResolution>[0], {
+      loaded: { issue: { id: "issue-1", assigneeAgentId: "agent-1", status: "in_progress" }, interaction: { id: "interaction-1", payload: { purpose: "ai" } } },
+      status: "accepted", actorId: "user-1",
+    });
+    expect(wakeup.mock.calls[0][1].contextSnapshot).toMatchObject({ forceFreshSession: true });
+    expect(wakeup.mock.calls[0][1].contextSnapshot.refreshTools).toBeUndefined();
+  });
   it("preserves resolved interaction evidence in the queued run snapshot", async () => {
     const wakeup = vi.fn().mockResolvedValue(null);
     await wakeConnectionIntentAfterResolution(
@@ -67,8 +76,10 @@ describe("wakeConnectionIntentAfterResolution", () => {
         interactionResolvedAt: "2026-08-28T13:30:00.000Z",
         mutation: "interaction",
         wakeReason: "issue_commented",
+        refreshTools: true,
       }),
     }));
+    expect(wakeup.mock.calls[0][1].contextSnapshot.forceFreshSession).toBeUndefined();
   });
 });
 

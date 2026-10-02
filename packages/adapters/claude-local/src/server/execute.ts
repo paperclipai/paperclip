@@ -776,7 +776,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeSessionId.length > 0 &&
     isValidUuid &&
     hasMatchingPromptBundle &&
-    hasMatchingMcpServers &&
+    // Each CLI invocation loads --mcp-config, including --resume invocations.
+    // Refreshing tools does not invalidate the saved conversation.
     claudeSessionCwdMatchesExecutionTarget({
       runtimeSessionCwd,
       effectiveExecutionCwd,
@@ -825,7 +826,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimeSessionId && !hasMatchingMcpServers) {
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved with a different runtime MCP server set and will not be resumed.\n`,
+      `[paperclip] Claude runtime MCP server set changed; loading current tools when resuming session "${runtimeSessionId}".\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");

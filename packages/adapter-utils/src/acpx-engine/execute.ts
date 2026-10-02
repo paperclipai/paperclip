@@ -1541,6 +1541,7 @@ function buildSessionParams(input: {
     mode: prepared.mode,
     stateDir: prepared.stateDir,
     configFingerprint: prepared.fingerprint,
+    mcpFingerprint: shortHash(prepared.mcpIdentity),
     ...(prepared.requestedModel ? { model: prepared.requestedModel } : {}),
     ...(prepared.requestedThinkingEffort ? { thinkingEffort: prepared.requestedThinkingEffort } : {}),
     ...(prepared.fastMode ? { fastMode: true } : {}),
@@ -2208,7 +2209,9 @@ async function buildRuntime(input: {
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
-    mcpServers: mcpIdentity,
+    // Qualified built-in ACP harnesses reconnect to the supplied MCP servers
+    // on session/load. Keep their conversation identity independent of tools.
+    mcpServers: ["claude", "codex", "grok", "gemini", "kimi"].includes(acpxAgent) ? [] : mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
     // Fold the resolved adapter env (all applied user-configured values —
     // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit
@@ -4221,7 +4224,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // same session still sees it. The borrow clears the entry's idle timer, so
         // the reused runtime cannot expire under its own timer while this run uses
         // it (today's `clearWarmHandleTimer(cached)` after the reuse decision).
-        const cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
+        let cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
+        if (cached && (ctx.context.refreshTools === true
+          || asString(previousParams.mcpFingerprint, "") !== shortHash(prepared.mcpIdentity)
+          // MCP bearer credentials are run-scoped, even for an unchanged catalog.
+          || prepared.mcpServers.length > 0)) {
+          await hostStore.discard(prepared.sessionKey);
+          cached = undefined;
+        }
         childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
         processIdentitySink = cached?.processIdentitySink ?? {
           current: ctx.onSpawn,

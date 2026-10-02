@@ -37,6 +37,7 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
+import { sessionCodec } from "./session-codec.js";
 import { runChildProcess } from "../server-utils.js";
 import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
@@ -2711,6 +2712,24 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.result.sessionParams?.configFingerprint).toBeTypeOf("string");
     expect(second.result.sessionParams?.configFingerprint).toBeTypeOf("string");
     expect(first.result.sessionParams?.configFingerprint).not.toBe(second.result.sessionParams?.configFingerprint);
+  });
+
+  it.each(["claude", "codex", "grok", "gemini", "kimi"])("resumes %s with added and removed MCP servers and current credentials", async (agent) => {
+    const root = await makeTempRoot();
+    const config = { agent, cwd: root, stateDir: path.join(root, "state"), paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+    const first = await runExecutor(config);
+    const server = { name: "github", url: "https://example.test/github/mcp", connectionId: "github", token: "current-token" };
+    const second = await runExecutor(config, {
+      runtime: { sessionParams: sessionCodec.deserialize(first.result.sessionParams), taskKey: "default" },
+      runtimeMcp: { getServers: () => [server] }, context: { refreshTools: true },
+    });
+    expect(second.sessionInputs[0]?.resumeSessionId).toBe("backend-session");
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    expect(second.runtimeOptions[0]?.mcpServers).toEqual([{ type: "http", name: "github", url: server.url, headers: [{ name: "Authorization", value: "Bearer current-token" }] }]);
+    expect(JSON.stringify(sessionCodec.serialize(second.result.sessionParams ?? null))).not.toContain("current-token");
+    const third = await runExecutor(config, { runtime: { sessionParams: sessionCodec.deserialize(second.result.sessionParams) }, context: { refreshTools: true } });
+    expect(third.sessionInputs[0]?.resumeSessionId).toBe("backend-session");
+    expect(third.runtimeOptions[0]?.mcpServers).toEqual([]);
   });
 
   it("injects runtime MCP servers and fingerprints their identity without persisting bearer tokens", async () => {

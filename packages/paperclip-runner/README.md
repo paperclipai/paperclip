@@ -14,6 +14,32 @@ session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
 
+Connection continuations inspect the harness descriptor's optional
+`toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
+OpenCode, and qualified Claude/Codex/Grok ACPX profiles expose it; unqualified
+harnesses leave it false or absent. Changing tools can replace a provider process while retaining
+the provider conversation. Company, agent, task, workspace, model, instruction,
+and skill compatibility still gate recovery. An MCP-only assignment change can
+resume only when the selected harness explicitly supports refreshing tools.
+
+When recovery needs a fresh conversation, the server supplies a deterministic
+handoff through the existing fresh-only `initialCommunicationGuidance` field.
+It includes the original request, recent messages, resolved interaction
+summaries, agent replies, and document excerpts, with source identities and
+retrieval instructions. Reads and excerpts are bounded; the handoff has a
+24,000-byte ceiling and explicit truncation/omission markers. Conversation
+reset boundaries, deleted messages, source quarantine, and secret redaction
+apply before model submission. Successful recovery never replays the handoff.
+Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
+harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
+Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
+invocation with current endpoints and credentials, including resumed turns. ACP reloads
+current MCP bindings, including run-scoped credentials, while preserving the
+conversation; an unqualified/custom harness retains its restart fence.
+Legacy fresh attempts receive the same bounded handoff, including resume-failure
+fallbacks. Provider
+authentication repairs retain their existing fresh-session recovery behavior.
+
 ## Public package surfaces
 
 - `@paperclipai/paperclip-runner` — production contracts, clients/backends,

@@ -463,6 +463,8 @@ export interface ServerAdapterModule {
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
+  /** Selected harness can resume its conversation with this run's tool bindings. */
+  supportsToolRefreshOnResume?: boolean | ((config: Record<string, unknown>) => boolean);
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
