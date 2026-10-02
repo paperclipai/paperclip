@@ -213,7 +213,9 @@ export type ReleaseRecoveryReviewParticipantFacts = {
 };
 
 export type ReleaseRecoveryImmediateFacts = {
-  /** True when the issue is todo/in_progress, unassigned to a user, not hidden, still assigned to the finishing run's agent, and the run ended failed/timed_out/cancelled. */
+  /** True when the issue is todo/in_progress, unassigned to a user, not hidden,
+   * still assigned to the finishing run's agent, and either the run ended
+   * unsuccessfully or successful terminalization followed its checkout. */
   applies: boolean;
   /** True when the finishing run itself carried the disposition-repair retry reason. */
   isDispositionRepairRetry: boolean;

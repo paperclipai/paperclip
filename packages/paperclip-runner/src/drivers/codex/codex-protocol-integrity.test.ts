@@ -537,7 +537,11 @@ describe("Codex protocol integrity propagation", () => {
         sourceCodexHome: null,
         environment: {},
         runnerReconnectGraceMs: 900_000,
-        closeGraceMs: scenario === "early-semantic" ? 1_000 : 50,
+        // The early-semantic case drives the full drain and suspension
+        // handshake from this test process. Keep that production deadline
+        // bounded, but leave enough room for a loaded CI worker to deliver
+        // both durable command receipts before the close barrier expires.
+        closeGraceMs: scenario === "early-semantic" ? 5_000 : 50,
         readRunnerState: async () => ({
           schema: "paperclip.runner.durable.state.v1",
           ...identity,
@@ -578,7 +582,9 @@ describe("Codex protocol integrity propagation", () => {
       }).catch((error: unknown) => error);
       let client: Awaited<ReturnType<typeof authenticatedRunner>> | undefined;
       try {
-        await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(1), {
+          timeout: 5_000,
+        });
         const core = authority!;
         client = await authenticatedRunner(core, identity, runnerBinary);
         const commandResult = async (

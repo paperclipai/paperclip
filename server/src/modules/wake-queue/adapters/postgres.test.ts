@@ -1,6 +1,6 @@
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
@@ -26,6 +26,15 @@ import {
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
 import type { TransactionScope } from "../application/ports.js";
+import { issueService } from "../../../services/issues.js";
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 // Proves the atomicity and company-scope properties the security review
 // requires: every mutation names `companyId` in its own SQL `WHERE` clause,
@@ -285,6 +294,237 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       await settings.updateExperimental({ enableAgentChat: original });
     }
   });
+
+  it("queues a successor when checkout commits before successful terminalization", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({
+      companyId,
+      assigneeAgentId: agentId,
+      status: "in_progress",
+    });
+    const runId = await seedRun({
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+    await db
+      .update(issues)
+      .set({ checkoutRunId: runId, executionRunId: runId })
+      .where(eq(issues.id, issueId));
+
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        escalateStrandedAssignedIssue: async () => {
+          throw new Error("successful checkout handoff must stay live");
+        },
+        escalateStrandedRecoveryIssueInPlace: async () => {
+          throw new Error("successful checkout handoff must stay live");
+        },
+      },
+    });
+    const result = await release({ companyId, runId, now: new Date() });
+
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(result.postCommitEffects).toHaveLength(1);
+    expect(result.postCommitEffects[0]).toMatchObject({ kind: "run_queued" });
+
+    const successor = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .then((rows) => rows.find((row) => row.id !== runId));
+    expect(successor).toMatchObject({ status: "queued" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: null,
+      executionRunId: successor?.id,
+    });
+  });
+
+  it("does not strand an active issue when checkout wins an overlapping successful terminalization", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({
+      companyId,
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const runId = await seedRun({
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    const staleRunId = await seedRun({
+      companyId,
+      agentId,
+      status: "failed",
+      contextSnapshot: { issueId },
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: staleRunId,
+        executionRunId: staleRunId,
+        executionLockedAt: new Date("2026-09-27T03:37:34.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    const gateKey = 11_157_001;
+    const gateHeld = deferred<void>();
+    const releaseGate = deferred<void>();
+    let checkout: Promise<unknown> | null = null;
+    let terminalWrite: Promise<unknown> | null = null;
+
+    await db.execute(
+      sql.raw(`
+        create function test_checkout_terminalization_gate() returns trigger
+        language plpgsql as $$
+        begin
+          if new.id = '${issueId}'::uuid
+             and old.execution_run_id = '${staleRunId}'::uuid
+             and new.execution_run_id is null then
+            perform pg_advisory_xact_lock(${gateKey});
+          end if;
+          return new;
+        end
+        $$
+      `),
+    );
+    await db.execute(sql.raw(`
+      create trigger test_checkout_terminalization_gate
+      after update on issues
+      for each row execute function test_checkout_terminalization_gate()
+    `));
+
+    const heldGate = db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${gateKey})`);
+      gateHeld.resolve();
+      await releaseGate.promise;
+    });
+    await gateHeld.promise;
+
+    try {
+      checkout = issueService(db).checkout(
+        issueId,
+        agentId,
+        ["todo"],
+        runId,
+      );
+
+      // The trigger pauses checkout during stale-lock cleanup. Actor-run
+      // validation, cleanup, and the final issue mutation must share this same
+      // transaction, so checkout still owns both the issue and actor-run locks.
+      let checkoutWaitingOnGate = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await db.execute<{ count: number }>(sql`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+            and wait_event = 'advisory'
+        `);
+        if ((waiting[0]?.count ?? 0) > 0) {
+          checkoutWaitingOnGate = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(checkoutWaitingOnGate).toBe(true);
+
+      terminalWrite = db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning({ id: heartbeatRuns.id })
+        .then((rows) => rows[0] ?? null);
+
+      // Terminalization now overlaps checkout and must wait for checkout's
+      // run lock. Releasing the gate commits checkout first deterministically.
+      let terminalWriteBlocked = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await db.execute<{ count: number }>(sql`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+            and wait_event <> 'advisory'
+        `);
+        if ((waiting[0]?.count ?? 0) > 0) {
+          terminalWriteBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(terminalWriteBlocked).toBe(true);
+
+      releaseGate.resolve();
+      const [checkedOut, terminalized] = await Promise.all([
+        checkout,
+        terminalWrite,
+      ]);
+      await heldGate;
+      expect(checkedOut).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: runId,
+        executionRunId: runId,
+      });
+      expect(terminalized).toEqual({ id: runId });
+
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: {
+          escalateStrandedAssignedIssue: async () => {
+            throw new Error("checkout-first completion must queue a successor");
+          },
+          escalateStrandedRecoveryIssueInPlace: async () => {
+            throw new Error("checkout-first completion must queue a successor");
+          },
+        },
+      });
+      const result = await release({ companyId, runId, now: new Date() });
+      expect(result.outcome.kind).toBe("queued_recovery");
+
+      const successor = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .then((rows) =>
+          rows.find((row) => row.id !== runId && row.id !== staleRunId),
+        );
+      const [issue] = await db
+        .select({
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      expect(successor).toMatchObject({ status: "queued" });
+      expect(issue).toEqual({
+        status: "in_progress",
+        checkoutRunId: null,
+        executionRunId: successor?.id,
+      });
+    } finally {
+      releaseGate.resolve();
+      await heldGate;
+      await Promise.allSettled(
+        [checkout, terminalWrite].filter(
+          (operation): operation is Promise<unknown> => operation !== null,
+        ),
+      );
+      await db.execute(
+        sql`drop trigger if exists test_checkout_terminalization_gate on issues`,
+      );
+      await db.execute(
+        sql`drop function if exists test_checkout_terminalization_gate()`,
+      );
+    }
+  }, 20_000);
 
   for (const hasDeferredMessage of [false, true]) {
     it(`plans conversation recovery during owner cleanup without draining messages (queued=${hasDeferredMessage})`, async () => {

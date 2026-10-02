@@ -111,6 +111,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     status: row.status,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
+    checkoutRunId: row.checkoutRunId,
     hiddenAt: row.hiddenAt,
     originKind: row.originKind,
     monitorNextCheckAt: row.monitorNextCheckAt,

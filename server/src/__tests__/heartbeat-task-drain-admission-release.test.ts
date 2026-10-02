@@ -17,7 +17,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
+import {
+  heartbeatService,
+  getTaskDrainStatus,
+  releaseRunClaimedJustBeforeSuppression,
+  startTaskDrain,
+  stopTaskDrain,
+} from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -27,6 +34,20 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres task-drain admission release tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+function postgresErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  if ("code" in error && typeof error.code === "string") return error.code;
+  return "cause" in error ? postgresErrorCode(error.cause) : null;
 }
 
 describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
@@ -223,6 +244,182 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(finished?.status).toBe("succeeded");
+  }, 20_000);
+
+  it("uses issue-before-run ordering when suppression release overlaps checkout", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+      await seedQueuedRun();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "claimed", claimedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(issues)
+      .set({ executionRunId: runId })
+      .where(eq(issues.id, issueId));
+
+    // Hold the run row so suppression must retain its first lock while it
+    // waits for the second. Observing the issue lock proves the production
+    // path acquired issue -> run; the reversed order never reaches it.
+    const runLocked = deferred<void>();
+    const allowRunUnlock = deferred<void>();
+    const heldRunLock = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+      );
+      runLocked.resolve();
+      await allowRunUnlock.promise;
+    });
+    await runLocked.promise;
+
+    const suppressionRelease = releaseRunClaimedJustBeforeSuppression(db, runId);
+    let issueLockObserved = false;
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          await db.transaction((tx) =>
+            tx.execute(
+              sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update nowait`,
+            ),
+          );
+        } catch (error) {
+          if (postgresErrorCode(error) !== "55P03") throw error;
+          issueLockObserved = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(issueLockObserved).toBe(true);
+
+      const checkout = issueService(db).checkout(
+        issueId,
+        agentId,
+        ["todo"],
+        runId,
+      );
+      allowRunUnlock.resolve();
+      await heldRunLock;
+      const [, checkedOut] = await Promise.all([suppressionRelease, checkout]);
+
+      expect(checkedOut).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: runId,
+        executionRunId: runId,
+      });
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(run.status).toBe("queued");
+    } finally {
+      allowRunUnlock.resolve();
+      await heldRunLock;
+    }
+  }, 20_000);
+
+  it("does not revive or execute a claimed wake cancelled by reassignment", async () => {
+    const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "Replacement Drain Race Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        claimedAt: new Date(),
+        finishedAt: new Date(),
+        error: "Cancelled before issue reassignment",
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: replacementAgentId,
+        executionRunId: runId,
+      })
+      .where(eq(issues.id, issueId));
+
+    await releaseRunClaimedJustBeforeSuppression(db, runId);
+
+    const releasedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(releasedRun?.status).toBe("queued");
+    const cancelledWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(cancelledWake).toMatchObject({
+      status: "cancelled",
+      error: "Cancelled before issue reassignment",
+    });
+    expect(cancelledWake?.finishedAt).not.toBeNull();
+
+    const republishedStatuses: string[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = event.payload as { runId?: string; status?: string };
+      if (
+        event.type === "heartbeat.run.status" &&
+        payload.runId === runId &&
+        payload.status
+      ) {
+        republishedStatuses.push(payload.status);
+      }
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+    }
+
+    const rejectedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(rejectedRun?.status).toBe("cancelled");
+    expect(republishedStatuses).not.toContain("running");
+    const preservedWake = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(preservedWake?.status).toBe("cancelled");
   }, 20_000);
 
   it("keeps a wake that arrives during a task drain queued and runs it once the drain lifts", async () => {

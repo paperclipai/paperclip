@@ -39,6 +39,7 @@ const ISSUE: IssueSnapshot = {
   status: "in_progress",
   assigneeAgentId: "finishing-agent",
   assigneeUserId: null,
+  checkoutRunId: null,
   hiddenAt: null,
   originKind: null,
   monitorNextCheckAt: null,

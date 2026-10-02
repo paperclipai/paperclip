@@ -275,12 +275,17 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         await request.get(`/api/issues/${parent.id}/comments`),
       );
       expect(JSON.stringify(comments)).toContain("Please check mobile too.");
-      const queue = await json(
-        await request.get(`/api/issues/${parent.id}/queued-comments`),
-      );
-      expect(JSON.stringify(queue.entries)).toContain(
-        "Please check mobile too.",
-      );
+      // Comment persistence completes before the best-effort wake enqueue. Poll
+      // the queue boundary so this assertion proves durable delivery without
+      // racing the route's intentionally asynchronous wake creation.
+      await expect
+        .poll(async () => {
+          const queue = await json(
+            await request.get(`/api/issues/${parent.id}/queued-comments`),
+          );
+          return JSON.stringify(queue.entries);
+        })
+        .toContain("Please check mobile too.");
 
       let dispatchedAt = 0;
       page.on("request", (req) => {

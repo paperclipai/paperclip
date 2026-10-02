@@ -37,6 +37,7 @@ describe("worktree port registry lock", () => {
     const firstEntered = deferred();
     const releaseFirst = deferred();
     let secondEntered = false;
+    let second: Promise<void> | null = null;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
       fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
@@ -48,21 +49,22 @@ describe("worktree port registry lock", () => {
       })}\n`);
       const oldTimestamp = new Date(Date.now() - 10_000);
       fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+      // Start the contender synchronously after aging the directory so its
+      // first acquisition attempt observes the stale lease before the
+      // one-second heartbeat can refresh the mtime again.
+      second = withWorktreePortRegistryLock(homeDir, async () => {
+        secondEntered = true;
+      });
       firstEntered.resolve();
       await releaseFirst.promise;
     });
     await firstEntered.promise;
 
-    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
-
-    const second = withWorktreePortRegistryLock(homeDir, async () => {
-      secondEntered = true;
-    });
     await delay(100);
 
     expect(secondEntered).toBe(false);
     releaseFirst.resolve();
-    await Promise.all([first, second]);
+    await Promise.all([first, second!]);
     expect(secondEntered).toBe(true);
   }, 10_000);
 

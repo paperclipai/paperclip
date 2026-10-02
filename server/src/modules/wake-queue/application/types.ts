@@ -35,6 +35,9 @@ export type IssueSnapshot = {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  /** Preserved until release planning so a successful run that won checkout
+   * before terminalization receives a successor instead of becoming stranded. */
+  checkoutRunId: string | null;
   hiddenAt: Date | null;
   originKind: string | null;
   monitorNextCheckAt: Date | null;

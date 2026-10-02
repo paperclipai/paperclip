@@ -1,7 +1,7 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -908,6 +908,7 @@ export function createPostgresRunDispatchAdapter(
             and(
               eq(agentWakeupRequests.id, row.wakeupRequestId),
               eq(agentWakeupRequests.companyId, row.companyId),
+              ne(agentWakeupRequests.status, "cancelled"),
             ),
           );
       }
