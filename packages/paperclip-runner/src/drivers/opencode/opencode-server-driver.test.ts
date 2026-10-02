@@ -1022,6 +1022,87 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("delivers the settlement event for a runtime request whose turn fails through the same single-pass consumer that reads the turn", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-pending-then-fail-"),
+    );
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-pending-then-fail-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-pending-then-fail",
+      normalizedSessionId: "pending-then-fail",
+      workingDirectory: workspace,
+    });
+
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "pending-request-then-turn-fails" },
+    });
+    // The fixture asks a native question, which leaves a runtime request
+    // pending, then fails the same turn through `session.error` without
+    // ever resolving that request. `collectTurnEvents` reads exactly one
+    // pass and stops at the turn's terminal event, the same rule the
+    // production consumer applies (see its doc comment above). The
+    // settlement event must arrive inside that same pass: a production
+    // consumer that stops at `turn.failed` never opens a second read
+    // afterward, so a settlement event that only `close()` produced later
+    // would never reach it.
+    const turnEvents = await collectTurnEvents(session.events());
+    expect(
+      turnEvents.some(
+        (event) => event.eventType === "runtime_request.created",
+      ),
+    ).toBe(true);
+    const settlementIndex = turnEvents.findIndex(
+      (event) => event.eventType === "runtime_request.expired",
+    );
+    const terminalIndex = turnEvents.findIndex(
+      (event) => event.eventType === "turn.failed",
+    );
+    expect(settlementIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalIndex).toBeGreaterThanOrEqual(0);
+    // The settlement fact must precede the turn's terminal event, or a
+    // consumer that stops reading at that terminal event misses it.
+    expect(settlementIndex).toBeLessThan(terminalIndex);
+    expect(turnEvents[settlementIndex]).toMatchObject({
+      turnId,
+      itemId: "question-native-1",
+    });
+    expect(turnEvents[terminalIndex]).toMatchObject({ turnId });
+    expect(
+      turnEvents.some(
+        (event) =>
+          event.eventType === "harness.diagnostic" &&
+          event.payload.code === "opencode_late_terminal_turn_event_dropped" &&
+          event.payload.turnId === turnId,
+      ),
+    ).toBe(false);
+    // The request already settled with the turn; nothing is left pending
+    // for `close()` to settle a second time.
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(0);
+
+    await session.close({ reason: "test" });
+    const closeEvents = await collectTurnEvents(session.events());
+    expect(
+      closeEvents.some((event) =>
+        ["runtime_request.expired", "runtime_request.cancelled"].includes(
+          event.eventType,
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps the session usable after a cancelled turn so the next turn on the same session still completes", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(

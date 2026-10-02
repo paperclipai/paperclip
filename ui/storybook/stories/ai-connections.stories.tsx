@@ -249,7 +249,6 @@ export const ChangePersonalDefault: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Make default" }));
     await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Your default");
     await expect(canvas.queryByRole("button", { name: "Make default" })).not.toBeInTheDocument();
   },
 };
@@ -511,7 +510,7 @@ export const ReconnectExisting: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Submit code" }));
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByRole("heading", { name: "My Claude subscription" })).toBeVisible();
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Your default");
+    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
   },
 };
 export const RevokeConnection: Story = {

@@ -6,7 +6,7 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
     description: CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
     inputSchema: {
       type: "object",
-      properties: { query: { type: "string" }, retryProviderChoice: { type: "boolean", description: "Only when the user explicitly asks to reconsider a previous provider choice or decline" } },
+      properties: { query: { type: "string", maxLength: 4000 }, retryProviderChoice: { type: "boolean", description: "Only when the user explicitly asks to reconsider a previous provider choice or decline" } },
       additionalProperties: false,
     },
   },
@@ -21,4 +21,3 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
     },
   },
 ] as const;
-

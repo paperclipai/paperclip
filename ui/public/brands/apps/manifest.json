@@ -136,6 +136,13 @@
       "darkAsset": "/brands/apps/github-dark.svg"
     },
     {
+      "slug": "github-code-review-bot",
+      "provider": "GitHub Code Review Bot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github.svg",
+      "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
       "slug": "gmail",
       "provider": "Gmail",
       "catalogVisible": true,
@@ -515,6 +522,14 @@
       "provider": "Zep",
       "catalogVisible": true,
       "localAsset": "/brands/apps/zep.png"
+    },
+    {
+      "slug": "browser-use-cloud",
+      "provider": "Browser Use Cloud",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/browser-use.svg",
+      "sourceUrl": "https://browser-use.com/logo-primary.svg",
+      "retrievedAt": "2026-09-29"
     }
   ]
 }

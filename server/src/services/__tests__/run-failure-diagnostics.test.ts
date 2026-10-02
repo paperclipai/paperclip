@@ -7,6 +7,76 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("selects bounded lock-owner evidence from a caught timeout cause", () => {
+    const error = new Error("outer", { cause: Object.assign(new Error("lock timeout"), {
+      code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
+      workspaceRestoreLock: { operation: "agent_directory_release", ownerState: "alive", ownerSameProcess: true,
+        ownerPredatesProcess: true, knownLocalHolder: false, ownerAgeMs: 120_000, waitMs: 30_001,
+        ownerPid: 123, path: "/sentinel-lock-path", owner: { payload: "sentinel-owner-payload" } },
+    }) });
+    const result = sanitizeRunFailureDiagnostics(collect(error));
+    expect(result.execution).toEqual({ restoreLockOperation: "agent_directory_release", restoreLockOwnerState: "alive", restoreLockOwnerSameProcess: true,
+      restoreLockOwnerPredatesProcess: true, restoreLockKnownLocalHolder: false,
+      restoreLockOwnerAgeMs: 120_000, restoreLockWaitMs: 30_001 });
+    expect(JSON.stringify(result)).not.toContain("sentinel-");
+    expect(result.execution).not.toHaveProperty("ownerPid");
+  });
+
+  it.each([null, -1, Infinity, NaN, 1.5, 604_800_001, "private", {}])("omits invalid lock diagnostic values (%j)", value => {
+    const error = Object.assign(new Error("lock timeout"), { code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
+      workspaceRestoreLock: { operation: value, ownerState: value, ownerAgeMs: value, waitMs: value,
+        ownerSameProcess: value, ownerPredatesProcess: value, knownLocalHolder: value } });
+    expect(collect(error).execution).toEqual({});
+  });
+
+  it("does not attach lock evidence to unrelated errors or invoke hostile getters", () => {
+    expect(collect({ code: "OTHER", workspaceRestoreLock: { ownerState: "alive" } }).execution).toEqual({});
+    const error = { code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
+      workspaceRestoreLock: Object.defineProperty({}, "ownerState", { get() { throw new Error("private"); } }) };
+    expect(collect(error).execution).toEqual({});
+  });
+
+  it.each(["restore_permission_denied", "restore_lock_timeout", "restore_unsafe_archive", "restore_failed"])(
+    "includes the saved %s classification without copying workspace paths or results", (code) => {
+      const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: code, workspaceRestorePath: "/private/workspace",
+        executionBeforeRestore: { errorMessage: "private provider response" },
+      } }), {}));
+      expect(result.execution).toEqual({ workspaceRestoreFailure: code });
+      expect(JSON.stringify(result)).not.toContain("private");
+    },
+  );
+
+  it.each([null, false, 1, "private arbitrary code", { error: "private" }])(
+    "omits unknown workspace restore classifications (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: { workspaceRestoreFailure: value } }), {});
+      expect(result.execution).not.toHaveProperty("workspaceRestoreFailure");
+      expect(JSON.stringify(result)).not.toContain("private");
+    },
+  );
+
+  it("includes only bounded ACP activity fields, not tool names, identities, or output", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpLastEventAgeMs: 14_000_000, acpObservedEventCount: 9, acpPendingToolCount: 2,
+      acpToolInventoryComplete: false, acpToolNames: ["private command"], lastEvent: "private output",
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpLastEventAgeMs: 14_000_000, acpObservedEventCount: 9, acpPendingToolCount: 2,
+      acpToolInventoryComplete: false,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
+  it.each([null, -1, Infinity, NaN, 1.5, Number.MAX_SAFE_INTEGER + 1, "private", {}])(
+    "omits invalid ACP activity fields (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        acpLastEventAgeMs: value, acpObservedEventCount: value, acpPendingToolCount: value,
+        acpToolInventoryComplete: value,
+      } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
   it("selects declared environment secrets under opaque names and common credential keys", () => {
     expect(collectRunFailureSecretValues({
       CUSTOM_BINDING: "bound-opaque-value", ACCESS_TOKEN: "plain-opaque-value", REGION: "us-east-1", EMPTY_KEY: "",

@@ -48,7 +48,7 @@
     {
       "id": "discovery",
       "description": "Company-visible task, agent, project, and goal discovery.",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "set_task_title"]
     },
     {
       "id": "projects",
@@ -120,7 +120,7 @@
       "legacyGroup": 1,
       "name": "Heartbeat",
       "owner": "control plane + always tools",
-      "operationIds": ["get_task_context"],
+      "operationIds": ["get_task_context", "set_task_title"],
       "controlPlaneOperationIds": ["select_work", "enforce_budget"],
       "realSurface": "agent identity, inbox-lite, heartbeat context, budget and active-issue services",
       "mockStateDomains": ["company", "actor", "wake", "task", "budget", "run"],

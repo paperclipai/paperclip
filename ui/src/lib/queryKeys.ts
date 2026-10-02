@@ -1,5 +1,12 @@
 export const queryKeys = {
+  skillSources: {
+    preview: (companyId: string, repositoryUrl: string, connectionId: string | null, commitSha: string | null, skillPath: string, filePath: string) => ['skill-sources', companyId, 'preview', repositoryUrl, connectionId, commitSha, skillPath, filePath] as const,
+    all: (companyId: string) => ["skill-sources", companyId] as const,
+    repositories: (companyId: string) => ["skill-source-repositories", companyId] as const,
+  },
   agentChats: {
+    list: (companyId: string | null, userId?: string | null) =>
+      ["agent-chats", companyId, userId] as const,
     detail: (companyId: string | null, userId: string | null, agentId: string | undefined) =>
       ["agent-chat", companyId, userId, agentId] as const,
   },

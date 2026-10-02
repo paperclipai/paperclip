@@ -6,6 +6,14 @@ import { PAPERCLIP_CORE_PROTOCOL_ACTIONS } from "./core.js";
 describe("core Paperclip protocol action contracts", () => {
   const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
 
+  it("keeps the live input tool's guidance consistent with conversational confirmation recording", () => {
+    const action = PAPERCLIP_CORE_PROTOCOL_ACTIONS.find(action => action.id === "request_human_input")!;
+    expect(action.live!.descriptor.description).toBe(action.documentation.description);
+    expect(action.live!.descriptor.description).toContain("resolve-from-comment");
+    expect(action.live!.descriptor.description).toContain("resolver permissions");
+    expect(action.live!.descriptor.description).not.toContain("Never infer answers, answer your own card");
+  });
+
   it.each(PAPERCLIP_CORE_PROTOCOL_ACTIONS.map((action) => [action.id, action] as const))(
     "%s has immutable metadata and schema-valid examples",
     (operationId, action) => {

@@ -184,7 +184,12 @@ it("keeps agent-only invitations reachable from the new-agent flow", async () =>
     allowedJoinTypes: "agent", humanRole: null, agentMessage: "Help with research",
   });
   expect(document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value).toContain("/api/invites/one-time-token/onboarding.txt");
-  expect(invites.copy).toHaveBeenCalled();
+  expect(invites.copy).toHaveBeenCalledTimes(1);
+  expect(document.querySelector('[aria-label="Copy onboarding prompt"]')?.getAttribute("data-copied")).toBe("true");
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Copy onboarding prompt"]')!.click());
+  expect(invites.copy).toHaveBeenCalledTimes(2);
+  expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
+  expect(document.querySelector('pre[aria-label="Setup prompt"]')?.textContent).toBe(invites.copy.mock.calls[0][0]);
   expect(state.navigate).not.toHaveBeenCalled();
 });
 
@@ -196,4 +201,48 @@ it("keeps the generated invitation readable when clipboard access fails", async 
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(document.body.textContent).toContain("Copy the prompt manually");
   expect(document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value).toContain("/api/invites/one-time-token/onboarding.txt");
+});
+
+it("clears the invitation copy failure after retrying without generating another invite", async () => {
+  invites.copy.mockRejectedValueOnce(new Error("Clipboard unavailable"));
+  await click("Invite an external agent");
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(document.body.textContent).toContain("Clipboard unavailable");
+  await click("Copy onboarding prompt");
+  expect(invites.copy).toHaveBeenCalledTimes(2);
+  expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).not.toContain("Clipboard unavailable");
+  expect(document.body.textContent).toContain("Copied to clipboard");
+});
+
+it("shows the generated invitation while automatic clipboard access is pending", async () => {
+  let finishCopy!: () => void;
+  invites.copy.mockImplementationOnce(() => new Promise<void>((resolve) => { finishCopy = resolve; }));
+  await click("Invite an external agent");
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value).toContain("/api/invites/one-time-token/onboarding.txt");
+  expect(document.querySelector('[aria-label="Copy onboarding prompt"]')?.getAttribute("data-copied")).toBe("false");
+  await act(async () => finishCopy());
+  expect(document.querySelector('[aria-label="Copy onboarding prompt"]')?.getAttribute("data-copied")).toBe("true");
+});
+
+it("keeps a newer user copy result when the automatic invitation copy fails", async () => {
+  let failAutomaticCopy!: (error: Error) => void;
+  let finishUserCopy!: () => void;
+  invites.copy
+    .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failAutomaticCopy = reject; }))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishUserCopy = resolve; }));
+  await click("Invite an external agent");
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  await click("Copy onboarding prompt");
+  await act(async () => failAutomaticCopy(new Error("Automatic copy failed")));
+  expect(document.querySelector(".agent-setup-copy")?.textContent).toBe("Copying…");
+  await act(async () => finishUserCopy());
+  expect(document.querySelector(".agent-setup-copy")?.textContent).toBe("Copied to clipboard");
+  expect(document.body.textContent).not.toContain("Clipboard unavailable");
+  expect(invites.copy).toHaveBeenCalledTimes(2);
+  expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
 });

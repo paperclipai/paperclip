@@ -407,6 +407,28 @@ jobs:
       # rebuilds the Runner release binary; without the shared Rust cache that
       # is a ~3m40s cold compile of all third-party crates (run 35036001734,
       # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -445,8 +467,8 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -766,11 +788,33 @@ jobs:
 
       # Same restore-only contract as the pnpm store above, for the Rust
       # dependency tree: master's post-merge verification is the sole writer
-      # of release-runner-v1, and PR merge refs must not save branch-scoped
+      # of release-runner-v2, and PR merge refs must not save branch-scoped
       # copies of a ~680MB target directory. Every key input below has to
       # match that writer in release-verify.yml exactly or each PR misses and
       # recompiles all 313 third-party crates in both profiles. A miss is a
       # slow run, never a wrong one.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -809,8 +853,8 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -884,6 +928,28 @@ jobs:
       # shared Rust cache that is a ~3m40s cold compile of all third-party
       # crates (run 35036001734, 2026-09-15). Same restore-only contract as
       # Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -922,8 +988,8 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1094,6 +1160,28 @@ jobs:
       # build:binary step; without the shared Rust cache that is a ~3m40s cold
       # compile of all third-party crates (run 35036001734, 2026-09-15). Same
       # restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -1132,8 +1220,8 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false

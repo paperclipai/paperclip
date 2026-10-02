@@ -26,7 +26,12 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://netlify-mcp.netlify.app/mcp"
+        "serverUrl": "https://netlify-mcp.netlify.app/mcp",
+        "scopesHint": [
+          "offline_access",
+          "read",
+          "write"
+        ]
       },
       "guidanceMd": "Connect Netlify in the browser. A Netlify account with access to the relevant team and sites.",
       "riskTier": "S3",

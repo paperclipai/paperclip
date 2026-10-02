@@ -1772,10 +1772,12 @@ async function executeOneShot(
   }
 }
 
-// Poll interval for a session command's exit code. The live spike measured a
-// session command resolving in about 260-300 ms, so a short interval keeps the
-// poll responsive without a busy loop.
-const SESSION_POLL_INTERVAL_MS = 50;
+// Fallback reads full log snapshots as well as status. Limit the heavier
+// polling path while keeping output available to interactive commands.
+const SESSION_LOG_POLL_INTERVAL_MS = 1000;
+// A socket can stay open after it stops delivering output. Switch to saved
+// logs after this much silence; silence never proves that the command exited.
+const SESSION_LOG_STREAM_IDLE_MS = 15_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1787,10 +1789,10 @@ function sleep(ms: number): Promise<void> {
 // where the first read has no code yet.
 const SESSION_EXIT_CODE_RETRY_DELAYS_MS = [50, 100, 200];
 
-// A bounded reconnect for the log stream. A disconnect settles the stream
-// promise as a rejection while the command still runs on the server. One
-// reconnect replays the log from byte 0; the stream buffer drops the replayed
-// prefix by byte offset. After this many reconnects the dispatch falls back to
+// A bounded reconnect for the log stream. The SDK resolves on WebSocket close,
+// which does not prove that the command exited. A reconnect replays the log
+// from byte 0; the stream buffer drops the replayed prefix by byte offset.
+// After this many reconnects the dispatch falls back to
 // the poll path.
 const MAX_SESSION_STREAM_RECONNECTS = 1;
 
@@ -1812,19 +1814,39 @@ const MAX_SESSION_STREAM_RECONNECTS = 1;
 function createSessionStreamBuffer(
   onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
 ) {
+  type Stream = {
+    chunks: Buffer[];
+    length: number;
+    connectionBytes: number;
+    pendingReplacement: string;
+    previousReplacement: { offset: number; text: string } | null;
+  };
+  const createStream = (): Stream => ({
+    chunks: [], length: 0, connectionBytes: 0, pendingReplacement: "", previousReplacement: null,
+  });
   const streams = {
-    stdout: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
-    stderr: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
+    stdout: createStream(),
+    stderr: createStream(),
   };
 
   function append(
     streamName: "stdout" | "stderr",
-    stream: { chunks: Buffer[]; length: number; connectionBytes: number },
+    stream: Stream,
     chunk: string,
+    final = false,
+    publish = true,
   ): void {
-    const buf = Buffer.from(chunk, "utf8");
+    // The SDK flushes an incomplete UTF-8 character as U+FFFD on socket close.
+    // Do not publish that suffix or count its replacement bytes until a replay
+    // confirms it. A real final U+FFFD is flushed at confirmed command exit.
+    const text = stream.pendingReplacement + chunk;
+    stream.pendingReplacement = final ? "" : (text.match(/\uFFFD+$/u)?.[0] ?? "");
+    const buf = Buffer.from(text.slice(0, text.length - stream.pendingReplacement.length), "utf8");
     const start = stream.connectionBytes;
     stream.connectionBytes = start + buf.length;
+    if (stream.previousReplacement && stream.connectionBytes > stream.previousReplacement.offset) {
+      stream.previousReplacement = null;
+    }
     // The whole chunk falls before the delivered byte count, so it is a replay.
     if (start + buf.length <= stream.length) {
       return;
@@ -1837,7 +1859,7 @@ function createSessionStreamBuffer(
     stream.length += tail.length;
     // Deliver only the genuinely new tail to the live sink, so a replayed
     // prefix on a reconnect never reaches the host twice.
-    if (onNewTail && tail.length > 0) {
+    if (publish && onNewTail && tail.length > 0) {
       onNewTail(streamName, tail.toString("utf8"));
     }
   }
@@ -1848,8 +1870,34 @@ function createSessionStreamBuffer(
     // Reset the per-connection read cursors after a reconnect, so the replayed
     // prefix drops against the already-delivered byte count.
     resetConnectionCursors(): void {
-      streams.stdout.connectionBytes = 0;
-      streams.stderr.connectionBytes = 0;
+      for (const stream of Object.values(streams)) {
+        if (stream.pendingReplacement &&
+            (!stream.previousReplacement || stream.connectionBytes > stream.previousReplacement.offset ||
+             (stream.connectionBytes === stream.previousReplacement.offset &&
+              stream.pendingReplacement.length > stream.previousReplacement.text.length))) {
+          stream.previousReplacement = { offset: stream.connectionBytes, text: stream.pendingReplacement };
+        }
+        stream.pendingReplacement = "";
+        stream.connectionBytes = 0;
+      }
+    },
+    finish(publish = true): void {
+      for (const name of ["stdout", "stderr"] as const) {
+        const stream = streams[name];
+        if (stream.previousReplacement?.offset === stream.connectionBytes &&
+            stream.previousReplacement.text.length > stream.pendingReplacement.length) {
+          stream.pendingReplacement = stream.previousReplacement.text;
+        }
+        append(name, stream, "", true, publish);
+        // A short terminal snapshot must not discard a genuine trailing
+        // replacement character already received from a longer stream.
+        const previous = stream.previousReplacement;
+        if (previous && previous.offset >= stream.length) {
+          stream.connectionBytes = previous.offset;
+          append(name, stream, previous.text, true, publish);
+        }
+        stream.previousReplacement = null;
+      }
     },
     get stdout(): string {
       return Buffer.concat(streams.stdout.chunks).toString("utf8");
@@ -1860,34 +1908,109 @@ function createSessionStreamBuffer(
   };
 }
 
-type SessionLogStreamResult =
-  | { ok: true; stdout: string; stderr: string }
-  | { ok: false };
+type SessionLogStreamResult = {
+  exitCode: number | null;
+  pollUntilExit: boolean;
+  buffer: ReturnType<typeof createSessionStreamBuffer>;
+};
+
+class SessionCommandDeadlineError extends Error {}
+class SessionObservationTimeoutError extends Error {}
+
+async function beforeSessionDeadline<T>(deadlineMs: number, action: () => Promise<T>): Promise<T> {
+  const remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) throw new SessionCommandDeadlineError();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      action(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new SessionCommandDeadlineError()), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+// A provider operation timeout bounds one observation, not a healthy stream's
+// lifetime. The caller's RPC/run guard and session teardown own that lifetime.
+async function observeSessionCommand<T>(timeoutMs: number, action: () => Promise<T>): Promise<T> {
+  try {
+    return await beforeSessionDeadline(Date.now() + timeoutMs, action);
+  } catch (error) {
+    if (error instanceof SessionCommandDeadlineError || error instanceof DaytonaTimeoutError) {
+      throw new SessionObservationTimeoutError();
+    }
+    throw error;
+  }
+}
 
 // Stream stdout and stderr of one session command from the callback log form.
-// The stream buffer drops a replayed prefix by byte offset on a reconnect. A
-// disconnect rejects the stream promise; the dispatch reconnects a bounded
-// number of times, then reports failure so the caller falls back to the poll
-// path.
+// The stream buffer drops a replayed prefix by byte offset on a reconnect.
+// Rejected streams and clean closes use bounded reconnects, then polling.
+// An idle socket goes directly to polling, including one that never settles.
 async function runSessionLogStream(
   sandbox: Sandbox,
   sessionId: string,
   commandId: string,
-  onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
+  timeoutMs: number,
+  buffer: ReturnType<typeof createSessionStreamBuffer>,
 ): Promise<SessionLogStreamResult> {
-  const buffer = createSessionStreamBuffer(onNewTail);
   let reconnects = 0;
+  let pollUntilExit = false;
   while (true) {
+    let streamClosed = false;
+    let acceptingOutput = true;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let signalIdle!: () => void;
+    const idle = new Promise<"idle">((resolve) => { signalIdle = () => resolve("idle"); });
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(signalIdle, SESSION_LOG_STREAM_IDLE_MS);
+    };
+    const receive = (stream: "stdout" | "stderr", chunk: string) => {
+      if (!acceptingOutput || !chunk) return;
+      armIdleTimer();
+      if (stream === "stdout") buffer.onStdout(chunk);
+      else buffer.onStderr(chunk);
+    };
     try {
-      await sandbox.process.getSessionCommandLogs(sessionId, commandId, buffer.onStdout, buffer.onStderr);
-      return { ok: true, stdout: buffer.stdout, stderr: buffer.stderr };
-    } catch {
-      if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
-        return { ok: false };
+      armIdleTimer();
+      const outcome = await Promise.race([
+        sandbox.process.getSessionCommandLogs(
+          sessionId,
+          commandId,
+          (chunk) => receive("stdout", chunk),
+          (chunk) => receive("stderr", chunk),
+        ).then(() => "closed" as const),
+        idle,
+      ]);
+      if (outcome === "idle") {
+        // Do not wait for the abandoned socket or open another one. The SDK
+        // exposes no cancellation handle. Fence its callbacks before the
+        // snapshot path resets the buffer's byte cursors.
+        return { exitCode: null, pollUntilExit: true, buffer };
       }
-      reconnects += 1;
-      buffer.resetConnectionCursors();
+      streamClosed = true;
+      pollUntilExit = true;
+    } catch {
+      // The command can still be running after a log transport failure.
+    } finally {
+      // The SDK exposes no cancellation handle for this socket. Session
+      // teardown owns closing it; late data cannot change a settled execution.
+      acceptingOutput = false;
+      clearTimeout(idleTimer);
     }
+    if (streamClosed) {
+      const exitCode = await readSessionExitCode(sandbox, sessionId, commandId, timeoutMs);
+      if (exitCode !== null) return { exitCode, pollUntilExit, buffer };
+    }
+    if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
+      return { exitCode: null, pollUntilExit, buffer };
+    }
+    reconnects += 1;
+    buffer.resetConnectionCursors();
   }
 }
 
@@ -1899,14 +2022,15 @@ async function readSessionExitCode(
   sandbox: Sandbox,
   sessionId: string,
   commandId: string,
+  timeoutMs: number,
 ): Promise<number | null> {
-  const first = await sandbox.process.getSessionCommand(sessionId, commandId);
+  const first = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId));
   if (typeof first.exitCode === "number") {
     return first.exitCode;
   }
   for (const delayMs of SESSION_EXIT_CODE_RETRY_DELAYS_MS) {
     await sleep(delayMs);
-    const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+    const status = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId));
     if (typeof status.exitCode === "number") {
       return status.exitCode;
     }
@@ -1948,6 +2072,8 @@ async function executeInSession(
   // the exec wall-time spent before the abort, so a slow command is still
   // attributed to the provider boundary.
   let execStart: number | null = null;
+  let confirmedExitCode: number | null = null;
+  const streamBuffer = createSessionStreamBuffer((stream, text) => pluginContext?.execution.log(stream, text));
 
   try {
     if (stdinPath) {
@@ -1975,8 +2101,8 @@ async function executeInSession(
 
     // Log-stream path. A session command always tries the stream first: it
     // streams stdout and stderr from the callback log form, then reads the exit
-    // code one time. On a stream failure, fall through to the poll path below,
-    // because the command still runs to its exit on the server.
+    // code. A log socket closing without a recorded exit leaves the command
+    // running, so reconnect and then poll the same command without replaying it.
     //
     // Emit each genuinely new output chunk to the host during the active execute
     // call. The host routes it to the runner log sink by the host-issued
@@ -1986,71 +2112,101 @@ async function executeInSession(
       sandbox,
       sessionId,
       commandId,
-      (stream, text) => pluginContext?.execution.log(stream, text),
+      effectiveTimeoutMs,
+      streamBuffer,
     );
-    if (streamResult.ok) {
-      const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
+    if (streamResult.exitCode !== null) {
+      confirmedExitCode = streamResult.exitCode;
+      // A log socket can close before the process emits its final bytes. Even
+      // a now-visible exit code does not prove the streamed prefix is complete.
+      const logs = await observeSessionCommand(effectiveTimeoutMs, () => sandbox.process.getSessionCommandLogs(sessionId, commandId));
+      streamBuffer.resetConnectionCursors();
+      streamBuffer.onStdout(logs?.stdout ?? "");
+      streamBuffer.onStderr(logs?.stderr ?? "");
+      streamBuffer.finish();
       const durationMs = timingNow() - execStart;
       return {
-        exitCode,
+        exitCode: streamResult.exitCode,
         timedOut: false,
-        stdout: streamResult.stdout,
-        stderr: streamResult.stderr,
+        stdout: streamResult.buffer.stdout,
+        stderr: streamResult.buffer.stderr,
         metadata: { durationMs },
       };
     }
 
-    // Poll for the exit code; the SDK has no wait method. The poll deadline uses
-    // the wall clock, separate from the injected timing clock that measures the
-    // reported `durationMs`. The poll path is the fallback when the log stream
-    // fails.
+    // Keep forwarding output while waiting for the actual command exit. ACP
+    // peers may need a tool response before they can finish the command. Waiting
+    // for exit before reading logs would strand those peers after a stream loss.
+    // A closed or idle log socket does not end the command's lifetime. Bound
+    // each recovery read independently; the caller still owns stop/teardown.
+    // Preserve the legacy budget starting at fallback entry when both stream
+    // attempts fail, including a stream that fails after running for hours.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
-    let exitCode: number | null = null;
-    while (true) {
-      const status = await sandbox.process.getSessionCommand(sessionId, commandId);
-      if (typeof status.exitCode === "number") {
-        exitCode = status.exitCode;
-        break;
+    const observe = async <T>(action: () => Promise<T>): Promise<T> => {
+      try {
+        return await (streamResult.pollUntilExit
+          ? observeSessionCommand(effectiveTimeoutMs, action)
+          : beforeSessionDeadline(deadlineMs, action));
+      } catch (error) {
+        if (error instanceof DaytonaTimeoutError) throw new SessionObservationTimeoutError();
+        throw error;
       }
-      if (Date.now() >= deadlineMs) {
+    };
+    while (true) {
+      const status = await observe(() => sandbox.process.getSessionCommand(sessionId, commandId));
+      if (typeof status.exitCode === "number") confirmedExitCode = status.exitCode;
+      const logs = await observe(() => sandbox.process.getSessionCommandLogs(sessionId, commandId));
+      streamResult.buffer.resetConnectionCursors();
+      streamResult.buffer.onStdout(logs.stdout ?? "");
+      streamResult.buffer.onStderr(logs.stderr ?? "");
+      if (confirmedExitCode !== null) {
+        streamResult.buffer.finish();
         const durationMs = timingNow() - execStart;
-        const timeoutMessage = gitNet
-          ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
-          : `Command timed out after ${Math.round(effectiveTimeoutMs / 1000)} s.`;
         return {
-          exitCode: null,
-          timedOut: true,
-          stdout: "",
-          stderr: `${timeoutMessage}\n`,
+          exitCode: confirmedExitCode,
+          timedOut: false,
+          stdout: streamResult.buffer.stdout,
+          stderr: streamResult.buffer.stderr,
           metadata: { durationMs },
         };
       }
-      await sleep(SESSION_POLL_INTERVAL_MS);
+      // Full log snapshots are heavier than a status read. Limit fallback
+      // traffic to one snapshot per second. Failed-stream fallback retains
+      // its original deadline, including the time spent waiting between reads.
+      await sleep(streamResult.pollUntilExit ? SESSION_LOG_POLL_INTERVAL_MS
+        : Math.max(0, Math.min(SESSION_LOG_POLL_INTERVAL_MS, deadlineMs - Date.now())));
     }
-
-    // Read true, separated stdout and stderr from the logs endpoint. The
-    // synchronous dispatch response fields are optional, so the logs endpoint is
-    // the source of truth.
-    const logs = await sandbox.process.getSessionCommandLogs(sessionId, commandId);
-    const durationMs = timingNow() - execStart;
-    return {
-      exitCode,
-      timedOut: false,
-      stdout: logs.stdout ?? "",
-      stderr: logs.stderr ?? "",
-      metadata: { durationMs },
-    };
   } catch (error) {
-    if (error instanceof DaytonaTimeoutError) {
+    if (error instanceof SessionObservationTimeoutError) {
+      // Preserve undecided decoder suffixes in the partial result, without
+      // injecting a possibly incomplete character into the live protocol.
+      streamBuffer.finish(false);
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: streamBuffer.stdout,
+        stderr: `${streamBuffer.stderr}Session log observation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s; ${confirmedExitCode === null ? "command exit remains unconfirmed" : "final output may be incomplete"}.\n`,
+        metadata: {
+          ...(execStart != null ? { durationMs: timingNow() - execStart } : {}),
+          timeoutScope: "session_log_observation",
+          commandExitConfirmed: confirmedExitCode !== null,
+          ...(confirmedExitCode !== null ? { observedExitCode: confirmedExitCode } : {}),
+        },
+      };
+    }
+    if (error instanceof DaytonaTimeoutError || error instanceof SessionCommandDeadlineError) {
+      streamBuffer.finish(false);
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
-        : error.message.trim();
+        : error instanceof SessionCommandDeadlineError
+          ? `Command timed out after ${Math.round(effectiveTimeoutMs / 1000)} s.`
+          : error.message.trim();
       const durationMs = execStart != null ? timingNow() - execStart : undefined;
       return {
         exitCode: null,
         timedOut: true,
-        stdout: "",
-        stderr: `${timeoutMessage}\n`,
+        stdout: streamBuffer.stdout,
+        stderr: `${streamBuffer.stderr}${timeoutMessage}\n`,
         ...(durationMs != null ? { metadata: { durationMs } } : {}),
       };
     }

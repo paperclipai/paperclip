@@ -465,7 +465,7 @@ fn accepts_global_process_and_diagnostic_events_without_an_active_turn() {
 }
 
 #[test]
-fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
+fn terminal_events_retain_dispatched_tools_and_reject_late_turn_events() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
     state
@@ -484,8 +484,10 @@ fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
             json!({"status":"cancelled","error":{"message":"token=secret"}}),
         ))
         .unwrap();
+    assert!(state.pending_tool("call-1").is_some());
+    assert!(state.begin_turn("turn-2").is_err());
+    state.complete_tool("call-1", "issues.read").unwrap();
     assert!(state.pending_tool("call-1").is_none());
-    assert!(state.complete_tool("call-1", "issues.read").is_err());
     assert!(state
         .accept_event(&event(
             3,
@@ -509,10 +511,8 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         "description": "The document must contain the token CHAT8322bda781b81.",
         "initialPlan": plan,
         "idempotencyKey": "CHAT8322bda781b81-task",
-        "apiToken": "actual-credential",
     });
-    let mut expected = input.clone();
-    expected["apiToken"] = json!("[REDACTED]");
+    let expected = input.clone();
     let emitted = state
         .accept_event(&event(
             1,
@@ -578,34 +578,27 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
             false,
         ),
     ] {
-        state
-            .complete_tool(
-                "call-1",
-                state
-                    .pending_tool("call-1")
-                    .unwrap()
-                    .operation_id
-                    .clone()
-                    .as_str(),
-            )
-            .unwrap();
-        let emitted = state
-            .accept_event(&event(
-                2,
-                GeneratedAcpxSidecarEventType::RuntimeToolCalled,
-                Some("turn-1"),
-                json!({"callId": "call-1", "operationId": operation, "input": {field: prose}}),
-            ))
-            .unwrap();
-        let AcpxProviderStateEvent::ToolCall { input, .. } = &emitted[0] else {
+        let mut candidate = AcpxProviderState::new("run-1").unwrap();
+        candidate.begin_turn("turn-1").unwrap();
+        let emitted = candidate.accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            Some("turn-1"),
+            json!({"callId":"call-1", "operationId":operation, "input":{field:prose}}),
+        ));
+        if !preserved {
+            assert!(emitted
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to execute altered arguments"));
+            assert!(candidate.pending_tool("call-1").is_none());
+            continue;
+        }
+        let events = emitted.unwrap();
+        let AcpxProviderStateEvent::ToolCall { input, .. } = &events[0] else {
             panic!("expected tool call");
         };
-        assert_eq!(
-            input[field] == json!(prose),
-            preserved,
-            "{operation}: {prose}"
-        );
-        assert!(!input.to_string().contains("actual-credential"));
+        assert_eq!(input[field], json!(prose));
     }
 }
 

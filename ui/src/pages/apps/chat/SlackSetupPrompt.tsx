@@ -38,5 +38,5 @@ export function buildSlackSetupPrompt(instanceUrl: string) {
 }
 
 export function SlackSetupPrompt({ instanceUrl = window.location.origin }: { instanceUrl?: string }) {
-  return <SetupPrompt prompt={buildSlackSetupPrompt(instanceUrl)} />;
+  return <SetupPrompt prompt={buildSlackSetupPrompt(instanceUrl)} description="Paste this into your agent to configure your Slack bot." />;
 }

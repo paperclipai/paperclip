@@ -563,6 +563,7 @@ export const toolMcpGatewayTokens = pgTable(
   },
   (table) => [
     uniqueIndex("tool_mcp_gateway_tokens_token_hash_uq").on(table.tokenHash),
+    index("tool_mcp_gateway_tokens_expiry_idx").on(table.expiresAt, table.id),
     index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
     index("tool_mcp_gateway_tokens_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
     index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),

@@ -23,7 +23,7 @@ export class AcpxApprovalRequiredError extends Error {
 const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "report_progress", "answer_status_question", "write_document",
   "request_human_input", "register_deliverable", "finish_task", "block_task",
-  "request_review", "create_task", "reassign_task", "set_dependencies",
+  "set_task_title", "request_review", "create_task", "reassign_task", "set_dependencies",
   "create_project", "request_approval",
 ]);
 

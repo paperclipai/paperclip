@@ -120,9 +120,11 @@ export interface ProjectRepository {
   url: string;
   private?: boolean;
   connections: string[];
+  connectionIds?: string[];
 }
 
 export interface ProjectRepositoryOptions {
+  connections?: Array<{ id: string; name: string }>;
   repositories: ProjectRepository[];
   connectionCount: number;
   failedConnectionCount: number;

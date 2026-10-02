@@ -2017,6 +2017,41 @@
       "when": 1790727655506,
       "tag": "0289_drop_user_keyboard_shortcuts",
       "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1790768845200,
+      "tag": "0290_browser_use_cloud",
+      "breakpoints": true
+    },
+    {
+      "idx": 291,
+      "version": "7",
+      "when": 1790771783697,
+      "tag": "0291_conscious_secret_warriors",
+      "breakpoints": true
+    },
+    {
+      "idx": 292,
+      "version": "7",
+      "when": 1790776905226,
+      "tag": "0292_powerful_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1790796608171,
+      "tag": "0293_broad_rattler",
+      "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1790891286527,
+      "tag": "0294_chilly_marvel_apes",
+      "breakpoints": true
     }
   ]
 }

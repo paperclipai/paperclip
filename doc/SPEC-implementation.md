@@ -229,6 +229,17 @@ See `doc/project-repositories.md` for the API and UI contract.
 
 ## 7.6 `issues` (core task entity)
 
+Task creation accepts an omitted or blank title when the description contains a prompt.
+The server stores the first 120 characters of its whitespace-normalized prompt as
+a provisional title and sets `title_needs_generation`. The assigned agent receives
+an early instruction to use `set_task_title` (or `PUT /api/issues/:id/title`) to
+replace it with a concise title. `onlyIfProvisional: true` atomically preserves a
+user or agent title already chosen, including concurrent edits. Explicit title
+edits clear the marker. Naming is available in standard, ask, and planning modes;
+it does not change status, ownership, or the full description. Title writes are
+company-scoped and audited; agent callers must own the active run. Existing tasks
+retain their titles and default to no generation request.
+
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `project_id` uuid fk `projects.id` null
@@ -615,6 +626,27 @@ budget gates, and pause gates remain independently enforced. Comment access is
 structurally downstream of issue read access (`issue:comment` is a subset of
 `issue:read`).
 
+Low-trust agents may create self-assigned tasks and subtasks inside their existing
+project or root-task scope. Both creation endpoints enforce task-assignment
+authorization, including responsible-user and protected-assignment checks, even
+when the new task is unassigned. Created tasks retain the effective containment
+policy and quarantined source attribution. Self-assigned decomposition does not
+count as delegation back to another agent. Persistent instruction changes remain
+restricted except for self-edits requested through authenticated owner chat.
+That exception requires the current accepted identity and a recorded direct
+board-message wake, and rechecks the user's current instruction-editing permission
+when saving. It does not extend to outside work, subtasks, peer instructions, or
+other privileged configuration. Denials name the specific restriction.
+
+Authenticated board direction permits a low-trust agent to execute its own
+human conversation or the exact task explicitly assigned or addressed by a human.
+This server-owned exception is bound to the current assignee and the run's task;
+it uses existing conversation identity and authenticated execution-request records,
+including same-task retry ancestry. It does not expand inherited boundaries or
+grant privileged tools. Backlog assignments retain the existing human requester
+without starting a run. Reassignment transactionally cancels prior human requests,
+including service/plugin writes; cancelled runs cannot authorize later retries. See `doc/LOW-TRUST-PRESETS.md` for containment details.
+
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a
 `done` or `cancelled` issue, but the wake remains agent-class and is subject to
@@ -739,8 +771,12 @@ outcomes and resolver attribution are immutable.
 
 An explicit named agent or user addressee and a company-configured cap may narrow
 the effective audience. Only the exact named addressee may resolve an addressed
-interaction; a human does not override a user addressee. A cap never widens the
-requested audience. Tool-action confirmations and
+interaction; a human does not override a user addressee. Explicit user recipients
+must exist and be authorized to respond in the issue's company before creation.
+Ordinary Agent Chat questions derive their user recipient from the persisted
+conversation owner. A conflicting explicit user recipient is rejected; IDs are
+never guessed or repaired. Ordinary task questions keep optional addressing.
+A cap never widens the requested audience. Tool-action confirmations and
 other hard-governed action cards remain `human_only` (or move to the formal approval
 system) regardless of a requested open audience.
 
@@ -1172,6 +1208,14 @@ Dashboard payload must include:
 - open/in-progress/blocked/done issue counts
 - month-to-date spend and budget utilization
 - pending approvals count
+
+The dashboard agent cards show each linked task at most once. The server selects
+distinct task cards from bounded active and recent run samples before it applies
+the dashboard card limit. When multiple runs belong to one task, an active run
+takes precedence over completed runs.
+Runs without a linked task remain separate cards. The dashboard keeps the
+count of additional distinct cards in its link to the live runs page, which
+can show every run.
 
 ## 10.10 Error Semantics
 
@@ -1635,7 +1679,9 @@ for persistence, migration, rendering, and integration contracts.
 
 `enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
-`GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue on first send/upload. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
+`GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
+
+The Chat navigation entry reopens the last agent conversation visited by the current user in the current company. The browser keeps this recent order and any existing conversation ID locally; unavailable agents and removed conversations are skipped. An agent chat that has no issue yet can still reopen from the agent roster. The agent chooser remains the landing view when no saved chat is available.
 
 The server owns conversation state: `waiting` plus `in_review` denotes a healthy idle conversation, and `active` denotes an unanswered or executing turn. Successful replies settle a turn; they do not finish the issue. Idle containers are excluded from execution-work counts, ordinary task lists, timer work, and recovery invocations. Failed/unanswered turns retain normal handling. Child completion never wakes or completes the conversation. Search and direct task access preserve history.
 
@@ -1672,10 +1718,25 @@ harness/model routing and fails closed without ambient credential fallback.
 Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
-### Experimental task-bound email
 
-AgentMail channel connections extend the experimental conversation/task pipeline
-with explicit email publication. Each owned inbox/provider thread binds one task;
+The selected AI connection supports an on-demand usage probe through the common
+connection service, independent of legacy/native execution. The board usage
+endpoint rechecks company membership and the credential's human audience before
+reading its stored token. Report all returned allowance windows, model/feature
+scope, reset times, exhaustion and overage observations; missing values remain
+unknown and unsupported methods/provider failures are explicit. The account
+detail's Check usage action triggers the probe. No automatic detection, routing,
+budget enforcement, credential refresh or credit purchase follows from it.
+
+Provider login failures create a provider-specific Connections card on the task
+when the run fails, before generic recovery retries. Reconnect preserves account
+identity and permissions. Compatible legacy agents may explicitly adopt a
+validated connection inline; late failures must not invalidate newer credentials.
+
+### Task-bound email
+
+AgentMail is a default connection and does not require the experimental chat
+setting. It extends the conversation/task pipeline with explicit email publication. Each owned inbox/provider thread binds one task;
 external email senders do not gain board authority. Incoming correspondence uses
 the assigned agent's normal execution controls. Internal task activity never
 implicitly sends email. New outgoing conversations create child tasks and durable
@@ -1767,3 +1828,67 @@ omit the already-rejected export, clear stale repair notices, and finalize the
 accepted result without another provider turn, even when its old sandbox is
 unavailable. Preserve current ownership and newer-work fences. See
 `native-workspace-finalization-recovery.md`.
+
+## GitHub-synced skill sources
+
+- Discovery supports opt-in `Accept: application/x-ndjson` on the existing discovery
+  endpoint. Progress events report connection/download/tree/package stages, checked skill
+  counts, and the current package's file counts; candidate events contain metadata,
+  never file contents. Only the final `complete` event makes the scan selectable.
+  Interrupted streams discard partial results, and cancellation stops further
+  provider reads. The default JSON API remains compatible. The import dialog uses
+  reduced-motion-aware animations and shows indeterminate progress while saving
+  complete packages, without inventing completion percentages.
+
+- Sources and entries are company-scoped. Reuse GitHub connection grants and credential
+  refresh; every provider read authorizes the current caller. Saved connection IDs do
+  not confer access to another user's token. Agent reads use managed run identities.
+- The import picker searches the deduplicated union of repositories from all connections
+  the caller can access, automatically choosing an authorized connection. Adding accounts
+  uses the standard GitHub setup in Apps and retains the import draft. Repository URLs
+  use the default branch; `/tree/<branch>` URLs select a branch, including slash-containing
+  names, without a separate branch or credential selector. Pasted URLs also prefer
+  the caller's eligible GitHub connections, including for public repositories;
+  anonymous access is used when no authorized connection succeeds. An explicitly
+  saved connection must remain authorized. Repository identity still comes from
+  the GitHub API; quota errors are distinct from access denials.
+- Discover every `SKILL.md`, including hidden/deep directories. Resolve the tracking
+  ref to an immutable commit once per operation through a shallow Git fetch. Read
+  the complete local Git tree and blobs without checkout, archive transformations,
+  or per-file API calls. Git's receiving/preparing percentages feed download progress.
+  Git must be installed on the server. Downloads are bounded to 128 MiB and three
+  minutes, with two simultaneous downloads and at most four cached/downloading
+  snapshots. A ten-minute in-memory index of temporary repositories, scoped by
+  company, caller, run, and grant, reuses a pinned snapshot for preview/import;
+  authorization is checked before every reuse. No credentials are written to disk
+  or inherited from host Git configuration. Cancellation terminates the Git process
+  group and removes incomplete downloads. Symlinks and submodules are reported,
+  never traversed; nested skill roots are independent package boundaries.
+- Select packages as units, with included-file trees and bounded read-only previews.
+  Nested packages have independent checkboxes; supporting files have no individual
+  selection. Persist file manifests, explicit missing/out-of-package reference findings,
+  and declared `compatibility` requirements with source entries. Preview reads reauthorize
+  the current caller and audit the requested package at the scanned immutable commit;
+  discovery and source metadata contain no file contents. Reference checks are advisory,
+  do not establish complete runtime dependencies, and never expand package boundaries.
+- Stage and audit complete packages before publishing. Scripts are allowed through
+  the existing content audit and never run on import. Persist binary bytes and executable
+  flags in immutable version inventories (legacy entries default to UTF-8/non-executable).
+- Refresh is serialized per source, checks saved selection revisions, and publishes
+  valid skills plus per-entry outcomes with required activity records in one transaction.
+  Failed packages retain prior versions; access/scan/download failures retain all content.
+  Record attempted and successful refresh times separately.
+- Match by repository identity and exact path. Preserve IDs, keys, assignments, folders,
+  and history. New key collisions cannot overwrite unrelated skills. Only changed package
+  bytes or executable modes create versions. Library reads, tests, and subsequent unpinned
+  runs use local installed snapshots; pinned/active runs retain their versions.
+- Additions require reviewed selection, with new candidates checked by default and
+  explicit folder exclusions retained. Upstream deletion keeps installed content with
+  removed status; moves are removal plus discovery. Deselect/disconnect retains content
+  and assignments. Originals are read-only, with the existing independent fork workflow.
+- Adopt recognizable existing GitHub imports without provider calls or content changes;
+  resolve missing repository IDs and full snapshots on successful refresh. Exclude bundled,
+  catalog, local/project, skills.sh, and unsupported hosts. Existing GitHub import and update
+  endpoints delegate to sources while retaining response shapes.
+- GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
+  or pull-request creation in this milestone.

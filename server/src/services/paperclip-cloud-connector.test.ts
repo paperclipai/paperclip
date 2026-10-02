@@ -262,6 +262,27 @@ describe("Paperclip Cloud connector", () => {
     });
   });
 
+  it.each([
+    ["https://app.asana.com/-/oauth_authorize", true],
+    ["https://mcp.asana.com/authorize", false],
+    ["https://app.asana.com/other", false],
+  ])("validates Asana's exact v2 authorization endpoint %s", async (authorizationUrl, accepted) => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
+        expect(claims).toMatchObject({ prv: "asana", prf: "asana.mcp", scp: ["default"] });
+        return Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=test",
+          authorizationUrl, expiresAt: "2099-01-01T00:00:00Z" });
+      }) as typeof fetch,
+    });
+    const result = connector.startAuthorization({ subject, companyId, profile: "asana.mcp",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "state" });
+    if (accepted) await expect(result).resolves.toMatchObject({ authorizationUrl });
+    else await expect(result).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
+  });
+
   it("accepts the fixed Google authorization endpoint for Google profiles", async () => {
     const keys = config();
     const connector = createPaperclipCloudConnector({

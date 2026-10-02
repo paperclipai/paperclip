@@ -283,8 +283,8 @@ const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 // Identity is read from the complete control-plane state, including its PRP
 // event window. Match the transport's bounded reader so verbose valid turns do
-// not lose continuation authority merely because their history exceeds 2 MiB.
-const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 64 * 1024 * 1024;
+// not lose continuation authority merely because their history exceeds 64 MiB.
+const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
@@ -391,6 +391,9 @@ function clearNativeRuntimeRequestResolutions(runId: string): void {
 }
 
 type WarmNativeSession = {
+  agentId: string;
+  instructionCopy?: { runId: string; root?: string; targetIdentity: string; collectStopped: () => Promise<void> };
+  preparingRunId?: string;
   managedAiCredentialIdentity?: string;
   credentialRunId?: string;
   githubAccess?: NativeGitHubAccess;
@@ -408,10 +411,13 @@ type WarmNativeSession = {
   lastActivityAt: string;
 };
 
-async function closeWarmNativeSession(entry: WarmNativeSession, reason: string) {
+async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, preserveInstructionsForRunId?: string) {
   // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
-  try { await entry.session.close({ reason }); }
+  try {
+    await entry.session.close({ reason });
+    if (entry.instructionCopy?.runId !== preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
+  }
   finally { await stopping; }
 }
 
@@ -419,6 +425,56 @@ const warmNativeSessions = new Map<string, WarmNativeSession>();
 // Closing a remote owner saves its checkpoint asynchronously. A new turn must
 // not inspect or quarantine that owner's state until the save has finished.
 const closingWarmNativeSessions = new Map<string, Promise<void>>();
+
+function instructionTargetIdentity(target?: AdapterExecutionTarget | null): string {
+  return JSON.stringify(target?.kind === "remote" ? {
+    environmentId: target.environmentId, cwd: target.remoteCwd,
+    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.spec,
+  } : { kind: "local", environmentId: target?.environmentId });
+}
+
+/** Reserve the actual live owner before handing its directory to another run.
+ * A persisted conversation alone is not proof that a working tree is reusable. */
+export async function reserveWarmNativeInstructionDirectory(input: {
+  companyId: string; agentId: string; previousRunId: string; runId: string; target?: AdapterExecutionTarget | null;
+  canReuse: () => Promise<boolean>;
+}): Promise<{ reuseRunId: string; adopt: (root: string, collectStopped: () => Promise<void>) => void; release: () => Promise<void> } | null> {
+  for (const [id, entry] of warmNativeSessions) {
+    if (entry.companyId !== input.companyId || entry.agentId !== input.agentId || entry.instructionCopy?.runId !== input.previousRunId) continue;
+    if (entry.busy || entry.preparingRunId) throw new Error("native_session_supervisor_busy");
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+    entry.preparingRunId = input.runId;
+    const retire = async (reason: string) => {
+      entry.closeOnReleaseReason = reason;
+      try {
+        await closeWarmNativeSession(entry, reason);
+        if (warmNativeSessions.get(id) === entry) warmNativeSessions.delete(id);
+      } finally {
+        // Failed containment remains registered and cannot be adopted. The next
+        // admission retries retirement instead of launching over a live owner.
+        entry.preparingRunId = undefined;
+      }
+    };
+    let reusable = false;
+    const targetProven = input.target?.kind !== "remote" || input.target.transport !== "sandbox" || Boolean(input.target.sandboxLeaseAcquisition?.providerLeaseId);
+    try { reusable = targetProven && !entry.closeOnReleaseReason && entry.instructionCopy.targetIdentity === instructionTargetIdentity(input.target) && await input.canReuse(); }
+    finally {
+      if (!reusable) {
+        await retire("managed agent files changed or environment replaced");
+      }
+    }
+    if (!reusable) return null;
+    return { reuseRunId: input.previousRunId, adopt: (root, collectStopped) => {
+      entry.instructionCopy = { runId: input.runId, root, targetIdentity: instructionTargetIdentity(input.target), collectStopped };
+    }, release: async () => {
+      if (warmNativeSessions.get(id) === entry && entry.preparingRunId === input.runId) {
+        await retire("managed warm turn preparation ended without attachment");
+      }
+    } };
+  }
+  return null;
+}
 
 /**
  * Close idle native sessions before an operator destroys their remote
@@ -457,7 +513,7 @@ async function closeIdleWarmNativeSessions(input: {
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
-    if (entry.busy || executingRunnerdSessionScopes.has(sessionId)) {
+    if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(sessionId)) {
       // A busy turn can complete while another idle session is checkpointing.
       // Fence that entry now so its eventual release cannot leave a new idle
       // owner behind after the shutdown sweep has already passed it.
@@ -2137,7 +2193,13 @@ export function retainedNativeCleanupJournalMatches(input: {
         payload.isError === false &&
         payload.sourceEventId === event.sourceEventId &&
         payload.sourceEventType === event.eventType &&
-        canonicalJson(payload.input) === canonicalJson(semantic.input) &&
+        // Current receipts retain a digest; older journals retain the input.
+        // If both exist, both must bind to the accepted semantic input.
+        (payload.inputDigest === undefined
+          ? canonicalJson(payload.input) === canonicalJson(semantic.input)
+          : payload.inputDigest === nativeSha256(semantic.input) &&
+            (payload.input === undefined ||
+              canonicalJson(payload.input) === canonicalJson(semantic.input))) &&
         canonicalJson(payload.correlation) ===
           canonicalJson(semantic.correlation) &&
         record(record(command.result).result).callId === semantic.callId
@@ -7181,9 +7243,12 @@ export async function executePaperclipNativeSession(input: {
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
-  /** Only this run's registered private instruction entry.
-   * Probe at terminal; persist only after owned shutdown. */
+  /** Only this run's registered directory. Validate a warm checkpoint at the
+   * terminal boundary, or collect after owned shutdown when it cannot settle. */
   instructionWorkingCopy?: {
+    runId?: string;
+    root?: string;
+    checkpointWarm?: () => Promise<boolean>;
     hasChanges: () => Promise<boolean>;
     collectStopped: () => Promise<void>;
   };
@@ -7209,6 +7274,7 @@ export async function executePaperclipNativeSession(input: {
   runnerRemoteCodexNpmSpec?: string | null;
   runnerRemoteProviderPackPath?: string | null;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
+  syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   enqueueWakeup?: (
     agentId: string,
     options: {
@@ -8055,6 +8121,8 @@ async function executePaperclipNativeSessionWithinScope(
   if (warmSessionId !== null && warmConfigDigest !== null) {
     const entry = warmNativeSessions.get(warmSessionId);
     if (entry) {
+      if (entry.preparingRunId && entry.preparingRunId !== input.execution.binding.runId) throw new Error("native_session_supervisor_busy");
+      entry.preparingRunId = undefined;
       // Old run-scoped environments still require process replacement. A
       // session-owned broker can change run authority without replacing it.
       const hasBrokerCapability = Boolean(
@@ -8067,6 +8135,7 @@ async function executePaperclipNativeSessionWithinScope(
       if (
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
+        entry.instructionCopy?.root !== input.instructionWorkingCopy?.root ||
         entry.managedAiCredentialIdentity !== input.managedAiCredentialIdentity ||
         credentialRunChanged ||
         Boolean(entry.githubAccess) !== Boolean(input.managedGitHub) ||
@@ -8080,7 +8149,10 @@ async function executePaperclipNativeSessionWithinScope(
         if (entry.busy) throw new Error("native_session_supervisor_busy");
         if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
         warmNativeSessions.delete(warmSessionId);
-        await closeWarmNativeSession(entry, "warm native session configuration changed");
+        // Preparation may already have handed this directory to the incoming
+        // run. Retiring the old transport must not delete the new run's root;
+        // its own stop callback owns collection from this point forward.
+        await closeWarmNativeSession(entry, "warm native session configuration changed", input.execution.binding.runId);
         persistedWarmSession = loadWarmNativeCheckpoint(
           input.execution,
           warmConfigDigest,
@@ -8417,6 +8489,7 @@ async function executePaperclipNativeSessionWithinScope(
                   existing.session = session;
                 } else
                   warmNativeSessions.set(warmSessionId, {
+                    agentId: input.execution.binding.agentId,
                     managedAiCredentialIdentity: input.managedAiCredentialIdentity,
                     githubAuthenticationMode:
                       input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
@@ -8441,6 +8514,11 @@ async function executePaperclipNativeSessionWithinScope(
                     idleTimer: null,
                     lastActivityAt: new Date().toISOString(),
                   });
+                const owner = warmNativeSessions.get(warmSessionId);
+                if (owner && input.instructionWorkingCopy?.runId) owner.instructionCopy = {
+                  runId: input.instructionWorkingCopy.runId, root: input.instructionWorkingCopy.root, targetIdentity: instructionTargetIdentity(input.runnerExecutionTarget),
+                  collectStopped: input.instructionWorkingCopy.collectStopped,
+                };
               } else if (!session && warmSessionId !== null) {
                 const existing = warmNativeSessions.get(warmSessionId);
                 // onSession(null) quarantines a transport that can no longer
@@ -9087,10 +9165,25 @@ async function executePaperclipNativeSessionWithinScope(
   // A following run cannot attach until the prior run's durable finalization
   // is committed. Provider completion alone is not an authority boundary.
   if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+    // A structured failed/cancelled result completes the protocol without
+    // throwing. Heartbeat still stops its sandbox, so retire the provider now
+    // while its transport can collect files and checkpoint the suspended runner.
+    // Leaving it in the warm map makes the next turn retire a stopped transport.
+    const retainSession = native.terminal.runTerminalState === "succeeded";
     const instructionCopy = input.instructionWorkingCopy;
     const ownedSession = warmNativeSessions.get(warmSessionId);
-    const collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
-      await instructionCopy.hasChanges());
+    let collectInstructions: boolean;
+    try {
+      collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
+        (instructionCopy.checkpointWarm ? !await instructionCopy.checkpointWarm() : await instructionCopy.hasChanges()));
+    } catch (error) {
+      // A checkpoint or its receipt callback can reject. Retire this owner
+      // before heartbeat stops the sandbox, preserving the initiating error.
+      await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true)
+        .catch(() => undefined);
+      throw error;
+    }
+    const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped;
     if (collectInstructions && ownedSession) {
       // Keep the unchanged warm path intact. A changed private instruction copy
       // requires the existing checkpoint-and-close boundary before collection.
@@ -9100,9 +9193,9 @@ async function executePaperclipNativeSessionWithinScope(
       warmSessionId,
       warmSessionOwnerToken,
       lifecyclePolicy.idleTimeoutMs,
-      false,
+      !retainSession,
     );
-    if (collectInstructions) await instructionCopy!.collectStopped();
+    if (collectInstructions && !collectedByOwner) await instructionCopy!.collectStopped();
   }
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
@@ -10555,6 +10648,7 @@ export async function createRunnerdBackend(input: {
   toolTrace?: NativeToolTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
+  syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   enqueueWakeup?: (
     agentId: string,
     options: {
@@ -10697,6 +10791,7 @@ async function createRunnerdBackendWithinSessionClaim(
     currentWakeComments: currentWakeComments ?? undefined,
     chatAttachmentReadScope: input.chatAttachmentReadScope,
     stopTaskForReassignment: input.stopTaskForReassignment,
+    syncIssueExternalObjects: input.syncIssueExternalObjects,
     enqueueWakeup: input.enqueueWakeup,
   });
   const authorityEpoch = new SessionToolAuthorityEpoch(

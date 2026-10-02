@@ -36,6 +36,7 @@ import { Workspaces } from "./pages/Workspaces";
 import { Issues } from "./pages/Issues";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
+import { AgentChats } from "./pages/AgentChats";
 import { AgentChat } from "./pages/AgentChat";
 import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
@@ -81,6 +82,7 @@ import { PaperclipCloudOAuthHandoffPage } from "./pages/apps/PaperclipCloudOAuth
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanySkills } from "./pages/CompanySkills";
+import { SkillSources } from "./pages/SkillSources";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -255,6 +257,8 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
+      <Route path="skills/sources" element={<SkillSources />} />
+      <Route path="skills/sources/:sourceId" element={<SkillSources />} />
       <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/studio/new" element={<SkillStudio />} />
       <Route path="skills/studio/:skillId" element={<SkillStudio />} />
@@ -304,6 +308,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
+      <Route path="chats" element={<AgentChats />} />
       <Route path="chats/:agentRef" element={<AgentChat />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
       {import.meta.env.DEV ? (

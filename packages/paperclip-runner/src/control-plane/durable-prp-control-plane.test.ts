@@ -26,6 +26,7 @@ import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
+  SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
   spawnRunner,
   type RunnerProcessLaunchSpec,
@@ -819,7 +820,9 @@ function sendMaskedJson(socket: Socket, value: unknown): void {
   } else if (payload.length <= 0xffff) {
     header.push(0x80 | 126, payload.length >>> 8, payload.length & 0xff);
   } else {
-    throw new Error("Test client frame exceeds the supported size.");
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(payload.length));
+    header.push(0x80 | 127, ...length);
   }
   const masked = Buffer.from(payload);
   for (let index = 0; index < masked.length; index += 1) {
@@ -2216,7 +2219,74 @@ describe.sequential("DurablePrpControlPlane", () => {
     }
   });
 
-  it("recovers one semantic call from the durable event after a coordinator restart", async () => {
+  it("delivers a large lossless result without copying its large input into the command", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-large-tool-result-"));
+    const content = "日本語🦀".repeat(34_000) + "END";
+    const args = { content };
+    const handler = vi.fn(async () => ({ result: { content } }));
+    const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler };
+    const core = new DurablePrpControlPlane(options);
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const event = semanticInputEvent();
+      const semantic = ((event.payload as any).payload as any).semantic_tool;
+      semantic.input = args;
+      semantic.content.digest = digestPaperclipSemanticContent(args);
+      sendSecure(client, event);
+      const frames = [await receiveSecure(client), await receiveSecure(client)];
+      const wire = frames.find((frame) => frame?.kind === "command")!.payload as any;
+      expect(wire.payload.result.content).toBe(content);
+      expect(wire.payload.input).toBeUndefined();
+      expect(wire.payload.inputDigest).toBe(digestPaperclipSemanticContent(args).slice("sha256:".length));
+      expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThan(1024 * 1024);
+      sendSecure(client, { protocol: "paperclip.runner", version: 1, kind: "command_result", payload: {
+        commandId: wire.commandId, controllerSeq: wire.controllerSeq, commandType: wire.type,
+        status: "completed", result: { status: "delivered", callId: "call-1" },
+      } });
+      await vi.waitFor(() => expect(core.store.state.commands[0]?.status).toBe("completed"));
+      expect(core.semanticToolResultsSettled()).toBe(true);
+      const savedDigest = core.store.state.commands[0]!.payload.inputDigest;
+      core.store.state.commands[0]!.payload.inputDigest = `sha256:${"0".repeat(64)}`;
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      core.store.state.commands[0]!.payload.inputDigest = savedDigest;
+      const reopened = new DurablePrpControlPlane(options);
+      expect(reopened.semanticToolResultsSettled()).toBe(true);
+      await reopened.stop();
+      expect(handler).toHaveBeenCalledTimes(1);
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["before_dispatch", "during_effect"] as const)("settles only proven pre-dispatch cancellation (%s)", async (stage) => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-tool-dispatch-boundary-"));
+    const handler = vi.fn(async () => {
+      if (stage === "before_dispatch") throw new SemanticToolNotDispatchedError();
+      throw new Error("connection lost after possibly committing a write");
+    });
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      await receiveSecure(client);
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      if (stage === "before_dispatch") {
+        await vi.waitFor(() => expect(core.store.state.commands).toHaveLength(1));
+        expect(core.store.state.commands[0]).toMatchObject({ type: "semantic_tool.result", payload: {
+          callId: "call-1", isError: true, result: { error: { code: "semantic_tool_not_dispatched" } },
+        } });
+      } else {
+        await vi.waitFor(() => expect(core.semanticToolSettlementDiagnostics()).toMatchObject({ persistenceFailed: true }));
+        expect(core.store.state.commands).toEqual([]);
+      }
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("retains an uncertain semantic outcome without redispatching after a coordinator restart", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-recovery-"));
     let firstCalls = 0;
     const first = new DurablePrpControlPlane({
@@ -2264,22 +2334,13 @@ describe.sequential("DurablePrpControlPlane", () => {
       await recovered.start();
       const client = await authenticate(recovered, leaseToken!);
       sendSecure(client!, semanticInputEvent());
-      const outcomes = [
-        await receiveSecure(client!),
-        await receiveSecure(client!),
-      ];
-      const command = outcomes.find((outcome) => outcome?.kind === "command");
-      expect(outcomes.some((outcome) => outcome?.kind === "ack")).toBe(true);
-      expect(command?.payload).toMatchObject({
-        type: "semantic_tool.result",
-        payload: {
-          callId: "call-1",
-          operationId: "get_task_context",
-          result: { ok: true, operationId: "get_task_context" },
-          isError: false,
-        },
+      await expect(receiveSecure(client!)).resolves.toMatchObject({ kind: "ack" });
+      expect(recoveredCalls).toBe(0);
+      expect(recovered.semanticToolResultsSettled()).toBe(false);
+      expect(recovered.semanticToolSettlementDiagnostics()).toMatchObject({
+        pending: [{ callId: "call-1", operationId: "get_task_context" }], deliveries: [],
       });
-      expect(recoveredCalls).toBe(1);
+      expect(recovered.store.state.commands.filter((entry) => entry.type === "semantic_tool.result")).toEqual([]);
 
       const tampered = semanticInputEvent(2);
       const tamperedEvent = tampered.payload as Record<string, unknown>;
