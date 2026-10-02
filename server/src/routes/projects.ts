@@ -153,9 +153,6 @@ export function projectRoutes(db: Db) {
     for (const runId of activeRunIds) {
       await heartbeat.cancelRun(runId, "Cancelled because the project was deleted");
     }
-    for (const runId of activeRunIds) {
-      await heartbeat.waitForRunExecutionDrain(runId);
-    }
     for (const workspace of project.workspaces) {
       await stopRuntimeServicesForProjectWorkspace({
         db,
@@ -172,6 +169,9 @@ export function projectRoutes(db: Db) {
         executionWorkspaceId: workspace.id,
         workspaceCwd: workspace.cwd,
       });
+    }
+    for (const runId of activeRunIds) {
+      await heartbeat.waitForRunExecutionDrain(runId, { timeoutMs: 30_000 });
     }
   }
 
