@@ -35,7 +35,9 @@ it("checks only on demand and replaces a successful observation with a failed pr
   await vi.waitFor(() => expect(host.textContent).toContain("100% used"));
   expect(api.probeUsage).toHaveBeenCalledWith("company", "connection", "grant");
   expect(host.textContent).toContain("Limit reached");
-  expect(host.textContent).toContain("Overage is unavailable");
+  expect(host.textContent).toContain("OverageOff");
+  expect(host.textContent).not.toContain("remaining");
+  expect(host.textContent).not.toContain("hour window");
   api.probeUsage.mockResolvedValue({ ...observation, status: "error", limits: [], overage: null, message: "The provider rate limited the usage check. Try again later." });
   click();
   await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("rate limited"));
@@ -57,16 +59,28 @@ it("does not round almost-exhausted usage up to an exhausted allowance", async (
   });
   render(); click();
   await vi.waitFor(() => expect(host.textContent).toContain("99.99999% used"));
-  expect(host.textContent).toContain("0.00001% remaining");
-  expect(host.textContent).toContain("0.0000001 USD remaining");
-  expect(host.textContent).toContain("0.00001 USD balance");
+  expect(host.textContent).not.toContain("0.00001% remaining");
+  expect(host.textContent).toContain("$0.0000001 left");
+  expect(host.textContent).toContain("$0.00001");
   expect(host.textContent).not.toContain("Limit reached");
 });
 it("explains unsupported methods and disables checks for a revoked grant", () => {
   render({ ...account, method: "api_key" });
-  expect(host.textContent).toContain("unavailable through this sign-in method");
+  expect(host.textContent).toContain("Unavailable for this sign-in method");
   expect(host.querySelector("button")).toBeNull();
   render({ ...account, status: "revoked" });
   expect(host.querySelector("button")?.disabled).toBe(true);
   expect(api.probeUsage).not.toHaveBeenCalled();
+});
+it("keeps provider admission and unknown overage availability distinct from exhaustion", async () => {
+  api.probeUsage.mockResolvedValue({ status: "ok", checkedAt: "2026-10-02T12:00:00Z",
+    overage: { enabled: true, available: null, unlimited: null, balance: null, remaining: null },
+    limits: [{ id: "primary", label: "Plan usage · Primary", windowDurationSeconds: 18000, usedPercent: 100,
+      remainingPercent: 0, limitReached: true, allowed: true, resetsAt: null, used: null, limit: null, remaining: null, unit: "percent" }],
+  });
+  render(); click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Limit reached · Usage allowed"));
+  expect(host.textContent).toContain("Plan usage · 5h");
+  expect(host.textContent).toContain("On · Availability unknown");
+  expect(host.textContent).not.toContain("Provider denies");
 });
