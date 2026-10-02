@@ -5,6 +5,33 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## JEV Shadow Issue-Lane Receipt
+
+When an operator enables the optional JEV shadow observer, Paperclip can write
+one `jev.shadow.issue_lane` event after it claims an eligible run. The observer
+does not participate in run admission or dispatch. It cannot change an issue,
+an assignment, a dependency, a priority, or a wake.
+
+The payload contains only these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `suggestedLane` | string or null | One reviewed lane, or null when the call failed. |
+| `probabilities` | object or null | Probabilities for the finite reviewed lane set. |
+| `modelVersion` | string | The versioned model ID that handled the request. |
+| `elapsedMs` | number | Elapsed time for the bounded SDK call. |
+| `tokens` | object or null | Input, output, and total token counts. |
+| `errorCategory` | string or null | A bounded category with no provider error body. |
+
+The event never contains an issue title, description, comment, identifier,
+request body, response body, provider error body, API key, or environment
+value. The observer accepts only code-reviewed synthetic summaries from its
+allowlist. It also rejects blocked, dependency-blocked, duplicate, and
+unapproved inputs before an external call.
+
+This event stays in the local run log. It does not add a Paperclip Telemetry
+event or an OpenTelemetry span.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound

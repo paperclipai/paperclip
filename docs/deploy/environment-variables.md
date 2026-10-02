@@ -28,6 +28,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` | (unset) | Host-local path to the immutable provider pack built by `pnpm --filter @paperclipai/paperclip-runner build:provider-pack`. The pack includes its target-built Node 24.11 runtime, locked production dependencies, OpenCode proxy/executable, and ACPX sidecar. Remote OpenCode and ACPX fail closed without it. A preinstalled pack is accepted only when its complete digested manifest matches this build-owned pack; otherwise Paperclip stages this pack into the sandbox. |
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
+| `PAPERCLIP_JEV_SHADOW_ENABLED` | `false` | Enables the optional JEV issue-lane shadow observer. It records suggestions only and never changes issue routing, assignment, status, priority, dependencies, or wakes. Requires `TYPESAFE_API_KEY`; only summaries in the reviewed registry are eligible. |
+| `TYPESAFE_API_KEY` | (unset) | TypeSafe credential used server-side by the optional JEV shadow observer. Keep it in the Paperclip server/container environment; never bind it to an agent. |
 
 Daytona connectivity for `paperclip_runner` uses authenticated provider
 WebSocket ingress and follows the instance experimental setting

@@ -38,6 +38,10 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # Optional JEV issue-lane shadow observer. Keep disabled until the key is
+      # installed and the shadow rollout is explicitly confirmed.
+      PAPERCLIP_JEV_SHADOW_ENABLED: "${PAPERCLIP_JEV_SHADOW_ENABLED:-false}"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:

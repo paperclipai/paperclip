@@ -47,6 +47,7 @@ import { executionFailureRetryCount, executionRetryAttemptCount, accountingForSc
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
+import { createJevDecisionAdapter } from "./jev-decision-adapter.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -9536,6 +9537,7 @@ export function heartbeatService(
       BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   });
   const runDispatch = createRunDispatch(db);
+  const jevDecisionAdapter = createJevDecisionAdapter();
 
   // Applies the post-commit effects a run-dispatch operation returns, on a
   // best-effort basis, exactly as this service publishes them for every
@@ -20356,6 +20358,38 @@ export function heartbeatService(
           throw error;
         }
         issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+      }
+      if (issueContext?.identifier) {
+        // Shadow-only observation. Paperclip has already selected, admitted,
+        // and claimed this run. This promise is intentionally not awaited, so
+        // JEV latency or failure cannot alter dispatch. The adapter accepts
+        // only a reviewed summary from its explicit registry, never raw issue
+        // title/description data, and its receipt has no mutation authority.
+        void jevDecisionAdapter
+          .suggestIssueLane({
+            runId: run.id,
+            issueIdentifier: issueContext.identifier,
+            issueStatus: issueContext.status,
+            unresolvedDependencyCount:
+              issueDependencyReadiness?.unresolvedBlockerCount ?? 0,
+            duplicateRun: false,
+          })
+          .then(async (receipt) => {
+            if (!receipt) return;
+            await appendRunEvent(run, {
+              eventType: "jev.shadow.issue_lane",
+              stream: "system",
+              level: receipt.errorCategory ? "warn" : "info",
+              message: "JEV shadow issue-lane suggestion recorded",
+              payload: receipt,
+            });
+          })
+          .catch(() => {
+            logger.warn(
+              { errorCategory: "receipt_write_failed", runId: run.id },
+              "JEV shadow receipt could not be recorded",
+            );
+          });
       }
       if (
         issueId &&

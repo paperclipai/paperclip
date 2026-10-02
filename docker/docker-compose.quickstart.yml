@@ -25,6 +25,9 @@ services:
       # ── LLM provider keys (at least one is needed for agents to work) ──
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Optional JEV issue-lane shadow observer. It never assigns work.
+      PAPERCLIP_JEV_SHADOW_ENABLED: "${PAPERCLIP_JEV_SHADOW_ENABLED:-false}"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
 
       # ── Deployment settings ──
       # "authenticated" requires login, "local_trusted" skips auth
