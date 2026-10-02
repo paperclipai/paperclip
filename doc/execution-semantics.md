@@ -1487,6 +1487,9 @@ prior completed actions and uncertain outcomes remain history. An operator Stop
 or ambiguous historical cancellation does not automatically release that queue.
 Externally bound chat conversations use a new chat message to continue. Their
 recovery notices show that guidance and do not offer the board Continue action.
+Removed chat connections direct the operator to inspect the run and create a new
+task. Unavailable connections direct the operator to restore access or create a
+new task. A retained conversation record does not prove the chat is available.
 
 ### Native finalization recovery display
 

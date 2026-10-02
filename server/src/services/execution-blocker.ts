@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, issueRecoveryActions, toolConnections, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
@@ -83,9 +83,29 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     : run?.error);
   const eligibleContinuation = Boolean(run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && canContinueCancelledRun(run));
-  const [chatBinding] = eligibleContinuation ? await db.select({ id: chatConversations.id }).from(chatConversations).where(and(
+  const [chatBinding] = eligibleContinuation ? await db.select({
+    state: chatConversations.state, endpointStatus: chatEndpoints.status,
+    connectionStatus: toolConnections.status, connectionEnabled: toolConnections.enabled,
+  }).from(chatConversations).leftJoin(chatEndpoints, and(
+    eq(chatEndpoints.companyId, companyId), eq(chatEndpoints.id, chatConversations.endpointId),
+  )).leftJoin(toolConnections, and(
+    eq(toolConnections.companyId, companyId), eq(toolConnections.id, chatEndpoints.connectionId),
+  )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
+  let nextAction = action.nextAction;
+  if (chatBinding) {
+    if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
+      nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";
+    } else if (chatBinding.state === "unavailable" || !["active", "verifying"].includes(chatBinding.endpointStatus) ||
+        chatBinding.connectionStatus !== "active" || !chatBinding.connectionEnabled) {
+      nextAction = "This chat connection is unavailable. Restore access in Apps or create a new task to continue the work.";
+    } else {
+      nextAction = "Send a new chat message to continue this conversation.";
+    }
+  } else if (run?.status === "cancelled" && !eligibleContinuation && action.cause === "legacy_execution_requires_reconciliation") {
+    nextAction += " Inspect the run before sending a new message to request continuation.";
+  }
 
   return {
     recoveryActionId: action.id,
@@ -93,7 +113,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: chatBinding ? "Send a new chat message to continue this conversation." : action.nextAction,
+    nextAction,
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,

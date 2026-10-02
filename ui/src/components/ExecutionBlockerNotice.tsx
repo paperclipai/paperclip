@@ -36,9 +36,6 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
       <div className="min-w-0 flex-1 break-words">
         <p>Recovery needed.{blocker.runError ? ` ${blocker.runError}` : ""}</p>
         <p>{blocker.nextAction}</p>
-        {blocker.runStatus === "cancelled" && !blocker.canContinue && (
-          <p>Inspect the run before sending a new message to request continuation.</p>
-        )}
         {Boolean(blocker.savedMessageCount) && (
           <p>{blocker.savedMessageCount} saved {blocker.savedMessageCount === 1 ? "message is" : "messages are"} waiting for recovery.</p>
         )}

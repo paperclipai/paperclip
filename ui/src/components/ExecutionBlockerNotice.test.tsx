@@ -46,7 +46,8 @@ describe("stopped task recovery notice", () => {
         recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent",
         cause: "legacy_execution_requires_reconciliation", runStatus: "cancelled",
         runError: "Provider cancelled execution", savedMessageCount: 2, canContinue,
-        nextAction: "Verify provider shutdown before continuing.",
+        nextAction: canContinue ? "Verify provider shutdown before continuing."
+          : "Inspect the run before sending a new message to request continuation.",
       }} />
     </QueryClientProvider>));
     expect(container.textContent).toContain("Provider cancelled execution");
@@ -59,6 +60,19 @@ describe("stopped task recovery notice", () => {
       await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
       expect(agentsApi.retryFailedRun).toHaveBeenCalledWith("agent", "cancelled-run", "company");
     }
+  });
+  it("keeps removed-chat guidance without suggesting a message to an unavailable destination", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent",
+        cause: "legacy_execution_requires_reconciliation", runStatus: "cancelled", canContinue: false,
+        nextAction: "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.",
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).toContain("create a new task");
+    expect(container.textContent).not.toContain("sending a new message");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("Inspect run");
   });
   it("keeps the required next action for other reconciliation causes", async () => {
     await act(async () => root.render(<QueryClientProvider client={client}>

@@ -385,7 +385,7 @@ const support = await getEmbeddedPostgresTestSupport();
     return result;
   });
 
-  it("directs external chat cancellations to new chat input instead of a rejected Continue action", async () => {
+  it.each(["active", "removed", "unavailable", "paused", "disabled"])("shows usable recovery guidance for external chat cancellations: %s", async kind => {
     const f = await seed();
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", nativeIssueId: null,
@@ -401,14 +401,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
     await db.insert(toolApplications).values({ id: applicationId, companyId: f.companyId, name: "Slack", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId,
-      name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
+      name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel", status: "active", enabled: kind !== "disabled" });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId,
-      provider: "slack", publicId: endpointId, assignedAgentId: f.agentId, status: "active" });
+      provider: "slack", publicId: endpointId, assignedAgentId: f.agentId,
+      status: kind === "removed" ? "archived" : kind === "paused" ? "paused" : "active" });
     await db.insert(chatConversations).values({ companyId: f.companyId, endpointId, issueId: f.issueId,
-      externalConversationId: "channel", externalLabel: "#recovery" });
+      externalConversationId: "channel", externalLabel: "#recovery",
+      state: kind === "removed" ? "endpoint_removed" : kind === "unavailable" ? "unavailable" : "active" });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
       runId: f.sourceRunId, canContinue: false,
-      nextAction: "Send a new chat message to continue this conversation.",
+      nextAction: kind === "active" ? "Send a new chat message to continue this conversation."
+        : kind === "removed" ? "This chat connection was removed. Inspect the stopped run and create a new task to continue the work."
+        : "This chat connection is unavailable. Restore access in Apps or create a new task to continue the work.",
     });
   });
 
