@@ -86,7 +86,7 @@ export function formatScope(
   }
   if (gateway.projectId) return `Project · ${projectNames.get(gateway.projectId) ?? shortId(gateway.projectId)}`;
   if (gateway.agentId) return `Agent · ${agentNames.get(gateway.agentId) ?? shortId(gateway.agentId)}`;
-  return "Company";
+  return "Organization";
 }
 
 export function formatOwner(gateway: ToolMcpGatewayWithTokens, agentNames: Map<string, string>): string {
@@ -206,4 +206,43 @@ export function orderedSnippets(
 
 export function formatSnippetConfig(config: Record<string, unknown>): string {
   return JSON.stringify(config, null, 2);
+}
+
+export function defaultGatewayTokenName(
+  gateway: Pick<ToolMcpGatewayWithTokens, "displaySlug">,
+  now: Date = new Date(),
+): string {
+  const stamp = now.toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  return `${gateway.displaySlug}-${stamp}`;
+}
+
+type SnippetConfigReplacements = {
+  endpointPath: string;
+  endpoint: string;
+  token: string;
+};
+
+function replaceSnippetConfigValue(value: unknown, replacements: SnippetConfigReplacements): unknown {
+  if (typeof value === "string") {
+    return value
+      .split(replacements.endpointPath)
+      .join(replacements.endpoint)
+      .replaceAll("pcgw_...", replacements.token);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceSnippetConfigValue(item, replacements));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, replaceSnippetConfigValue(item, replacements)]),
+    );
+  }
+  return value;
+}
+
+export function formatHydratedSnippetConfig(
+  config: Record<string, unknown>,
+  replacements: SnippetConfigReplacements,
+): string {
+  return JSON.stringify(replaceSnippetConfigValue(config, replacements), null, 2);
 }

@@ -18,7 +18,17 @@ function fakeClient() {
 
 describe("createInvalidationBatcher", () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it("marks queries stale without refetching when the tab hides before flush", async () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client);
+    const pending = batcher.schedule({ queryKey: ["dashboard", "c1"] });
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    await batcher.flush();
+    await pending;
+    expect(client.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: ["dashboard", "c1"], refetchType: "none" });
+  });
 
   it("coalesces repeated invalidations of the same key into one call per window", () => {
     const { client } = fakeClient();
@@ -111,7 +121,7 @@ describe("createInvalidationBatcher", () => {
 
 describe("createCoalescingQueryClient", () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it("batches invalidateQueries but passes other methods straight through", () => {
     const setQueryData = vi.fn();

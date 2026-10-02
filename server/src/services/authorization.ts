@@ -1,5 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { withHumanDirectedWork } from "./human-directed-work.js";
+import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import {
   agents,
   authUsers,
@@ -20,7 +22,14 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  trustPresetSchema,
+  lowTrustBoundarySchema,
+  lowTrustReviewPresetPolicySchema,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -28,6 +37,8 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
 
 export type AuthorizationActor =
   {
@@ -52,6 +63,7 @@ export type AuthorizationActor =
       | "agent_key"
       | "agent_jwt"
       | "cloud_tenant"
+      | "cloud_control"
       | "none";
   };
 
@@ -59,6 +71,7 @@ export type AuthorizationAction =
   | PermissionKey
   | "agent_config:read"
   | "agent_config:update"
+  | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
   | "agent:wake"
@@ -102,6 +115,7 @@ export type AuthorizationDecision = {
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
+    | "allow_role_default"
     | "allow_user_inbox_policy"
     | "allow_direct_change"
     | "allow_consented_change"
@@ -144,7 +158,7 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
-  if (action === "agent_config:read" || action === "agent_config:update" || action === "skill_config:update") {
+  if (action === "agent_config:read" || action === "agent_config:update" || action === "agent_instructions:update" || action === "skill_config:update") {
     return null;
   }
   if (
@@ -168,8 +182,10 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
-  if (!agent.permissions || typeof agent.permissions !== "object") return false;
-  return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  // Raw agent rows may predate permission normalization; apply the same
+  // defaults the agent service applies on read so enforcement matches what
+  // the API reports.
+  return normalizeAgentPermissions(agent.permissions).canCreateAgents;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -265,15 +281,27 @@ function evaluateAuthorizationPolicyForAssignment(
   const agentVisibility = readPolicyObject(policy, "agentVisibility");
   const assignmentPolicy = readPolicyObject(policy, "assignmentPolicy");
   const protectedAgent = readPolicyObject(policy, "protectedAgent");
+  // Core containment policy is understood independently of assignment policy.
+  // Recognizing it must not hide malformed values or unknown extension rules.
+  const trustSections = [
+    ["trustPreset", trustPresetSchema],
+    ["trustBoundary", lowTrustBoundarySchema],
+    ["reviewPreset", lowTrustReviewPresetPolicySchema],
+  ] as const;
+  const hasTrustPolicy = trustSections.some(([key]) => policy[key] !== undefined);
+  const hasInvalidTrustPolicy = trustSections.some(([key, schema]) =>
+    policy[key] !== undefined && !schema.safeParse(policy[key]).success,
+  );
   const knownTopLevelKeys = new Set([
     "agentVisibility",
     "assignmentPolicy",
     "protectedAgent",
     "managedBy",
+    ...trustSections.map(([key]) => key),
   ]);
   const hasUnknownTopLevelKey = Object.keys(policy).some((key) => !knownTopLevelKeys.has(key));
-  const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent);
-  if (hasUnknownTopLevelKey || !hasKnownPolicySection) {
+  const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent || hasTrustPolicy);
+  if (hasUnknownTopLevelKey || hasInvalidTrustPolicy || !hasKnownPolicySection) {
     return {
       kind: "unknown",
       explanation: `${label} has authorization policy data that core cannot evaluate for task assignment.`,
@@ -349,7 +377,7 @@ function agentIsInSubtree(
   return false;
 }
 
-async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
+async function loadCompanyAgentHierarchy(db: Db | DbTransaction, companyId: string) {
   const rows = await db
     .select({ id: agents.id, reportsTo: agents.reportsTo })
     .from(agents)
@@ -357,7 +385,12 @@ async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
   return new Map(rows.map((agent) => [agent.id, agent]));
 }
 
-async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, targetAgentId: string) {
+async function isAgentInSubtree(
+  db: Db | DbTransaction,
+  companyId: string,
+  rootAgentId: string,
+  targetAgentId: string,
+) {
   return agentIsInSubtree(
     await loadCompanyAgentHierarchy(db, companyId),
     rootAgentId,
@@ -366,7 +399,7 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
 }
 
 async function scopeAllows(
-  db: Db,
+  db: Db | DbTransaction,
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
@@ -524,7 +557,9 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   };
 }
 
-export function authorizationService(db: Db) {
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export function authorizationService(db: Db | DbTransaction) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
     if (
@@ -664,6 +699,19 @@ export function authorizationService(db: Db) {
 
     const grant = await findGrant(input.companyId, input.principalType, input.principalId, input.permissionKey);
     if (!grant) {
+      if (
+        input.principalType === "user"
+        && input.permissionKey.startsWith("tools:")
+        && (membership.membershipRole === "owner" || membership.membershipRole === "admin")
+        && grantsForHumanRole(normalizeHumanRole(membership.membershipRole, "operator"))
+          .some((defaultGrant) => defaultGrant.permissionKey === input.permissionKey)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_role_default",
+          explanation: `Allowed by the ${membership.membershipRole ?? "operator"} membership role.`,
+        });
+      }
       return deny({
         action: input.action,
         reason: "deny_missing_grant",
@@ -846,12 +894,16 @@ export function authorizationService(db: Db) {
   }): Promise<TrustPresetResolution> {
     const { issue, project } = await loadResourceContext(input.resource);
     const run = await loadRunPolicy(input.actor.runId, input.companyId, input.actorAgent.id);
-    return resolveCoreTrustPreset({
+    const resolution = resolveCoreTrustPreset({
       companyId: input.companyId,
       agent: input.actorAgent,
       project,
       issue,
       run,
+    });
+    if (!input.actor.runId || resolution.kind !== "low_trust_review") return resolution;
+    return withHumanDirectedWork(db, resolution, {
+      companyId: input.companyId, agentId: input.actorAgent.id, runId: input.actor.runId,
     });
   }
 
@@ -893,21 +945,16 @@ export function authorizationService(db: Db) {
     if (candidate.id && boundary.rootIssueId) {
       return issueIdIsDescendantOf(candidate.id, boundary.rootIssueId, boundary.companyId);
     }
-    if (!resource.parentIssueId) return false;
+    // Only an explicit root scope includes descendants. A parent in a permitted
+    // project (or an exact issue-id scope) cannot authorize a child elsewhere.
+    if (!resource.parentIssueId || !boundary.rootIssueId) return false;
     const parent = await loadIssue(resource.parentIssueId);
-    if (!parent) return false;
-    if (
-      isIssueWithinLowTrustBoundary(boundary, {
-        companyId: parent.companyId,
-        id: parent.id,
-        projectId: parent.projectId,
-      })
-    ) {
-      return true;
-    }
-    return boundary.rootIssueId
-      ? issueIdIsDescendantOf(parent.id, boundary.rootIssueId, boundary.companyId)
-      : false;
+    if (!parent || parent.companyId !== boundary.companyId) return false;
+    // Root ancestry permits decomposition, not selection of an unrelated
+    // project. Projectless children remain possible for projectless roots.
+    if (candidate.projectId && !await projectWithinLowTrustBoundary(boundary, candidate.projectId)) return false;
+    return parent.id === boundary.rootIssueId ||
+      issueIdIsDescendantOf(parent.id, boundary.rootIssueId, boundary.companyId);
   }
 
   async function projectWithinLowTrustBoundary(
@@ -932,6 +979,7 @@ export function authorizationService(db: Db) {
 
   async function decideLowTrustAccess(input: {
     actorAgentId: string;
+    actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
@@ -960,8 +1008,30 @@ export function authorizationService(db: Db) {
         explanation,
       });
 
+    if (input.action === "agent_instructions:update") {
+      if (input.resource.type === "agent" && input.resource.agentId === input.actorAgentId &&
+          await hasOwnerChatInstructionAuthority(db, {
+            companyId: boundary.companyId,
+            agentId: input.actorAgentId,
+            runId: input.actor.runId,
+            userId: input.actor.onBehalfOfUserId,
+          })) {
+        // Continue through self-instruction permissions, explicit protected
+        // change restrictions, and the responsible user's current edit access.
+        return null;
+      }
+      return lowTrustDeny(
+        "This low-trust run cannot change persistent agent instructions, including AGENTS.md. Self-edits require a direct message in the authorized user's chat with this agent. Outside-triggered work and subtasks do not inherit that authority; ask the authorized user to request the edit in their chat or apply it directly.",
+      );
+    }
+
     if (
       input.action === "company_scope:read" ||
+      // Agent creation is a company-wide privileged action. The default-on
+      // canCreateAgents flag must never reach the legacy creator allow when
+      // the effective execution context (agent, project, issue, or run
+      // policy) resolves to low trust.
+      input.action === "agents:create" ||
       input.action === "decision_queue:manage" ||
       input.action === "decision_queue:read" ||
       input.action === "decision_triage:manage" ||
@@ -1002,6 +1072,10 @@ export function authorizationService(db: Db) {
     if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
+      }
+      if (input.resolution.humanDirectedIssueId && input.resource.companyId === boundary.companyId &&
+          input.resource.issueId === input.resolution.humanDirectedIssueId) {
+        return lowTrustAllow("Allowed on the exact task directed by an authenticated human.");
       }
       if (input.action === "issue:comment" && input.directParentReportTarget) {
         if (
@@ -1703,7 +1777,7 @@ export function authorizationService(db: Db) {
       if (input.action === "agent_config:read") {
         return decideWithAgentConfigReadGrant("user", input.actor.userId);
       }
-      if (input.action === "agent_config:update") {
+      if (input.action === "agent_config:update" || input.action === "agent_instructions:update") {
         return decideWithProtectedChangeGrants("user", input.actor.userId, {
           direct: "agents:configure",
           suggest: "agents:suggest-changes",
@@ -1753,6 +1827,7 @@ export function authorizationService(db: Db) {
         }
         if (
           input.action === "agent:read" ||
+          input.action === "agent:wake" ||
           input.action === "company_scope:read" ||
           input.action === "decision_queue:manage" ||
           input.action === "decision_queue:read" ||
@@ -1767,6 +1842,7 @@ export function authorizationService(db: Db) {
           // Mirroring the tasks:assign carve-out above, viewers keep the
           // read-only visibility actions but not the privileged ones.
           const requiresNonViewer =
+            input.action === "agent:wake" ||
             input.action === "runtime:manage" ||
             input.action === "secrets:read" ||
             input.action === "decision_queue:manage" ||
@@ -1883,6 +1959,7 @@ export function authorizationService(db: Db) {
       });
     const lowTrustDecision = await decideLowTrustAccess({
       actorAgentId,
+      actor: input.actor,
       action: input.action,
       resource: input.resource,
       resolution: trustResolution,
@@ -2194,6 +2271,19 @@ export function authorizationService(db: Db) {
       return decideWithAgentConfigReadGrant("agent", actorAgentId);
     }
 
+    if (input.action === "agent_instructions:update") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status) || !input.actor.onBehalfOfUserId) {
+        return deny({ action: input.action, reason: "deny_missing_membership", explanation: "Instruction edits require an active agent and a responsible user." });
+      }
+      // Explicit configure/suggest restrictions still govern content changes.
+      // Only self edits may fall back to the responsible user's target access.
+      const restricted = await decideWithProtectedChangeGrants("agent", actorAgentId, {
+        direct: "agents:configure", suggest: "agents:suggest-changes",
+      });
+      if (restricted.reason !== "deny_no_grant" || input.resource.type !== "agent" || input.resource.agentId !== actorAgentId) return restricted;
+      return allow({ action: input.action, reason: "allow_self", explanation: "Own instruction content edit, subject to the responsible user's target edit access." });
+    }
+
     if (input.action === "agent_config:update") {
       return decideWithProtectedChangeGrants("agent", actorAgentId, {
         direct: "agents:configure",
@@ -2220,11 +2310,19 @@ export function authorizationService(db: Db) {
       if (grantDecision.allowed) return grantDecision;
     }
 
-    if (
-      (input.action === "agents:create" ||
-        input.action === "tasks:manage_active_checkouts") &&
-      canCreateAgentsLegacy(actorAgent)
-    ) {
+    if (input.action === "agents:create" && canCreateAgentsLegacy(actorAgent)) {
+      return allow({
+        action: input.action,
+        reason: "allow_legacy_agent_creator",
+        explanation: "Allowed by legacy agent creator authority.",
+      });
+    }
+
+    // Active-checkout management deliberately does not ride on
+    // canCreateAgents: that flag is default-on for standard-trust agents, and
+    // coupling would let any peer write over another agent's checked-out
+    // issue. CEOs, explicit grants, and the manager chain remain the paths.
+    if (input.action === "tasks:manage_active_checkouts" && actorAgent.role === "ceo") {
       return allow({
         action: input.action,
         reason: "allow_legacy_agent_creator",
@@ -2350,7 +2448,7 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return input.action !== "agent_instructions:update" && responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
   async function decide(input: {

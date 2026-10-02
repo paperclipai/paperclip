@@ -1,5 +1,16 @@
+import { stripVTControlCharacters } from "node:util";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
+
+/** Select diagnostics without mistaking Cursor's trace-file notice for an error. */
+export function firstCursorDiagnosticLine(text: string): string {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = stripVTControlCharacters(raw).trim();
+    if (!line || /^cursor-retrieval: tracing to (?:'[^']*'|"[^"]*")$/.test(line)) continue;
+    return line;
+  }
+  return "";
+}
 
 function asErrorText(value: unknown): string {
   if (typeof value === "string") return value;

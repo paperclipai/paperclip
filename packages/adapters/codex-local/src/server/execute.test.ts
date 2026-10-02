@@ -117,11 +117,10 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: {
-    sandboxAuth: string;
-    hostAuth: string;
-  }): Promise<{ finalHostAuth: string; finalHostMode: number }> {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"));
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void> }) {
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
+    );
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     // The shared host home is what `resolveSharedCodexHomeDir` returns
@@ -137,8 +136,9 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     process.env.CODEX_HOME = sharedHostHome;
     sandboxAuthFixture.bytes = Buffer.from(input.sandboxAuth, "utf8");
 
-    await execute({
+    const executionResult = await execute({
       runId: "run-copyback-e2e",
+      onProviderStopped: input.onProviderStopped,
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -178,8 +178,44 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     return {
       finalHostAuth: await readFile(hostAuthPath, "utf8"),
       finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
+      executionResult,
     };
   }
+
+  it("collects stopped-provider instruction edits before a throwing remote restore", async () => {
+    const order: string[] = [];
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT, assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => { order.push("restore"); throw new Error("restore failed"); },
+    }));
+    await expect(runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: async () => { order.push("collect"); } })).rejects.toThrow("restore failed");
+    expect(order).toEqual(["collect", "restore"]);
+  });
+
+  it("collects after a failed provider exit before restoring its workspace", async () => {
+    runChildProcess.mockResolvedValueOnce({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "provider failed", pid: 321, startedAt: new Date().toISOString() });
+    const collected = vi.fn(async () => {});
+    await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: collected });
+    expect(collected).toHaveBeenCalledOnce();
+  });
+
+  it("stops the bridge and restores the workspace when instruction collection rejects", async () => {
+    const order: string[] = [];
+    startAdapterExecutionTargetPaperclipBridge.mockResolvedValueOnce({
+      env: {}, stop: async () => { order.push("bridge-stop"); },
+    } as never);
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT, assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => { order.push("restore"); },
+    }));
+    await expect(runTeardown({ sandboxAuth: "{}", hostAuth: "{}", onProviderStopped: async () => {
+      order.push("collect");
+      throw new Error("instruction collection failed");
+    } })).rejects.toThrow("instruction collection failed");
+    expect(order).toEqual(["collect", "bridge-stop", "restore"]);
+  });
 
   it("declares a Codex `home` asset carrying both inbound provision and outbound restore contributions", async () => {
     await runTeardown({
@@ -230,5 +266,51 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       expect(result.finalHostAuth, entry.name).toBe(entry.hostAuth);
       expect(result.finalHostMode, entry.name).toBe(0o600);
     }
+  });
+
+  it("surfaces workspace restore failure after successful provider execution", async () => {
+    prepareAdapterExecutionTargetRuntime.mockResolvedValueOnce({
+      target: { kind: "remote", transport: "ssh" },
+      workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT,
+      assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => {
+        throw new Error("workspace copy-back failed");
+      },
+    });
+
+    await expect(
+      runTeardown({
+        sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+        hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+      }),
+    ).rejects.toThrow("workspace copy-back failed");
+  });
+
+  it("preserves a provider failure when workspace restore also fails", async () => {
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "provider failed first",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+    prepareAdapterExecutionTargetRuntime.mockResolvedValueOnce({
+      target: { kind: "remote", transport: "ssh" },
+      workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT,
+      assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` },
+      restoreWorkspace: async () => {
+        throw new Error("workspace copy-back failed second");
+      },
+    });
+
+    const result = await runTeardown({
+      sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+      hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+    });
+    expect(result.executionResult.errorMessage).toBe("provider failed first");
   });
 });

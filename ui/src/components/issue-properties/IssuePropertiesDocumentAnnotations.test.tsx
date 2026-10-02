@@ -31,15 +31,23 @@ const issueDocument: IssueDocument = {
 const issue = { id: "issue-1", identifier: "PAP-522", workMode: "standard" } as Issue;
 
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
-vi.mock("@/hooks/useIssuePlanDocument", () => ({ useIssuePlanDocument: () => ({ data: null, isLoading: false }) }));
+vi.mock("@/hooks/useIssuePlanDocument", () => ({
+  useIssuePlanDocument: () => ({ data: { ...issueDocument, key: "plan" }, isLoading: false }),
+}));
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: () => ({ data: [issueDocument] }) }));
-vi.mock("@/lib/router", () => ({ useLocation: () => ({ hash: "" }) }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+  useLocation: () => ({ hash: "" }),
+}));
 vi.mock("@/components/IssuePlanDecompositionsSection", () => ({ IssuePlanDecompositionsSection: () => null }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 vi.mock("@/components/IssueDocumentAnnotations", () => ({
   DocumentAnnotationsCountChip: ({ docKey }: { docKey: string }) => <span data-testid={`annotation-count-${docKey}`} />,
-  IssueDocumentAnnotations: ({ doc, children }: { doc: IssueDocument; children: React.ReactNode }) => (
-    <div data-testid={`annotation-surface-${doc.key}`} data-document-id={doc.id}>{children}</div>
+  IssueDocumentAnnotations: ({ doc, children }: {
+    doc: Pick<IssueDocument, "key" | "latestRevisionId">;
+    children: React.ReactNode;
+  }) => (
+    <div data-testid={`annotation-surface-${doc.key}`} data-revision-id={doc.latestRevisionId}>{children}</div>
   ),
 }));
 
@@ -49,6 +57,7 @@ describe("issue properties document annotation mounting", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    Element.prototype.scrollIntoView = vi.fn();
   });
 
   afterEach(() => {
@@ -58,8 +67,8 @@ describe("issue properties document annotation mounting", () => {
   it("uses the issue document key on the Plan tab", async () => {
     const root = createRoot(container);
     await act(async () => root.render(<IssuePropertiesPlansTab issue={issue} />));
-    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')?.getAttribute("data-document-id"))
-      .toBe("document-1");
+    expect(container.querySelector('[data-testid="annotation-surface-plan"]')?.getAttribute("data-revision-id"))
+      .toBe("revision-1");
     await act(async () => root.unmount());
   });
 
@@ -70,8 +79,38 @@ describe("issue properties document annotation mounting", () => {
     expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')).toBeNull();
     const expand = container.querySelector('button[aria-expanded="false"]') as HTMLButtonElement;
     await act(async () => expand.click());
-    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')?.getAttribute("data-document-id"))
-      .toBe("document-1");
+    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')?.getAttribute("data-revision-id"))
+      .toBe("revision-1");
+    await act(async () => root.unmount());
+  });
+
+  it("expands and scrolls the requested document into view", async () => {
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <IssuePropertiesArtifactsTab
+        issue={issue}
+        documentDeepLink={{ documentKey: "qa-evidence", requestId: 1 }}
+      />,
+    ));
+
+    expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')).not.toBeNull();
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    await act(async () => root.unmount());
+  });
+
+  it("does not expand an unrelated document when the requested key is missing", async () => {
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <IssuePropertiesArtifactsTab
+        issue={issue}
+        documentDeepLink={{ documentKey: "deleted-document", requestId: 1 }}
+      />,
+    ));
+
+    expect(container.querySelector('button[aria-expanded="true"]')).toBeNull();
+    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')).toBeNull();
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 });

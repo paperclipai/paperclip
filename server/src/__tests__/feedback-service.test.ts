@@ -457,6 +457,36 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.exportId).toBeNull();
   });
 
+  it("keeps a stored sharing preference when the settings row still carries retired keys", async () => {
+    const { issueId, commentId } = await seedIssueWithAgentComment();
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: { feedbackDataSharingPreference: "not_allowed", keyboardShortcuts: true },
+      experimental: {},
+    });
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    expect(result.persistedSharingPreference).toBeNull();
+
+    const settings = await db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "default"))
+      .then((rows) => rows[0] ?? null);
+
+    expect(settings?.general).toMatchObject({
+      feedbackDataSharingPreference: "not_allowed",
+    });
+  });
+
   it("enables sharing metadata on the first consented vote and upserts subsequent votes", async () => {
     const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
 
@@ -618,7 +648,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
-  it("builds a detailed sanitized shared bundle with issue and agent context", async () => {
+  it("builds a sanitized shared bundle without reading external instruction roots", async () => {
     const { companyId, issueId, targetCommentId, runId } = await seedIssueWithRichAgentComment();
 
     await svc.saveIssueVote({
@@ -662,8 +692,12 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(sourceRun?.id).toBe(runId);
     expect(JSON.stringify(sourceRun)).toContain("gpt-5.4");
     expect(skillItems?.[1]?.sourceLocator).toBe("https://github.com/octo/research/tree/main/skills/public-skill");
-    expect(String(instructions?.entryBody)).toContain("[REDACTED]");
-    expect(String(instructions?.entryBody)).not.toContain("secret-value");
+    expect(instructions).toBeNull();
+    expect(runtime?.configuredInstructionsBundleMode).toBe("external");
+    expect(runtime?.configuredInstructionsFilePath).toBeNull();
+    expect(runtime?.configuredInstructionsRootPath).toBeNull();
+    expect(JSON.stringify(bundle)).not.toContain("secret-value");
+    expect(JSON.stringify(bundle)).not.toContain("private-workspace");
   });
 
   it("keeps earlier local votes local when a later vote enables sharing", async () => {

@@ -188,9 +188,7 @@ export const MobileWidth: Story = {
     ),
   ],
   args: { services: [entry()] },
-  parameters: {
-    viewport: { defaultViewport: "mobile1" },
-  },
+  globals: { viewport: { value: "mobile1" } },
 };
 
 export const AllStates: Story = {

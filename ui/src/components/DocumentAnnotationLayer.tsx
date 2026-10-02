@@ -263,7 +263,6 @@ export function DocumentAnnotationLayer({
     () => `document-annotation-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
     [reactId],
   );
-  const nativeHighlightsSupported = getNativeHighlightApi() !== null;
   const selectionDebugEnabled = isSelectionDebugEnabled();
   if (selectionDebugEnabled) initializeSelectionDebug();
 
@@ -503,43 +502,31 @@ export function DocumentAnnotationLayer({
 
   const content = (
     <>
-      {!nativeHighlightsSupported ? (
-        <div className="paperclip-doc-annotation-visual-layer pointer-events-none absolute inset-0 z-0" aria-hidden="true">
-          <div className="relative h-full w-full">
-            {highlightRects.map((rect, index) => {
-              const isFocused = rect.focused;
-              const isStale = rect.anchorState === "stale";
-              const isResolved = rect.status === "resolved";
-              return (
-                <span
-                  key={`visual-${rect.threadId}-${index}`}
-                  data-thread-id={rect.threadId}
-                  data-anchor-state={rect.anchorState}
-                  data-status={rect.status}
-                  data-focused={isFocused || undefined}
-                  className={cn(
-                    "paperclip-doc-annotation-highlight absolute rounded-none transition-colors",
-                    // base box treatment (replaces the previous baseline border)
-                    isResolved
-                      ? "bg-yellow-100 outline outline-1 outline-dashed outline-offset-0 outline-yellow-700/45 dark:bg-yellow-700 dark:outline-yellow-200/45"
-                      : isStale
-                        ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
-                        : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-(--shadow-extract-6) dark:bg-yellow-500 dark:outline-yellow-200/85"
-                          : "bg-yellow-200 dark:bg-yellow-600",
-                  )}
-                  style={{
-                    top: rect.top,
-                    left: rect.left,
-                    width: rect.width,
-                    height: rect.height,
-                  }}
-                />
-              );
-            })}
-          </div>
+      <div className="paperclip-doc-annotation-visual-layer pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+        <div className="relative h-full w-full">
+          {highlightRects.map((rect, index) => {
+            const isFocused = rect.focused;
+            const isHovered = rect.threadId === hoveredThreadId;
+            return (
+              <span
+                key={`visual-${rect.threadId}-${index}`}
+                data-thread-id={rect.threadId}
+                data-anchor-state={rect.anchorState}
+                data-status={rect.status}
+                data-focused={isFocused || undefined}
+                data-hovered={isHovered || undefined}
+                className="paperclip-doc-annotation-highlight absolute"
+                style={{
+                  top: rect.top,
+                  left: rect.left,
+                  width: rect.width,
+                  height: rect.height,
+                }}
+              />
+            );
+          })}
         </div>
-      ) : null}
+      </div>
       <div
         className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-(--z-2)"
         aria-hidden="true"
@@ -561,8 +548,6 @@ export function DocumentAnnotationLayer({
                 aria-label="Open annotation thread"
                 className={cn(
                   "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent transition-colors",
-                  // Tint the run on hover so it's obvious which highlight you're over.
-                  isHovered && "bg-amber-400/40 dark:bg-amber-300/30",
                   isFocused && "ring-1 ring-transparent",
                 )}
                 style={{

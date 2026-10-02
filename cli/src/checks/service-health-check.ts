@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
-import { readInstallManifest } from "../install-store.js";
+import { readInstallManifest, resolveInstallStorePaths } from "../install-store.js";
 import {
   detectServiceManager,
+  isExecutableFile,
+  resolveServiceShimPath,
   type ServiceManagerDetection,
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
@@ -13,6 +16,7 @@ type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {
   detect: (instanceId: string) => Promise<ServiceManagerDetection>;
   probe: (config: PaperclipConfig) => Promise<HealthResult>;
+  shimPresent: (executablePath: string) => Promise<boolean>;
 };
 
 async function probeHealth(config: PaperclipConfig): Promise<HealthResult> {
@@ -45,6 +49,7 @@ export async function serviceHealthChecks(
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),
     probe: probeHealth,
+    shimPresent: (executablePath) => isExecutableFile(executablePath),
     ...dependencies,
   };
   const instanceId = resolvePaperclipInstanceId();
@@ -84,17 +89,36 @@ export async function serviceHealthChecks(
   );
 
   const health = await deps.probe(config);
+  // The installed definition is the truth about what the service executes;
+  // fall back to the environment-derived path only when it is unreadable.
+  const serviceExecutable = (await manager.installedExecutablePath()) ?? resolveServiceShimPath();
+  const shimPresent = status.active ? true : await deps.shimPresent(serviceExecutable);
   results.push(
     status.active
       ? { name: "Service runtime", status: "pass", message: `${status.serviceName} is active` }
-      : {
-          name: "Service runtime",
-          status: "fail",
-          message: health.ok
-            ? `${status.serviceName} is inactive but the configured port is serving another Paperclip process`
-            : `${status.serviceName} is ${status.detail ?? "inactive"}`,
-          repairHint: "Run `paperclipai service start`, or stop the conflicting foreground process first",
-        },
+      : !shimPresent
+        ? {
+            name: "Service runtime",
+            status: "fail",
+            message: `${status.serviceName} cannot start: no executable exists at ${serviceExecutable}`,
+            repairHint:
+              path.resolve(serviceExecutable) === path.resolve(resolveInstallStorePaths().shimPath)
+                ? "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`"
+                : `Restore the executable at ${serviceExecutable}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai install\` followed by \`paperclipai service install\` to re-point the service at the managed shim`,
+          }
+        : health.ok
+          ? {
+              name: "Service runtime",
+              status: "fail",
+              message: `${status.serviceName} is inactive but the configured port is serving another Paperclip process`,
+              repairHint: "Run `paperclipai service start`, or stop the conflicting foreground process first",
+            }
+          : {
+              name: "Service runtime",
+              status: "fail",
+              message: `${status.serviceName} is ${status.detail ?? "inactive"}`,
+              repairHint: "Run `paperclipai service start`; inspect `paperclipai service logs` if it does not stay up",
+            },
   );
 
   let expectedVersion: string | null = null;
@@ -116,11 +140,17 @@ export async function serviceHealthChecks(
             message: `Running ${health.version ?? "unknown"}; managed install is ${expectedVersion}`,
             repairHint: "Run `paperclipai service restart --expected-version " + expectedVersion + "`",
           }
-        : {
-            name: "Service health",
-            status: "pass",
-            message: `Healthy${health.version ? ` at version ${health.version}` : ""}`,
-          },
+        : status.active
+          ? {
+              name: "Service health",
+              status: "pass",
+              message: `Healthy${health.version ? ` at version ${health.version}` : ""}`,
+            }
+          : {
+              name: "Service health",
+              status: "warn",
+              message: `The configured port answers healthy${health.version ? ` (version ${health.version})` : ""}, but not from ${status.serviceName} — the service is inactive`,
+            },
   );
 
   if (status.enabled && status.linger === false) {

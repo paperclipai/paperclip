@@ -128,7 +128,7 @@ function registerModuleMocks() {
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
-    companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
+    companyService: () => ({ getById: vi.fn(async () => ({ id: companyId })) }),
     documentAnnotationService: () => mockAnnotationService,
     documentService: () => mockDocumentService,
     environmentService: () => ({}),

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "./company-selection";
+import {
+  resolveArchivedCompanyBounce,
+  resolveCompanyArchiveDeparture,
+  shouldSyncCompanySelectionFromRoute,
+} from "./company-selection";
 
 describe("shouldSyncCompanySelectionFromRoute", () => {
   it("does not resync when selection already matches the route", () => {
@@ -83,5 +87,54 @@ describe("resolveArchivedCompanyBounce", () => {
         companies: [archived],
       }),
     ).toBeNull();
+  });
+});
+
+describe("resolveCompanyArchiveDeparture", () => {
+  const justArchived = { id: "old", name: "Old Co", issuePrefix: "OLD", status: "archived" };
+  const active = { id: "pap", name: "Paperclip", issuePrefix: "PAP", status: "active" };
+  const alsoArchived = { id: "ret", name: "Retail", issuePrefix: "RET", status: "archived" };
+  const portfolioUrl = "https://my.paperclip.app/orgs?manage=1";
+
+  it("switches to another active company when one exists, even on cloud", () => {
+    expect(
+      resolveCompanyArchiveDeparture({
+        archivedCompanyId: "old",
+        companies: [justArchived, alsoArchived, active],
+        cloudPortfolioUrl: portfolioUrl,
+      }),
+    ).toEqual({ kind: "company", company: active });
+  });
+
+  it("never departs into the company that was just archived, whatever its cached status", () => {
+    // The caller's company list is pre-invalidation, so the archived
+    // company can still read "active" there.
+    expect(
+      resolveCompanyArchiveDeparture({
+        archivedCompanyId: "old",
+        companies: [{ ...justArchived, status: "active" }],
+        cloudPortfolioUrl: null,
+      }),
+    ).toEqual({ kind: "companies_list" });
+  });
+
+  it("leaves for the Cloud portfolio when no active company remains", () => {
+    expect(
+      resolveCompanyArchiveDeparture({
+        archivedCompanyId: "old",
+        companies: [justArchived, alsoArchived],
+        cloudPortfolioUrl: portfolioUrl,
+      }),
+    ).toEqual({ kind: "cloud_portfolio", url: portfolioUrl });
+  });
+
+  it("falls back to the companies list on self-hosted instances", () => {
+    expect(
+      resolveCompanyArchiveDeparture({
+        archivedCompanyId: "old",
+        companies: [justArchived],
+        cloudPortfolioUrl: null,
+      }),
+    ).toEqual({ kind: "companies_list" });
   });
 });

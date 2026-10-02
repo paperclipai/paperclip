@@ -1,15 +1,16 @@
-import { readConfigFile } from "./config-file.js";
+import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
+import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
+import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
-  DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
   type BindMode,
@@ -36,10 +37,14 @@ if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");
-const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PATH)
+const cwdEnvExists = existsSync(CWD_ENV_PATH);
+const isSameFile = cwdEnvExists && existsSync(PAPERCLIP_ENV_FILE_PATH)
   ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
   : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
-if (!isSameFile && existsSync(CWD_ENV_PATH)) {
+if (shouldLoadWorkingDirectoryEnv({
+  cwdEnvExists,
+  isPaperclipEnvFile: isSameFile,
+})) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
@@ -59,6 +64,7 @@ export interface Config {
   allowedHostnames: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
+  chatWebhookPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
@@ -69,6 +75,7 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  workspaceReaperCooldownDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -87,6 +94,8 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  announcementsEnabled: boolean;
+  announcementsFeedUrl: string;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -157,12 +166,7 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_TELEMETRY_BACKEND_TOKEN?.trim() ||
     undefined;
 
-  const deploymentModeFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_MODE;
-  const deploymentModeFromEnv =
-    deploymentModeFromEnvRaw && DEPLOYMENT_MODES.includes(deploymentModeFromEnvRaw as DeploymentMode)
-      ? (deploymentModeFromEnvRaw as DeploymentMode)
-      : null;
-  const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  const deploymentMode = resolveDeploymentMode(fileConfig);
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
   const secretsStrictMode =
     strictModeFromEnv !== undefined
@@ -197,17 +201,21 @@ export function loadConfig(): Config {
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
   const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
-  const authPublicBaseUrlRaw =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
-    process.env.BETTER_AUTH_URL ??
-    process.env.BETTER_AUTH_BASE_URL ??
-    publicUrlFromEnv ??
-    fileConfig?.auth?.publicBaseUrl;
+  const configuredAuthPublicBaseUrlRaw = [
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL,
+    process.env.BETTER_AUTH_URL,
+    process.env.BETTER_AUTH_BASE_URL,
+    publicUrlFromEnv,
+    fileConfig?.auth?.publicBaseUrl,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const managedRuntimePublicUrl = process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim() || undefined;
+  const authPublicBaseUrlRaw = configuredAuthPublicBaseUrlRaw ?? managedRuntimePublicUrl;
   const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
   const authBaseUrlMode: AuthBaseUrlMode =
     authBaseUrlModeFromEnv ??
-    fileConfig?.auth?.baseUrlMode ??
-    (authPublicBaseUrl ? "explicit" : "auto");
+    (configuredAuthPublicBaseUrlRaw === undefined && managedRuntimePublicUrl
+      ? "explicit"
+      : fileConfig?.auth?.baseUrlMode ?? (authPublicBaseUrl ? "explicit" : "auto"));
   const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined
@@ -265,6 +273,21 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  // The terminal-workspace reaper waits this many days after an issue tree
+  // becomes terminal before it archives the workspace. A person can reopen the
+  // work inside this window. A value of 0 disables the cooldown and restores
+  // immediate reaping. A negative or non-numeric value falls back to the
+  // default. The day granularity and the default of 7 obey the
+  // PAPERCLIP_DB_BACKUP_RETENTION_DAYS precedent above.
+  const workspaceReaperCooldownDaysEnv =
+    process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS?.trim();
+  const workspaceReaperCooldownDaysRaw = Number(workspaceReaperCooldownDaysEnv);
+  const workspaceReaperCooldownDays =
+    workspaceReaperCooldownDaysEnv
+      && Number.isFinite(workspaceReaperCooldownDaysRaw)
+      && workspaceReaperCooldownDaysRaw >= 0
+      ? workspaceReaperCooldownDaysRaw
+      : 7;
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -295,6 +318,9 @@ export function loadConfig(): Config {
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,
+    chatWebhookPublicBaseUrl: parseChatWebhookPublicBaseUrl(
+      process.env.PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL,
+    ),
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
@@ -307,6 +333,7 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    workspaceReaperCooldownDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"
@@ -333,5 +360,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    announcementsEnabled: process.env.PAPERCLIP_ANNOUNCEMENTS_ENABLED !== "false",
+    announcementsFeedUrl: process.env.PAPERCLIP_ANNOUNCEMENTS_FEED_URL?.trim() || "https://pages.paperclip.ing/announcements/v1/current.json",
   };
 }

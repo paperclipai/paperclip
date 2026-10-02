@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskMessageScroller } from "./TaskMessageScroller";
+import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 const PILL_SELECTOR = 'button[aria-label="Scroll to latest"]';
 
@@ -22,6 +23,34 @@ function fakeGeometry(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400
     },
     configurable: true,
   });
+}
+
+function fakeResizableGeometry(
+  el: HTMLElement,
+  { scrollHeight = 1000, clientHeight = 400 } = {},
+) {
+  let currentClientHeight = clientHeight;
+  let scrollTop = 0;
+  Object.defineProperty(el, "scrollHeight", {
+    value: scrollHeight,
+    configurable: true,
+  });
+  Object.defineProperty(el, "clientHeight", {
+    get: () => currentClientHeight,
+    configurable: true,
+  });
+  Object.defineProperty(el, "scrollTop", {
+    get: () => scrollTop,
+    set: (value: number) => {
+      scrollTop = value;
+    },
+    configurable: true,
+  });
+  return {
+    setClientHeight(value: number) {
+      currentClientHeight = value;
+    },
+  };
 }
 
 /**
@@ -56,6 +85,20 @@ describe("TaskMessageScroller", () => {
     return container.querySelector<HTMLButtonElement>(PILL_SELECTOR);
   }
 
+  /**
+   * Wait for the pill to reach a state, rather than for a fixed number of turns.
+   * `flushEvents` yields exactly one macrotask, which is enough on an idle
+   * machine and not when the suite runs many workers in parallel — React
+   * flushes continuous-priority updates asynchronously, so the DOM read can
+   * land before the state does. Sites that dereference `pill()!` turn that into
+   * a hard failure rather than a retry.
+   */
+  async function waitForPill(present: boolean): Promise<void> {
+    await vi.waitFor(() =>
+      present ? expect(pill()).not.toBeNull() : expect(pill()).toBeNull(),
+    );
+  }
+
   /** Set scrollTop and fire a scroll event, like a user or the browser would. */
   async function scrollTo(el: HTMLElement, top: number) {
     el.scrollTop = top;
@@ -77,7 +120,42 @@ describe("TaskMessageScroller", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+    document.documentElement.style.removeProperty("--motion-scrollbar-idle-delay");
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("applies same-task hash changes and restores each history entry without remounting", async () => {
+    let initialized = false;
+    function navigate(key: string, hash: string, restore = false) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key, hash, restore }}>
+          <TaskMessageScroller contentKey="unchanged">
+            <div ref={(node) => {
+              if (node && !initialized) {
+                fakeGeometry(node.parentElement!);
+                initialized = true;
+              }
+            }}>
+              {[100, 500].map((top, index) => <div key={index} id={`nav-comment-${index}`} data-thread-anchor={`nav-comment-${index}`} ref={(node) => {
+                if (node) node.getBoundingClientRect = () => ({ top: top - scroller().scrollTop, bottom: top + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+              }}>Comment {index}</div>)}
+            </div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    navigate("desktop-entry-one", "#nav-comment-0");
+    const viewport = scroller();
+    expect(viewport.scrollTop).toBe(100);
+    await scrollTo(viewport, 150);
+    navigate("desktop-entry-two", "#nav-comment-1");
+    expect(scroller()).toBe(viewport);
+    expect(viewport.scrollTop).toBe(500);
+    navigate("desktop-entry-one", "#nav-comment-0", true);
+    expect(viewport.scrollTop).toBe(150);
+    navigate("desktop-entry-one", "#nav-comment-1", true);
+    expect(viewport.scrollTop).toBe(500);
   });
 
   it("renders children inside the scroll container, pill hidden, scrolled to bottom on mount", () => {
@@ -89,11 +167,44 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+  it("extends only the streamlined scroll box through the page gutter", () => {
     render();
-    const frame = scroller().parentElement;
+    const el = scroller();
+    const frame = el.parentElement;
 
     expect(frame?.className).toBe("relative min-h-0 flex-1");
+    expect(el.classList).toContain("-right-4");
+    expect(el.classList).toContain("pr-4");
+    expect(el.classList).toContain("md:-right-6");
+    expect(el.classList).toContain("md:pr-6");
+    expect(el.classList).not.toContain("right-0");
+  });
+
+  it("shows the scrollbar only while scroll activity is recent", () => {
+    vi.useFakeTimers();
+    document.documentElement.style.setProperty("--motion-scrollbar-idle-delay", "600ms");
+    render();
+    const el = scroller();
+    fakeGeometry(el);
+
+    expect(el.className).toContain("scrollbar-while-scrolling");
+    expect(el.getAttribute("data-scroll-active")).toBeNull();
+
+    el.scrollTop = 100;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(el.getAttribute("data-scroll-active")).toBe("true");
+
+    vi.advanceTimersByTime(599);
+    expect(el.getAttribute("data-scroll-active")).toBe("true");
+    vi.advanceTimersByTime(1);
+    expect(el.getAttribute("data-scroll-active")).toBeNull();
+  });
+
+  it("contains horizontal overflow so no scrollbar appears above the composer", () => {
+    render();
+
+    expect(scroller().classList).toContain("overflow-x-hidden");
+    expect(scroller().classList).toContain("overflow-y-auto");
   });
 
   it("auto-follows content instantly while pinned", async () => {
@@ -101,6 +212,7 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 600); // bottom: 1000 - 600 - 400 = 0 → pinned
+    await waitForPill(false); // pinned state settled before content grows
     render(2);
     expect(el.scrollTop).toBe(1000);
     expect(pill()).toBeNull();
@@ -111,16 +223,72 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100); // 500px from bottom → unpinned
+    await waitForPill(true);
     const btn = pill();
     expect(btn).not.toBeNull();
     expect(btn!.className).toContain("tc-scroll-pill-in");
     expect(btn!.className).toContain("size-8");
+    expect(btn!.className).toContain("bottom-7");
+    expect(btn!.className).not.toContain("bottom-3");
     expect(btn!.className).not.toContain("-translate-x-1/2");
     // Icon-only: no visible text.
     expect(btn!.textContent).toBe("");
     // New content must not yank the held position.
     render(2);
     expect(el.scrollTop).toBe(100);
+  });
+
+  it("follows a shrinking viewport while pinned so a growing composer cannot cover the latest text", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    render();
+    const el = scroller();
+    const geometry = fakeResizableGeometry(el);
+    triggerResize();
+    await scrollTo(el, 600);
+
+    geometry.setClientHeight(200);
+    triggerResize();
+
+    expect(el.scrollTop).toBe(el.scrollHeight);
+    expect(pill()).toBeNull();
+  });
+
+  it("holds a reader's position when the composer grows while they are scrolled up", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    render();
+    const el = scroller();
+    const geometry = fakeResizableGeometry(el);
+    triggerResize();
+    await scrollTo(el, 100);
+    await waitForPill(true);
+
+    geometry.setClientHeight(200);
+    triggerResize();
+
+    expect(el.scrollTop).toBe(100);
+    expect(pill()).not.toBeNull();
   });
 
   it("small drifts within the pin threshold do not show the pill", async () => {
@@ -132,6 +300,7 @@ describe("TaskMessageScroller", () => {
   });
 
   it("clicking the pill smooth-scrolls, ignores intermediate scroll events, re-pins on arrival", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);
@@ -139,6 +308,7 @@ describe("TaskMessageScroller", () => {
     el.scrollTo = scrollToSpy as unknown as typeof el.scrollTo;
 
     await scrollTo(el, 100);
+    await waitForPill(true);
     const btn = pill()!;
     btn.click();
     await flushEvents();
@@ -152,6 +322,7 @@ describe("TaskMessageScroller", () => {
 
     // Arrival within the threshold re-pins and hides the pill (immediately
     // here: no matchMedia in jsdom → reduced-motion/unmount-now path).
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
     await scrollTo(el, 600);
     expect(pill()).toBeNull();
 
@@ -160,13 +331,30 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(1000);
   });
 
+  it("finishes following at the new bottom when content changes during the latest glide", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    render(1);
+    const el = scroller();
+    fakeGeometry(el);
+    el.scrollTo = vi.fn() as unknown as typeof el.scrollTo;
+    await scrollTo(el, 100);
+    await waitForPill(true);
+    pill()!.click();
+    await flushEvents();
+    await scrollTo(el, 250);
+    render(2);
+    expect(el.scrollTop).toBe(1000);
+  });
+
   it("a wheel gesture during the glide cancels easing and stays unpinned", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);
     el.scrollTo = vi.fn() as unknown as typeof el.scrollTo;
 
     await scrollTo(el, 100);
+    await waitForPill(true);
     pill()!.click();
     await flushEvents();
     await dispatch(el, new Event("wheel", { bubbles: true }));
@@ -190,20 +378,20 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100);
-    expect(pill()!.className).toContain("tc-scroll-pill-in");
+    await vi.waitFor(() => expect(pill()?.className).toContain("tc-scroll-pill-in"));
 
     // Scrolling back to the bottom starts the exit animation but keeps the
     // pill mounted until animationend.
     await scrollTo(el, 600);
+    await vi.waitFor(() => expect(pill()?.className).toContain("tc-scroll-pill-out"));
     const exiting = pill();
     expect(exiting).not.toBeNull();
-    expect(exiting!.className).toContain("tc-scroll-pill-out");
 
     // jsdom has no window.AnimationEvent, so React's vendor-prefix detection
     // maps onAnimationEnd to "webkitAnimationEnd" here (real browsers get the
     // unprefixed event).
     await dispatch(exiting!, new Event("webkitAnimationEnd", { bubbles: true }));
-    expect(pill()).toBeNull();
+    await waitForPill(false);
   });
 
   it("unmounts immediately on hide under prefers-reduced-motion", async () => {
@@ -215,8 +403,8 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100);
-    expect(pill()).not.toBeNull();
+    await waitForPill(true);
     await scrollTo(el, 600);
-    expect(pill()).toBeNull(); // no animationend needed
+    await waitForPill(false); // no animationend needed
   });
 });

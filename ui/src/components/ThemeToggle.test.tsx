@@ -72,6 +72,23 @@ describe("ThemeToggle", () => {
     await act(async () => root.unmount());
   });
 
+  it("renders the compact profile-menu row without secondary copy", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ThemeToggle variant="compact-menu-action" />);
+    });
+    await flushReact();
+
+    const button = container.querySelector("button");
+    expect(button?.classList).toContain("h-(--profile-popover-row-height)");
+    expect(button?.classList).toContain("gap-(--profile-popover-row-gap)");
+    expect(button?.querySelector("span")?.classList).toContain("size-5");
+    expect(container.textContent).toContain("Switch to light mode");
+    expect(container.textContent).not.toContain("Toggle the app appearance.");
+
+    await act(async () => root.unmount());
+  });
+
   it("calls onAfterToggle after toggling (used by SidebarAccountMenu to close the popover)", async () => {
     const onAfterToggle = vi.fn();
     const root = createRoot(container);
