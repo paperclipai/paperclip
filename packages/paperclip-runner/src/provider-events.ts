@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { redactCodexDiagnostic } from "./drivers/codex/app-server-transport.js";
+import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
 
 /**
  * Structural subset of an ACP runtime event consumed by the canonical event
