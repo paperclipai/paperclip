@@ -4855,7 +4855,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs.some((row) => row.retryOfRunId === runId)).toBe(false);
+    // Scoped to the classifier's own retry reason, which is what the comment
+    // above always meant. A bare `retryOfRunId === runId` was only ever safe
+    // because the escalation parked the issue in `blocked` with no blocker
+    // edge, i.e. unreachable by work selection. Now that it is rehomed to
+    // `todo` (AND-13551, same reason as the status assertion below), the issue
+    // is legitimately pickable, so an unrelated concurrent recovery sweep can
+    // re-dispatch it and produce a `retryOfRunId` row that says nothing about
+    // this classifier. Without the reason filter this assertion fails only
+    // when another suite file runs alongside this one.
+    expect(
+      runs.some(
+        (row) =>
+          row.retryOfRunId === runId &&
+          row.scheduledRetryReason ===
+            INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      ),
+    ).toBe(false);
     expect(
       runs.some(
         (row) =>
