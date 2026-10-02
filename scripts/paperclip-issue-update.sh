@@ -11,11 +11,16 @@ Reads a multiline markdown comment from stdin when stdin is piped. This preserve
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
 
 Examples:
-  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
-  Investigating formatting
+  # Intentional status + multiline comment. Do not use --status in_progress
+  # just to attach a comment (that can request-changes on in_review). Omitting
+  # --status still PATCHes; board/human comments on done/blocked can move the
+  # issue to todo. Agent note-only updates: POST /api/issues/{id}/comments
+  # (see skills/paperclip/SKILL.md):
+  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+  Done
 
-  - Pulled the raw comment body
-  - Comparing it with the run transcript
+  - Fixed the newline-preserving issue update path
+  - Verified the raw stored comment body keeps paragraph breaks
   MD
 
   scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done --dry-run <<'MD'
@@ -80,16 +85,17 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
-require_command jq
+require_command node
 
 payload="$(
-  jq -nc \
-    --arg status "$status" \
-    --arg comment "$comment" \
-    '
-      (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
-    '
+  node -e "
+    const status = process.argv[1];
+    const comment = process.argv[2];
+    const payload = {};
+    if (status) payload.status = status;
+    if (comment) payload.comment = comment;
+    console.log(JSON.stringify(payload));
+  " "$status" "$comment"
 )"
 
 if [[ "$dry_run" == "1" ]]; then
@@ -136,7 +142,7 @@ while :; do
       exit 1
     fi
     if [[ -n "$status" ]]; then
-      returned_status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
+      returned_status="$(node -e 'const v = JSON.parse(process.argv[1]); process.stdout.write(v && v.status != null ? String(v.status) : "")' "$body" 2>/dev/null || true)"
       if [[ "$returned_status" != "$status" ]]; then
         printf 'Issue update FAILED: server echoed status %s instead of requested %s.\n' "${returned_status:-<none>}" "$status" >&2
         printf '%s\n' "$body" >&2
@@ -158,6 +164,63 @@ while :; do
     printf 'Issue update FAILED after %d attempts (curl exit %s, HTTP %s). The status/comment was NOT saved — report this write as failed, do not assume it landed.\n' "$max_attempts" "$curl_exit" "${http_code:-000}" >&2
     [[ -n "$body" ]] && printf '%s\n' "$body" >&2
     exit 1
+  fi
+
+  # Ambiguous transport failure with a comment: the PATCH may already have
+  # landed and a blind retry would duplicate it. Probe comments before
+  # re-sending. HTTP 5xx still retries (server rejected/did not commit).
+  if [[ -n "$comment" && "$curl_exit" -ne 0 ]]; then
+    set +e
+    comments_resp="$(
+      curl -sS -m 30 -X GET         "$PAPERCLIP_API_URL/api/issues/$issue_id/comments?order=desc"         -H "Authorization: Bearer $PAPERCLIP_API_KEY"         -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"         -w '\n%{http_code}'
+    )"
+    comments_exit=$?
+    set -e
+    if [[ "$comments_exit" -eq 0 ]]; then
+      comments_code="${comments_resp##*$'\n'}"
+      comments_body="${comments_resp%$'\n'*}"
+      if [[ "$comments_code" == 2* && -n "$comments_body" ]]; then
+        comment_found="$(
+          node -e '
+            const wanted = process.argv[1];
+            const runId = process.argv[2];
+            let rows = [];
+            try { rows = JSON.parse(process.argv[3]); } catch {}
+            if (!Array.isArray(rows) && rows && Array.isArray(rows.comments)) rows = rows.comments;
+            if (!Array.isArray(rows)) rows = [];
+            // Require this run id — identical older bodies must not confirm an unsaved update.
+            const hit = rows.some((row) => row && row.body === wanted && (
+              row.createdByRunId === runId || row.derivedCreatedByRunId === runId
+            ));
+            process.stdout.write(hit ? "yes" : "no");
+          ' "$comment" "$PAPERCLIP_RUN_ID" "$comments_body" 2>/dev/null || true
+        )"
+        if [[ "$comment_found" == "yes" ]]; then
+          set +e
+          issue_resp="$(
+            curl -sS -m 30 -X GET               "$PAPERCLIP_API_URL/api/issues/$issue_id"               -H "Authorization: Bearer $PAPERCLIP_API_KEY"               -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"               -w '\n%{http_code}'
+          )"
+          issue_exit=$?
+          set -e
+          if [[ "$issue_exit" -eq 0 ]]; then
+            issue_code="${issue_resp##*$'\n'}"
+            issue_body="${issue_resp%$'\n'*}"
+            if [[ "$issue_code" == 2* && -n "$issue_body" ]]; then
+              if [[ -n "$status" ]]; then
+                issue_status="$(node -e 'const v = JSON.parse(process.argv[1]); process.stdout.write(v && v.status != null ? String(v.status) : "")' "$issue_body" 2>/dev/null || true)"
+                if [[ "$issue_status" != "$status" ]]; then
+                  printf 'Issue update FAILED: comment was saved but status is %s instead of requested %s.\n' "${issue_status:-<none>}" "$status" >&2
+                  printf '%s\n' "$issue_body" >&2
+                  exit 1
+                fi
+              fi
+              printf '%s\n' "$issue_body"
+              exit 0
+            fi
+          fi
+        fi
+      fi
+    fi
   fi
 
   printf 'Issue update attempt %d/%d failed (curl exit %s, HTTP %s); retrying...\n' "$attempt" "$max_attempts" "$curl_exit" "${http_code:-000}" >&2
