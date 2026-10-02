@@ -14,12 +14,12 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The September 22, 2026 refresh pins Codex 0.156.0, Claude Agent SDK
-0.3.280 (Claude Code 2.1.280), and OpenCode 1.18.32 in the shared provider
+The October 1, 2026 refresh pins Codex 0.156.0, Claude Agent SDK
+0.3.286 (Claude Code 2.1.286), and OpenCode 1.18.32 in the shared provider
 pack. Claude Code 2.1.280 is the minimum for
-[Opus 5.5](https://code.claude.com/docs/en/model-config); it also supports
-Fable 5.1. Codex uses the current
-[GPT-6 Sol and Luna model IDs](https://learn.chatgpt.com/docs/models).
+[Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
+minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Codex uses
+the current [GPT-6 Sol and Luna model IDs](https://learn.chatgpt.com/docs/models).
 Grok CLI 1.0.41 supports the current
 [Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family.
 
