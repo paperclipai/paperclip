@@ -2855,6 +2855,41 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("rejects a run-less service-scoped comment that carries resume intent", async () => {
+    // The assignee's own service key would pass comment authorization via
+    // allow_self, so the comments-only carve-out would admit the write — but
+    // `resume: true` makes this a task-state change (status to todo, workspace
+    // reopen), which stays attributable to a run.
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "resuming without a run", resume: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("charges the run budget when a service-scoped key does send a run", async () => {
     const routerAgentId = "33333333-3333-4333-8333-333333333333";
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

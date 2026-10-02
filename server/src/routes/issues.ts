@@ -17287,6 +17287,21 @@ export function issueRoutes(
       const reopenRequested = req.body.reopen === true;
       const resumeRequested = req.body.resume === true;
       const interruptRequested = req.body.interrupt === true;
+      // The run-less service-key carve-out further down covers the comment
+      // itself and nothing else. `reopen` and `resume` turn this POST into a
+      // task-state change — status back to todo, a workspace reopen, an
+      // assignee wake — and task-state changes stay attributable to a run.
+      // Refuse instead of silently dropping the flag so a misconfigured
+      // integration hears the contract rather than guessing why nothing
+      // resumed. (`interrupt` is board-only below, so it needs no gate here.)
+      if (
+        (reopenRequested || resumeRequested) &&
+        req.actor.type === "agent" &&
+        !req.actor.runId &&
+        req.actor.keyScope?.kind === "service"
+      ) {
+        throw crossIssueInfluenceRunContextError();
+      }
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
       const crossIssueCommentOnlyGrant =
