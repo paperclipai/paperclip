@@ -880,7 +880,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       mode: "responsible_user" as const, responsibleUserId: "task-owner" };
     input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
       config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
-      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, gate: null, cleanup: async () => {} };
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
     expect(selected.nativeExecution.provider.kind).toBe(profile.provider);
@@ -913,6 +913,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       accountOwnerUserId: "task-owner",
       identity: "fixture-grant:task-owner:generation-1",
       home: instructionRoot,
+      gate: null,
       cleanup: async () => {},
     };
     const selected = await selectHeartbeatRuntime(db, input);
@@ -937,7 +938,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       mode: "responsible_user" as const, responsibleUserId: "task-owner" };
     input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
       config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
-      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, gate: null, cleanup: async () => {} };
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Claude selection");
     expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000 });
