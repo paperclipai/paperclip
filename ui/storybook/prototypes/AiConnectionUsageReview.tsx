@@ -66,7 +66,7 @@ const claude = scenario("anthropic", "My Claude subscription", {
   limits: [
     limit("five_hour", "5 hour limit", 38, { windowDurationSeconds: 18_000, resetsAt: "2026-10-02T19:00:00Z" }),
     limit("seven_day", "Weekly limit", 76, { windowDurationSeconds: 604_800, resetsAt: "2026-10-06T15:00:00Z" }),
-    limit("weekly_code", "Weekly limit (group:code)", 100, {
+    limit("weekly_code", "Weekly limit · code", 100, {
       scope: "group:code", windowDurationSeconds: 604_800, resetsAt: "2026-10-06T15:00:00Z",
     }),
   ],

@@ -12,7 +12,7 @@ const amount = (value: number, unit: string | null) => unit === "USD"
   : `${usageNumber(value)}${unit ? ` ${unit}` : ""}`;
 
 function limitLabel(window: AiConnectionUsageLimit) {
-  let label = window.label.replace(/\b(\d+(?:\.\d+)?) hour limit\b/i, "$1h").replace(/\bweekly limit\b/i, "Weekly");
+  const label = window.label.replace(/\b(\d+(?:\.\d+)?) hour limit\b/i, "$1h").replace(/\bweekly limit\b/i, "Weekly");
   if (window.windowDurationSeconds == null) return label;
   const hours = window.windowDurationSeconds / 3600;
   const period = hours === 168 ? "Weekly" : `${usageNumber(hours)}h`;
@@ -22,6 +22,7 @@ function limitLabel(window: AiConnectionUsageLimit) {
 }
 
 function limitValue(window: AiConnectionUsageLimit) {
+  if (window.used === 0 && window.limit === 0) return `${amount(window.limit, window.unit)} cap`;
   if (window.used != null && window.limit != null) return `${amount(window.used, window.unit)} / ${amount(window.limit, window.unit)} used`;
   if (window.usedPercent != null) return `${usageNumber(window.usedPercent)}% used`;
   if (window.used != null) return `${amount(window.used, window.unit)} used`;
