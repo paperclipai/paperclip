@@ -12,7 +12,7 @@ import { validateConfiguredBindMode } from "./network-bind.js";
 export const configMetaSchema = z.object({
   version: z.literal(1),
   updatedAt: z.string(),
-  source: z.enum(["onboard", "configure", "doctor"]),
+  source: z.enum(["onboard", "configure", "doctor", "nixos-module"]),
 }).passthrough();
 
 export const llmConfigSchema = z.object({
