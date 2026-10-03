@@ -3,7 +3,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -77,6 +77,8 @@ import {
 } from "./duplex-observability.js";
 
 const execFileAsync = promisify(execFile);
+// Keep shell lookup independent of the remote PATH values supplied by tests.
+const localToolPath = process.env.PATH;
 
 type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
 
@@ -147,7 +149,11 @@ describe("sandbox adapter execution targets", () => {
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
-        const command = input.command === "bash" ? "/bin/bash" : input.command;
+        const command = input.command === "bash"
+          ? (await execFileAsync("sh", ["-c", "command -v bash"], {
+            env: { ...process.env, PATH: localToolPath },
+          })).stdout.trim()
+          : input.command;
         return runChildProcess(`sandbox-run-${counter}`, command, input.args ?? [], {
           cwd: input.cwd ?? process.cwd(),
           env: input.env ?? {},
@@ -475,7 +481,22 @@ describe("sandbox adapter execution targets", () => {
 
       const nodeBinDir = path.dirname(process.execPath);
       const explicitHostPath = `${nodeBinDir}:/explicit-host-bin`;
-      const sandboxNativePath = `/usr/bin:/bin:${nodeBinDir}`;
+      const controllerBin = path.join(rootDir, "controller-only-tools");
+      await mkdir(controllerBin);
+      const controllerOnly = "paperclip-controller-only";
+      await writeFile(path.join(controllerBin, controllerOnly), "exit 0\n", { mode: 0o700 });
+      vi.stubEnv("PATH", `${controllerBin}:${localToolPath}`);
+      const hostProbe = await execFileAsync("sh", ["-c", `command -v ${controllerOnly}`]);
+      expect(hostProbe.stdout.trim()).toBe(path.join(controllerBin, controllerOnly));
+      // Bridge staging, queue I/O, and the background launcher need only these
+      // tools. Do not make the rest of the controller's toolchain visible.
+      const sandboxNativePath = path.join(rootDir, "sandbox-tools");
+      await mkdir(sandboxNativePath);
+      for (const tool of ["sh", "bash", "mkdir", "rm", "mv", "cat", "base64", "sleep", "nohup", "basename", "head", "wc"]) {
+        const { stdout } = await execFileAsync("sh", ["-c", 'command -v "$1"', "fixture-tool", tool]);
+        await symlink(stdout.trim(), path.join(sandboxNativePath, tool));
+      }
+      await symlink(process.execPath, path.join(sandboxNativePath, "node"));
       vi.stubEnv("PATH", explicitHostPath);
 
       const delegate = createLocalSandboxRunner();
@@ -499,6 +520,12 @@ describe("sandbox adapter execution targets", () => {
         timeoutMs: 30_000,
         runner,
       };
+
+      const sandboxProbe = await runner.execute({
+        command: "bash", args: ["--noprofile", "--norc", "-c", `command -v ${controllerOnly}`],
+      });
+      expect(sandboxProbe.exitCode).not.toBe(0);
+      expect(sandboxProbe.stdout).toBe("");
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
         runId: `run-process-session-${outputMode}-path`,
