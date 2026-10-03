@@ -48,6 +48,18 @@ export function legacyExecutionNeedsReconciliation(
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
+  // A graceful server shutdown is a control-plane initiated stop: this process
+  // signalled the run's provider and observed it exit, so the stop itself needs
+  // no reconciliation. The bounded retry budget owns the continuation. Holding
+  // a deploy-stopped run for the board parks every later wake on its issue
+  // (`deferred_issue_execution`) and the card loses its live path for good.
+  if (
+    run.status === "interrupted" &&
+    run.errorCode === "server_shutdown_interrupted" &&
+    evidence?.kind === "server_shutdown" &&
+    evidence.providerStopped === true
+  )
+    return false;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
   );

@@ -15306,7 +15306,30 @@ export function heartbeatService(
           signal,
           resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
             conversationContinuationEligible: await runUsedConversationAdapter(db, run),
-            resultJson: persistedCancellationResult,
+            resultJson: {
+              ...persistedCancellationResult,
+              // Record the control-plane stop as evidence only when that stop
+              // was actually verifiable. terminateHeartbeatRunProcess() signals
+              // the run's process group and waits for the group to disappear
+              // (SIGKILL fallback included), so a tracked process group proves
+              // the whole provider tree is gone. A tracked pid alone (win32 has
+              // no group) proves nothing about descendants, and an in-process
+              // adapter (hermes_gateway) runs no child at all — both keep the
+              // generic reconciliation hold instead of claiming a stop. Without
+              // this evidence the generic rule turns a deploy into a board-owned
+              // hold that parks every later wake on the issue.
+              ...(running?.processGroupId
+                ? {
+                    executionRecovery: {
+                      kind: "server_shutdown",
+                      providerStopped: true,
+                      controlPlaneInitiated: true,
+                      processGroupId: running.processGroupId,
+                      signal,
+                    },
+                  }
+                : {}),
+            },
             errorCode: "server_shutdown_interrupted",
             errorMessage: message,
           }),
