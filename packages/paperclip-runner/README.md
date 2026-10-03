@@ -66,6 +66,12 @@ effects, audit, retries, conflicts, redaction, continuation, and terminal
 decisions. The production adapter stays App-owned and invokes Paperclip's real
 route/service authorities; it does not copy those rules into this package.
 
+Provider-facing `paperclip_finish` accepts an omitted or `null` continuation for
+`done`, `completed`, and `needs_review`. This supports gateways that require all
+declared tool properties to be present. Normalization removes only `null`;
+non-yielding tool calls still reject a continuation object, and `yielded` still
+requires a complete `response_wake` object.
+
 ## Quick start
 
 Native provider debug-trace correlation uses an incremental index owned by its transport. Pending

@@ -667,7 +667,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
   return (
     <div className="max-w-5xl space-y-5 pb-12">
-      <header className="flex justify-start">
+      <header className="flex flex-wrap items-center justify-start gap-3">
         <div className="relative w-full max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -679,6 +679,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             className="pl-9"
           />
         </div>
+        <Button type="button" variant="outline" onClick={() => navigate("/apps/connect?source=model-provider")}>Connect a model provider</Button>
       </header>
 
       {loadFailed ? (

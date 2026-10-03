@@ -611,6 +611,29 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("projects a custom connection into the isolated OpenCode config", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-routing-"));
+    roots.push(root);
+    const driver = new OpenCodeServerDriver({
+      model: "paperclip/team/model-alias",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1", PAPERCLIP_AI_PROVIDER_KEY: "selected-gateway-key" },
+    });
+    const session = await driver.openSession({ runId: "routing", normalizedSessionId: "routing", workingDirectory: root });
+    try {
+      const configPath = join(root, "routing", "config", "opencode", "opencode.json");
+      expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+        model: "paperclip/team/model-alias", small_model: "paperclip/team/model-alias", plugin: [],
+        provider: { paperclip: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "https://gateway.example/v1", apiKey: "selected-gateway-key" }, models: { "team/model-alias": { name: "team/model-alias" } } } },
+      });
+      expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
   it("starts an authenticated isolated server, creates a session, streams usage, aborts, and cleans up", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
@@ -2239,16 +2262,20 @@ describe("OpenCodeServerDriver", () => {
     const exitingFixture = join(root, "exit-before-health.mjs");
     await writeFile(
       exitingFixture,
-      "#!/usr/bin/env node\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\nauthorization=super-secret-opencode-token\\n`);\nprocess.exit(17);\n",
+      "#!/usr/bin/env node\nimport { readFileSync } from 'node:fs';\nconst config = JSON.parse(readFileSync(`${process.env.XDG_CONFIG_HOME}/opencode/opencode.json`, 'utf8'));\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\ngateway=${config.provider.paperclip.options.apiKey}\\nauthorization=super-secret-opencode-token\\n`);\nprocess.exit(17);\n",
       { mode: 0o755 },
     );
+    const diagnostics: string[] = [];
     const driver = new OpenCodeServerDriver({
-      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      model: "paperclip/team/model-alias",
       runtimeDirectory: root,
       command: exitingFixture,
+      onDiagnostic: (message) => { diagnostics.push(message); },
       environment: {
         PATH: process.env.PATH,
         OPENROUTER_API_KEY: "fixture-key",
+        PAPERCLIP_AI_PROVIDER_KEY: "fixture-custom-gateway-key",
+        PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1",
       },
     });
     const error = await driver
@@ -2266,6 +2293,41 @@ describe("OpenCodeServerDriver", () => {
     expect(error).toContain("stage=health");
     expect(error).toContain("[REDACTED]");
     expect(error).not.toContain("fixture-key");
+    expect(error).not.toContain("fixture-custom-gateway-key");
     expect(error).not.toContain("super-secret-opencode-token");
+    expect(diagnostics.join("")).toContain("gateway=[REDACTED]");
+    expect(diagnostics.join("")).not.toContain("fixture-custom-gateway-key");
+  });
+
+  it.each(["network", "response"])("redacts custom gateway keys in %s errors", async (failure) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const key = "fixture-custom-gateway-key";
+    const driver = new OpenCodeServerDriver({
+      model: "paperclip/team/model-alias",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        PAPERCLIP_AI_PROVIDER_KEY: key,
+        PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1",
+      },
+      fetch: async (input, init) => {
+        if (String(input).endsWith("/session") && init?.method === "POST") {
+          if (failure === "network") throw new Error(`Gateway rejected ${key}`);
+          return new Response(`Gateway rejected ${key}`, { status: 400 });
+        }
+        return fetch(input, init);
+      },
+    });
+    const error = await driver.openSession({
+      runId: "run-gateway-error",
+      normalizedSessionId: "gateway-error",
+      workingDirectory: workspace,
+    }).then(() => "provider unexpectedly started", (cause: unknown) => String(cause));
+    expect(error).toContain("Gateway rejected [REDACTED]");
+    expect(error).not.toContain(key);
   });
 });

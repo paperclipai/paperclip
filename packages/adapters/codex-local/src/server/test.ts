@@ -155,6 +155,7 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
     );
     let seededAuth = false;
+    let seededConfig = false;
     for (const file of ["auth.json", "config.toml"]) {
       // `fs.readFile` follows the home's `auth.json` symlink into the host's
       // `~/.codex`, so we copy the resolved bytes as a plain file.
@@ -162,6 +163,7 @@ async function prepareCodexHelloProbe(input: {
       if (contents) {
         await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
         if (file === "auth.json") seededAuth = true;
+        if (file === "config.toml") seededConfig = true;
       }
     }
 
@@ -169,7 +171,7 @@ async function prepareCodexHelloProbe(input: {
     // Pointing Codex at an empty uploaded home would mask any login already
     // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
     // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
-    if (!seededAuth) {
+    if (!seededAuth && !(input.managedAiConnection && seededConfig)) {
       return {
         command: input.command,
         args: input.args,
@@ -341,8 +343,15 @@ export async function testEnvironment(
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
+  const hostOpenAiKey = targetIsRemote || Object.hasOwn(env, "OPENAI_API_KEY")
+    ? undefined : process.env.OPENAI_API_KEY;
+  if (config.managedAiRouting) {
+    checks.push({
+      code: "codex_managed_provider_configured",
+      level: "info",
+      message: "Testing the selected connection’s provider and model.",
+    });
+  } else if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "codex_openai_api_key_present",
@@ -420,7 +429,9 @@ export async function testEnvironment(
       // wrap the probe with a shell that materializes a per-run auth.json so
       // the CLI can authenticate. The key content is passed via env (not on
       // the command line) to avoid leaking it into process listings.
-      const probeApiKey = isNonEmpty(configOpenAiKey)
+      // Managed connections already contain their exact auth and provider config.
+      // Replacing that home with a native-key probe would test another provider.
+      const probeApiKey = config.managedAiConnection ? null : isNonEmpty(configOpenAiKey)
         ? configOpenAiKey
         : isNonEmpty(hostOpenAiKey)
           ? hostOpenAiKey

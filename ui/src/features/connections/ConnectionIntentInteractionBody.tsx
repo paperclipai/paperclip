@@ -1,3 +1,4 @@
+import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -357,7 +358,7 @@ export function ConnectionIntentInteractionBody({
           {completeMutation.isPending ? "Continuing…" : "Continue task"}
         </Button>
       </div>
-    : repair ? repair.canReconnect ? <AiConnectionCredentialStep
+    : repair ? repair.canReconnect ? repair.connection.routing ? <AiProviderSetup companyId={interaction.companyId} agentId={interaction.payload.requestingAgentId} reconnect={repair.connection} onComplete={result => selectAiAccountMutation.mutate({ ...result, generation })} onCancel={() => { closeSetup(); returnFocusToCard(); }} /> : <AiConnectionCredentialStep
         companyId={interaction.companyId}
         provider={repair.connection.provider}
         initialMethod={repair.connection.method}

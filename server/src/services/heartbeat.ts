@@ -24133,6 +24133,7 @@ export function heartbeatService(
                             nativeRuntimeResolution.profile.backend,
                             agent.adapterConfig,
                             issueAssigneeOverrides?.adapterConfig,
+                            managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
                           )
                         : agent.adapterConfig,
                       managedProfile,

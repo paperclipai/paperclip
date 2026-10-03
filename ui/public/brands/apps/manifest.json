@@ -33,6 +33,12 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "bedrock",
+      "provider": "Amazon Bedrock",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/bedrock.svg"
+    },
+    {
       "slug": "beehiiv",
       "provider": "beehiiv",
       "catalogVisible": false,
@@ -153,6 +159,12 @@
       "provider": "Google Sheets",
       "catalogVisible": true,
       "localAsset": "/brands/apps/google-sheets.svg"
+    },
+    {
+      "slug": "google",
+      "provider": "Google",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/google.svg"
     },
     {
       "slug": "google-drive",

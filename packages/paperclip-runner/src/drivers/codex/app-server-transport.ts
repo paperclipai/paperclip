@@ -203,6 +203,8 @@ const SAFE_ENVIRONMENT_KEYS = [
   "AGENT_HOME",
   "ALL_PROXY",
   "CODEX_HOME",
+  // Only the selected managed provider credential enters the trusted server.
+  "PAPERCLIP_AI_PROVIDER_KEY",
   "HOME",
   "HTTP_PROXY",
   "HTTPS_PROXY",

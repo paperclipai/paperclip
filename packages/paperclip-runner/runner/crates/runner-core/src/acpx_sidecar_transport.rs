@@ -96,8 +96,17 @@ impl AcpxSidecarTransport {
         agent: &str,
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
-            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "claude" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_AI_PROVIDER_KEY",
+            ],
             "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
             "pi" => &["OPENROUTER_API_KEY"],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
@@ -135,6 +144,21 @@ impl AcpxSidecarTransport {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
+        }
+        if agent == "claude" {
+            keys.extend_from_slice(&[
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
         }
         keys.extend_from_slice(credential_keys);
         Self::start_with_environment_keys(config, &keys)

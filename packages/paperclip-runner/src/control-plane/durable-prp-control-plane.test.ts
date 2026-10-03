@@ -390,6 +390,9 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     environment: {
       PATH: "/bin",
       OPENROUTER_API_KEY: "provider-key",
+      PAPERCLIP_AI_PROVIDER_KEY: "managed-provider-key",
+      ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
+      ANTHROPIC_BASE_URL: "https://gateway.example",
       PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
       DATABASE_URL: "must-not-reach-runnerd",
@@ -419,6 +422,9 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment).toMatchObject({
     PATH: "/bin",
     OPENROUTER_API_KEY: "provider-key",
+    PAPERCLIP_AI_PROVIDER_KEY: "managed-provider-key",
+    ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
+    ANTHROPIC_BASE_URL: "https://gateway.example",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
   });

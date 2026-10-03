@@ -148,11 +148,14 @@ export function projectPaperclipRunnerTaskConfig(
   backend: "codex_app_server" | "opencode_server",
   agentConfig: unknown,
   taskOverrides: unknown,
+  managedModel?: string,
 ): Record<string, unknown> {
   const base = asRecord(agentConfig);
   const task = asRecord(taskOverrides);
   const config = { ...base };
-  const model = optionalString(task.model);
+  // The server resolves a connection's model namespace after task overrides.
+  // Carry that model into durable input without allowing routing to change the harness.
+  const model = optionalString(managedModel) ?? optionalString(task.model);
   const effortKey = backend === "codex_app_server"
     ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
     : undefined;

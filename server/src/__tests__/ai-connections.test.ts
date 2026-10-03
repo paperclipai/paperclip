@@ -4,7 +4,7 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -13,6 +13,7 @@ import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
@@ -46,6 +47,74 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
+    const root = await mkdtemp(path.join(home, "gemini-auth-"));
+    const command = path.join(root, "gemini");
+    await writeFile(command, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const settings = JSON.parse(fs.readFileSync(path.join(process.env.HOME, ".gemini/settings.json"), "utf8"));
+if (settings.selectedAuthType !== "gemini-api-key" || settings.security?.auth?.selectedType !== "gemini-api-key" || process.env.GEMINI_API_KEY !== "saved-google-key") {
+  console.error("Invalid auth method selected");
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-managed" }));
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "output_text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello", session_id: "gemini-managed" }));
+`, { mode: 0o700 });
+    const saved = await service.save(companyId, "alice", {
+      provider: "google", method: "api_key", ownership: "personal", name: "Saved Google",
+      apiKey: "fixture", allAgents: true, agentIds: [],
+    }, "saved-google-key");
+    const runtime = await prepareManagedAiRuntime(db, {
+      companyId, agentId, responsibleUserId: "alice", adapterType: "gemini_local",
+      binding: { provider: "google", method: "api_key", mode: "responsible_user" },
+      config: { engine: "cli", command, cwd: root, promptTemplate: "Say hello.", paperclipRuntimeSkills: [], env: { GEMINI_API_KEY: "ambient-google-key" } },
+    });
+    try {
+      expect(runtime.attribution.grantId).toBe(saved.grantId);
+      expect(runtime.home).not.toBe(os.homedir());
+      const settingsFile = path.join(runtime.home!, ".gemini/settings.json");
+      expect(await readFile(settingsFile, "utf8")).not.toContain("saved-google-key");
+      expect((await stat(settingsFile)).mode & 0o777).toBe(0o600);
+      const probe = await testGeminiEnvironment({ companyId, adapterType: "gemini_local", config: runtime.config });
+      expect(probe.status).toBe("pass");
+      expect(probe.checks).toContainEqual(expect.objectContaining({ code: "gemini_hello_probe_passed" }));
+      const result = await executeGemini({
+        runId: randomUUID(),
+        agent: { id: agentId, companyId, name: "Gemini", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: runtime.config, context: {}, onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionId).toBe("gemini-managed");
+    } finally {
+      await runtime.cleanup();
+      await rm(root, { recursive: true, force: true });
+    }
+    await expect(access(runtime.home!)).rejects.toThrow();
+  });
+
+  it("preserves Google account defaults when the provider constraint migration is reapplied", async () => {
+    const saved = await service.save(companyId, "bob", {
+      provider: "google", method: "api_key", ownership: "personal", name: "Google migration",
+      apiKey: "fixture", allAgents: true, agentIds: [],
+    }, "google-migration-key");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0295_absurd_starhawk.sql", import.meta.url), "utf8");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await db.transaction(async (tx) => {
+        for (const statement of migration.split("--> statement-breakpoint")) {
+          if (statement.trim()) await tx.execute(sql.raw(statement));
+        }
+      });
+    }
+    const selected = await service.select({
+      companyId, agentId, userId: "bob", adapterType: "gemini_local",
+      binding: { provider: "google", method: "api_key", mode: "responsible_user" },
+    });
+    expect(selected.grant.id).toBe(saved.grantId);
+  });
+
   it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
     const userId = `custom-manager-${manager}`;
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
@@ -118,6 +187,58 @@ describe("managed AI connections", () => {
       expect(await service.probeUsage(companyId, owner, apiAccount.connectionId)).toMatchObject({ status: "unsupported" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("vaults routed credentials, enforces compatibility and access, and configures both Codex runners", async () => {
+    const routing = { kind: "openrouter", protocol: "responses", auth: "bearer", models: [{ id: "openai/gpt-5.4" }] } as const;
+    const saved = await service.save(companyId, "alice", { provider: "openrouter", method: "api_key", name: "Routed test", ownership: "personal", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...routing, models: [...routing.models] } }, "fixture-routed-credential");
+    const selected = { provider: "openrouter", method: "api_key", mode: "delegated", ...saved } as const;
+    expect(JSON.stringify(await service.list(companyId, "alice"))).not.toContain("fixture-routed-credential");
+    expect(await service.list(companyId, "alice")).toEqual(expect.arrayContaining([expect.objectContaining({ id: saved.connectionId, routing, isDefault: false })]));
+    await expect(service.setDefault(companyId, "alice", saved.grantId)).rejects.toThrow("explicit connection");
+    await expect(service.select({ ...input, binding: selected, userId: "bob", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("not shared");
+    await expect(service.select({ ...input, companyId: otherCompanyId, binding: selected, userId: "alice", adapterType: "codex_local" })).rejects.toThrow();
+    for (const adapterType of ["codex_local", "paperclip_runner"]) {
+      const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", binding: selected, adapterType, config: { provider: "codex", model: "openai/gpt-5.4", env: { OPENAI_API_KEY: "ambient" } } });
+      try {
+        expect(runtime.config.env.OPENAI_API_KEY).toBe("");
+        expect(runtime.config.env.PAPERCLIP_AI_PROVIDER_KEY).toBe("fixture-routed-credential");
+        const toml = await readFile(path.join(String(runtime.config.env.CODEX_HOME), "config.toml"), "utf8");
+        expect(toml).toContain('base_url = "https://openrouter.ai/api/v1"');
+        expect(toml).toContain('wire_api = "responses"');
+        expect(toml).not.toContain("fixture-routed-credential");
+      } finally { await runtime.cleanup(); }
+    }
+    await expect(service.save(companyId, "alice", { provider: "openrouter", method: "api_key", name: "Routed test", ownership: "personal", apiKey: "fixture", connectionId: saved.connectionId, allAgents: true, agentIds: [], routing: { ...routing, kind: "gateway", baseUrl: "https://other.example/v1", models: [] } }, "fixture-replacement")).rejects.toThrow("retain");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
+    await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("Reconnect");
+  });
+  it("reconnects JSONB routing without changing its identity or access", async () => {
+    const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
+    const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
+    const saved = await service.save(companyId, "alice", { ...input, agentIds: [...input.agentIds] }, "old-gateway-credential");
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored!.config.ai).toMatchObject({ routing });
+    // PostgreSQL JSONB reorders object keys; compare values, not serialization.
+    const reordered = { models: [...routing.models], auth: routing.auth, baseUrl: routing.baseUrl, protocol: routing.protocol, kind: routing.kind };
+    expect(await service.save(companyId, "alice", { ...input, agentIds: [], allAgents: true, connectionId: saved.connectionId, routing: reordered }, "new-gateway-credential")).toEqual(saved);
+    const selection = { companyId, agentId, userId: "alice", adapterType: "codex_local", binding: { provider: "openai", method: "api_key", mode: "delegated", ...saved } } as const;
+    const selected = await service.select(selection);
+    expect(await service.credential(selected)).toBe("new-gateway-credential");
+    const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, saved.connectionId));
+    expect(installs).toEqual([expect.objectContaining({ targetType: "agent", targetId: agentId })]);
+    await expect(service.save(companyId, "alice", { ...input, agentIds: [agentId], connectionId: saved.connectionId, routing: { ...reordered, baseUrl: "https://different.example/v1" } }, "rejected-credential")).rejects.toThrow("retain");
+    expect(await service.credential(await service.select(selection))).toBe("new-gateway-credential");
+  });
+
+  it("saves no-auth endpoints without a secret and refuses protocol mismatches", async () => {
+    const routing = { kind: "local", protocol: "chat", auth: "none", baseUrl: "http://localhost:11434/v1", models: [] } as const;
+    const saved = await service.save(companyId, "alice", { provider: "openai", method: "api_key", name: "Local", ownership: "personal", allAgents: true, agentIds: [], routing: { ...routing, models: [] } }, "");
+    const selected = { provider: "openai", method: "api_key", mode: "delegated", ...saved } as const;
+    await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local" })).rejects.toThrow("incompatible");
+    const row = await service.select({ ...input, binding: selected, userId: "alice", adapterType: "opencode_local", model: "qwen" });
+    expect(row.grant.credentialSecretRefs).toEqual([]);
+    expect(await service.credential(row)).toBe("");
   });
 
   it.each([

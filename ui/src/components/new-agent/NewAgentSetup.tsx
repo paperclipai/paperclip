@@ -1,3 +1,4 @@
+import { useConnectionModels } from "../ai-connections/useConnectionModels";
 import { AgentCharacter } from "../AgentCharacter";
 import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
@@ -155,6 +156,7 @@ function Setup({
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
+  const connectionModels = useConnectionModels(companyId, aiBinding, brandType);
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
@@ -716,7 +718,6 @@ function Setup({
                     <div className="mb-8">
                       <OnboardingHeading
                         title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
                         center
                       />
                     </div>
@@ -740,6 +741,10 @@ function Setup({
                         </select>
                       </Field>
                     </div>
+                    <details className="mb-5">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">Use another connection</summary>
+                      <div className="pt-4"><AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding} onChange={binding => { setConnection({ env: {}, aiConnection: binding }); setRuntimeAiBinding(undefined); resetTest(); setScreen("runtime"); }} /></div>
+                    </details>
                     <AgentProviderConnection
                       key={environmentId ?? "local"}
                       companyId={companyId}
@@ -764,6 +769,7 @@ function Setup({
                       }
                       onConnected={(next) => {
                         setConnection(next);
+                        setRuntimeAiBinding(undefined);
                         resetTest();
                         setScreen("runtime");
                       }}
@@ -833,21 +839,9 @@ function Setup({
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
-                        <h3 className="text-sm font-semibold">Runtime</h3>
-                        {aiProviderForAdapter(brandType) && (
-                          connection && !aiBinding ? (
-                            <div className="space-y-3">
-                              <p className="text-sm text-muted-foreground">
-                                Using the connection selected in the Connect step.
-                              </p>
-                              <Button type="button" variant="outline" onClick={() => setScreen("connect")}>
-                                Change connection
-                              </Button>
-                            </div>
-                          ) : (
-                            <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
-                          )
+                        {!connectionAdapter && aiProviderForAdapter(brandType) && (
+                          <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                            onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
@@ -855,10 +849,10 @@ function Setup({
                           <div className="grid items-start gap-5 sm:grid-cols-2">
                             {showModel && !usingKimiApi && (
                               <ModelDropdown
-                                models={models.data ?? []}
+                                models={connectionModels?.models ?? models.data ?? []}
                                 value={model}
                                 onChange={(value) => {
-                                  setModel(value);
+                                  setModel(connectionModels?.resolveModel(value) ?? value);
                                   if (
                                     effort &&
                                     !setupEfforts(adapterType, value).includes(
@@ -909,7 +903,7 @@ function Setup({
                             )}
                           </div>
                         )}
-                        {SETUP_LOGIN_HINTS[adapterType] && (
+                        {!aiBinding && SETUP_LOGIN_HINTS[adapterType] && (
                           <p className="text-sm text-muted-foreground">
                             {SETUP_LOGIN_HINTS[adapterType]}
                           </p>

@@ -40,7 +40,7 @@ const state = vi.hoisted(() => ({
   openNewIssue: vi.fn(),
 }));
 const managedApi = vi.hoisted(() => ({
-  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
+  list: vi.fn(async () => ({ currentUserId: "user-1", canManageConnections: true, connections: [] })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
   setDefault: vi.fn(async () => ({})),
 }));
@@ -259,7 +259,8 @@ describe("New agent setup", () => {
     api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
     api.testEnvironment.mockResolvedValue({ ...pass, adapterType });
     await render(adapterType, "grok");
-    expect(container.textContent).toContain("Connect Atlas to Grok");
+    expect(container.textContent).toContain("Connect a model");
+    expect(container.textContent).not.toContain("Connect Atlas to Grok");
     if (method === "subscription") {
       await click("GrokSubscription");
       await click("Complete subscription login");
@@ -375,7 +376,8 @@ describe("New agent setup", () => {
   });
   it("uses the shared Grok connection flow and hides ignored Kimi and OpenCode effort controls", async () => {
     await render("grok_local");
-    expect(container.textContent).toContain("Connect Atlas to Grok");
+    expect(container.textContent).toContain("Connect a model");
+    expect(container.textContent).not.toContain("Connect Atlas to Grok");
     await render("opencode_local");
     expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
   });
@@ -470,6 +472,8 @@ describe("New agent setup", () => {
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
     expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
     expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).toBeNull();
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
@@ -498,6 +502,34 @@ describe("New agent setup", () => {
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
     expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
     expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+  });
+  it.each(["codex_local", "paperclip_runner"])("keeps a saved connection chosen in Connect when hiring %s", async (adapter) => {
+    await render(adapter, "codex");
+    await act(async () => cache.setQueryData(["ai-connections", "company-1", undefined], {
+      currentUserId: "user-1",
+      connections: [{
+        id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", companyId: "company-1",
+        provider: "openrouter", method: "api_key", name: "Company OpenRouter",
+        ownership: "shared", isDefault: false, status: "connected",
+        routing: { kind: "openrouter", protocol: "responses", auth: "bearer" },
+      }],
+    }));
+    const disclosure = [...container.querySelectorAll("summary")].find(node => node.textContent === "Use another connection")!;
+    await act(async () => disclosure.click());
+    const picker = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Company OpenRouter")) as HTMLElement;
+    expect(option).toBeTruthy();
+    await act(async () => option.click());
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).toBeNull();
+    await click("Run test");
+    const binding = { provider: "openrouter", method: "api_key", mode: "shared", connectionId: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022" };
+    expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
   });
   it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
@@ -528,11 +560,25 @@ describe("New agent setup", () => {
     await render("opencode_local");
     const model = "openrouter/anthropic/claude-sonnet-4.6";
     await fill("Model", model);
-    await click("Connect another account");
+    const connectionSelect = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => connectionSelect.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const connectOption = [...document.querySelectorAll('[role="option"]')].find(option => option.textContent?.includes("Connect an account"))!;
+    expect(connectOption).toBeTruthy();
+    await act(async () => (connectOption as HTMLElement).click());
+    await settle();
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog).toBeTruthy();
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.testEnvironment).not.toHaveBeenCalled();
+    const advanced = [...dialog.querySelectorAll("summary")].find(node => node.textContent?.includes("Advanced providers"))!;
+    await act(async () => advanced.click());
+    const openrouter = [...dialog.querySelectorAll("button")].find(node => node.textContent?.includes("OpenRouter"))!;
+    await act(async () => openrouter.click());
+    await settle();
+    const accessContinue = [...dialog.querySelectorAll("button")].find(node => node.textContent?.trim() === "Continue")!;
+    await act(async () => accessContinue.click());
+    await settle();
     const input = dialog.querySelector('[aria-label="API key"]') as HTMLInputElement;
     expect(input).toBeTruthy();
     await act(async () => {
@@ -544,11 +590,13 @@ describe("New agent setup", () => {
     await act(async () => connectButton.click());
     await settle();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(managedApi.setDefault).toHaveBeenCalledWith("company-1", "managed-grant");
+    expect(managedApi.setDefault).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
     }));
-    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    const binding = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
     await click("Run test");
     expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
       aiConnection: binding, testCredentials: {},

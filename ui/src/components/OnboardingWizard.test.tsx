@@ -161,7 +161,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 // model/harness picker internals are out of scope here, so stub the adapter
 // layer entirely and drive it through this knob.
 const mockAdapterRegistry = vi.hoisted(() => ({
-  list: [] as Array<{ type: string }>,
+  list: [] as Array<{ type: string; recommended?: boolean }>,
   disabled: new Set<string>(),
 }));
 
@@ -198,7 +198,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     // then sat in the "Advanced settings" disclosure and was reachable anyway;
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
-    recommended: type === "claude_local" || type === "codex_local",
+    recommended: type === "claude_local" || type === "codex_local" || mockAdapterRegistry.list.some(entry => entry.type === type && entry.recommended),
     label: type,
     description: "",
     icon: () => null,
@@ -3334,6 +3334,21 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           if (navigation === "provider") expect(document.body.textContent).toContain("claude auth login");
         } finally { if (mounted) await act(async () => root.unmount()); }
       });
+    });
+
+    it("keeps Gemini local login out of managed Claude subscription setup", async () => {
+      localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      mockAdapterRegistry.list.push({ type: "gemini_local", recommended: true });
+      const { root } = await openStep4({ adapterType: "gemini_local" });
+      try {
+        await pickSource(/Gemini|Google|gemini_local/);
+        expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+        expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        expect(document.body.textContent).not.toContain("claude auth login");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
     });
 
     it("shows local Claude instructions and saves its connection before hiring", async () => {
