@@ -2895,6 +2895,83 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("does not repeat the continuation summary inside untrusted continuation evidence", () => {
+    const summaryBody = "# Continuation Summary\n\n## Next Action\n\n- Ship the fix.";
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "issue-1", status: "in_progress" },
+      continuationSummary: {
+        key: "continuation-summary",
+        title: "Continuation Summary",
+        body: summaryBody,
+        updatedAt: "2026-09-27T12:00:00.000Z",
+      },
+      executionContinuation: {
+        version: 1,
+        companyId: "company-1",
+        issueId: "issue-1",
+        trigger: { reason: "run_failed", interactionId: null, sourceRunId: "run-1" },
+        originCommentIds: [],
+        objective: "Ship the fix.",
+        messages: [],
+        interactionOutcomes: [],
+        // The server passes the untrimmed document body as completedWork,
+        // while the rendered continuation summary is trimmed on normalize.
+        completedWork: `${summaryBody}\n`,
+        unresolvedInteractionIds: [],
+        coverage: {
+          kind: "full_task_history",
+          throughCommentId: null,
+          summaryThroughCommentId: null,
+        },
+      },
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Issue continuation summary:");
+    expect(prompt).toContain("### Untrusted continuation evidence");
+    // The plain-text render stays; the escaped copy inside the fenced
+    // evidence JSON is the duplicate this regression test removes.
+    expect(prompt).not.toContain(JSON.stringify(summaryBody));
+    expect(prompt).toContain('"completedWork":null');
+  });
+
+  it("keeps distinct completed work inside untrusted continuation evidence", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "issue-1", status: "in_progress" },
+      continuationSummary: {
+        key: "continuation-summary",
+        title: "Continuation Summary",
+        body: "Summary of the agreed next action.",
+        updatedAt: "2026-09-27T12:00:00.000Z",
+      },
+      executionContinuation: {
+        version: 1,
+        companyId: "company-1",
+        issueId: "issue-1",
+        trigger: { reason: "run_failed", interactionId: null, sourceRunId: "run-1" },
+        originCommentIds: [],
+        objective: "Ship the fix.",
+        messages: [],
+        interactionOutcomes: [],
+        completedWork: "Evidence-only completion notes from the previous run.",
+        unresolvedInteractionIds: [],
+        coverage: {
+          kind: "full_task_history",
+          throughCommentId: null,
+          summaryThroughCommentId: null,
+        },
+      },
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Issue continuation summary:");
+    expect(prompt).toContain(
+      '"completedWork":"Evidence-only completion notes from the previous run."',
+    );
+  });
 });
 
 describe("WATCHDOG_DEFAULT_MANDATE", () => {
