@@ -379,6 +379,15 @@ Claude Code login. Authenticated self-hosted users instead get a separate
 `CLAUDE_CONFIG_DIR` for `claude auth login`; checking and saving only read that
 attempt’s credential files, never the server operator’s account or Keychain.
 
+A Claude subscription can also use a pasted `claude setup-token` token. The local
+sign-in step offers "Use a setup token instead"; the create route accepts it as
+`setupToken` on an Anthropic `subscription` request. The token is valid for one
+year and is separate from the operator's interactive Claude login, so it suits
+agents that must keep running. It carries only the inference scope, so saving it skips the
+usage check that verifies a normal login. The hello probe still checks it when an
+agent adopts the connection. Runs receive it as `CLAUDE_CODE_OAUTH_TOKEN`, the same
+as a copied login.
+
 Codex and Grok start a separate terminal sign-in for each connection or reconnect.
 The shared component shows a server-generated command with a fresh `CODEX_HOME`
 or `GROK_HOME`. Codex uses file credential storage in that home and `login --device-auth`, so
