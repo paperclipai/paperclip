@@ -75,6 +75,27 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+// Fleet-wide run ceiling (`PAPERCLIP_MAX_CONCURRENT_RUNS`). Same bounds as the
+// per-agent clamp so operators only learn one set of limits.
+export const FLEET_MAX_CONCURRENT_RUNS_MIN = 1;
+export const FLEET_MAX_CONCURRENT_RUNS_MAX = 50;
+
+/**
+ * Parse `PAPERCLIP_MAX_CONCURRENT_RUNS`. Returns `0` when unset, unparseable, or
+ * non-positive, which means "no fleet cap" so dispatch is unchanged by default.
+ */
+export function normalizeFleetMaxConcurrentRuns(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? Math.floor(value)
+      : Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(
+    FLEET_MAX_CONCURRENT_RUNS_MAX,
+    Math.max(FLEET_MAX_CONCURRENT_RUNS_MIN, parsed),
+  );
+}
+
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 // Config keys owned by Paperclip/company state rather than one concrete adapter.

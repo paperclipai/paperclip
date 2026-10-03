@@ -117,6 +117,7 @@ import {
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   isToolConnectionAttentionHealth,
+  normalizeFleetMaxConcurrentRuns,
   type BillingType,
   type ChatProvider,
   type CostStatus,
@@ -17111,6 +17112,19 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -20077,6 +20091,23 @@ export function heartbeatService(
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
+      // Fleet-wide ceiling from PAPERCLIP_MAX_CONCURRENT_RUNS. 0 = disabled, so
+      // dispatch is unchanged unless an operator opts in. Per-agent slots below
+      // still apply; this only refuses to start a run when the fleet is already at
+      // its ceiling. The queued run stays queued and a later tick retries.
+      const fleetCap = normalizeFleetMaxConcurrentRuns(
+        runtimeEnv.PAPERCLIP_MAX_CONCURRENT_RUNS,
+      );
+      if (fleetCap > 0) {
+        const fleetRunning = await countRunningRunsForCompany(agent.companyId);
+        if (fleetRunning >= fleetCap) {
+          logger.info(
+            { agentId, companyId: agent.companyId, fleetRunning, fleetCap },
+            "fleet concurrency cap reached; leaving run queued",
+          );
+          return [];
+        }
+      }
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
