@@ -107,6 +107,9 @@ export function createSettingsFixtures(
         maxConcurrentRuns: 1,
       },
     },
+    configurationAccess: "full",
+    adapterConfigKeys: ["access.MODEL_API"],
+    runtimeConfigKeys: ["heartbeat"],
     permissions: { canCreateAgents: false, canCreateSkills: true },
     chainOfCommand: [],
     access: {
