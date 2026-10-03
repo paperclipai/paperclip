@@ -759,6 +759,8 @@ The scan scope is:
 
 The reusable watchdog issue is a child of the watched source issue for audit and navigation, but it is excluded from the watched work subtree. This prevents recursive watchdog loops.
 
+Liveness recovery excludes `task_watchdog` origin children when inferring business dependencies or a healthy child path. An active watchdog review alone does not establish that the original work has recovered. Independent follow-up repair issues remain eligible. Explicit watchdog-review dependencies remain valid; recovery does not infer them from `parentId` alone.
+
 ### Stopped-subtree evaluation
 
 Task watchdog evaluation is conservative. If any included issue has a live run, queued wake, or scheduled retry that should fire without intervention, the subtree is live and the task watchdog does not run.
