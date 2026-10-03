@@ -14,7 +14,17 @@ export function inferOpenAiCompatibleBiller(
     readEnv(env, "OPENAI_BASE_URL") ??
     readEnv(env, "OPENAI_API_BASE") ??
     readEnv(env, "OPENAI_API_BASE_URL");
-  if (baseUrl && /openrouter\.ai/i.test(baseUrl)) return "openrouter";
+  if (baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      if (url.protocol === "https:" && url.hostname === "openrouter.ai") return "openrouter";
+      // An OpenAI-compatible endpoint does not imply OpenAI prices. Do not
+      // assign direct-provider estimates to a proxy or an unknown endpoint.
+      if (url.protocol !== "https:" || url.hostname !== "api.openai.com") return "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
 
   return fallback;
 }

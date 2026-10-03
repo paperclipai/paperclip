@@ -1,4 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { firstCursorDiagnosticLine, parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorJsonl, createCursorJsonlParser, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -626,11 +627,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const consumeAccounting = createCursorJsonlParser();
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+      const parsed = consumeAccounting(stdout);
+      const provider = resolveProviderFromModel(model);
+      return { usage: parsed.usage, costUsd: parsed.costUsd, usageBasis: "per_run", provider, biller: resolveCursorBiller(effectiveEnv, billingType, provider), billingType, model, complete: parsed.sawResult };
+    });
     let stdoutLineBuffer = "";
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);
       if (!normalized.line) return;
-      await onLog(normalized.stream ?? "stdout", `${normalized.line}\n`);
+      await accountingLog(normalized.stream ?? "stdout", `${normalized.line}\n`);
     };
     const flushStdoutChunk = async (chunk: string, finalize = false) => {
       const combined = `${stdoutLineBuffer}${chunk}`;
@@ -670,6 +677,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
     });
     await flushStdoutChunk("", true);
+    await accountingLog.flush();
 
     return {
       proc,
@@ -698,6 +706,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
+        usageComplete: attempt.parsed.sawResult,
+          usage: attempt.parsed.usage,
+          usageBasis: "per_run",
+          provider: providerFromModel,
+          biller: resolveCursorBiller(effectiveEnv,
+          billingType, providerFromModel),
+          model,
+          billingType,
+          costUsd: attempt.parsed.costUsd,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
       };
@@ -729,6 +746,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
+      usageComplete: attempt.parsed.sawResult,
+      usageBasis: "per_run",
       errorMessage:
         (attempt.proc.exitCode ?? 0) === 0
           ? null

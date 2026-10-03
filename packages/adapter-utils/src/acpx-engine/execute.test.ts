@@ -7119,6 +7119,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // The lost channel overrides the nominally completed terminal to a failure.
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(result.usageComplete).toBe(false);
     // The message carries only the typed loss reason, not raw provider text.
     expect(result.errorMessage).toContain("provider_exit");
     expect(result.resultJson).toMatchObject({ status: "failed" });
@@ -7138,6 +7139,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
+    expect(result.usageComplete).toBe(true);
     // The atomic settle step marked the orderly completion for the
     // success-eligible terminal.
     expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);

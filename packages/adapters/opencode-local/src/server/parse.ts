@@ -20,6 +20,11 @@ function errorText(value: unknown): string {
 }
 
 export function parseOpenCodeJsonl(stdout: string) {
+  return createOpenCodeJsonlParser()(stdout);
+}
+
+/** Consume complete JSONL records once, retaining protocol accounting state. */
+export function createOpenCodeJsonlParser() {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
@@ -29,62 +34,66 @@ export function parseOpenCodeJsonl(stdout: string) {
     cachedInputTokens: 0,
     outputTokens: 0,
   };
-  let costUsd = 0;
+  let costUsd: number | null = null;
+  let missingCost = false;
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  return (stdout: string) => {
+    for (const rawLine of stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    const event = parseJson(line);
-    if (!event) continue;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    const currentSessionId = asString(event.sessionID, "").trim();
-    if (currentSessionId) sessionId = currentSessionId;
+      const currentSessionId = asString(event.sessionID, "").trim();
+      if (currentSessionId) sessionId = currentSessionId;
 
-    const type = asString(event.type, "");
+      const type = asString(event.type, "");
 
-    if (type === "text") {
-      const part = parseObject(event.part);
-      const text = asString(part.text, "").trim();
-      if (text) messages.push(text);
-      continue;
-    }
-
-    if (type === "step_finish") {
-      const part = parseObject(event.part);
-      const tokens = parseObject(part.tokens);
-      const cache = parseObject(tokens.cache);
-      usage.inputTokens += asNumber(tokens.input, 0);
-      usage.cachedInputTokens += asNumber(cache.read, 0);
-      usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
-      costUsd += asNumber(part.cost, 0);
-      continue;
-    }
-
-    if (type === "tool_use") {
-      const part = parseObject(event.part);
-      const state = parseObject(part.state);
-      if (asString(state.status, "") === "error") {
-        const text = asString(state.error, "").trim();
-        if (text) toolErrors.push(text);
+      if (type === "text") {
+        const part = parseObject(event.part);
+        const text = asString(part.text, "").trim();
+        if (text) messages.push(text);
+        continue;
       }
-      continue;
+
+      if (type === "step_finish") {
+        const part = parseObject(event.part);
+        const tokens = parseObject(part.tokens);
+        const cache = parseObject(tokens.cache);
+        usage.inputTokens += asNumber(tokens.input, 0) + asNumber(cache.write, 0);
+        usage.cachedInputTokens += asNumber(cache.read, 0);
+        usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
+        if (typeof part.cost === "number" && Number.isFinite(part.cost) && part.cost >= 0) costUsd = (costUsd ?? 0) + part.cost;
+        else missingCost = true;
+        continue;
+      }
+
+      if (type === "tool_use") {
+        const part = parseObject(event.part);
+        const state = parseObject(part.state);
+        if (asString(state.status, "") === "error") {
+          const text = asString(state.error, "").trim();
+          if (text) toolErrors.push(text);
+        }
+        continue;
+      }
+
+      if (type === "error") {
+        const text = errorText(event.error ?? event.message).trim();
+        if (text) errors.push(text);
+        continue;
+      }
     }
 
-    if (type === "error") {
-      const text = errorText(event.error ?? event.message).trim();
-      if (text) errors.push(text);
-      continue;
-    }
-  }
-
-  return {
-    sessionId,
-    summary: messages.join("\n\n").trim(),
-    usage,
-    costUsd,
-    errorMessage: errors.length > 0 ? errors.join("\n") : null,
-    toolErrors,
+    return {
+      sessionId,
+      summary: messages.join("\n\n").trim(),
+      usage: { ...usage },
+      costUsd: missingCost ? null : costUsd,
+      errorMessage: errors.length > 0 ? errors.join("\n") : null,
+      toolErrors,
+    };
   };
 }
 

@@ -403,3 +403,12 @@ describe("cursor cli formatter", () => {
     }
   });
 });
+
+
+describe("Cursor price completeness", () => {
+  it("preserves reported zero and keeps a partially priced stream unpriced", () => {
+    expect(parseCursorJsonl(JSON.stringify({ type: "result", cost_usd: 0 })).costUsd).toBe(0);
+    expect(parseCursorJsonl(JSON.stringify({ type: "result" })).costUsd).toBeNull();
+    expect(parseCursorJsonl([JSON.stringify({ type: "step_finish", part: { cost: 1 } }), JSON.stringify({ type: "step_finish", part: {} })].join("\n")).costUsd).toBeNull();
+  });
+});

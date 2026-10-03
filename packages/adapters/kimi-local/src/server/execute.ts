@@ -648,6 +648,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
+        usageComplete: false,
+        usageBasis: "per_run",
+        provider: "moonshot",
+        biller: "moonshot",
+        model: model || null,
+        billingType,
+        costUsd: null,
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth
           ? "kimi_auth_required"
@@ -704,6 +711,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
+      usageBasis: "per_run",
       errorMessage: failed ? fallbackErrorMessage : null,
       // Forward the transport-level error code from the run-disposition seam
       // first. A lost duplex control channel surfaces the typed

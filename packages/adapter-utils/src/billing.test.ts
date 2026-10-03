@@ -25,4 +25,14 @@ describe("inferOpenAiCompatibleBiller", () => {
       ),
     ).toBe("openai");
   });
+
+  it.each(["https://proxy.example/v1", "https://openrouter.ai.example/v1", "https://example.org/openrouter.ai", "http://api.openai.com/v1", "invalid"])("does not apply direct provider prices to %s", (baseUrl) => {
+    expect(inferOpenAiCompatibleBiller({ OPENAI_BASE_URL: baseUrl }, "openai")).toBe("unknown");
+  });
+
+  it("recognizes each supported base URL override", () => {
+    expect(inferOpenAiCompatibleBiller({ OPENAI_API_BASE: "https://proxy.example" })).toBe("unknown");
+    expect(inferOpenAiCompatibleBiller({ OPENAI_API_BASE_URL: "https://proxy.example" })).toBe("unknown");
+    expect(inferOpenAiCompatibleBiller({}, null)).toBeNull();
+  });
 });

@@ -28,6 +28,11 @@ export type CodexAuthRefreshFailureClass =
   | "refresh_token_invalidated";
 
 export function parseCodexJsonl(stdout: string) {
+  return createCodexJsonlParser()(stdout);
+}
+
+/** Consume complete JSONL records once, retaining protocol accounting state. */
+export function createCodexJsonlParser() {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
@@ -39,61 +44,64 @@ export function parseCodexJsonl(stdout: string) {
     outputTokens: 0,
   };
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  return (stdout: string) => {
+    for (const rawLine of stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    const event = parseJson(line);
-    if (!event) continue;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    const type = asString(event.type, "");
-    if (type) sawProtocolEvent = true;
-    if (type === "error" || type === "turn.completed" || type === "turn.failed") {
-      sawProtocolTerminalEvent = true;
-    }
-    if (type === "thread.started") {
-      sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
-      continue;
-    }
-
-    if (type === "error") {
-      const msg = asString(event.message, "").trim();
-      if (msg) errorMessage = msg;
-      continue;
-    }
-
-    if (type === "item.completed") {
-      const item = parseObject(event.item);
-      if (asString(item.type, "") === "agent_message") {
-        const text = asString(item.text, "");
-        if (text) finalMessage = text;
+      const type = asString(event.type, "");
+      if (type) sawProtocolEvent = true;
+      if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+        sawProtocolTerminalEvent = true;
       }
-      continue;
+      if (type === "thread.started") {
+        sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
+        continue;
+      }
+
+      if (type === "error") {
+        const msg = asString(event.message, "").trim();
+        if (msg) errorMessage = msg;
+        continue;
+      }
+
+      if (type === "item.completed") {
+        const item = parseObject(event.item);
+        if (asString(item.type, "") === "agent_message") {
+          const text = asString(item.text, "");
+          if (text) finalMessage = text;
+        }
+        continue;
+      }
+
+      if (type === "turn.completed") {
+        const usageObj = parseObject(event.usage);
+        usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
+        usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
+        usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+        continue;
+      }
+
+      if (type === "turn.failed") {
+        const err = parseObject(event.error);
+        const msg = asString(err.message, "").trim();
+        if (msg) errorMessage = msg;
+      }
     }
 
-    if (type === "turn.completed") {
-      const usageObj = parseObject(event.usage);
-      usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
-      usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
-      usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
-      continue;
-    }
-
-    if (type === "turn.failed") {
-      const err = parseObject(event.error);
-      const msg = asString(err.message, "").trim();
-      if (msg) errorMessage = msg;
-    }
-  }
-
-  return {
-    sessionId,
-    summary: finalMessage?.trim() ?? "",
-    usage,
-    usageBasis: "per_run" as const,
-    errorMessage,
-    sawProtocolEvent,
-    sawProtocolTerminalEvent,
+    return {
+      sessionId,
+      summary: finalMessage?.trim() ?? "",
+      // Codex includes cache hits in input_tokens; Paperclip stores them separately.
+      usage: { ...usage, inputTokens: Math.max(0, usage.inputTokens - usage.cachedInputTokens) },
+      usageBasis: "per_run" as const,
+      errorMessage,
+      sawProtocolEvent,
+      sawProtocolTerminalEvent,
+    };
   };
 }
 

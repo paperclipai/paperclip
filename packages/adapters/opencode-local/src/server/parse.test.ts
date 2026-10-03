@@ -75,3 +75,12 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
   });
 });
+
+describe("OpenCode price availability", () => {
+  it("distinguishes missing cost from reported zero and counts cache writes", () => {
+    const event = { type: "step_finish", part: { tokens: { input: 10, output: 3, cache: { read: 100, write: 20 } } } };
+    expect(parseOpenCodeJsonl(JSON.stringify(event))).toMatchObject({ costUsd: null, usage: { inputTokens: 30, cachedInputTokens: 100, outputTokens: 3 } });
+    expect(parseOpenCodeJsonl(JSON.stringify({ ...event, part: { ...event.part, cost: 0 } })).costUsd).toBe(0);
+    expect(parseOpenCodeJsonl([event, { ...event, part: { ...event.part, cost: 1 } }].map((row) => JSON.stringify(row)).join("\n")).costUsd).toBeNull();
+  });
+});

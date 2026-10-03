@@ -4906,6 +4906,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              const checkpoint = summarizeAcpxTurnUsage({ preStatus: preTurnStatus, postStatus: null, eventBreakdown, eventCostUsd });
+              await ctx.onUsage?.({ ...billingFields, usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd,
+                model: prepared.requestedModel, usageBasis: "per_run", complete: false });
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
@@ -4992,6 +4995,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
+        await ctx.onUsage?.({ ...billingFields, usage: turnUsage.usage ?? undefined, costUsd: turnUsage.costUsd,
+          model: prepared.requestedModel, usageBasis: "per_run", complete: !channelLost });
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
         // ACPX can defer session/load until runTurn. Forget an unavailable
         // session so the next bounded turn receives the full task conversation.
@@ -5077,6 +5082,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           model: prepared.requestedModel || null,
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
+          usageComplete: !channelLost,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
             ...activityDiagnostics,

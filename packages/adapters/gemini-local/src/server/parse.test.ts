@@ -88,8 +88,8 @@ describe("parseGeminiJsonl", () => {
     expect(result.summary).toBe("hello.");
     expect(result.sessionId).toBe("session-abc");
     expect(result.errorMessage).toBeNull();
-    expect(result.usage.inputTokens).toBe(9095);
-    expect(result.usage.outputTokens).toBe(29);
+    expect(result.usage.inputTokens).toBe(963);
+    expect(result.usage.outputTokens).toBe(373);
     expect(result.usage.cachedInputTokens).toBe(8132);
   });
 
@@ -211,5 +211,17 @@ describe("isGeminiTransientNetworkError", () => {
     expect(
       isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
     ).toBe(false);
+  });
+});
+
+
+describe("Gemini accounting semantics", () => {
+  it("keeps cache reads disjoint and includes thinking tokens in API metadata", () => {
+    const parsed = parseGeminiJsonl(JSON.stringify({ type: "result", usageMetadata: { promptTokenCount: 100, cachedContentTokenCount: 80, candidatesTokenCount: 10, thoughtsTokenCount: 5, totalTokenCount: 115 } }));
+    expect(parsed.usage).toEqual({ inputTokens: 20, cachedInputTokens: 80, outputTokens: 15 });
+  });
+  it("preserves explicit zero and distinguishes absent prices", () => {
+    expect(parseGeminiJsonl(JSON.stringify({ type: "result", total_cost_usd: 0 })).costUsd).toBe(0);
+    expect(parseGeminiJsonl(JSON.stringify({ type: "result" })).costUsd).toBeNull();
   });
 });
