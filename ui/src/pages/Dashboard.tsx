@@ -438,7 +438,7 @@ export function Dashboard() {
             />
             <MetricCard
               icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
+              value={data.pendingApprovals}
               label="Pending Approvals"
               to="/approvals"
               description={
