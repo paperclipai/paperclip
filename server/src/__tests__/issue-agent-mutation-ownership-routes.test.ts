@@ -1370,7 +1370,7 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
-  it("charges an agent create against the run's own create budget", async () => {
+  it("hands the create service a per-run budget hook for an agent actor", async () => {
     const app = await createApp(ownerActor(), createRunContextDb({ issueId }));
 
     const res = await request(app)
@@ -1378,21 +1378,31 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ title: "Stage 3 — implement the gate" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockObserveIssueCreate).toHaveBeenCalledWith(
-      expect.anything(),
+    // The charge is the service's to run, inside the transaction that does the
+    // insert — the route only supplies it. Charging here instead billed replays
+    // that minted nothing and could refuse a retry of an already-created task.
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
       expect.objectContaining({
-        companyId,
-        runId: ownerRunId,
-        agentId: ownerAgentId,
-        parentIssueId: null,
         title: "Stage 3 — implement the gate",
+        assertCreateAllowed: expect.any(Function),
       }),
     );
   });
 
   it("refuses a create past the per-run budget without minting an issue", async () => {
-    // The whole reason the charge is taken before the insert: a refused create must
-    // leave no board row behind. One observed run minted 18 tasks in under six minutes.
+    // One observed run minted 18 tasks in under six minutes, so the refusal has to
+    // land before the row exists. The stub stands in for `create`'s own ordering:
+    // run the hook first, insert only if it did not throw.
+    let inserted = false;
+    mockIssueService.create.mockImplementation(async (
+      _companyId: string,
+      input: Record<string, unknown>,
+    ) => {
+      await (input.assertCreateAllowed as ((tx: unknown) => Promise<void>) | undefined)?.({});
+      inserted = true;
+      return { id: "never-reached", companyId, title: input.title };
+    });
     mockObserveIssueCreate.mockResolvedValue({
       allowed: false,
       mode: "enforce",
@@ -1414,7 +1424,7 @@ describe("agent issue mutation checkout ownership", () => {
       mode: "enforce",
     });
     expect(res.body.error).toContain("next heartbeat");
-    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(inserted).toBe(false);
   });
 
   it("does not charge board creates against any run budget", async () => {

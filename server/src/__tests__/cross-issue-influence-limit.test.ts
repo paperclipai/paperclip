@@ -285,11 +285,7 @@ function issueCreateDb(
       },
     }),
   };
-  return {
-    db: { transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx) },
-    inserted,
-    countedActions,
-  };
+  return { tx, inserted, countedActions };
 }
 
 const createInput = {
@@ -374,7 +370,7 @@ describe("per-run issue-create budget", () => {
     // A run that has spent all 20 cross-issue comments is still on create attempt 1.
     const fake = issueCreateDb({ influence: CROSS_ISSUE_INFLUENCE_LIMIT, create: 0 });
 
-    const decision = await observeIssueCreate(fake.db as never, {
+    const decision = await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: null,
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
@@ -389,14 +385,17 @@ describe("per-run issue-create budget", () => {
   it("leaves the comment budget spendable by a run that has spent its create budget", async () => {
     const fake = issueCreateDb({ influence: 0, create: ISSUE_CREATE_RUN_LIMIT });
 
-    const decision = await observeCrossIssueInfluence(fake.db as never, {
+    const decision = await observeCrossIssueInfluence(
+      { transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb(fake.tx) } as never,
+      {
       companyId: COMPANY_ID,
       runId: RUN_ID,
       agentId: AGENT_ID,
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "comment",
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
-    });
+      },
+    );
 
     expect(decision).toMatchObject({ allowed: true, count: 1, cap: CROSS_ISSUE_INFLUENCE_LIMIT });
     expect(fake.countedActions).toEqual(["issue.cross_issue_influence_observed"]);
@@ -407,7 +406,7 @@ describe("per-run issue-create budget", () => {
     // is the run's subject, so it is free — like any same-issue write.
     const fake = issueCreateDb({ create: ISSUE_CREATE_RUN_LIMIT });
 
-    const decision = await observeIssueCreate(fake.db as never, {
+    const decision = await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: SOURCE_ISSUE_ID,
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
@@ -421,7 +420,7 @@ describe("per-run issue-create budget", () => {
   it("matches the run's source issue by human identifier too", async () => {
     const fake = issueCreateDb({}, { contextSnapshot: { issueId: "task-531" } });
 
-    expect(await observeIssueCreate(fake.db as never, {
+    expect(await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: "99999999-9999-4999-8999-999999999999",
       parentIssueIdentifier: "TASK-531",
@@ -432,14 +431,14 @@ describe("per-run issue-create budget", () => {
 
   it("charges a parentless create and a foreign-parent create alike", async () => {
     const parentless = issueCreateDb();
-    expect(await observeIssueCreate(parentless.db as never, {
+    expect(await observeIssueCreate(parentless.tx as never, {
       ...createInput,
       parentIssueId: null,
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
     })).toMatchObject({ allowed: true, count: 1 });
 
     const foreignParent = issueCreateDb();
-    expect(await observeIssueCreate(foreignParent.db as never, {
+    expect(await observeIssueCreate(foreignParent.tx as never, {
       ...createInput,
       parentIssueId: "99999999-9999-4999-8999-999999999999",
       parentIssueIdentifier: "TASK-999",
@@ -450,7 +449,7 @@ describe("per-run issue-create budget", () => {
   it("charges every create of an unscoped run, since it has no source issue to parent under", async () => {
     const fake = issueCreateDb({}, { contextSnapshot: {} });
 
-    expect(await observeIssueCreate(fake.db as never, {
+    expect(await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: "99999999-9999-4999-8999-999999999999",
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
@@ -463,7 +462,7 @@ describe("per-run issue-create budget", () => {
     // `activity_log.entity_id` is NOT NULL. The counter is per-run anyway.
     const fake = issueCreateDb();
 
-    await observeIssueCreate(fake.db as never, {
+    await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: "99999999-9999-4999-8999-999999999999",
       parentIssueIdentifier: "TASK-999",
@@ -496,7 +495,7 @@ describe("per-run issue-create budget", () => {
   it("records a refused create under its own rejected action", async () => {
     const fake = issueCreateDb({ create: ISSUE_CREATE_RUN_LIMIT });
 
-    const decision = await observeIssueCreate(fake.db as never, {
+    const decision = await observeIssueCreate(fake.tx as never, {
       ...createInput,
       parentIssueId: null,
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
@@ -516,7 +515,7 @@ describe("per-run issue-create budget", () => {
     // its run header was eaten in transit. An uncountable create is allowed and
     // reported, never refused.
     const malformed = issueCreateDb();
-    expect(await observeIssueCreate(malformed.db as never, {
+    expect(await observeIssueCreate(malformed.tx as never, {
       ...createInput,
       runId: "attacker-controlled-run-id",
       parentIssueId: null,
@@ -525,7 +524,7 @@ describe("per-run issue-create budget", () => {
     expect(malformed.inserted).toEqual([]);
 
     const noSuchRun = issueCreateDb({}, null);
-    expect(await observeIssueCreate(noSuchRun.db as never, {
+    expect(await observeIssueCreate(noSuchRun.tx as never, {
       ...createInput,
       parentIssueId: null,
       now: ISSUE_CREATE_RUN_ENFORCE_AT,

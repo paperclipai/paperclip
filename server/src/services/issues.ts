@@ -1945,6 +1945,16 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   allowDuplicate?: boolean;
   assertCanReuseIssue?: (issue: typeof issues.$inferSelect) => Promise<void>;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  /**
+   * Last gate before a task is minted, run inside the create transaction.
+   *
+   * Called only when a new row is actually about to be inserted — after the
+   * duplicate lookup above has ruled out a replay — so a caller metering creation
+   * is charged once per minted task and never for a retry that returns an existing
+   * one. Throw to refuse: the throw rolls the transaction back, so a refusal leaves
+   * no task behind.
+   */
+  assertCreateAllowed?: (tx: DbTransaction) => Promise<void>;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -9756,6 +9766,7 @@ export function issueService(db: Db) {
         allowDuplicate,
         assertCanReuseIssue,
         onDeduplicated,
+        assertCreateAllowed,
         ...issueData
       } = data;
       const explicitTitle = issueData.title?.trim();
@@ -10181,6 +10192,11 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+
+        // Everything above either returned an existing task or decided to mint a
+        // new one. This is therefore the one point where "a task is about to exist"
+        // is true, which is where a per-caller creation budget has to be charged.
+        await assertCreateAllowed?.(tx);
 
         const [issue] = await tx.insert(issues).values(values).returning();
         await recordChatHandoff(tx, issue, actorRunId);

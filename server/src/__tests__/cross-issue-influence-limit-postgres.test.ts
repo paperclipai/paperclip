@@ -26,6 +26,15 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization", () => {
+  /**
+   * `observeIssueCreate` takes a transaction, not a `Db`: its run-row lock only
+   * serializes inside one, and in production it shares the create's transaction so
+   * the charge and the task commit together. Tests therefore open one per attempt,
+   * which is also what makes the concurrency case below a real race.
+   */
+  const charge = (input: Parameters<typeof observeIssueCreate>[1]) =>
+    db.transaction((tx) => observeIssueCreate(tx, input));
+
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -177,9 +186,9 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       now: ISSUE_CREATE_RUN_ENFORCE_AT,
     };
     const decisions = await Promise.all([
-      observeIssueCreate(db, input),
-      observeIssueCreate(db, input),
-      observeIssueCreate(db, input),
+      charge(input),
+      charge(input),
+      charge(input),
     ]);
 
     expect(decisions.map((decision) => decision?.allowed).sort()).toEqual([false, true, true]);
@@ -245,13 +254,13 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
     // Twice, to prove the free path is not a one-shot: a planning run decomposing its
     // own epic into a wave of stages is never bounded.
-    await expect(observeIssueCreate(db, { ...base, parentIssueId: sourceIssueId, title: "[stage:plan]" }))
+    await expect(charge({ ...base, parentIssueId: sourceIssueId, title: "[stage:plan]" }))
       .resolves.toBeNull();
-    await expect(observeIssueCreate(db, { ...base, parentIssueId: sourceIssueId, title: "[stage:implement]" }))
+    await expect(charge({ ...base, parentIssueId: sourceIssueId, title: "[stage:implement]" }))
       .resolves.toBeNull();
-    await expect(observeIssueCreate(db, { ...base, parentIssueId: foreignParentId, title: "Under a foreign epic" }))
+    await expect(charge({ ...base, parentIssueId: foreignParentId, title: "Under a foreign epic" }))
       .resolves.toMatchObject({ count: 1, allowed: true });
-    await expect(observeIssueCreate(db, { ...base, parentIssueId: null, title: "Rootless" }))
+    await expect(charge({ ...base, parentIssueId: null, title: "Rootless" }))
       .resolves.toMatchObject({ count: 2, allowed: true });
 
     const recorded = await db
@@ -329,7 +338,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     ]);
 
     // A run out of comments is still on create attempt 1.
-    await expect(observeIssueCreate(db, {
+    await expect(charge({
       companyId,
       runId: spentCommentsRunId,
       agentId,

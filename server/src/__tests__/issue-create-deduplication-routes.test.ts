@@ -288,6 +288,78 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(recreatedClosed.body.id).not.toBe(closedIssueId);
   });
 
+  // Greptile P1 on the per-run create budget: a charge taken *before* `create` is
+  // charged even when the call turns out to be a replay and mints nothing — so a
+  // retry of an already-created task could be refused once enforcement starts, and
+  // every earlier retry quietly spent a slot. The budget bounds minting, so the
+  // charge has to sit where the insert does: inside the transaction, after the
+  // duplicate lookup has decided there is something to insert.
+  it("charges a create hook once for a real insert and never for a replay", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const svc = issueService(db);
+    const charged: string[] = [];
+    const assertCreateAllowed = async () => {
+      charged.push("called");
+    };
+
+    const first = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "Prepare release",
+      status: "todo",
+      priority: "medium",
+      idempotencyKey: "run-1:prepare-release",
+      assertCreateAllowed,
+    });
+    expect(charged).toHaveLength(1);
+
+    // Idempotency-key replay: returns the same task, mints nothing, charges nothing.
+    const replay = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "Totally different retry payload",
+      status: "todo",
+      priority: "medium",
+      idempotencyKey: "run-1:prepare-release",
+      assertCreateAllowed,
+    });
+    expect(replay.id).toBe(first.id);
+    expect(charged).toHaveLength(1);
+
+    // Recent-open-title dedup is the other replay path, and it must not charge
+    // either. `allowDuplicate: false` is what turns it on — the service default is
+    // off, so an internal create never silently collapses onto a sibling.
+    const titleReplay = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "Prepare release",
+      status: "todo",
+      priority: "medium",
+      allowDuplicate: false,
+      assertCreateAllowed,
+    });
+    expect(titleReplay.id).toBe(first.id);
+    expect(charged).toHaveLength(1);
+  });
+
+  it("inserts no task when the create hook refuses", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const svc = issueService(db);
+    const before = await db.select().from(issues);
+
+    await expect(svc.create(companyId, {
+      parentId: parent.id,
+      title: "Throwaway probe",
+      status: "todo",
+      priority: "medium",
+      assertCreateAllowed: async () => {
+        throw new Error("budget spent");
+      },
+    })).rejects.toThrow("budget spent");
+
+    // The whole point of charging pre-insert: a refusal leaves no board row behind.
+    expect(await db.select().from(issues)).toHaveLength(before.length);
+  });
+
   it("stores the request run header on manual creates", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);

@@ -667,11 +667,14 @@ the heartbeat run rather than an issue, because the charge is taken before the i
 create mints no issue to key it on. A create the server cannot attribute to a persisted run is
 logged and allowed rather than refused: creation was never gated here, so refusing it would deny a
 write the agent is entitled to make instead of bounding one. Issue document upserts
-(`PUT /issues/:id/documents/:key`) are deliberately **not** counted by either cap. They are fenced
-to the issue's assignee, so there is no cross-agent blast radius; a PUT is idempotent per key, so N
-writes produce N revisions of one object rather than N board objects; and an agent whose run cannot
-comment is told to record its findings in a document, which makes the document path the evidence
-channel of last resort rather than an amplification vector. Document revisions are observed
+(`PUT /issues/:id/documents/:key`) are deliberately **not** counted by either cap. A PUT is
+idempotent per key, so N writes produce N revisions of one object rather than N board objects; and an
+agent whose run cannot comment is told to record its findings in a document, which makes the document
+path the evidence channel of last resort rather than an amplification vector. The write is also
+narrow, though not assignee-only: `assertAgentIssueMutationAllowed` admits the assignee, any
+same-company agent on an unassigned task, and a task-watchdog run inside its watched subtree — so the
+blast radius is bounded by the tasks an agent may already mutate and by one object per key, rather
+than by sole ownership. Document revisions are observed
 log-only so the decision can be revisited from data.
 
 Agent @-mentions are context links only: they do not wake the mentioned agent,

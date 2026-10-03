@@ -227,6 +227,7 @@ import {
   forbidden,
   HttpError,
   notFound,
+  tooManyRequests,
   unauthorized,
   unprocessable,
 } from "../errors.js";
@@ -343,6 +344,7 @@ import {
   issueCreateLimitError,
   observeCrossIssueInfluence,
   observeIssueCreate,
+  type RunWriteTransaction,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
@@ -3805,14 +3807,23 @@ export function issueRoutes(
   }
 
   /**
-   * Charge one agent-authored issue create against the run's own create budget.
+   * The per-run create budget, shaped as the hook `svc.create` runs inside its
+   * transaction immediately before the insert.
    *
-   * Called before `svc.create`, so a refusal mints no board row — that is the entire
-   * point of charging pre-insert. Returns false once it has written the 429.
+   * Returned rather than called here: charging before `svc.create` charged replays
+   * too. `create` may return an existing task instead of minting one (idempotency
+   * key, or a recent open sibling with the same title), and a budget that bounds
+   * minting must not spend a slot on a call that mints nothing — nor refuse a retry
+   * of a task the run already created. Handing the charge to the service lets it fire
+   * once the duplicate lookup has decided there really is an insert, in the same
+   * transaction, so the charge and the task commit or roll back together.
+   *
+   * `undefined` when there is nothing to charge, so the optional hook never runs:
+   * board and user creates are unaffected, and a create with no resolvable run is
+   * allowed through uncounted rather than refused.
    */
-  async function assertIssueCreateWithinRunCap(
+  function issueCreateRunBudgetHook(
     req: Request,
-    res: Response,
     input: {
       companyId: string;
       parentIssueId: string | null;
@@ -3821,33 +3832,38 @@ export function issueRoutes(
       assigneeAgentId?: string | null;
     },
   ) {
-    // Board and user creates are unaffected — same early-out as the cross-issue cap.
-    if (req.actor.type !== "agent") return true;
+    if (req.actor.type !== "agent") return undefined;
+    const agentId = req.actor.agentId;
+    const runId = req.actor.runId;
     // No run to charge it to. Deliberately not a 403: creates were never gated here
     // before this counter, so refusing one an agent is entitled to make would be a
-    // regression rather than containment. `observeIssueCreate` logs the gap.
-    if (!req.actor.agentId || !req.actor.runId) return true;
+    // regression rather than containment.
+    if (!agentId || !runId) return undefined;
 
-    const decision = await observeIssueCreate(db, {
-      companyId: input.companyId,
-      runId: req.actor.runId,
-      agentId: req.actor.agentId,
-      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
-      parentIssueId: input.parentIssueId,
-      parentIssueIdentifier: input.parentIssueIdentifier ?? null,
-      title: typeof input.title === "string" ? input.title : null,
-      assigneeAgentId: input.assigneeAgentId ?? null,
-    });
-    if (!decision || decision.allowed) return true;
+    return async (tx: RunWriteTransaction) => {
+      const decision = await observeIssueCreate(tx, {
+        companyId: input.companyId,
+        runId,
+        agentId,
+        responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+        parentIssueId: input.parentIssueId,
+        parentIssueIdentifier: input.parentIssueIdentifier ?? null,
+        title: typeof input.title === "string" ? input.title : null,
+        assigneeAgentId: input.assigneeAgentId ?? null,
+      });
+      if (!decision || decision.allowed) return;
 
-    const labels = await issueWriteDenialLabels(req, {
-      identifier: null,
-      assigneeAgentId: null,
-    });
-    res
-      .status(429)
-      .json(issueCreateLimitError(decision, { actorLabel: labels.actorLabel }));
-    return false;
+      const labels = await issueWriteDenialLabels(req, {
+        identifier: null,
+        assigneeAgentId: null,
+      });
+      // Throwing rolls the create transaction back, which is what makes "a refusal
+      // mints nothing" true rather than merely intended.
+      const { error, details } = issueCreateLimitError(decision, {
+        actorLabel: labels.actorLabel,
+      });
+      throw tooManyRequests(error, details);
+    };
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(
@@ -11754,20 +11770,6 @@ export function issueRoutes(
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
-      // Last gate before anything is minted: the per-run create budget. It sits after
-      // the authorization and shape checks so a 404 on a bad parent does not spend a
-      // slot, and before `svc.create` so a refusal leaves no board row behind.
-      if (
-        !(await assertIssueCreateWithinRunCap(req, res, {
-          companyId,
-          parentIssueId:
-            typeof effectiveParentId === "string" ? effectiveParentId : null,
-          parentIssueIdentifier: createParent?.identifier ?? null,
-          title: rawCreateBody.title,
-          assigneeAgentId: normalizedAssigneeAgentId ?? null,
-        }))
-      )
-        return;
       const actor = getActorInfo(req);
       const runWorkspaceInheritanceSourceIssueId =
         hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -11914,6 +11916,13 @@ export function issueRoutes(
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
           deduplicationReason = reason;
         },
+        assertCreateAllowed: issueCreateRunBudgetHook(req, {
+          companyId,
+          parentIssueId: createBody.parentId ?? null,
+          parentIssueIdentifier: createParent?.identifier ?? null,
+          title: createBody.title,
+          assigneeAgentId: createBody.assigneeAgentId ?? null,
+        }),
       };
       let issue: Awaited<ReturnType<typeof svc.create>>;
       try {

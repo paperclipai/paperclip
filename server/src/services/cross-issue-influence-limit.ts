@@ -265,13 +265,22 @@ export async function observeCrossIssueInfluence(
   });
 }
 
+/** The transaction this observer must run in, so its row lock actually holds. */
+export type RunWriteTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 /**
- * Atomically observes one agent-authored issue create for a heartbeat run.
+ * Observes one agent-authored issue create for a heartbeat run, on the caller's
+ * transaction.
  *
- * Same shape as `observeCrossIssueInfluence` — the run row is locked `FOR UPDATE` so
- * concurrent creates from one run serialize and cannot both read the same prior count
- * — but on its own counter, its own rollout and its own activity actions. Returns
- * `null` when the create is not chargeable at all.
+ * Takes a transaction rather than a `Db` on purpose, twice over. The run row is
+ * locked `FOR UPDATE` so concurrent creates from one run serialize, and that lock is
+ * released the moment an implicit single-statement transaction ends — so an observer
+ * handed a bare `Db` would look correct and serialize nothing. And the charge has to
+ * commit with the task it is charging for: the caller runs this inside the same
+ * transaction as the insert, so a refusal (or any later failure) rolls the charge
+ * back instead of spending a slot that minted nothing.
+ *
+ * Returns `null` when the create is not chargeable at all.
  *
  * Two differences from the cross-issue counter are deliberate:
  *
@@ -289,7 +298,7 @@ export async function observeCrossIssueInfluence(
  *    logged and allowed through.
  */
 export async function observeIssueCreate(
-  db: Db,
+  tx: RunWriteTransaction,
   input: {
     companyId: string;
     runId: string;
@@ -313,110 +322,108 @@ export async function observeIssueCreate(
     return null;
   }
 
-  return db.transaction(async (tx) => {
-    const run = await tx
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        responsibleUserId: heartbeatRuns.responsibleUserId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-      ))
-      .for("update")
-      .then((rows) => rows[0] ?? null);
-    if (!run) {
-      // Well formed, but no run of this agent in this company — stale or another
-      // agent's. Nothing to charge it to, and refusing is not this counter's call.
-      logger.warn(
-        {
-          event: "issue_create_cap",
-          companyId: input.companyId,
-          runId: input.runId,
-          agentId: input.agentId,
-        },
-        "issue create not counted: run id matched no run of this agent",
-      );
-      return null;
-    }
-
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (
-      input.parentIssueId &&
-      runScopeIsIssue(sourceIssueId, {
-        id: input.parentIssueId,
-        identifier: input.parentIssueIdentifier ?? null,
-      })
-    ) {
-      // Decomposition under the epic this run owns. Unbounded by design.
-      return null;
-    }
-
-    const priorCount = await tx
-      .select({ count: count() })
-      .from(activityLog)
-      .where(and(
-        eq(activityLog.companyId, input.companyId),
-        eq(activityLog.runId, input.runId),
-        eq(activityLog.action, ISSUE_CREATE_ACTIVITY),
-      ))
-      .then((rows) => Number(rows[0]?.count ?? 0));
-    const decision = evaluateIssueCreateLimit({ priorCount, now: input.now });
-
-    await tx.insert(activityLog).values({
-      companyId: input.companyId,
-      actorType: "agent",
-      actorId: input.agentId,
-      agentId: input.agentId,
-      runId: input.runId,
-      responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
-      action: decision.allowed ? ISSUE_CREATE_ACTIVITY : ISSUE_CREATE_REJECTED_ACTIVITY,
-      // The charge is taken *before* the insert, so a refusal mints nothing — which
-      // means there is no issue id to key the row on, and `activity_log.entity_id` is
-      // NOT NULL. The counter is per-run anyway, so the run is the right entity: the
-      // entity-type/id index then yields a run's whole create ledger in one lookup.
-      entityType: "heartbeat_run",
-      entityId: input.runId,
-      details: {
-        sourceIssueId,
-        parentIssueId: input.parentIssueId ?? null,
-        parentIssueIdentifier: input.parentIssueIdentifier ?? null,
-        title: input.title ?? null,
-        assigneeAgentId: input.assigneeAgentId ?? null,
-        count: decision.count,
-        cap: decision.cap,
-        mode: decision.mode,
-        enforceAt: decision.enforceAt,
-        allowed: decision.allowed,
+  const run = await tx
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+    ))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  if (!run) {
+    // Well formed, but no run of this agent in this company — stale or another
+    // agent's. Nothing to charge it to, and refusing is not this counter's call.
+    logger.warn(
+      {
+        event: "issue_create_cap",
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
       },
-    });
+      "issue create not counted: run id matched no run of this agent",
+    );
+    return null;
+  }
 
-    const logContext = {
-      event: "issue_create_cap",
-      companyId: input.companyId,
-      runId: input.runId,
-      agentId: input.agentId,
+  const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+  if (
+    input.parentIssueId &&
+    runScopeIsIssue(sourceIssueId, {
+      id: input.parentIssueId,
+      identifier: input.parentIssueIdentifier ?? null,
+    })
+  ) {
+    // Decomposition under the epic this run owns. Unbounded by design.
+    return null;
+  }
+
+  const priorCount = await tx
+    .select({ count: count() })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, input.companyId),
+      eq(activityLog.runId, input.runId),
+      eq(activityLog.action, ISSUE_CREATE_ACTIVITY),
+    ))
+    .then((rows) => Number(rows[0]?.count ?? 0));
+  const decision = evaluateIssueCreateLimit({ priorCount, now: input.now });
+
+  await tx.insert(activityLog).values({
+    companyId: input.companyId,
+    actorType: "agent",
+    actorId: input.agentId,
+    agentId: input.agentId,
+    runId: input.runId,
+    responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+    action: decision.allowed ? ISSUE_CREATE_ACTIVITY : ISSUE_CREATE_REJECTED_ACTIVITY,
+    // The charge is taken *before* the insert, so a refusal mints nothing — which
+    // means there is no issue id to key the row on, and `activity_log.entity_id` is
+    // NOT NULL. The counter is per-run anyway, so the run is the right entity: the
+    // entity-type/id index then yields a run's whole create ledger in one lookup.
+    entityType: "heartbeat_run",
+    entityId: input.runId,
+    details: {
       sourceIssueId,
       parentIssueId: input.parentIssueId ?? null,
+      parentIssueIdentifier: input.parentIssueIdentifier ?? null,
+      title: input.title ?? null,
+      assigneeAgentId: input.assigneeAgentId ?? null,
       count: decision.count,
       cap: decision.cap,
       mode: decision.mode,
       enforceAt: decision.enforceAt,
       allowed: decision.allowed,
-    };
-    if (decision.allowed) {
-      logger.info(logContext, "issue create observed");
-    } else {
-      logger.warn(logContext, "issue create cap exceeded");
-    }
-
-    return decision;
+    },
   });
+
+  const logContext = {
+    event: "issue_create_cap",
+    companyId: input.companyId,
+    runId: input.runId,
+    agentId: input.agentId,
+    sourceIssueId,
+    parentIssueId: input.parentIssueId ?? null,
+    count: decision.count,
+    cap: decision.cap,
+    mode: decision.mode,
+    enforceAt: decision.enforceAt,
+    allowed: decision.allowed,
+  };
+  if (decision.allowed) {
+    logger.info(logContext, "issue create observed");
+  } else {
+    logger.warn(logContext, "issue create cap exceeded");
+  }
+
+   return decision;
 }
 
 export function crossIssueInfluenceLimitError(
