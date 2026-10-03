@@ -9,6 +9,8 @@ Usage:
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
+For terminal updates (`done` / `in_review`), run the pre-completion heartbeat-context
+race check first (see `skills/paperclip/SKILL.md`, Step 8) before invoking this helper.
 
 Examples:
   scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
