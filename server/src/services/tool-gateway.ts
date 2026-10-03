@@ -3652,6 +3652,37 @@ export function createToolGatewayService(
     return connectionGrantCredentialRef(grant, ref);
   }
 
+  /**
+   * Resolve a connection-level credential when the grant carries no binding for
+   * it.
+   *
+   * A shared grant is not guaranteed to have a per-grant binding for an api_key
+   * credential: `connectionGrants.credentialSecretRefs` is only populated when
+   * the grant is created, and nothing backfills it from
+   * `connection.credentialRefs` the way `tool-oauth-legacy-backfill` does for
+   * OAuth. Treating the absent binding as "no credential" is what let an
+   * `mcp_remote` connection validate green and then dispatch every real
+   * `tools/call` with no Authorization header at all — the health-check and
+   * catalog-refresh path in `tool-access.ts` already falls back to the
+   * connection-level `secretId`, and this path did not.
+   *
+   * Personal grants keep the skip. Their per-user ownership checks in
+   * `resolveGrantSecretValue` are the only thing stopping one user's
+   * authorization from resolving a shared connection-level secret, so an
+   * unbound personal grant must stay unresolved.
+   */
+  function connectionCredentialFallbackRef(
+    grant: typeof connectionGrants.$inferSelect,
+    ref: McpConnectionCredentialRef,
+  ): ToolCredentialSecretRef | undefined {
+    if (grant.kind === "user") return undefined;
+    return {
+      secretId: ref.secretId,
+      versionSelector: ref.version ?? "latest",
+      configPath: `credentials.${ref.name}`,
+    };
+  }
+
   async function resolveGrantSecretValue(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
@@ -4140,7 +4171,9 @@ export function createToolGatewayService(
     const headers: Record<string, string> = {};
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
-      const grantRef = grantRefForCredential(grant, ref);
+      const grantRef =
+        grantRefForCredential(grant, ref) ??
+        connectionCredentialFallbackRef(grant, ref);
       if (!grantRef) continue;
       try {
         const value = await resolveGrantSecretValue(

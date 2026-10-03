@@ -1734,6 +1734,75 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
   });
 
+  it("sends a shared api_key header credential when the grant carries no binding", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    const apiKeySecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Remote MCP API key",
+      key: `gateway.api-key.${randomUUID()}`,
+      value: "remote-api-key",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: apiKeySecret.id,
+      targetType: "tool_connection",
+      targetId: connection.id,
+      configPath: "credentials.remote_api_key",
+    });
+    await db.update(toolConnections).set({
+      authKind: "api_key",
+      credentialSource: "paperclip_vault",
+      credentialRefs: [{
+        name: "remote_api_key",
+        secretId: apiKeySecret.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    }).where(eq(toolConnections.id, connection.id));
+    // The credential lives on the connection. Nothing backfills the default
+    // organization grant's `credentialSecretRefs` for an api_key connection, so
+    // it stays empty -- the shape that used to dispatch with no header at all
+    // while health-check and catalog refresh still reported the connection green.
+    const [grant] = await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant!.kind).toBe("organization");
+    expect(grant!.credentialSecretRefs).toEqual([]);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow shared api key reads",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+
+    const authorizationHeaders: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        authorizationHeaders.push(new Headers(init.headers).get("authorization") ?? "");
+        const requestBody = JSON.parse(String(init.body)) as { id: string };
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestBody.id,
+          result: { content: [{ type: "text", text: "shared api key result" }] },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect(authorizationHeaders).toEqual(["Bearer remote-api-key"]);
+  });
+
   it("marks a managed OAuth grant reconnect-required after one rejected refresh retry", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
