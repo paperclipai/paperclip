@@ -12,6 +12,7 @@ import {
   environments,
   heartbeatRuns,
   issues,
+  managedAgentProfiles,
   projects,
   routines,
   secretAccessEvents,
@@ -3373,6 +3374,60 @@ export function secretService(db: Db | DbTransaction) {
     );
   }
 
+  // Deletes a secret only when nothing still references it: no binding outside
+  // `ignoreBinding`, and no managed-agent profile (whose foreign key restricts
+  // the delete). The check and the row delete run in one transaction that
+  // holds the secret row `FOR UPDATE`. A binding insert checks its foreign key
+  // with `FOR KEY SHARE` on that same row, so it cannot commit between the
+  // check and the delete: a binding that commits first is seen by the check and
+  // keeps the secret, and a later one finds the secret gone, the same as racing
+  // an explicit delete. The row is deleted before the provider cleanup, so a
+  // database failure never leaves an active row whose provider value is gone,
+  // and a provider failure rolls the row back with its original key for a
+  // retry. The provider call holds the row lock while it runs; only writers of
+  // this one secret wait on it.
+  async function removeSecretIfUnreferencedInternal(
+    secretId: string,
+    options: {
+      ignoreBinding?: (binding: { targetType: string; targetId: string; configPath: string }) => boolean;
+    } = {},
+  ): Promise<boolean> {
+    const preCheckSecret = await getById(secretId);
+    if (!preCheckSecret) return false;
+    return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
+      db.transaction(async (tx) => {
+        const secret = await tx
+          .select()
+          .from(companySecrets)
+          .where(eq(companySecrets.id, secretId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!secret) return false;
+        const bindings = await tx
+          .select({
+            targetType: companySecretBindings.targetType,
+            targetId: companySecretBindings.targetId,
+            configPath: companySecretBindings.configPath,
+          })
+          .from(companySecretBindings)
+          .where(eq(companySecretBindings.secretId, secretId));
+        if (bindings.some((binding) => !options.ignoreBinding?.(binding))) return false;
+        const profile = await tx
+          .select({ id: managedAgentProfiles.id })
+          .from(managedAgentProfiles)
+          .where(eq(managedAgentProfiles.apiKeySecretId, secretId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (profile) return false;
+        const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
+        const provider = getSecretProvider(secret.provider as SecretProvider);
+        await tx.delete(companySecrets).where(eq(companySecrets.id, secretId));
+        await deleteSecretProviderMaterial(secret, versionRow, provider);
+        return true;
+      }),
+    );
+  }
+
   // The body of `removeSecretInternal` above, unchanged. Extracted to a named
   // function so that wrapper can hold the lock across this whole delete
   // sequence without duplicating it.
@@ -3380,8 +3435,7 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) return null;
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
-    const providerId = secret.provider as SecretProvider;
-    const provider = getSecretProvider(providerId);
+    const provider = getSecretProvider(secret.provider as SecretProvider);
     if (secret.status !== "deleted") {
       await db
         .update(companySecrets)
@@ -3394,6 +3448,19 @@ export function secretService(db: Db | DbTransaction) {
         })
         .where(eq(companySecrets.id, secretId));
     }
+    await deleteSecretProviderMaterial(secret, versionRow, provider);
+    await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
+    return secret;
+  }
+
+  // Deletes the provider-side value for `secret`, read before any rename so the
+  // provider sees the original key. A value the provider no longer has is
+  // treated as already deleted.
+  async function deleteSecretProviderMaterial(
+    secret: typeof companySecrets.$inferSelect,
+    versionRow: Awaited<ReturnType<typeof getSecretVersion>>,
+    provider: ReturnType<typeof getSecretProvider>,
+  ) {
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)
       : null;
@@ -3401,28 +3468,25 @@ export function secretService(db: Db | DbTransaction) {
       providerConfig && providerConfig.status !== "disabled" && providerConfig.status !== "coming_soon"
         ? toProviderVaultRuntimeConfig(providerConfig)
         : null;
-    if (!secret.providerConfigId || providerRuntimeConfig) {
-      try {
-        await provider.deleteOrArchive({
-          material: versionRow?.material as Record<string, unknown> | undefined,
-          externalRef: secret.externalRef,
-          providerConfig: providerRuntimeConfig,
-          context: {
-            companyId: secret.companyId,
-            secretKey: secret.key,
-            secretName: secret.name,
-            version: secret.latestVersion,
-          },
-          mode: "delete",
-        });
-      } catch (error) {
-        if (!isSecretProviderClientError(error) || error.code !== "not_found") {
-          throw error;
-        }
+    if (secret.providerConfigId && !providerRuntimeConfig) return;
+    try {
+      await provider.deleteOrArchive({
+        material: versionRow?.material as Record<string, unknown> | undefined,
+        externalRef: secret.externalRef,
+        providerConfig: providerRuntimeConfig,
+        context: {
+          companyId: secret.companyId,
+          secretKey: secret.key,
+          secretName: secret.name,
+          version: secret.latestVersion,
+        },
+        mode: "delete",
+      });
+    } catch (error) {
+      if (!isSecretProviderClientError(error) || error.code !== "not_found") {
+        throw error;
       }
     }
-    await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
-    return secret;
   }
 
   async function removeUserSecretDefinitionInternal(
@@ -5101,6 +5165,8 @@ export function secretService(db: Db | DbTransaction) {
     },
 
     remove: removeSecretInternal,
+
+    removeIfUnreferenced: removeSecretIfUnreferencedInternal,
 
     normalizeAdapterConfigForPersistence: async (
       companyId: string,

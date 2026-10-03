@@ -16,6 +16,7 @@ import type {
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { environmentService } from "./environments.js";
 import {
   resolvePluginSandboxProviderDriverByKey,
   validatePluginEnvironmentDriverConfig,
@@ -550,6 +551,8 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   config: Record<string, unknown> | null | undefined;
   actor?: { userId?: string | null; agentId?: string | null };
   pluginWorkerManager?: PluginWorkerManager;
+  /** The environment being updated, or omitted when creating one. */
+  environmentId?: string;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
     const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
@@ -558,7 +561,6 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
         issues: parsed.error.issues,
       });
     }
-    const secrets = secretService(input.db);
     const { privateKey, ...stored } = parsed.data;
     let nextPrivateKeySecretRef = stored.privateKeySecretRef;
     if (privateKey) {
@@ -576,7 +578,11 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
         stored.privateKeySecretRef &&
         stored.privateKeySecretRef.secretId !== nextPrivateKeySecretRef.secretId
       ) {
-        await secrets.remove(stored.privateKeySecretRef.secretId);
+        await removeSshPrivateKeySecretIfUnreferenced({
+          db: input.db,
+          secretId: stored.privateKeySecretRef.secretId,
+          environmentId: input.environmentId ?? null,
+        });
       }
     }
     return {
@@ -783,6 +789,36 @@ export function readSshEnvironmentPrivateKeySecretId(
   const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(environment.config));
   if (!parsed.success) return null;
   return parsed.data.privateKeySecretRef?.secretId ?? null;
+}
+
+/**
+ * Remove an SSH environment's private-key secret only when nothing else still
+ * uses it. The key can be a shared company secret that other environments and
+ * agents bind to, and `managedMode` cannot tell that apart from a secret the
+ * environment created itself, so ownership is decided by remaining references.
+ * Only this environment's own `privateKeySecretRef` binding is ignored, because
+ * the caller is dropping that reference. Its `env.*` bindings still count.
+ * Other SSH environments' configs are also checked in case an older
+ * environment has no binding row.
+ */
+export async function removeSshPrivateKeySecretIfUnreferenced(input: {
+  db: Db;
+  secretId: string;
+  environmentId: string | null;
+}): Promise<boolean> {
+  const sshEnvironments = await environmentService(input.db).list({ driver: "ssh" });
+  const referencedByEnvironment = sshEnvironments.some(
+    (environment) =>
+      environment.id !== input.environmentId &&
+      readSshEnvironmentPrivateKeySecretId(environment) === input.secretId,
+  );
+  if (referencedByEnvironment) return false;
+  return secretService(input.db).removeIfUnreferenced(input.secretId, {
+    ignoreBinding: (binding) =>
+      binding.targetType === "environment" &&
+      binding.targetId === input.environmentId &&
+      binding.configPath === "privateKeySecretRef",
+  });
 }
 
 export function parseEnvironmentDriverConfig(

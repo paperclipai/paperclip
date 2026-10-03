@@ -18,6 +18,7 @@ import {
   companySecrets,
   createDb,
   heartbeatRuns,
+  managedAgentProfiles,
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
@@ -165,6 +166,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
+    await db.delete(managedAgentProfiles);
     await db.delete(companySecrets);
     await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
@@ -1471,6 +1473,124 @@ describeEmbeddedPostgres("secretService", () => {
       href: "/agents/codexcoder",
       status: "idle",
     });
+  });
+
+  it("removeIfUnreferenced keeps a secret that a binding outside the ignored one still references", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `shared-ssh-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "ssh-private-key",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "environment", targetId: "env-a" }, [
+      { secretId: secret.id, configPath: "privateKeySecretRef" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "environment", targetId: "env-b" }, [
+      { secretId: secret.id, configPath: "privateKeySecretRef" },
+    ]);
+
+    const removed = await svc.removeIfUnreferenced(secret.id, {
+      ignoreBinding: (binding) => binding.targetType === "environment" && binding.targetId === "env-a",
+    });
+
+    expect(removed).toBe(false);
+    expect(await svc.getById(secret.id)).toMatchObject({ id: secret.id, status: "active" });
+    expect(await svc.listBindingReferences(companyId, secret.id)).toHaveLength(2);
+  });
+
+  it("removeIfUnreferenced removes a secret whose only binding is the ignored one", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `own-ssh-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "ssh-private-key",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "environment", targetId: "env-a" }, [
+      { secretId: secret.id, configPath: "privateKeySecretRef" },
+    ]);
+
+    const removed = await svc.removeIfUnreferenced(secret.id, {
+      ignoreBinding: (binding) => binding.targetType === "environment" && binding.targetId === "env-a",
+    });
+
+    expect(removed).toBe(true);
+    expect(await svc.getById(secret.id)).toBeNull();
+  });
+
+  it("removeIfUnreferenced keeps a secret that a managed-agent profile still uses, without touching the provider", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `profile-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "anthropic-api-key",
+    });
+    await db.insert(managedAgentProfiles).values({
+      companyId,
+      profileKey: "default",
+      displayName: "Default profile",
+      anthropicAgentId: "agent_123",
+      agentVersion: "1",
+      environmentId: "env_123",
+      apiKeySecretId: secret.id,
+    });
+    const deleteOrArchive = vi.spyOn(localEncryptedProvider, "deleteOrArchive");
+
+    await expect(svc.removeIfUnreferenced(secret.id)).resolves.toBe(false);
+
+    expect(deleteOrArchive).not.toHaveBeenCalled();
+    expect(await svc.getById(secret.id)).toMatchObject({ id: secret.id, status: "active" });
+  });
+
+  it("removeIfUnreferenced rolls back on provider failure and passes the original key on retry", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/ssh-key";
+    const secret = await db
+      .insert(companySecrets)
+      .values({
+        companyId,
+        key: "ssh-key",
+        name: "SSH Key",
+        provider: "aws_secrets_manager",
+        managedMode: "paperclip_managed",
+        externalRef,
+        latestVersion: 1,
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(companySecretVersions).values({
+      secretId: secret.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      providerVersionRef: "aws-version-1",
+      status: "current",
+    });
+    const deleteOrArchive = vi
+      .spyOn(awsSecretsManagerProvider, "deleteOrArchive")
+      .mockRejectedValueOnce(new Error("provider delete failed"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(svc.removeIfUnreferenced(secret.id)).rejects.toThrow("provider delete failed");
+    expect(await svc.getById(secret.id)).toMatchObject({ key: "ssh-key", name: "SSH Key", status: "active" });
+
+    await expect(svc.removeIfUnreferenced(secret.id)).resolves.toBe(true);
+    expect(deleteOrArchive).toHaveBeenCalledTimes(2);
+    for (const [call] of deleteOrArchive.mock.calls) {
+      expect(call.context).toMatchObject({ secretKey: "ssh-key", secretName: "SSH Key" });
+    }
+    expect(await svc.getById(secret.id)).toBeNull();
   });
 
   it("enforces binding context and records value-free access events", async () => {
