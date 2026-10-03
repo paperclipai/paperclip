@@ -214,3 +214,91 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     }
   });
 });
+
+describe("hermes-local agent-facing API base", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * Reads the base the prompt *tells* the agent to use and the base the child
+   * process actually receives, straight out of the real spawn arguments. It
+   * deliberately does not re-derive either value through the resolver: a test
+   * that passed the same options to the same function could only confirm that
+   * function agrees with itself, which is how a prompt/environment divergence
+   * survived review once already.
+   */
+  async function spawnAndReadApiBases(config: Record<string, unknown> = {}) {
+    const { ctx } = makeCtx(config);
+    await execute(ctx as any);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    const prompt = (call[2] as string[]).join("\n");
+    const promptBase = /^- API base: (.+)$/m.exec(prompt)?.[1]?.trim();
+    const envBase = (call[3] as { env: Record<string, string> }).env
+      .PAPERCLIP_API_URL;
+    return { promptBase, envBase };
+  }
+
+  /** The prompt is normalized to carry the `/api` path; the env var is a base. */
+  const withApiPath = (base: string) =>
+    base.endsWith("/api") ? base : `${base.replace(/\/+$/, "")}/api`;
+
+  it.each([
+    ["no override configured", {}],
+    [
+      "an explicit paperclipApiUrl override",
+      { paperclipApiUrl: "https://configured.example.test" },
+    ],
+  ])(
+    "names the same API base in the prompt and the child environment with %s",
+    async (_label, config) => {
+      // The opt-in is on and the public origin differs from the local one, so a
+      // base that leaked in from the wrong source is visible rather than
+      // coincidentally equal.
+      vi.stubEnv("PAPERCLIP_ALLOW_LOCAL_API_CALLS", "true");
+      vi.stubEnv("PAPERCLIP_RUNTIME_LOCAL_API_URL", "http://127.0.0.1:3100");
+      vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.test");
+      try {
+        const { promptBase, envBase } = await spawnAndReadApiBases(config);
+        expect(envBase).toBeDefined();
+        expect(promptBase).toBe(withApiPath(envBase));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it("prefers the opt-in local origin over a configured override, in both places", async () => {
+    // `paperclipApiUrl` is documented as defaulting to PAPERCLIP_API_URL, so it
+    // is the same category of configured origin — and the opt-in exists because
+    // such an origin can sit behind an edge that answers an agent with a login
+    // redirect. It therefore loses to the local origin, as PAPERCLIP_API_URL does.
+    vi.stubEnv("PAPERCLIP_ALLOW_LOCAL_API_CALLS", "true");
+    vi.stubEnv("PAPERCLIP_RUNTIME_LOCAL_API_URL", "http://127.0.0.1:3100");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.test");
+    try {
+      const { promptBase, envBase } = await spawnAndReadApiBases({
+        paperclipApiUrl: "https://configured.example.test",
+      });
+      expect(envBase).toBe("http://127.0.0.1:3100");
+      expect(promptBase).toBe("http://127.0.0.1:3100/api");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("uses a configured override for both when the opt-in is off", async () => {
+    vi.stubEnv("PAPERCLIP_ALLOW_LOCAL_API_CALLS", "");
+    vi.stubEnv("PAPERCLIP_RUNTIME_LOCAL_API_URL", "");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.test");
+    try {
+      const { promptBase, envBase } = await spawnAndReadApiBases({
+        paperclipApiUrl: "https://configured.example.test",
+      });
+      expect(envBase).toBe("https://configured.example.test");
+      expect(promptBase).toBe("https://configured.example.test/api");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

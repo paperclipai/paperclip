@@ -8,6 +8,8 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_ALLOW_LOCAL_API_CALLS = process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS;
+const ORIGINAL_PAPERCLIP_RUNTIME_LOCAL_API_URL = process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL;
 
 const {
   completionSweepMock,
@@ -802,11 +804,25 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS;
+    delete process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL;
   });
 
   afterEach(() => {
     if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+
+    if (ORIGINAL_PAPERCLIP_ALLOW_LOCAL_API_CALLS === undefined) {
+      delete process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS;
+    } else {
+      process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = ORIGINAL_PAPERCLIP_ALLOW_LOCAL_API_CALLS;
+    }
+
+    if (ORIGINAL_PAPERCLIP_RUNTIME_LOCAL_API_URL === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_LOCAL_API_URL;
+    }
 
     if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
     else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
@@ -842,6 +858,62 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("leaves PAPERCLIP_RUNTIME_LOCAL_API_URL unset when local API calls are not enabled", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    // A value inherited from the surrounding process must not survive, or an
+    // operator who turns the opt-in back off keeps silently routing agents local.
+    process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL = "http://127.0.0.1:9999";
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBeUndefined();
+    expect(process.env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
+  });
+
+  it("exports a loopback runtime API URL when local API calls are enabled, keeping the public origin", async () => {
+    process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = "true";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("http://127.0.0.1:3210");
+    // The public origin still serves browsers, OAuth callbacks, and webhooks.
+    expect(process.env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe(
+      "http://127.0.0.1:3210",
+    );
+  });
+
+  it("honors an explicit PAPERCLIP_LOCAL_API_URL override", async () => {
+    process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = "true";
+    process.env.PAPERCLIP_LOCAL_API_URL = "https://198.51.100.10:3100";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+
+    try {
+      await startServer();
+
+      expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("https://198.51.100.10:3100");
+    } finally {
+      delete process.env.PAPERCLIP_LOCAL_API_URL;
+    }
+  });
+
+  it("does not downgrade a cleartext non-loopback override without the insecure acknowledgement", async () => {
+    process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = "true";
+    process.env.PAPERCLIP_LOCAL_API_URL = "http://198.51.100.10:3100";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+
+    try {
+      await startServer();
+
+      // The rejected override falls back to loopback rather than sending the run
+      // bearer key across a network in cleartext.
+      expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("http://127.0.0.1:3210");
+    } finally {
+      delete process.env.PAPERCLIP_LOCAL_API_URL;
+    }
   });
 
   it("keeps loopback as the runtime API URL when allowed hostnames are present", async () => {

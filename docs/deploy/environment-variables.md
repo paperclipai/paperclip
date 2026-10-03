@@ -19,6 +19,9 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_ALLOW_LOCAL_API_CALLS` | `false` | Point agent runtimes at the server's own listener instead of the public origin. Set to `true` when the public origin sits behind an authenticating edge (Cloudflare Access, an SSO reverse proxy, a WAF) that a non-interactive agent cannot pass. See [Local API calls for agent runtimes](#local-api-calls-for-agent-runtimes). |
+| `PAPERCLIP_LOCAL_API_URL` | (derived loopback origin) | Explicit origin used when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true` and loopback is not the right address — for example when agents run in a bridged container. Must be HTTPS unless it points at loopback; Paperclip's listener does not terminate TLS, so an `https://` value must address a TLS proxy in front of it. Ignored when the opt-in is off. |
+| `PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP` | `false` | Permit a cleartext `http://` `PAPERCLIP_LOCAL_API_URL` that points at a non-loopback address. Discouraged: it sends short-lived run bearer keys unencrypted over that path. |
 | `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` | (board public origin) | Optional HTTPS origin for native chat provider webhooks when ingress and the board use different hosts. Must have no credentials, path, query, or fragment; invalid configuration refuses startup. Used only for provider callback URLs, not board links, authentication, trusted hosts, or identity confirmation. |
 | `PAPERCLIP_RUNNER_PUBLIC_URL` | (unset) | Explicit `wss://` base URL used only when a remote `paperclip_runner` target dials Paperclip directly. Paperclip appends `/api/runner/v1/connect/<runId>`; the reverse proxy must forward WebSocket upgrades for that route. This value is never inferred from request headers. Daytona ignores it and uses provider ingress. |
 | `PAPERCLIP_RUNNER_CA_BUNDLE_PATH` | (unset) | Optional PEM CA bundle for direct runner WSS. Platform roots remain enabled. There is no insecure TLS bypass. |
@@ -37,6 +40,136 @@ runs retain their recovery path. The deprecated `enableRunnerPreviewIngress`
 key remains accepted in stored and managed configuration for version-skew
 compatibility, but it has no runtime effect. The setting has no effect on
 legacy adapters or callback bridges.
+
+### Local API calls for agent runtimes
+
+When Paperclip is reachable at a public origin that requires interactive
+authentication — Cloudflare Access, an SSO reverse proxy, a WAF challenge — the
+origin works for browsers, OAuth callbacks, and inbound webhooks but not for
+agents. An agent process has no session at that edge, so every request it makes
+to the injected `PAPERCLIP_API_URL` is answered with a login redirect instead of
+the API. Agents then cannot update issue status, post comments, reach managed MCP
+gateways, call the runtime-tools connection routes, or fetch managed GitHub
+credentials.
+
+The usual workaround is an edge bypass rule for `/api` and `/mcp` scoped to a
+source IP, which breaks as soon as the operator moves off that network and
+widens the public attack surface either way. Set this instead:
+
+```bash
+PAPERCLIP_ALLOW_LOCAL_API_CALLS=true
+```
+
+Paperclip keeps serving the public origin for everything user-facing and routes
+only the agent-facing endpoints to its own listener:
+
+| Endpoint | Consumer |
+|----------|----------|
+| `PAPERCLIP_API_URL` injected into agent processes | Agent API calls (status, comments, documents, attachments) |
+| `/mcp/*` gateway endpoints | Managed runtime MCP servers |
+| `/runtime-tools/connections/*` | `connections_search` / `connection_request` |
+| `/runtime-tools/github/credentials` | Managed GitHub credential broker (`git`/`gh` launcher) |
+
+`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `PAPERCLIP_PUBLIC_URL`, board links, OAuth
+callbacks, routine webhook URLs, and chat webhook ingress are all unaffected.
+
+#### Which runtimes it applies to
+
+The local origin names an address in the server's own network, so it only helps a
+runtime that sits there — an agent Paperclip starts as a child process on this
+host. Agents that run elsewhere keep the public origin, because the local address
+would resolve to their machine rather than to Paperclip.
+
+The opt-in applies to the adapters that spawn the agent on the Paperclip host:
+`claude_local`, `codex_local`, `cursor`, `gemini_local`, `grok_local`,
+`hermes_local`, `kimi_local`, `opencode_local`, `paperclip_runner`, `pi_local`,
+and `process`. Everything else keeps the public origin, including:
+
+- `cursor_cloud`, which runs on hardware the operator does not own.
+- `hermes_gateway` and `openclaw_gateway`, which reach an agent over HTTP on
+  another host.
+- `http`, which invokes an operator-supplied remote URL.
+- Any agent on a remote execution target, including SSH and sandbox transports.
+
+This is an allow-list, so an adapter nobody has classified keeps the public
+origin rather than inheriting a loopback address on a host the operator may not
+control. Those runtimes are expected to satisfy the edge themselves (a service
+token at the proxy, or an allowlisted egress address); the opt-in does not
+change them.
+
+#### The derived origin
+
+The derived local origin is `http://127.0.0.1:<PORT>`, or `http://[::1]:<PORT>`
+when the listener binds `::1` — or when it binds a wildcard on a host with no
+IPv4 loopback at all. A listener bound to the *name* `localhost` derives
+`http://localhost:<PORT>`: `listen()` resolves that name and binds the single
+address the lookup returned, which on a dual-stack host can be `::1` even though
+IPv4 loopback also exists, so the name is passed through and the agent resolves
+it the same way. It is deliberately always loopback: the local listener
+serves plain HTTP, and agents authenticate with a bearer key, so a derived LAN
+address would carry that key off the host in cleartext and silently downgrade an
+HTTPS deployment. A specific non-loopback `PAPERCLIP_BIND_HOST`/`HOST` therefore
+derives nothing, and the server logs a warning saying so.
+
+#### Naming the origin explicitly
+
+When the agent runtime is in the server's network but cannot reach loopback — a
+bridged container talking to a LAN IP, or a tailnet address — name the origin
+with `PAPERCLIP_LOCAL_API_URL`. It must be HTTPS unless it points at loopback.
+
+**Paperclip's own listener speaks plain HTTP and does not terminate TLS.** An
+`https://` value therefore has to point at a TLS-terminating proxy you run in
+front of it, at that proxy's address and port — not at `PAPERCLIP_LISTEN_PORT`.
+Pointing `https://` straight at the listener fails the TLS handshake on every
+agent request.
+
+```bash
+PAPERCLIP_ALLOW_LOCAL_API_CALLS=true
+# A TLS proxy on the same host, listening on 8443 and forwarding to
+# 127.0.0.1:3100. Its certificate must be trusted by the agent runtime, and
+# 198.51.100.10 must be in PAPERCLIP_ALLOWED_HOSTNAMES.
+PAPERCLIP_LOCAL_API_URL=https://198.51.100.10:8443
+```
+
+That proxy is a separate concern from the access-gated public edge: it only needs
+to terminate TLS and forward, with no authentication in front of it.
+
+A `PAPERCLIP_LOCAL_API_URL` that is unparseable, uses a scheme other than
+`http`/`https`, or is cleartext `http` to a non-loopback address is rejected, and
+the derived loopback origin is used instead. Startup logs the origin actually in
+use, so a rejected override is visible.
+
+If you do not want to run a TLS proxy and accept the risk — a trusted private
+bridge where TLS is impractical — you can permit cleartext to a non-loopback
+address explicitly, pointing straight at the listener:
+
+```bash
+PAPERCLIP_LOCAL_API_URL=http://198.51.100.10:3100
+PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP=true
+```
+
+This sends short-lived run bearer keys unencrypted over that path. Prefer TLS, or
+loopback, wherever you can.
+
+A non-loopback `PAPERCLIP_LOCAL_API_URL` hostname must also be accepted as a
+trusted host, so include it in `PAPERCLIP_ALLOWED_HOSTNAMES` if it is not already
+the bind host or the public hostname.
+
+The opt-in defaults to `false`, and only `true`, `1`, or `yes` enable it. It
+changes routing, not authorization: agents still present the same run-scoped JWT,
+and every request is authenticated and audited exactly as it is through the
+public origin. It also does not expose a new listener — it reuses the one the
+server already binds.
+
+Some adapters expose their own API base override in adapter config (the Hermes
+adapter's `paperclipApiUrl`, documented as defaulting to `PAPERCLIP_API_URL`).
+The local origin outranks such an override for a runtime that can reach it, for
+the same reason it outranks `PAPERCLIP_API_URL`: the opt-in exists because a
+configured origin can sit behind an edge a non-interactive agent cannot pass.
+With the opt-in off, the adapter override applies as before. Either way the
+rendered prompt and the runtime's `PAPERCLIP_API_URL` name the same base, so an
+agent that follows its instructions and one that reads its environment reach the
+same place.
 
 ### Webhook-only chat ingress
 
@@ -195,7 +328,7 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `PAPERCLIP_AGENT_ID` | Agent's unique ID |
 | `PAPERCLIP_COMPANY_ID` | Company ID |
-| `PAPERCLIP_API_URL` | Paperclip API base URL (inherits the server-level value; see Server Configuration above) |
+| `PAPERCLIP_API_URL` | Paperclip API base URL (inherits the server-level value, or the local origin for a co-located runtime when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true`; see Server Configuration above) |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API auth |
 | `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
 | `PAPERCLIP_TASK_ID` | Issue that triggered this wake |

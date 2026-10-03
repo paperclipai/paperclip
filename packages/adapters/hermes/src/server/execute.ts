@@ -30,6 +30,7 @@ import type {
 import {
   runChildProcess,
   buildPaperclipEnv,
+  resolveAgentFacingApiBaseUrl,
   buildRuntimeToolsEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
@@ -153,11 +154,21 @@ export function buildPrompt(
   const companyName = cfgString(context.companyName) || cfgString(ctx.config?.companyName) || "";
   const projectName = cfgString(context.projectName) || cfgString(ctx.config?.projectName) || "";
 
-  // Build API URL — ensure it has the /api path
+  // Build API URL — ensure it has the /api path.
+  //
+  // This resolves the same base the child environment receives from
+  // buildPaperclipEnv below, including the `paperclipApiUrl` config override,
+  // which is passed in rather than preferred here: reading it (or
+  // PAPERCLIP_API_URL) directly would print one base into the prompt while the
+  // process env held another, so an agent that trusted its instructions over
+  // its environment would call the authenticating edge the opt-in exists to
+  // bypass. This adapter spawns Hermes on this host, which is why it can reach
+  // the local origin.
   let paperclipApiUrl =
-    cfgString(config.paperclipApiUrl) ||
-    process.env.PAPERCLIP_API_URL ||
-    "http://127.0.0.1:3100/api";
+    resolveAgentFacingApiBaseUrl({
+      runtimeCanReachLocalApi: true,
+      configuredApiBaseUrl: cfgString(config.paperclipApiUrl),
+    }) || "http://127.0.0.1:3100/api";
   // Ensure /api suffix
   if (!paperclipApiUrl.endsWith("/api")) {
     paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
@@ -487,7 +498,10 @@ export async function execute(
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent),
+    ...buildPaperclipEnv(ctx.agent, {
+      runtimeCanReachLocalApi: true,
+      configuredApiBaseUrl: cfgString(config.paperclipApiUrl),
+    }),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
 

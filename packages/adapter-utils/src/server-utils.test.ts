@@ -13,6 +13,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
+  resolveAgentFacingApiBaseUrl,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
@@ -3728,6 +3729,8 @@ describe("buildPaperclipEnv", () => {
   const ENV_KEYS = [
     "PAPERCLIP_API_URL",
     "PAPERCLIP_RUNTIME_API_URL",
+    "PAPERCLIP_RUNTIME_LOCAL_API_URL",
+    "PAPERCLIP_ALLOW_LOCAL_API_CALLS",
     "PAPERCLIP_LISTEN_HOST",
     "PAPERCLIP_LISTEN_PORT",
     "HOST",
@@ -3768,6 +3771,54 @@ describe("buildPaperclipEnv", () => {
     );
   });
 
+  it("prefers an adapter-level configured API base over PAPERCLIP_API_URL", () => {
+    // An adapter whose schema documents its own override as "defaults to
+    // PAPERCLIP_API_URL" passes it here instead of preferring it before the
+    // call, so the base it renders into a prompt and the base it puts in the
+    // child environment come from one decision.
+    withEnv({ PAPERCLIP_API_URL: "https://public.example.test" }, () => {
+      const options = { configuredApiBaseUrl: "https://configured.example.test" };
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, options);
+      expect(env.PAPERCLIP_API_URL).toBe("https://configured.example.test");
+      expect(env.PAPERCLIP_API_URL).toBe(resolveAgentFacingApiBaseUrl(options));
+    });
+  });
+
+  it("prefers the opt-in local origin over an adapter-level configured API base", () => {
+    // The opt-in exists because a configured origin can sit behind an edge that
+    // answers a non-interactive agent with a login redirect, so it outranks a
+    // configured base for the same reason it outranks PAPERCLIP_API_URL.
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+        PAPERCLIP_API_URL: "https://public.example.test",
+      },
+      () => {
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          {
+            runtimeCanReachLocalApi: true,
+            configuredApiBaseUrl: "https://configured.example.test",
+          },
+        );
+        expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+      },
+    );
+  });
+
+  it("ignores a blank adapter-level configured API base", () => {
+    withEnv({ PAPERCLIP_API_URL: "https://public.example.test" }, () => {
+      for (const configuredApiBaseUrl of [undefined, null, "", "   "]) {
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          { configuredApiBaseUrl },
+        );
+        expect(env.PAPERCLIP_API_URL).toBe("https://public.example.test");
+      }
+    });
+  });
+
   it("falls back to the derived runtime URL when no explicit override is set", () => {
     withEnv({ PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100" }, () => {
       const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
@@ -3784,6 +3835,118 @@ describe("buildPaperclipEnv", () => {
           companyId: "company-1",
         });
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
+      },
+    );
+  });
+
+  it("prefers the local runtime API URL for a co-located runtime", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+        PAPERCLIP_RUNTIME_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          { runtimeCanReachLocalApi: true },
+        );
+        expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+      },
+    );
+  });
+
+  it("resolves the same API base that it puts in the child environment", () => {
+    // Anything that *tells* an agent its API base — a rendered prompt, a
+    // generated config file — reads resolveAgentFacingApiBaseUrl. If the two
+    // ever disagreed, an agent that trusted its prompt over its environment
+    // would call the authenticating edge the opt-in exists to bypass.
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        for (const options of [
+          undefined,
+          { runtimeCanReachLocalApi: false },
+          { runtimeCanReachLocalApi: true },
+          { configuredApiBaseUrl: "https://configured.example.test" },
+          {
+            runtimeCanReachLocalApi: true,
+            configuredApiBaseUrl: "https://configured.example.test",
+          },
+        ]) {
+          const env = buildPaperclipEnv(
+            { id: "agent-1", companyId: "company-1" },
+            options,
+          );
+          expect(env.PAPERCLIP_API_URL).toBe(resolveAgentFacingApiBaseUrl(options));
+        }
+      },
+    );
+  });
+
+  it("ignores an inherited local API URL when the opt-in is off", () => {
+    withEnv(
+      {
+        // The server entrypoint deletes this variable when the opt-in is off,
+        // but buildPaperclipEnv is a public export: an embedder that inherits
+        // it must not thereby route run credentials to a local origin the
+        // operator never opted into.
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        for (const optIn of [undefined, "", "false", "0", "no", "on", "y"]) {
+          if (optIn === undefined) delete process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS;
+          else process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = optIn;
+          const env = buildPaperclipEnv(
+            { id: "agent-1", companyId: "company-1" },
+            { runtimeCanReachLocalApi: true },
+          );
+          expect(env.PAPERCLIP_API_URL, `opt-in=${String(optIn)}`).toBe(
+            "https://paperclip.example.test",
+          );
+        }
+      },
+    );
+  });
+
+  it("keeps the public PAPERCLIP_API_URL for a runtime that cannot reach the local origin", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        // A cloud worker or a gateway agent on another host resolves
+        // 127.0.0.1 to itself, so the local origin must not reach it.
+        for (const options of [undefined, { runtimeCanReachLocalApi: false }]) {
+          const env = buildPaperclipEnv(
+            { id: "agent-1", companyId: "company-1" },
+            options,
+          );
+          expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
+        }
+      },
+    );
+  });
+
+  it("ignores a blank local runtime API URL", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "   ",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          { runtimeCanReachLocalApi: true },
+        );
+        expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
       },
     );
   });

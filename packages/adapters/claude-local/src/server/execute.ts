@@ -216,7 +216,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, { runtimeCanReachLocalApi: !executionTargetIsRemote }) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =

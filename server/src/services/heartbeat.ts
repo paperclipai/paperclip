@@ -302,6 +302,10 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import {
+  localRuntimeApiCallsEnabled,
+  runtimeCanReachLocalApi as runtimeReachesLocalApi,
+} from "../runtime-api.js";
+import {
   parseObject,
   asBoolean,
   asNumber,
@@ -4571,15 +4575,35 @@ type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
-function configuredPaperclipApiBaseUrl(): string | null {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+/**
+ * The base URL handed to agent runtimes for managed MCP gateway endpoints, the
+ * runtime-tools REST routes, and the GitHub credential broker.
+ *
+ * When the operator opted into local API calls, all three have to bypass the
+ * public edge for the same reason the plain API does — an authenticating proxy
+ * redirects a non-interactive agent to a login page instead of serving the
+ * endpoint. That only applies to a runtime that can reach the local origin, so
+ * the caller states whether this run's runtime can; a remote one keeps the
+ * public origin, which is the only address it can resolve.
+ */
+function configuredPaperclipApiBaseUrl(
+  runtimeCanReachLocalApi = false,
+): string | null {
+  // The opt-in is re-checked here rather than trusting the variable's presence.
+  // The server entrypoint deletes an inherited copy when the opt-in is off, but
+  // that leaves a single point of failure guarding a credential-routing
+  // decision; consulting the flag makes the opt-in hold by construction.
+  const configured =
+    (runtimeCanReachLocalApi && localRuntimeApiCallsEnabled()
+      ? readNonEmptyString(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL)
+      : undefined) ?? readNonEmptyString(process.env.PAPERCLIP_API_URL);
   return configured
-    ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
+    ? configured.trim().replace(/\/+$/, "").replace(/\/api$/, "")
     : null;
 }
 
-function paperclipApiBaseUrl(): string {
-  const configured = configuredPaperclipApiBaseUrl();
+function paperclipApiBaseUrl(runtimeCanReachLocalApi = false): string {
+  const configured = configuredPaperclipApiBaseUrl(runtimeCanReachLocalApi);
   if (!configured) {
     throw new Error(
       "PAPERCLIP_API_URL is required to deliver managed runtime MCP servers",
@@ -4612,6 +4636,8 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
+  /** See {@link configuredPaperclipApiBaseUrl}. Defaults to the public origin. */
+  runtimeCanReachLocalApi?: boolean;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveProfilesForAgent(
@@ -4912,7 +4938,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${paperclipApiBaseUrl(input.runtimeCanReachLocalApi)}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -4933,6 +4959,8 @@ function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  /** See {@link configuredPaperclipApiBaseUrl}. Defaults to the public origin. */
+  runtimeCanReachLocalApi?: boolean;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -4946,7 +4974,7 @@ function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
+  const baseUrl = configuredPaperclipApiBaseUrl(input.runtimeCanReachLocalApi);
   if (!baseUrl) return undefined;
   return Object.freeze({
     version: 1,
@@ -22702,6 +22730,15 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      // Whether this run's agent process sits in the server's own network, and so
+      // can reach the opt-in local API origin. A cloud worker or a gateway agent on
+      // another host cannot, and keeps the public origin for every agent-facing
+      // endpoint: the plain API, the managed MCP gateways, the runtime-tools routes,
+      // and the GitHub credential broker.
+      const canReachLocalApi = runtimeReachesLocalApi({
+        adapterType: agent.adapterType,
+        executionTargetKind: executionTarget?.kind ?? null,
+      });
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
       const recordInstructionSave = async (saved: NonNullable<Awaited<ReturnType<typeof instructionCopies.get>>>) => {
@@ -22886,7 +22923,7 @@ export function heartbeatService(
           target: executionTarget,
           cwd: executionWorkspace.cwd,
           env: gitExecutionEnv,
-          brokerUrl: configuredPaperclipApiBaseUrl() ?? "",
+          brokerUrl: configuredPaperclipApiBaseUrl(canReachLocalApi) ?? "",
           createBrokerToken: () => createRuntimeToolsToken({
             agentId: agent.id,
             companyId: agent.companyId,
@@ -24652,6 +24689,7 @@ export function heartbeatService(
               agent,
               runId: run.id,
               expectedAssignmentDigest: expectedNativeMcpDigest,
+              runtimeCanReachLocalApi: canReachLocalApi,
             });
             if ("runtimeContext" in nativeExecution) {
               if (nativeMcpServers.length > 1)
@@ -24892,6 +24930,7 @@ export function heartbeatService(
               companyId: agent.companyId,
               runId: run.id,
               responsibleUserId: run.responsibleUserId,
+              runtimeCanReachLocalApi: canReachLocalApi,
             });
             if (!runtimeTools) {
               logger.warn(
@@ -24907,6 +24946,7 @@ export function heartbeatService(
               db,
               agent,
               runId: run.id,
+              runtimeCanReachLocalApi: canReachLocalApi,
             });
             const runtimeToolDelivery =
               adapter.runtimeToolDelivery ?? "invocation_context";
@@ -24918,8 +24958,8 @@ export function heartbeatService(
                 connectionId: "paperclip-runtime-tools",
               });
             }
-            if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+            if (authToken && configuredPaperclipApiBaseUrl(canReachLocalApi) && issueRef) {
+              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl(canReachLocalApi)}/api/mcp/project-tools`,
                 token: authToken, connectionId: "paperclip-project-tools" });
             }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
