@@ -77,10 +77,10 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Annotated body text."
           threads={[
-            { id: "active", selectedText: "Annotated", status: "open", anchorState: "active" },
-            { id: "focused", selectedText: "body", status: "open", anchorState: "active" },
-            { id: "stale", selectedText: "text", status: "open", anchorState: "stale" },
-            { id: "resolved", selectedText: "body text", status: "resolved", anchorState: "active" },
+            { id: "active", selectedText: "Annotated", selector: { quote: { exact: "Annotated", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 9, markdownStart: 0, markdownEnd: 9 } }, status: "open", anchorState: "active" },
+            { id: "focused", selectedText: "body", selector: { quote: { exact: "body", prefix: "", suffix: "" }, position: { normalizedStart: 10, normalizedEnd: 14, markdownStart: 10, markdownEnd: 14 } }, status: "open", anchorState: "active" },
+            { id: "stale", selectedText: "text", selector: { quote: { exact: "text", prefix: "", suffix: "" }, position: { normalizedStart: 15, normalizedEnd: 19, markdownStart: 15, markdownEnd: 19 } }, status: "open", anchorState: "stale" },
+            { id: "resolved", selectedText: "body text", selector: { quote: { exact: "body text", prefix: "", suffix: "" }, position: { normalizedStart: 10, normalizedEnd: 19, markdownStart: 10, markdownEnd: 19 } }, status: "resolved", anchorState: "active" },
           ]}
           focusedThreadId="focused"
           onThreadFocus={vi.fn()}
@@ -129,7 +129,7 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Hidden folded text"
           threads={[
-            { id: "hidden", selectedText: "Hidden folded text", status: "open", anchorState: "active" },
+            { id: "hidden", selectedText: "Hidden folded text", selector: { quote: { exact: "Hidden folded text", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 18, markdownStart: 0, markdownEnd: 18 } }, status: "open", anchorState: "active" },
           ]}
           focusedThreadId={null}
           onThreadFocus={vi.fn()}
@@ -143,6 +143,91 @@ describe("DocumentAnnotationLayer", () => {
 
     expect(container.querySelector(".paperclip-doc-annotation-highlight")).toBeNull();
     expect(container.querySelector(".paperclip-doc-annotation-hit-target")).toBeNull();
+  });
+
+  it("preserves saved positions for persisted and composer duplicate overlays", async () => {
+    const body = document.createElement("div");
+    body.innerHTML = "<p>x</p><p>x</p><p>x</p>";
+    const selector = {
+      quote: { exact: "x", prefix: "x ", suffix: " x" },
+      position: { normalizedStart: 2, normalizedEnd: 3, markdownStart: 3, markdownEnd: 4 },
+    };
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DocumentAnnotationLayer
+          containerRef={{ current: body }}
+          markdown={"x\n\nx\n\nx"}
+          threads={[{ id: "persisted", selectedText: "x", selector, status: "open", anchorState: "active" }]}
+          focusedThreadId="persisted"
+          onThreadFocus={vi.fn()}
+          pendingAnchor={null}
+          onPendingAnchorChange={vi.fn()}
+          onRequestComment={vi.fn()}
+          pendingHighlightText="x"
+          pendingHighlightSelector={selector}
+        />,
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    // Highlights recompute synchronously on layout and again on a scheduled
+    // animation frame, so the exact call count is timing-dependent. Assert that
+    // every lookup (persisted thread + composer highlight) uses the saved position.
+    const calls = mockRangesForNormalizedSpan.mock.calls.map(([arg]) => arg);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.length % 2).toBe(0);
+    for (const call of calls) {
+      expect(call).toEqual({
+        container: body,
+        selectedText: "x",
+        projectionText: "x x x",
+        normalizedStart: 2,
+      });
+    }
+  });
+
+  it("recomputes highlights against the latest markdown projection", async () => {
+    const body = document.createElement("div");
+    body.innerHTML = "<p>x</p>";
+    const thread = {
+      id: "persisted",
+      selectedText: "x",
+      selector: {
+        quote: { exact: "x", prefix: "", suffix: "" },
+        position: { normalizedStart: 0, normalizedEnd: 1, markdownStart: 0, markdownEnd: 1 },
+      },
+      status: "open" as const,
+      anchorState: "active" as const,
+    };
+    const threads = [thread];
+    const renderLayer = (markdown: string) => (
+      <DocumentAnnotationLayer
+        containerRef={{ current: body }}
+        markdown={markdown}
+        threads={threads}
+        focusedThreadId={null}
+        onThreadFocus={vi.fn()}
+        pendingAnchor={null}
+        onPendingAnchorChange={vi.fn()}
+        onRequestComment={vi.fn()}
+      />
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(renderLayer("x"));
+    });
+    mockRangesForNormalizedSpan.mockClear();
+
+    await act(async () => {
+      root?.render(renderLayer("x\n\nx"));
+    });
+
+    const calls = mockRangesForNormalizedSpan.mock.calls.map(([arg]) => arg);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.projectionText === "x x")).toBe(true);
   });
 
   it("does not capture annotation comments from editable selections", async () => {
@@ -274,7 +359,7 @@ describe("DocumentAnnotationLayer", () => {
           containerRef={{ current: body }}
           markdown="Annotated body text."
           threads={[
-            { id: "active", selectedText: "Annotated", status: "open", anchorState: "active" },
+            { id: "active", selectedText: "Annotated", selector: { quote: { exact: "Annotated", prefix: "", suffix: "" }, position: { normalizedStart: 0, normalizedEnd: 9, markdownStart: 0, markdownEnd: 9 } }, status: "open", anchorState: "active" },
           ]}
           focusedThreadId={null}
           onThreadFocus={vi.fn()}
