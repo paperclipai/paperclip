@@ -227,6 +227,259 @@ describe("managed GitHub launcher environment", () => {
     },
   );
 
+  it("keeps a local tool's node_modules/.bin on PATH in a shell the launcher starts", async () => {
+    const fixture = await sandbox("usr/bin");
+    // A tool such as a package runner prepends its own binary directory and then
+    // execs a shell. The launcher profile must not discard that directory.
+    const localBin = path.join(fixture.root, "node_modules", ".bin");
+    await mkdir(localBin, { recursive: true });
+    await writeFile(path.join(localBin, "local-tool-marker"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-local-bin", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A non-interactive shell reads BASH_ENV. Do not let it read an unrelated
+    // ~/.bashrc as well; the staged .bashrc is the file under test.
+    const result = await fixture.runner.execute({
+      command: "bash", args: ["--noprofile", "--norc", "-c",
+        "command -v local-tool-marker; command -v git; command -v gh"],
+      env: { HOME: fixture.root, PATH: `${localBin}:/usr/local/bin:/usr/bin:/bin`,
+        BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    // The launchers still win, and the spawning tool's binary still resolves.
+    expect(result.stdout.trim().split("\n")).toEqual([
+      path.join(localBin, "local-tool-marker"),
+      path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"),
+      path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"),
+    ]);
+  });
+
+  it.each([".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"])(
+    "prepends the launchers to, and does not replace, PATH in %s",
+    async (profile) => {
+      const fixture = await sandbox("usr/bin");
+      const env = await prepareGitHubOperationLaunchers({
+        runId: `run-prepend-${profile.replace(/\W/g, "")}`, target: fixture.target, cwd: fixture.root,
+        env: githubBrokerEnvironment({}, { url: "", token: "" }),
+      });
+      const script = await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, profile), "utf8");
+      const result = await fixture.runner.execute({ command: "sh", args: ["-c", `${script}\nprintf '%s' "$PATH"`],
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
+      expect(result.stdout).toBe(`${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:/usr/local/bin:/usr/bin:/bin`);
+    },
+  );
+
+  it("keeps the launcher directory first without growing PATH when a shell sources the profile again", async () => {
+    const fixture = await sandbox("usr/bin");
+    const localBin = path.join(fixture.root, "node_modules", ".bin");
+    await mkdir(localBin, { recursive: true });
+    await writeFile(path.join(localBin, "local-tool-marker"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-repeat", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    const childPath = `${localBin}:/usr/local/bin:/usr/bin:/bin`;
+    // A login shell reads several of the staged profiles, and every nested shell
+    // reads one more. PATH must not collect a copy per source.
+    const result = await fixture.runner.execute({
+      command: "bash", args: ["-c", '. "$BASH_ENV"; . "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: childPath, BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:${childPath}`);
+  });
+
+  it("restores launcher priority without dropping PATH when a login profile reorders it", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-reorder", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A login profile can move directories around. The launchers must return to
+    // the front, and every other entry must survive that move.
+    const reordered = `/usr/bin:${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:/usr/local/bin:/bin`;
+    const result = await fixture.runner.execute({
+      command: "sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: reordered, BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:/usr/bin:/usr/local/bin:/bin`);
+  });
+
+  it("restores the managed PATH in a shell that starts with no PATH at all", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-empty-child", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // An empty PATH is not a caller choice, so the profile falls back to the
+    // managed snapshot instead of leaving the shell with one entry.
+    const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: "", BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR } });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(env.PATH);
+  });
+
+  it("keeps a launcher-only PATH narrow instead of restoring the managed snapshot", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-launcher-only", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A shell that arrived with only the launcher directory on PATH asked for
+    // exactly that. It is a caller choice, not an empty PATH, so the profile must
+    // not hand back the directories the caller left out.
+    const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: env.PAPERCLIP_GITHUB_LAUNCHER_DIR, BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR } });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+    expect(result.stdout).not.toBe(env.PATH);
+  });
+
+  it("keeps empty PATH entries, which tell the shell to search the current directory", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-empty-entries", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    for (const inherited of [":/usr/bin", "::/usr/bin", "/usr/bin:", "::/usr/bin:"]) {
+      // The launcher directory is not one of these entries, so the profile has
+      // to produce exactly the caller's list with the launcher in front of it.
+      const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+        env: { HOME: fixture.root, PATH: inherited, BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR } });
+      expect(result.exitCode, `${inherited}: ${result.stderr}`).toBe(0);
+      expect(result.stdout, inherited).toBe(`${launcher}:${inherited}`);
+    }
+  });
+
+  it("moves the launcher directory to the front of a PATH that also has empty entries", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-empty-entries-reorder", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A login profile can move the launchers and leave empty entries behind at
+    // the same time. Both the move and the empty entries have to survive.
+    const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: `::${launcher}::/usr/bin`, BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR } });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${launcher}::::/usr/bin`);
+  });
+
+  it("leaves a caller's exported variables alone instead of overwriting and unsetting them", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-caller-vars", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // The profile walks PATH through temporary variables. A caller may already
+    // export a name the walk wants, and a command started by that shell has to
+    // keep receiving the caller's value. The single assignment this replaced
+    // touched PATH alone, so the walk must not add any other name to the shell.
+    const caller = { count: "5", inherited: "/caller/keep", kept: "caller-kept", rest: "caller-rest",
+      entry: "caller-entry", launcher_directory: "caller-dir", fallback_path: "caller-fallback" };
+    // `env` reports the environment of a child process, so this reads the values
+    // the caller exported rather than any copy the profile may have left behind.
+    const result = await fixture.runner.execute({
+      command: "/bin/sh",
+      args: ["-c", '. "$BASH_ENV"\nprintf \'path=%s\\n\' "$PATH"\n'
+        + "env | grep -E '^(count|inherited|kept|rest|entry|launcher_directory|fallback_path)=' | sort"],
+      env: { HOME: fixture.root, PATH: "/usr/local/bin:/usr/bin:/bin",
+        BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR, ...caller },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual([
+      `path=${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:/usr/local/bin:/usr/bin:/bin`,
+      `count=${caller.count}`,
+      `entry=${caller.entry}`,
+      `fallback_path=${caller.fallback_path}`,
+      `inherited=${caller.inherited}`,
+      `kept=${caller.kept}`,
+      `launcher_directory=${caller.launcher_directory}`,
+      `rest=${caller.rest}`,
+    ]);
+  });
+
+  it("keeps a PATH whose last directory name ends in a newline", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-trailing-newline", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A directory name may contain a newline, so a PATH entry may end in one. A
+    // command substitution strips trailing newlines from what it captures, so the
+    // profile has to guard the value it captures. Without the guard the entry
+    // comes back one character short and names a different directory, and a tool
+    // in the caller's directory can no longer be found.
+    const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", '. "$BASH_ENV"; printf "%s" "$PATH"'],
+      env: { HOME: fixture.root, PATH: "/usr/bin:usr\n", BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR } });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${launcher}:/usr/bin:usr\n`);
+  });
+
+  it("keeps the caller's PATH when a readonly variable collides with the walk", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-readonly-collision", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // A readonly attribute is inherited by a subshell, so a caller that owns one
+    // of the walk's names as a readonly variable stops the walk at its first
+    // assignment. The walk must then fall back to a plain prepend rather than to
+    // the managed snapshot, or the caller's own entries are lost. That is the same
+    // defect the whole change exists to fix.
+    const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    for (const name of ["kept", "count", "rest", "entry"]) {
+      const result = await fixture.runner.execute({
+        command: "/bin/sh",
+        args: ["-c", `readonly ${name}=caller-${name}\n. "$BASH_ENV"\nprintf '%s' "$PATH"\nprintf '\\n%s=%s\\n' "${name}" "$${name}"`],
+        env: { HOME: fixture.root, PATH: "/opt/x:/usr/bin:/bin", BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+      });
+      expect(result.exitCode, `${name}: ${result.stderr}`).toBe(0);
+      expect(result.stderr, name).toBe("");
+      const [path, echoed] = result.stdout.split("\n");
+      expect(path, name).toBe(`${launcher}:/opt/x:/usr/bin:/bin`);
+      // The caller's own value is still the caller's, not the walk's.
+      expect(echoed, name).toBe(`${name}=caller-${name}`);
+    }
+  });
+
+  it("gives an empty PATH the managed snapshot and stays stable when a readonly variable collides", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-readonly-fallback", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    // The collision fallback must not invent an empty entry. A trailing colon on
+    // PATH means "search the current directory", so a plain prepend of an empty
+    // PATH would add that and drop the system directories the managed snapshot
+    // carries. A login shell can also read more than one staged profile, so the
+    // fallback has to be stable when the profile is read again.
+    const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+
+    const empty = await fixture.runner.execute({
+      command: "/bin/sh",
+      args: ["-c", 'readonly kept=caller-kept\n. "$BASH_ENV"\nprintf \'%s\' "$PATH"'],
+      env: { HOME: fixture.root, PATH: "", BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+    });
+    expect(empty.exitCode, empty.stderr).toBe(0);
+    expect(empty.stdout).toBe(env.PATH);
+
+    for (const reads of [2, 3]) {
+      const repeated = await fixture.runner.execute({
+        command: "/bin/sh",
+        args: ["-c", `readonly kept=caller-kept\n${'. "$BASH_ENV"\n'.repeat(reads)}printf '%s' "$PATH"`],
+        env: { HOME: fixture.root, PATH: "/opt/x:/usr/bin:/bin", BASH_ENV: env.BASH_ENV, ZDOTDIR: env.ZDOTDIR },
+      });
+      expect(repeated.exitCode, repeated.stderr).toBe(0);
+      expect(repeated.stdout, `${reads} reads`).toBe(`${launcher}:/opt/x:/usr/bin:/bin`);
+    }
+  });
+
   it("preserves an explicit remote PATH without querying the remote environment", async () => {
     const fixture = await sandbox("custom/bin");
     const env = await prepareGitHubOperationLaunchers({

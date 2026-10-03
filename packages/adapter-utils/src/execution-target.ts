@@ -1725,13 +1725,87 @@ export async function prepareGitHubOperationLaunchers(input: {
   const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
+  // Only prepend them. The caller owns the rest of PATH: a tool such as a
+  // package runner adds its own node_modules/.bin entry and then execs a shell,
+  // and replacing PATH would delete it. Remove an earlier copy of the launcher
+  // directory instead of collecting one per source, because a login shell reads
+  // more than one staged profile. This matches github-launcher.ts, which keeps
+  // originalPath and filters out its own directory.
+  //
+  // The managed snapshot is a fallback for an absent PATH only. A shell that
+  // arrived with a nonempty PATH has made a choice, and one whose every entry
+  // was the launcher directory has deliberately narrowed the search. Restoring
+  // the snapshot for either case would hand back directories the caller removed.
+  const prependLauncherPath = [
+    // Compute the value in a subshell and assign it to PATH. A staged profile is
+    // sourced into the caller's own shell, so every name the walk below sets is a
+    // name the caller may already be using. The single assignment this replaces
+    // touched PATH alone. Setting a caller's `count` or `kept` and then unsetting
+    // it would stop a command started by that shell from receiving the value the
+    // caller exported. A subshell has its own variable scope, so the caller keeps
+    // every variable it had and only PATH changes.
+    'PATH="$(',
+    // A readonly attribute is inherited by a subshell, so a caller that owns one
+    // of these four names as a readonly variable stops the walk at its first
+    // assignment. The subshell would then report nothing, and the empty result
+    // would select the managed snapshot and drop entries the caller chose, which
+    // is the defect this change exists to fix. Probe the four names first inside a
+    // subshell of their own, where a failure shows up as a non-zero status rather
+    // than a dead walk. The probe assignments stay in that nested subshell, so the
+    // caller's own values are untouched either way.
+    "  if ( kept=x; count=x; rest=x; entry=x ) 2>/dev/null; then",
+    '    if [ -z "$PATH" ]; then',
+    // Each branch below prints its own trailing '.' and PATH drops it below, so
+    // that a real trailing newline in a PATH is not the last character and a
+    // command substitution cannot strip it. A PATH may hold a newline, because a
+    // directory name may hold one.
+    `      printf '%s.' ${shellQuote(managedPath)}`,
+    "    else",
+    // Append a delimiter so the walk also sees a trailing empty entry, and count
+    // the survivors separately from `kept` so that a kept-but-empty entry and no
+    // entry at all stay distinguishable. Both distinctions carry caller intent.
+    "      kept=",
+    "      count=0",
+    "      rest=$PATH:",
+    '      while [ -n "$rest" ]; do',
+    "        entry=${rest%%:*}",
+    "        rest=${rest#*:}",
+    `        if [ "$entry" != ${shellQuote(directory)} ]; then`,
+    "          count=$((count + 1))",
+    '          if [ "$count" -eq 1 ]; then kept=$entry; else kept=$kept:$entry; fi',
+    "        fi",
+    "      done",
+    `      if [ "$count" -eq 0 ]; then printf '%s.' ${shellQuote(directory)}`,
+    `      else printf '%s:%s.' ${shellQuote(directory)} "$kept"; fi`,
+    "    fi",
+    "  else",
+    // The walk cannot run, and no name is available to run it with. Match on PATH
+    // itself, which needs no name. An empty PATH gets the managed snapshot, a PATH
+    // that already starts with the launcher directory is returned unchanged, and
+    // any other PATH gets one prepend. Returning the launcher-first PATH unchanged
+    // is what keeps repeated reads from growing it.
+    "    case $PATH in",
+    `      '') printf '%s.' ${shellQuote(managedPath)} ;;`,
+    `      ${shellQuote(directory)}|${shellQuote(directory)}:*) printf '%s.' "$PATH" ;;`,
+    `      *) printf '%s:%s.' ${shellQuote(directory)} "$PATH" ;;`,
+    "    esac",
+    "  fi",
+    ')"',
+    "PATH=${PATH%?}",
+    // A subshell that is interrupted reports nothing, and an empty PATH would leave
+    // the shell with no search path at all. Fall back to the managed snapshot.
+    `if [ -z "$PATH" ]; then PATH=${shellQuote(managedPath)}; fi`,
+    "export PATH",
+  ].join("\n");
   // Empty merge overrides clear host identity before launch, but Git treats
   // them as an explicit empty author. Remove them once the shell has inherited
   // its final environment; preserve nonempty per-operation identity values.
   const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
     .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
     .join("");
-  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
+  // A process environment keeps the session-start snapshot; only a shell profile
+  // has to reconcile itself with the PATH it inherited.
+  const profile = `${prependLauncherPath}\n${clearEmptyGitIdentity}`;
   const files: Record<string, string> = Object.fromEntries([
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().

@@ -133,6 +133,9 @@ export function codexCommandEnvironment(
   } else if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
     environment.HOME = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
     environment.ZDOTDIR = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    // This is the profile that prepareGitHubOperationLaunchers writes. Every
+    // shell the codex process starts reads it, so it must prepend the managed
+    // launchers to PATH and must not replace the PATH it inherited.
     environment.BASH_ENV = `${source.PAPERCLIP_GITHUB_LAUNCHER_DIR}/.bashrc`;
   }
   return environment;
