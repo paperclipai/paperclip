@@ -619,9 +619,16 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
   const source = asRecord(record.usage) ?? record;
-  const inputTokens = asNumber(source.input_tokens ?? source.inputTokens ?? source.input, 0);
   const outputTokens = asNumber(source.output_tokens ?? source.outputTokens ?? source.output, 0);
-  const cachedInputTokens = asNumber(source.cached_input_tokens ?? source.cachedInputTokens, 0);
+  const explicitCachedInputTokens = source.cached_input_tokens ?? source.cachedInputTokens;
+  // Hermes' /v1/runs terminal usage names cache reads cache_read_tokens and counts them inside
+  // input_tokens (the whole prompt); Paperclip keeps cached input apart from input.
+  const cacheReadTokens = explicitCachedInputTokens === undefined ? asNumber(source.cache_read_tokens, 0) : 0;
+  const cachedInputTokens = cacheReadTokens || asNumber(explicitCachedInputTokens, 0);
+  const inputTokens = Math.max(
+    0,
+    asNumber(source.input_tokens ?? source.inputTokens ?? source.input, 0) - cacheReadTokens,
+  );
   if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0) return undefined;
   return {
     inputTokens,

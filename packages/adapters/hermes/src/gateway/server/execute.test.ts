@@ -855,4 +855,22 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
   });
+
+  it("reads Hermes cache_read_tokens as cached input, outside input_tokens", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "completed",
+        payload: {
+          status: "completed",
+          output: "done",
+          usage: { input_tokens: 620, output_tokens: 7, total_tokens: 627, cache_read_tokens: 570, cache_write_tokens: 0 },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.usage).toEqual({ inputTokens: 50, outputTokens: 7, cachedInputTokens: 570 });
+  });
 });

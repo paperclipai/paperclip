@@ -12,6 +12,7 @@ import {
   parseAgentDetailView,
   restoreAgentConfigHistoryEntry,
   runDetailRefetchIntervalMs,
+  runMetrics,
   shouldPollRunShellLog,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
@@ -170,5 +171,12 @@ describe("syncAgentRouteAfterRename", () => {
     expect(redirected).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
     expect(queryClient.getQueryData(queryKeys.agents.detail("same-agent"))).toEqual({ id: "agent-1" });
+  });
+});
+
+describe("runMetrics", () => {
+  it("counts cached input in the run total", () => {
+    const run = { usageJson: { inputTokens: 50, cachedInputTokens: 570, outputTokens: 7 }, resultJson: null };
+    expect(runMetrics(run as never).totalTokens).toBe(627);
   });
 });
