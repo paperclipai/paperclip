@@ -15689,7 +15689,11 @@ export function issueRoutes(
           // Re-read under lock after ACK so concurrent run receipts are retained.
           const [acknowledgedRun] = await tx.select().from(heartbeatRuns)
             .where(eq(heartbeatRuns.id, locked.activeRun.id)).for("update");
-          if (!acknowledgedRun) throw conflict("The steering run is no longer available");
+          if (!acknowledgedRun || acknowledgedRun.status !== "running") {
+            throw conflict("The queued message targets a stopped run. Your message is still queued.", {
+              code: "queued_comment_stale_target",
+            });
+          }
           const acknowledgedResult = readObject(acknowledgedRun.resultJson);
           if (steeringIdentity)
             await acceptSteeredIdentity(tx, steeringIdentity);

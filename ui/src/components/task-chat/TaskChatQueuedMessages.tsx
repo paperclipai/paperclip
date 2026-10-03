@@ -374,7 +374,7 @@ export function TaskChatQueuedMessages({
     }
   }
 
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && !visibleError) return null;
 
   return (
     <div

@@ -1632,6 +1632,29 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(steered.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
   });
 
+  it.each(["cancelled", "failed", "succeeded"] as const)("preserves queued input when the run stops during acknowledgement (%s)", async status => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), resultJson: { terminalReceipt: "preserve" } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      return { turnId: "turn-that-stopped" };
+    });
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const response = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({ code: "queued_comment_stale_target" });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+    expect((wake.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.resultJson).toEqual({ terminalReceipt: "preserve" });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"));
+    expect(activity).toHaveLength(0);
+  });
+
   it("keeps the identity pending after a steering timeout, then reconciles it on a later acknowledgement", async () => {
     const seeded = await seedQueue();
     await seedDispatchIdentity(seeded);

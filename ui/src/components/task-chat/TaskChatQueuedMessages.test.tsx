@@ -12,10 +12,12 @@ import {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
     resolve = innerResolve;
+    reject = innerReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 const queue: IssueQueuedCommentQueue = {
@@ -188,6 +190,18 @@ describe("TaskChatQueuedMessages", () => {
     await act(async () => { rejectInterrupt(new Error("Connection lost")); await interrupted.catch(() => undefined); });
     expect(container.querySelectorAll('[data-testid^="task-chat-queued-message-"]')).toHaveLength(2);
     expect(container.textContent).toContain("Couldn’t interrupt. Message is still queued.");
+  });
+
+  it.each(["steer", "interrupt"] as const)("shows a delivery error even when the queue becomes empty while %s is pending", async action => {
+    const delivery = deferred<void>();
+    const props = render({ queue: { ...queue, protocol: action === "interrupt" ? "legacy" : "paperclip_runner_v1" },
+      onSteer: vi.fn().mockReturnValue(delivery.promise), onInterrupt: vi.fn().mockReturnValue(delivery.promise) });
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-comment-1"]`)!.click(); });
+    await act(async () => { render({ ...props, queue: { ...props.queue, revision: "empty-poll", entries: [] } }); });
+    await act(async () => { delivery.reject(new Error("Connection lost")); await delivery.promise.catch(() => undefined); });
+    const error = action === "steer" ? "Couldn’t steer." : "Couldn’t interrupt.";
+    expect([...container.querySelectorAll('[role="status"]')].some(status => status.textContent?.includes(error))).toBe(true);
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
   });
 
   it("does not restore a message discarded elsewhere while steering was pending", async () => {

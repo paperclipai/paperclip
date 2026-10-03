@@ -1336,6 +1336,8 @@ the active turn's steering target. While awaiting steering acknowledgement, the
 queue route holds the task and queue locks but leaves the run row available for
 PRP event persistence. It locks and rereads the run after acknowledgement before
 merging the receipt, preserving concurrent provider updates.
+If the run stops during that wait, the request fails with a stale-target error
+and retains the queued input for continuation.
 
 ### Preserve work across handoff and deliver requested files
 
