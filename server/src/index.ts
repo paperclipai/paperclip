@@ -46,6 +46,7 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { createIncompleteTaskWatchdogScanReporter } from "./services/task-watchdog-diagnostics.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
   StartupRefusalError,
@@ -873,6 +874,9 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const reportIncompleteWatchdogScans = createIncompleteTaskWatchdogScanReporter(
+    (details, message) => logger.warn(details, message),
+  );
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
@@ -1561,6 +1565,7 @@ async function startServerWithDatabaseTeardown(
         }
 
         const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+        reportIncompleteWatchdogScans(taskWatchdogsReconciled, "startup");
         if (taskWatchdogsReconciled.triggered > 0) {
           logger.warn(
             { ...taskWatchdogsReconciled },
@@ -1803,6 +1808,7 @@ async function startServerWithDatabaseTeardown(
             })
             .then(async () => {
               const reconciled = await heartbeat.reconcileTaskWatchdogs();
+              reportIncompleteWatchdogScans(reconciled, "periodic");
               if (reconciled.triggered > 0) {
                 logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
               }

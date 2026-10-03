@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { classifyTaskWatchdogSubtree, type TaskWatchdogClassifierIssue } from "../services/task-watchdogs.ts";
+
+import { createIncompleteTaskWatchdogScanReporter } from "../services/task-watchdog-diagnostics.ts";
 
 const companyId = "company-1";
 const sourceId = "source-1";
@@ -35,6 +37,45 @@ function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtr
 }
 
 describe("task watchdog subtree classifier", () => {
+  it("reports an unchanged incomplete scan once across startup and a day of periodic ticks", () => {
+    const warn = vi.fn();
+    const report = createIncompleteTaskWatchdogScanReporter(warn);
+    report({ incomplete: 2, incompleteIssueIds: [sourceId, childId] }, "startup");
+    for (let tick = 0; tick < 2880; tick += 1) {
+      report({ incomplete: 2, incompleteIssueIds: [childId, sourceId] }, "periodic");
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      { incomplete: 2, newIncompleteIssueIds: [sourceId, childId] },
+      "startup task-watchdog reconciliation found incomplete subtree scans",
+    );
+  });
+
+  it("reports new incomplete issues and reports a resolved issue if it becomes incomplete again", () => {
+    const warn = vi.fn();
+    const report = createIncompleteTaskWatchdogScanReporter(warn);
+    report({ incomplete: 1, incompleteIssueIds: [sourceId] }, "startup");
+    report({ incomplete: 2, incompleteIssueIds: [sourceId, childId] }, "periodic");
+    expect(warn).toHaveBeenLastCalledWith(
+      { incomplete: 2, newIncompleteIssueIds: [childId] },
+      "periodic task-watchdog reconciliation found incomplete subtree scans",
+    );
+    report({ incomplete: 0, incompleteIssueIds: [] }, "periodic");
+    expect(warn).toHaveBeenCalledTimes(2);
+    report({ incomplete: 1, incompleteIssueIds: [sourceId] }, "periodic");
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenLastCalledWith(
+      { incomplete: 1, newIncompleteIssueIds: [sourceId] },
+      "periodic task-watchdog reconciliation found incomplete subtree scans",
+    );
+  });
+
+  it("does not produce a stopped fingerprint from an incomplete scan", () => {
+    const result = classify({ subtreeIncomplete: true });
+    expect(result.state).toBe("incomplete");
+    expect(result).not.toHaveProperty("stopFingerprint");
+  });
+
   it("suppresses watchdog wakeups while watched subtree work has a live path", () => {
     const result = classify({
       issues: [
