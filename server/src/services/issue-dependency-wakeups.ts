@@ -32,10 +32,16 @@ const IN_FLIGHT_DEPENDENCY_WAKE_STATUS_SET = new Set<string>(IN_FLIGHT_DEPENDENC
 
 export type IssueBlockersResolvedWakeCycleInput = Date | string | null | undefined;
 
+export type IssueUnblockDescriptorLike = {
+  owner: { agentId: string } | { userId: string } | "board";
+  action: string;
+};
+
 export type IssueBlockersResolvedReadyStateInput = {
   dependentIssueId: string;
   blockerIssueIds: string[];
   blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
+  unblockDescriptor?: IssueUnblockDescriptorLike | null;
 };
 
 /**
@@ -65,6 +71,23 @@ function hashBlockerReadyStateDigest(sortedBlockerIssueIds: string[], cycle: str
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
 
+function hashBlockerIntentStateDigest(
+  sortedBlockerIssueIds: string[],
+  unblockDescriptor: IssueUnblockDescriptorLike | null | undefined,
+): string {
+  let intent = "";
+  if (unblockDescriptor != null) {
+    const owner = unblockDescriptor.owner === "board"
+      ? "board"
+      : "agentId" in unblockDescriptor.owner
+        ? `agent:${unblockDescriptor.owner.agentId}`
+        : `user:${unblockDescriptor.owner.userId}`;
+    intent = JSON.stringify([owner, unblockDescriptor.action]);
+  }
+  const payload = `${sortedBlockerIssueIds.join(",")}\n${intent}`;
+  return createHash("sha256").update(payload).digest("hex").slice(0, 32);
+}
+
 function buildStateKey(dependentIssueId: string, digest: string, blockerCount: number): string {
   return [
     ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -75,6 +98,15 @@ function buildStateKey(dependentIssueId: string, digest: string, blockerCount: n
   ].join(":");
 }
 
+function buildIntentStateKey(dependentIssueId: string, digest: string, blockerCount: number): string {
+  return [
+    ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+    "intent-state",
+    dependentIssueId,
+    String(blockerCount),
+    digest,
+  ].join(":");
+}
 /**
  * Legacy per-edge idempotency key. One key encodes a single resolved blocker
  * edge `issue_blockers_resolved:{dependentIssueId}:{resolvedBlockerIssueId}`.
@@ -110,20 +142,16 @@ export function buildIssueBlockersResolvedWakeStateKeyWithoutCycle(input: {
 }
 
 /**
- * Level-triggered idempotency key. One key encodes the full set of blockers that
- * defines the current dependency-ready state plus the dependent's current
- * blocked cycle (`blockedTransitionAt`, or `none`). Two wakes for the same ready
- * state share the key. A wake from an earlier blocked cycle has a different
- * cycle stamp, so it produces a different key and never suppresses the current
- * wake. All three emit paths (route-time, finalize-time, periodic backstop) use
- * this key so they share one idempotency rule.
+ * Level-triggered idempotency key. One key encodes the full blocker set and the
+ * canonical unblock intent. `blockedTransitionAt` and all monitor metadata are
+ * deliberately excluded: a run may restore the same blocked-and-ready state many
+ * times, and only a substantive change to blockers or intent is a new wake.
  */
 export function buildIssueBlockersResolvedWakeStateKey(input: IssueBlockersResolvedReadyStateInput) {
   const sortedBlockerIssueIds = uniqueSortedBlockerIssueIds(input.blockerIssueIds);
-  const cycle = formatIssueBlockersResolvedWakeCycle(input.blockedTransitionAt);
-  return buildStateKey(
+  return buildIntentStateKey(
     input.dependentIssueId,
-    hashBlockerReadyStateDigest(sortedBlockerIssueIds, cycle),
+    hashBlockerIntentStateDigest(sortedBlockerIssueIds, input.unblockDescriptor),
     sortedBlockerIssueIds.length,
   );
 }
@@ -144,7 +172,8 @@ function wakeCoversIssueBlockersResolvedReadyState(
     requestedAt: Date;
   },
   keys: {
-    cycleKey: string;
+    intentKey: string;
+    cycleKey?: string;
     oldStateKey: string;
     legacyKeys: Set<string>;
     blockedTransitionAt: Date | null;
@@ -153,8 +182,12 @@ function wakeCoversIssueBlockersResolvedReadyState(
   const idempotencyKey = wake.idempotencyKey;
   if (!idempotencyKey) return false;
 
-  if (idempotencyKey === keys.cycleKey) {
+  if (idempotencyKey === keys.intentKey) {
     return IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(wake.status);
+  }
+
+  if (idempotencyKey === keys.cycleKey) {
+    return IN_FLIGHT_DEPENDENCY_WAKE_STATUS_SET.has(wake.status);
   }
 
   if (idempotencyKey === keys.oldStateKey) {
@@ -172,13 +205,11 @@ function wakeCoversIssueBlockersResolvedReadyState(
 }
 
 /**
- * Find a wake that already covers the current dependency-ready state of the
- * dependent issue. The check is level-triggered and cycle-aware:
- *
- * - The cycle-aware state key matches a wake in any idempotent status
- *   (including `completed`). This suppresses a duplicate for the SAME ready
- *   state, including the current blocked cycle.
- * - The old no-cycle state key matches in-flight statuses (deploy overlap),
+ * Find a wake that already covers the dependent's blocker set and unblock
+ * intent. The canonical intent key matches any idempotent status (including
+ * `completed`), so repeated blocked restores cannot loop. The prior cycle key
+ * is retained for deploy overlap only, because its completed rows contain
+ * volatile transition timestamps. The no-cycle key matches in-flight statuses,
  *   or a `completed` wake whose `requestedAt` is at or after the current
  *   `blockedTransitionAt` (same cycle). A completed old-key wake from a
  *   previous cycle does not suppress.
@@ -193,9 +224,19 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     dependentIssueId: string;
     blockerIssueIds: string[];
     blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
+    unblockDescriptor?: IssueUnblockDescriptorLike | null;
   },
 ) {
-  const cycleKey = buildIssueBlockersResolvedWakeStateKey(input);
+  const intentKey = buildIssueBlockersResolvedWakeStateKey(input);
+  const sortedBlockerIssueIds = uniqueSortedBlockerIssueIds(input.blockerIssueIds);
+  const cycleKey = buildStateKey(
+    input.dependentIssueId,
+    hashBlockerReadyStateDigest(
+      sortedBlockerIssueIds,
+      formatIssueBlockersResolvedWakeCycle(input.blockedTransitionAt),
+    ),
+    sortedBlockerIssueIds.length,
+  );
   const oldStateKey = buildIssueBlockersResolvedWakeStateKeyWithoutCycle(input);
   const legacyKeyList = [
     ...new Set(
@@ -209,7 +250,7 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
         ),
     ),
   ];
-  const lookupKeys = [...new Set([cycleKey, oldStateKey, ...legacyKeyList])];
+  const lookupKeys = [...new Set([intentKey, cycleKey, oldStateKey, ...legacyKeyList])];
   const blockedTransitionAt = parseWakeCycleDate(input.blockedTransitionAt);
 
   const rows = await db
@@ -229,6 +270,7 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
 
   const covering = rows.find((row) =>
     wakeCoversIssueBlockersResolvedReadyState(row, {
+      intentKey,
       cycleKey,
       oldStateKey,
       legacyKeys: new Set(legacyKeyList),

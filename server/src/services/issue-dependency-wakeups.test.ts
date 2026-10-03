@@ -37,7 +37,7 @@ function dbWithWakes(rows: WakeRow[]): Db {
 }
 
 describe("buildIssueBlockersResolvedWakeStateKey", () => {
-  it("is identical for the same dependent, blockers, and blockedTransitionAt", () => {
+  it("is identical for the same dependent, blockers, and unblock intent", () => {
     const first = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId,
       blockerIssueIds: [blockerIssueId],
@@ -52,7 +52,7 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
     expect(first).toContain(dependentIssueId);
   });
 
-  it("changes when blockedTransitionAt changes", () => {
+  it("does not change when only blockedTransitionAt changes", () => {
     const first = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId,
       blockerIssueIds: [blockerIssueId],
@@ -63,10 +63,27 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
       blockerIssueIds: [blockerIssueId],
       blockedTransitionAt: secondCycle,
     });
+    expect(first).toBe(second);
+  });
+
+  it("changes when the canonical unblock intent changes", () => {
+    const descriptor = { owner: "board" as const, action: "Check the monitor" };
+    const first = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockedTransitionAt: firstCycle,
+      unblockDescriptor: descriptor,
+    });
+    const second = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockedTransitionAt: secondCycle,
+      unblockDescriptor: { ...descriptor, action: "Review the new evidence" },
+    });
     expect(first).not.toBe(second);
   });
 
-  it("hashes a null cycle as none and differs from any timestamp", () => {
+  it("ignores comment and monitor timestamps because they are not wake inputs", () => {
     const noneKey = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId,
       blockerIssueIds: [blockerIssueId],
@@ -82,7 +99,7 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
       blockedTransitionAt: firstCycle,
     });
     expect(noneKey).toBe(omittedKey);
-    expect(noneKey).not.toBe(datedKey);
+    expect(noneKey).toBe(datedKey);
     expect(noneKey).not.toBe(
       buildIssueBlockersResolvedWakeStateKeyWithoutCycle({
         dependentIssueId,
@@ -100,20 +117,75 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
     blockedTransitionAt: secondCycle,
   };
 
-  it("suppresses a completed wake on the cycle-aware state key", async () => {
-    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+  it("suppresses a completed wake on the canonical intent state key", async () => {
+    const intentKey = buildIssueBlockersResolvedWakeStateKey(readyState);
     const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
       dbWithWakes([
         {
           id: "wake-cycle",
           status: "completed",
-          idempotencyKey: cycleKey,
+          idempotencyKey: intentKey,
           requestedAt: secondCycle,
         },
       ]),
       readyState,
     );
     expect(existing?.id).toBe("wake-cycle");
+  });
+
+  it("performs three identical blocked restores as one wake, then allows a distinct state", async () => {
+    const descriptor = {
+      owner: { agentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
+      action: "Check the next monitor run",
+    };
+    const firstReadyState = {
+      companyId,
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockedTransitionAt: firstCycle,
+      unblockDescriptor: descriptor,
+    };
+    const intentKey = buildIssueBlockersResolvedWakeStateKey(firstReadyState);
+    let rows: WakeRow[] = [];
+    const first = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes(rows),
+      firstReadyState,
+    );
+    expect(first).toBeNull();
+
+    rows = [{
+      id: "wake-intent",
+      status: "completed",
+      idempotencyKey: intentKey,
+      requestedAt: firstCycle,
+    }];
+
+    const secondRestore = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes(rows),
+      {
+        ...firstReadyState,
+        blockedTransitionAt: secondCycle,
+      },
+    );
+    expect(secondRestore?.id).toBe("wake-intent");
+
+    const thirdRestore = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes(rows),
+      {
+        ...firstReadyState,
+        blockedTransitionAt: new Date("2026-09-01T00:00:00.000Z"),
+      },
+    );
+    expect(thirdRestore?.id).toBe("wake-intent");
+
+    const distinctResolution = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes(rows),
+      {
+        ...firstReadyState,
+        blockerIssueIds: [blockerIssueId, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"],
+      },
+    );
+    expect(distinctResolution).toBeNull();
   });
 
   it("does not let a completed old-key wake from a previous blocked cycle suppress", async () => {
