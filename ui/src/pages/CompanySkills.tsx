@@ -1235,7 +1235,7 @@ export function DiscoveryGrid({
         {/* Search + sort + actions */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
           <div className="w-full">
-            <h1 className="text-lg font-semibold text-foreground">{viewTitle}</h1>
+            <h2 className="text-lg font-semibold text-foreground">{viewTitle}</h2>
             <p className="text-xs text-muted-foreground">{viewDescription}</p>
           </div>
           <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
