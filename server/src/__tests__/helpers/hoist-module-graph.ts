@@ -21,13 +21,21 @@ import { beforeAll } from "vitest";
 export function hoistModuleGraph<T>(
   registerMocks: () => void,
   loadGraph: () => Promise<T>,
+  options: { loadTimeoutMs?: number } = {},
 ): { readonly value: T } {
   let graph: T | undefined;
 
-  beforeAll(async () => {
-    registerMocks();
-    graph = await loadGraph();
-  });
+  beforeAll(
+    async () => {
+      registerMocks();
+      graph = await loadGraph();
+    },
+    // Loading `routes/agents.ts` pulls in every adapter and service module. In
+    // isolation that is seconds; in a full parallel run it can exceed the
+    // default hook timeout. Callers that know their graph is heavy can raise
+    // the bound rather than shipping a test that fails only under load.
+    options.loadTimeoutMs,
+  );
 
   return {
     get value(): T {

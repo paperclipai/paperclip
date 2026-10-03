@@ -70,6 +70,30 @@ export interface AgentChainOfCommandEntry {
   title: string | null;
 }
 
+/**
+ * Whether the `adapterConfig` / `runtimeConfig` on an agent read carry the real
+ * values or are a redaction placeholder.
+ *
+ * `"redacted"` means the caller lacks `agents:create` for the company and is
+ * not reading itself. Before this distinction existed, a restricted read
+ * returned `adapterConfig: {}` with a 200 and no marker, which is
+ * indistinguishable from a genuinely empty config.
+ */
+export type AgentConfigurationAccess = "full" | "redacted";
+
+/**
+ * Config-visibility metadata attached to every agent read.
+ *
+ * `adapterConfigKeys` / `runtimeConfigKeys` are top-level key names only, never
+ * values, and are always populated. They let a restricted caller answer "is this
+ * agent configured?" — the question the silent-redaction bug made unanswerable.
+ */
+export interface AgentConfigurationView {
+  configurationAccess: AgentConfigurationAccess;
+  adapterConfigKeys: string[];
+  runtimeConfigKeys: string[];
+}
+
 export interface Agent {
   id: string;
   companyId: string;
@@ -98,7 +122,15 @@ export interface Agent {
   updatedAt: Date;
 }
 
-export interface AgentDetail extends Agent {
+/**
+ * An agent read that always says whether its config was redacted.
+ *
+ * Agent read endpoints return this instead of a bare `Agent` so the marker
+ * cannot be silently dropped from a response again.
+ */
+export type AgentWithConfigurationAccess = Agent & AgentConfigurationView;
+
+export interface AgentDetail extends AgentWithConfigurationAccess {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;
 }
