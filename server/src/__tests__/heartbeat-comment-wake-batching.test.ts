@@ -1232,7 +1232,20 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false },
     { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true },
   ] as const)("$caseName", async ({ targetAssignee, terminalStatus, explicitResume }) => {
-    const gateway = await createControlledGatewayServer();
+    let issueAtFollowup: Pick<typeof issues.$inferSelect, "status" | "completedAt" | "assigneeAgentId"> | null = null;
+    const gateway = await createControlledGatewayServer(async (turn) => {
+      if (turn !== 2) return;
+      issueAtFollowup = await db
+        .select({ status: issues.status, completedAt: issues.completedAt, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      // The fake assignee must give the reopened task a disposition before
+      // returning success, or lifecycle recovery correctly adds another run.
+      if (shouldReopen) {
+        await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+      }
+    });
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const mentionedAgentId = randomUUID();
@@ -1418,16 +1431,22 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return;
       }
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
-      await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, companyId));
-        return (
-          runs.length === 2 && runs.every((run) => run.status === "succeeded")
-        );
-      }, 90_000);
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs.map((run) => ({
+        status: run.status,
+        retryOfRunId: run.retryOfRunId,
+        wakeReason: run.contextSnapshot?.wakeReason,
+      }))).toEqual([
+        { status: "succeeded", retryOfRunId: null, wakeReason: "issue_assigned" },
+        { status: "succeeded", retryOfRunId: null, wakeReason },
+      ]);
+      expect(gateway.getAgentPayloads()).toHaveLength(2);
 
       const continuation = (await db.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, targetAgentId),
@@ -1436,7 +1455,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         agentId: targetAgentId,
         contextSnapshot: expect.objectContaining({ issueId }),
       });
-      const issueAfterPromotion = await db
+      expect(issueAtFollowup).toMatchObject({
+        status: shouldReopen ? "in_progress" : "done",
+        assigneeAgentId,
+      });
+      if (shouldReopen) expect(issueAtFollowup!.completedAt).toBeNull();
+      else expect(issueAtFollowup!.completedAt).not.toBeNull();
+
+      const issueAfterCompletion = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
@@ -1446,12 +1472,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(issueAfterPromotion).toMatchObject({
-        status: shouldReopen ? "in_progress" : "done",
+      expect(issueAfterCompletion).toMatchObject({
+        status: "done",
         assigneeAgentId,
       });
-      if (shouldReopen) expect(issueAfterPromotion?.completedAt).toBeNull();
-      else expect(issueAfterPromotion?.completedAt).not.toBeNull();
+      expect(issueAfterCompletion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
