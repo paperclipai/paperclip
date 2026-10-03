@@ -15,7 +15,8 @@ import { restartManagedService } from "./service.js";
 import { packageVersion } from "../version.js";
 
 const execFileAsync = promisify(execFile);
-export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
+export type InstallMode = "managed" | "global-npm" | "global-pnpm" | "global-yarn" | "global-bun" | "npx" | "source" | "unknown";
+type ForeignGlobalMode = Extract<InstallMode, "global-pnpm" | "global-yarn" | "global-bun">;
 export type UpdateOptions = { canary?: boolean; latest?: boolean; version?: string; rollback?: boolean; check?: boolean; dryRun?: boolean; json?: boolean; yes?: boolean; backup?: boolean };
 type Dependencies = { executablePath: string; runCommand: CommandRunner; backup: () => Promise<void>; confirm: (message: string) => Promise<boolean>; now: () => Date; paths: InstallStorePaths; restartActiveService: (expectedVersion: string) => Promise<boolean>; hasInstanceData: () => boolean };
 
@@ -75,19 +76,46 @@ async function restartActiveManagedService(expectedVersion: string): Promise<boo
   return true;
 }
 
-export function detectInstallMode(executablePath = process.argv[1] ?? "", paths = resolveInstallStorePaths()): InstallMode {
+function isWithin(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+export function detectInstallMode(executablePath = process.argv[1] ?? "", paths = resolveInstallStorePaths(), env: NodeJS.ProcessEnv = process.env): InstallMode {
   const resolved = path.resolve(executablePath || ".");
   const manifest = readInstallManifest(paths);
   if (manifest && isManagedExecutable(resolved, manifest, paths)) return "managed";
-  const normalized = resolved.split(path.sep).join("/");
+  // npm, Yarn, and Bun link their bin entries as symlinks, and Node does not
+  // resolve process.argv[1], so classify the package entrypoint the link targets.
+  let real = resolved;
+  try { real = fs.realpathSync(resolved); } catch { /* keep the unresolved path */ }
+  const normalized = real.split(path.sep).join("/");
   if (normalized.includes("/.npm/_npx/") || normalized.includes("/node_modules/.cache/npx/")) return "npx";
-  if (normalized.includes("/node_modules/paperclipai/")) return "global-npm";
+  // pnpm, yarn, and bun global installs also contain /node_modules/paperclipai/,
+  // but npm does not own them, so classify them before the npm fallback.
+  if (normalized.includes("/node_modules/paperclipai/")) {
+    const pnpmHome = env.PNPM_HOME?.trim();
+    if (/\/pnpm\/global\//i.test(normalized) || (pnpmHome && isWithin(real, path.resolve(pnpmHome)))) return "global-pnpm";
+    if (/\/yarn\/(?:data\/)?global\//i.test(normalized)) return "global-yarn";
+    if (normalized.includes("/.bun/install/global/")) return "global-bun";
+    return "global-npm";
+  }
   let cursor = path.dirname(resolved);
   while (cursor !== path.dirname(cursor)) {
     if (fs.existsSync(path.join(cursor, ".git"))) return "source";
     cursor = path.dirname(cursor);
   }
   return "unknown";
+}
+
+const FOREIGN_GLOBAL_MANAGERS: Record<ForeignGlobalMode, { name: string; command: (version: string) => string[] }> = {
+  "global-pnpm": { name: "pnpm", command: (version) => ["pnpm", "add", "-g", `paperclipai@${version}`, `--registry=${PUBLIC_NPM_REGISTRY}`] },
+  "global-yarn": { name: "Yarn", command: (version) => ["yarn", "global", "add", `paperclipai@${version}`, `--registry=${PUBLIC_NPM_REGISTRY}`] },
+  "global-bun": { name: "Bun", command: (version) => ["bun", "add", "-g", `paperclipai@${version}`, `--registry=${PUBLIC_NPM_REGISTRY}`] },
+};
+
+function isForeignGlobalMode(mode: InstallMode): mode is ForeignGlobalMode {
+  return mode in FOREIGN_GLOBAL_MANAGERS;
 }
 
 export function compareVersions(left: string, right: string): number {
@@ -180,7 +208,8 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   }
   if (mode === "npx") { emit(options, { mode, action: "install" }, "This is an ephemeral npx install. Run `paperclipai install`, then use `paperclipai update` from the managed shim."); return; }
   if (mode === "source" || mode === "unknown") { emit(options, { mode, action: "manual" }, "This appears to be a source checkout. Update it with `git pull` followed by `pnpm install`; Paperclip will not mutate the repository."); return; }
-  if (!options.check && !options.dryRun) assertSupportedNodeVersion();
+  // Foreign global installs only print a command, so the Node check must not block that guidance.
+  if (!options.check && !options.dryRun && !isForeignGlobalMode(mode)) assertSupportedNodeVersion();
   const request = resolveUpdateRequest(mode === "managed" ? manifest : null, options);
   if (mode === "managed" && manifest?.source === "git") {
     if (!manifest.repo || !manifest.ref || !manifest.sha) throw new Error("Managed git install metadata is incomplete.");
@@ -217,9 +246,18 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     return;
   }
   const targetVersion = await resolvePublishedVersion(request.spec, runCommand);
-  const currentVersion = manifest?.version ?? (mode === "global-npm" ? packageVersion : undefined);
+  // A managed manifest can exist next to a global install; only a managed run reports its version.
+  const currentVersion = mode === "managed" ? manifest?.version : mode === "global-npm" || isForeignGlobalMode(mode) ? packageVersion : undefined;
   const comparison = currentVersion ? compareVersions(targetVersion, currentVersion) : 1;
   if (options.check) { emit(options, { mode, currentVersion: currentVersion ?? null, targetVersion, updateAvailable: comparison > 0, downgrade: comparison < 0, channel: request.channel }, comparison > 0 ? `Update available: ${targetVersion}` : comparison < 0 ? `Target ${targetVersion} is older than ${currentVersion}.` : `paperclipai ${targetVersion} is current.`); if (comparison > 0) process.exitCode = 10; return; }
+  if (isForeignGlobalMode(mode)) {
+    // npm cannot update a prefix it does not own, and its scoped-registry flag is
+    // npm-only, so print the owning manager's command instead of running npm.
+    const manager = FOREIGN_GLOBAL_MANAGERS[mode];
+    const command = manager.command(targetVersion);
+    emit(options, { mode, action: "manual", targetVersion, command }, `This paperclipai install is managed by ${manager.name}, so Paperclip will not update it with npm. Update it with \`${command.join(" ")}\`, then restart any running Paperclip service.`);
+    return;
+  }
   if (mode === "global-npm") {
     if (comparison < 0 && options.yes !== true) { const confirmed = await (overrides.confirm ?? defaultConfirm)(`Downgrade paperclipai from ${currentVersion} to ${targetVersion}?`); if (!confirmed) throw new Error("Downgrade cancelled. Re-run with --yes to confirm explicitly."); }
     const args = ["install", "-g", `paperclipai@${targetVersion}`, `--registry=${PUBLIC_NPM_REGISTRY}`, `--@paperclipai:registry=${PUBLIC_NPM_REGISTRY}`]; console.log(`Running: npm ${args.join(" ")}`);
