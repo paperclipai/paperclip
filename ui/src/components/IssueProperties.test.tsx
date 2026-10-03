@@ -2211,6 +2211,59 @@ describe("IssueProperties", () => {
     }
   });
 
+  it("disables the label color picker while a label is being created", async () => {
+    let resolveCreateLabel: ((label: IssueLabel) => void) | undefined;
+    mockIssuesApi.createLabel.mockImplementation(() => new Promise<IssueLabel>((resolve) => {
+      resolveCreateLabel = resolve;
+    }));
+
+    let root: ReturnType<typeof renderProperties> | undefined;
+    try {
+      root = renderProperties(container, {
+        issue: createIssue(),
+        childIssues: [],
+        onUpdate: vi.fn(),
+        inline: true,
+      });
+      await flush();
+
+      const labelsTrigger = findRowTrigger(container, "Labels");
+      await act(async () => {
+        labelsTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      const colorInput = container.querySelector<HTMLInputElement>('input[type="color"]');
+      expect(colorInput?.disabled).toBe(false);
+
+      const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="New label"]');
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(nameInput, "Feature");
+        nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flush();
+
+      const createButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Create label"));
+      await act(async () => {
+        createButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      expect(colorInput?.disabled).toBe(true);
+
+      await act(async () => {
+        resolveCreateLabel?.(createLabel({ id: "label-feature", name: "Feature" }));
+      });
+      await flush();
+
+      expect(colorInput?.disabled).toBe(false);
+    } finally {
+      const mountedRoot = root;
+      if (mountedRoot) act(() => mountedRoot.unmount());
+    }
+  });
+
   it("shows selected labels from labelIds even before the issue labels relation refreshes", async () => {
     mockIssuesApi.listLabels.mockResolvedValue([createLabel()]);
 

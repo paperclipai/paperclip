@@ -1673,6 +1673,7 @@ export function IssueProperties({
             className="h-7 w-7 p-0 rounded bg-transparent"
             type="color"
             value={newLabelColor}
+            disabled={createLabel.isPending}
             onChange={(e) => setNewLabelColor(e.target.value)}
           />
           <input
