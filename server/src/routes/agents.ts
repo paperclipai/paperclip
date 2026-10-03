@@ -3341,7 +3341,20 @@ export function agentRoutes(
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
     const userId = responsibleUserForAiRequest(req);
     const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
-    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch((error: unknown) => {
+    const fallback = bindingQuotaFallback(binding);
+    // A fallback-backed agent stays runnable when its primary is unavailable, so
+    // accept the save if the primary fails validation but the fallback passes.
+    async function fallbackEnvironmentHealthy(target: Awaited<ReturnType<typeof resolveAdapterTestExecutionContext>>): Promise<boolean> {
+      if (!fallback) return false;
+      let fallbackManaged: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+      try {
+        const fallbackBinding = quotaFallbackBinding(fallback);
+        fallbackManaged = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding: fallbackBinding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
+        const fallbackResult = await testManagedEnvironment(adapterType, { companyId, adapterType, config: fallbackManaged.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, fallbackBinding);
+        return !(fallbackResult.status === "fail" || fallbackResult.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE));
+      } catch { return false; } finally { await fallbackManaged?.cleanup?.(); }
+    }
+    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch(async (error: unknown) => {
       // Hiring is allowed before the responsible user has connected this
       // provider. Execution still resolves credentials and creates the normal
       // task connection request; compatibility and access denials stay errors.
@@ -3349,8 +3362,18 @@ export function agentRoutes(
         && ["ai_connection_default_missing", "ai_connection_missing", "ai_connection_unavailable", "ai_connection_responsible_user_missing"].includes(String(asRecord(error.details)?.code))) {
         return null;
       }
+      // Primary connection unavailable: accept the save if a healthy fallback is
+      // configured, since the agent can still run on the fallback account.
+      if (test && fallback && error instanceof HttpError
+        && ["ai_connection_unavailable", "ai_connection_default_missing", "ai_connection_missing"].includes(String(asRecord(error.details)?.code))) {
+        const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
+        if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId);
+        const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
+        try { if (await fallbackEnvironmentHealthy(target)) return "accepted-via-fallback" as const; } finally { await target.release("released"); }
+      }
       throw error;
     });
+    if (selection === "accepted-via-fallback") return undefined;
     if (!selection) return undefined;
     if (test) {
       const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
@@ -3363,21 +3386,8 @@ export function agentRoutes(
         const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
         const primaryFailed = result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
         if (primaryFailed) {
-          // An agent with a healthy quota fallback stays runnable when its
-          // primary is temporarily unavailable (e.g. a stale subscription
-          // login), so accept the save if the fallback itself validates.
-          const fallback = bindingQuotaFallback(binding);
-          let fallbackHealthy = false;
-          if (fallback) {
-            let fallbackManaged: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
-            try {
-              const fallbackBinding = quotaFallbackBinding(fallback);
-              fallbackManaged = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding: fallbackBinding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
-              const fallbackResult = await testManagedEnvironment(adapterType, { companyId, adapterType, config: fallbackManaged.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, fallbackBinding);
-              fallbackHealthy = !(fallbackResult.status === "fail" || fallbackResult.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE));
-            } catch { fallbackHealthy = false; } finally { await fallbackManaged?.cleanup?.(); }
-          }
-          if (!fallbackHealthy) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
+          // Accept the save if the configured fallback validates in this environment.
+          if (!(await fallbackEnvironmentHealthy(target))) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
             code: "ai_connection_validation_failed",
             checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
           });

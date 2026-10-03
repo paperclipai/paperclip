@@ -39,6 +39,7 @@ import {
   activityLog,
   chatConversations,
   companies,
+  connectionGrants,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -51,6 +52,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisions,
+  toolConnections,
   workAssessments,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
@@ -2595,7 +2597,35 @@ export function recoveryService(
     const raw = agent?.runtimeConfig?.aiConnection;
     if (!raw) return false;
     const parsed = aiConnectionBindingSchema.safeParse(raw);
-    return parsed.success && Boolean(bindingQuotaFallback(parsed.data));
+    if (!parsed.success) return false;
+    const fallback = bindingQuotaFallback(parsed.data);
+    if (!fallback) return false;
+    // Fail over only to a usable fallback account. If it is revoked, disabled,
+    // or unhealthy, keep the primary's normal quota-window wait instead of
+    // scheduling an immediate retry that cannot run.
+    const grant = (
+      await db
+        .select({ status: connectionGrants.status, kind: connectionGrants.kind })
+        .from(connectionGrants)
+        .where(eq(connectionGrants.id, fallback.grantId))
+        .limit(1)
+    )[0];
+    if (!grant || grant.status !== "active" || grant.kind !== "organization")
+      return false;
+    const conn = (
+      await db
+        .select({
+          enabled: toolConnections.enabled,
+          status: toolConnections.status,
+          healthStatus: toolConnections.healthStatus,
+        })
+        .from(toolConnections)
+        .where(eq(toolConnections.id, fallback.connectionId))
+        .limit(1)
+    )[0];
+    return Boolean(
+      conn && conn.enabled && conn.status === "active" && conn.healthStatus === "ok",
+    );
   }
 
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
