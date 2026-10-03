@@ -1,6 +1,26 @@
 # Paperclip Component Index
 
-Complete inventory of all UI components. Update this file when adding new reusable components.
+Inventory of the **reusable** components under `ui/src/components/`. Update this file when
+adding a new reusable component.
+
+**Scope.** A component belongs here when it is meant to be imported by more than one place:
+a shadcn/ui primitive, or a component reused across pages, boards, or panels. A one-off
+layout that exists only for a single page does **not** belong here -- `SKILL.md` sec.6 says so,
+and the census below counts that gap as out of scope, not as drift.
+
+This file is **one of three** inventories of the same set, and all three must agree:
+
+| | Artifact | What it is |
+|---|---|---|
+| A | `ui/src/components/**` | what exists on disk |
+| B | this file | the documented index |
+| C | the `Component Coverage` roster in `ui/src/pages/DesignGuide.tsx` | the badges the live `/design-guide` page renders |
+
+`SKILL.md` sec.10 rule 1 and sec.11 tell an author to update **two** places. There are three.
+The roster (C) is the one the guide never names, and the one a reader of `/design-guide` sees.
+Run `python3 scripts/census-design-guide-inventory.py` to check all three agree; it exits 1 on
+drift. Nothing runs it automatically yet, so it only holds if you run it -- see
+SKILL.md sec. 11.1.
 
 ---
 
@@ -45,6 +65,11 @@ These are shadcn/ui base components. Do not modify directly — extend via compo
 | Collapsible | `collapsible.tsx` | CollapsibleTrigger, CollapsibleContent | Expand/collapse sections. |
 | Skeleton | `skeleton.tsx` | className for sizing | Loading placeholder with shimmer. |
 | Sheet | `sheet.tsx` | SheetTrigger, SheetContent, SheetHeader, etc. | Side panel overlay. |
+| AlertDialog | `alert-dialog.tsx` | AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel | Destructive/irreversible confirmation. Kept distinct from Dialog so a destructive action cannot be confirmed with an ordinary dismissible panel. |
+| Attachment | `attachment.tsx` | Attachment, AttachmentGroup, AttachmentMedia, AttachmentContent, AttachmentTitle, AttachmentDescription, AttachmentActions, AttachmentAction, AttachmentTrigger | File chip used in task chat bubbles and composers. `AttachmentMedia` is the icon/avatar slot; there is no `AttachmentIcon` export. |
+| RadioCard | `radio-card.tsx` | RadioCardGroup, RadioCard, `RadioCardOption` (type) | Single-select that reads as a card. Every call site uses `RadioCardGroup`; `RadioCard` is the single-option primitive underneath it. |
+| ResizablePanels | `resizable-panels.tsx` | ResizablePanelGroup, ResizablePanel, ResizableHandle | Resizable split layout (e.g. SkillStudio). Local reimplementation -- the exports are `Resizable*`-prefixed, not `Panel*`. |
+| ToggleSwitch | `toggle-switch.tsx` | `checked`, `onCheckedChange` | Pill switch. 24 importing files -- the most-used of the five primitives this table had missed, and 14th of 26 overall -- so extend it via composition rather than hand-rolling a switch. |
 
 ---
 
@@ -187,6 +212,60 @@ Use in property rows, comment headers, assignee displays, and anywhere a user/ag
 
 **File:** `CompanySwitcher.tsx`
 **Usage:** Company selector dropdown in sidebar header.
+
+### InlineBanner
+
+**File:** `InlineBanner.tsx`
+**Props:** `tone?` (`info` | `warning` | `danger`, default `info`), `title?`, `icon?` (override, or `false` to omit), `actions?`, `compact?`
+**Usage:** In-flow notice rendered inside a page or a dialog -- `compact` is for embedding in a modal. Prefer this over a Dialog for anything that does not need to block the user's next action.
+
+### MarkdownEditor
+
+**File:** `MarkdownEditor.tsx`
+**Usage:** Markdown authoring surface with a rendered/preview split. Pair with `MarkdownBody` for read-only rendering.
+
+### CollectionToolbar
+
+**File:** `CollectionToolbar.tsx`
+**Props:** `context?`, `search?`, `controls?`, `actions?`, `feedback?`, `ariaLabel?`
+**Usage:** The shared toolbar geometry above a list -- the page owns its state and behaviour, the toolbar owns the slot layout. The canonical task row is opt-in during migration: status leads, unread work uses title emphasis, metadata stays stable, the task identifier trails.
+
+```tsx
+<CollectionToolbar
+  context={<span className="text-sm font-medium">Recent tasks</span>}
+  search={<Input placeholder="Search task collection..." />}
+  actions={<Button size="sm">New task</Button>}
+/>
+```
+
+### ContextualSidebarFrame
+
+**File:** `ContextualSidebarFrame.tsx`
+**Props:** `surface`, `title`, `icon?`, `fallbackTo?`, `showHeader?`
+**Usage:** Chrome for the secondary sidebar that opens over a primary surface. Owns the back affordance and the origin round-trip via `readContextualSidebarOrigin`, so a contextual sidebar returns the user where they came from instead of dumping them on the dashboard.
+
+### BuiltInAgentGate
+
+**File:** `BuiltInAgentGate.tsx`
+**Props:** `agentKey`, `companyId`, `featureLabel?`, `children`
+**Usage:** Wraps any feature surface that depends on a built-in agent and renders the correct lifecycle state for it (not configured / awaiting approval / live). Use it instead of branching on the agent's status at each call site.
+
+### BuiltInLifecycleChip
+
+**File:** `BuiltInAgentBadges.tsx`
+**Props:** `status: BuiltInAgentStatus`, `compact?`
+**Usage:** Amber chip for the built-in agent's *lifecycle* states (`needs_setup`, `pending_approval`) only; it renders `null` for every real run status. Kept separate from the agent status badge on purpose -- do not merge them.
+
+### EnvironmentVariablesEditor
+
+**File:** `environment-variables-editor/index.tsx` (barrel)
+**Usage:** Key/value editor for environment variables with per-row validation. Barrel directory, not a flat `.tsx` -- import from the directory, not a guessed filename.
+
+### IssueRow
+
+**File:** `IssueRow.tsx`
+**Props:** `issue`, `presentation?: "legacy" | "task"`, `selected?`, `leadingControl?`, `statusSlot?`, `metadata?`, `actions?`, `showIdentifier?`, `mobileLeading?`, `desktopTrailing?`, `trailingMeta?`, `titleSuffix?`
+**Usage:** The canonical task-list row. `presentation="task"` opts into the canonical collection layout (status leads, unread work uses title emphasis, metadata stays stable, identifier trails); `legacy` remains the default while surfaces migrate, so a new list should ask which one it wants rather than inherit whichever the last caller used. Pair with `CollectionToolbar`, which owns the geometry above it.
 
 ---
 
