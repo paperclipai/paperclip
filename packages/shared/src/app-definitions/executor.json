@@ -22,7 +22,7 @@
         "dcr",
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Paste your Executor MCP URL to use the integrations configured in Executor.",
       "defaults": {},
       "guidanceMd": "Paste your Executor MCP URL. Sign in if required, or add a token or headers under Advanced authentication.",
       "riskTier": "S3",
