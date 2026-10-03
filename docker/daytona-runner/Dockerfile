@@ -28,7 +28,7 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=58aeed65b62424cb4a18e78a0fcd62a88c3120c452ed7a14659e59a08d914580
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
@@ -56,9 +56,9 @@ ENV PATH=${PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT}/node_modules/.bin:/usr/local/sha
 # Never add a second CLI version to work around a runner compatibility pin.
 RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
     && npm install -g \
-      @xai-official/grok@1.0.41 \
-      @google/gemini-cli@0.60.0 \
-      @moonshot-ai/kimi-code@2.0.2 \
+      @xai-official/grok@1.0.46 \
+      @google/gemini-cli@0.62.0 \
+      @moonshot-ai/kimi-code@2.1.1 \
     && npm cache clean --force
 
 # Hermes requires Python >=3.11,<3.14; the image's default Python is newer.
@@ -69,8 +69,8 @@ RUN /usr/bin/python3 -m venv /opt/hermes \
     && /opt/hermes/bin/pip install --no-cache-dir hermes-agent==0.19.0 \
     && ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes
 
-ARG CURSOR_VERSION=2026.09.18-9a7762b
-ARG CURSOR_SHA256_AMD64=b1308f5a2fc05458b9d8966752986bb23a971bbcc67c842c1df94c4b8132bad9
+ARG CURSOR_VERSION=2026.10.01-e373342
+ARG CURSOR_SHA256_AMD64=a79726c6e644520e993970be4c45775a6889802b67abe461a677a53219ae28e8
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: cursor pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -84,8 +84,8 @@ RUN set -eu; \
     ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent; \
     chmod -R a+rX /opt/cursor
 
-ARG GH_VERSION=2.101.0
-ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256_AMD64=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -139,9 +139,9 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.156.0"; \
+    test "$(codex --version)" = "codex-cli 0.160.0"; \
     test "$(claude --version)" = "2.1.280 (Claude Code)"; \
-    test "$(opencode --version)" = "1.18.32"; \
+    test "$(opencode --version)" = "1.18.34"; \
     test "$(acpx --version)" = "0.13.1"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'

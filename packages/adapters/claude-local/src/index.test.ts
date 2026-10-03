@@ -8,6 +8,11 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
+  it.each(["us.anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5[1m]", "claude-sonnet-5-5"])("requires CLI 2.1.284 and offers all efforts for %s", (model) => {
+    expect(minimumClaudeCliVersionForModel(model)).toBe("2.1.284");
+    expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
   it("keeps model-specific Claude reasoning limits", () => {
     expect(claudeLocalReasoningEffortsForModel("claude-fable-5-1")).toContain("xhigh");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-5")).toContain("max");

@@ -127,7 +127,7 @@ function acpxExecution(
               ? "@openai/codex"
               : "@anthropic-ai/claude-agent-sdk",
         agentRuntimeVersion:
-          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.156.0" : "0.3.280",
+          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.160.0" : "0.3.280",
         commandDigest:
           agent === "codex"
             ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
@@ -292,7 +292,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         steering: false,
         resume: true,
@@ -445,7 +445,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         resume: true,
         interruption: true,
