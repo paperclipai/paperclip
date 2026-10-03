@@ -591,3 +591,4 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 <p align="center">
   <sub>Open source under MIT. Built for people who want to get work done, not babysit agents.</sub>
 </p>
+<p>This project is a simple student management system developed using Python. It allows users to add, view, update, and delete student information.</p>
