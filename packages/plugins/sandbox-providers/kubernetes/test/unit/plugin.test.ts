@@ -60,6 +60,27 @@ describe("plugin", () => {
     expect(result.normalizedConfig?.backend).toBe("job");
   });
 
+  it("validateConfig keeps nodeSelector and tolerations", async () => {
+    const placement = {
+      nodeSelector: { workload: "agents" },
+      tolerations: [{ key: "dedicated", operator: "Equal", value: "agents", effect: "NoSchedule" }],
+    };
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, ...placement },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig).toEqual(expect.objectContaining(placement));
+  });
+
+  it("validateConfig rejects a toleration with an unknown field", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, tolerations: [{ key: "dedicated", effct: "NoSchedule" }] },
+    });
+    expect(result.ok).toBe(false);
+  });
+
   it("validateConfig rejects unknown backend value", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",
