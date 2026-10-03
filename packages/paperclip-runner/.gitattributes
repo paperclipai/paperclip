@@ -1,0 +1,7 @@
+# Pin text files to LF so the byte-exact generated-file checks in this package
+# (protocol contract manifest, protocol schema modules, replay goldens) produce
+# the same SHA-256 on every operating system. Without this rule, a Windows
+# checkout with core.autocrlf=true converts the protocol schemas and fixtures to
+# CRLF, so every hash in the generated manifest differs from the LF-committed
+# one and `check:protocol-manifest` fails on Windows while passing on Linux CI.
+* text=auto eol=lf
