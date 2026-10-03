@@ -79,3 +79,19 @@ it("explicit retry can replace an attempt opened in another authentication host"
   await vi.waitFor(() => expect(host.textContent).toContain("isolated codex login"));
   expect(api.startLocalLogin).toHaveBeenLastCalledWith("company", expect.objectContaining({ restart: true }));
 });
+
+it("offers the browser sign-in command when device code sign-in is blocked", async () => {
+  api.startLocalLogin.mockImplementation(async () => ({ sessionId: "attempt-1", command: "isolated codex login --device-auth", browserCommand: "isolated codex browser login", expiresAt: "2099-01-01T00:00:00Z" }));
+  flushSync(() => root.render(<Harness />));
+  await vi.waitFor(() => expect(host.textContent).toContain("isolated codex login --device-auth"));
+  expect(host.textContent).not.toContain("isolated codex browser login");
+  flushSync(() => Array.from(host.querySelectorAll('button')).find(b => b.textContent === 'Device code sign-in blocked?')!.click());
+  expect(host.textContent).toContain("isolated codex browser login");
+  expect(host.textContent).toContain("browser on the machine running Paperclip");
+});
+
+it("does not offer a browser alternative when the provider has none", async () => {
+  flushSync(() => root.render(<Harness />));
+  await vi.waitFor(() => expect(host.textContent).toContain("isolated codex login"));
+  expect(Array.from(host.querySelectorAll('button')).some(b => b.textContent === 'Device code sign-in blocked?')).toBe(false);
+});
