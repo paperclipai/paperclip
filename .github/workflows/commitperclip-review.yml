@@ -28,13 +28,18 @@ jobs:
           base-ref: ${{ github.event.pull_request.base.sha }}
           head-ref: ${{ github.event.pull_request.head.sha }}
 
+      # The commitperclip steps below need COMMITPERCLIP_KEY, which only this
+      # repo holds; forks skip them so PRs stay green while Dependency Review
+      # still runs. Same fork guard as release.yml.
       - name: Set up Node
+        if: github.repository == 'paperclipai/paperclip'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: Generate commitperclip token
         id: token
+        if: github.repository == 'paperclipai/paperclip'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -44,7 +49,9 @@ jobs:
 
       - name: Run quality gates
         id: quality
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: >-
+          github.repository == 'paperclipai/paperclip' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +63,7 @@ jobs:
 
       - name: Fail if quality gates failed
         if: >-
+          github.repository == 'paperclipai/paperclip' &&
           github.event.pull_request.user.login != 'dependabot[bot]' &&
           steps.quality.outcome == 'failure'
         run: |
