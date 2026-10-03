@@ -28,6 +28,10 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
@@ -41,6 +45,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -136,6 +143,8 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockReset();
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -437,5 +446,106 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+  });
+
+  function decidedApproval(status: string, requestedByAgentId: string | null = "agent-7") {
+    return {
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status,
+      payload: {},
+      requestedByAgentId,
+    };
+  }
+
+  function expectRequesterWake(reason: string) {
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-7",
+      expect.objectContaining({
+        reason,
+        payload: expect.objectContaining({ approvalId: "approval-9", issueId: "issue-1", issueIds: ["issue-1"] }),
+        contextSnapshot: expect.objectContaining({ wakeReason: reason, taskId: "issue-1" }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.requester_wakeup_queued" }),
+    );
+  }
+
+  it("wakes the requesting agent when an approval is approved", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.approve.mockResolvedValue({ approval: decidedApproval("approved"), applied: true });
+
+    const res = await request(await createApp()).post("/api/approvals/approval-9/approve").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectRequesterWake("approval_approved");
+  });
+
+  it("wakes the requesting agent when an approval is rejected", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.reject.mockResolvedValue({ approval: decidedApproval("rejected"), applied: true });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/reject")
+      .send({ decisionNote: "Rewrite the subheading" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectRequesterWake("approval_rejected");
+  });
+
+  it("wakes the requesting agent when a revision is requested", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.requestRevision.mockResolvedValue(decidedApproval("revision_requested"));
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/request-revision")
+      .send({ decisionNote: "Tighten the copy" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectRequesterWake("approval_revision_requested");
+  });
+
+  it("still wakes the requesting agent when the revision's linked-issue lookup fails", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.requestRevision.mockResolvedValue(decidedApproval("revision_requested"));
+    mockIssueApprovalService.listIssuesForApproval.mockRejectedValue(new Error("database unavailable"));
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/request-revision")
+      .send({ decisionNote: "Tighten the copy" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-7",
+      expect.objectContaining({
+        reason: "approval_revision_requested",
+        payload: expect.objectContaining({ approvalId: "approval-9", issueId: null, issueIds: [] }),
+      }),
+    );
+  });
+
+  it("keeps the linked issue on the requester wake when the review-attention lookup fails", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.reject.mockResolvedValue({ approval: decidedApproval("rejected"), applied: true });
+    mockIssueService.listReviewAttention.mockRejectedValue(new Error("database unavailable"));
+
+    const res = await request(await createApp()).post("/api/approvals/approval-9/reject").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectRequesterWake("approval_rejected");
+  });
+
+  it("does not wake anyone when a rejected approval has no requesting agent", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending", null));
+    mockApprovalService.reject.mockResolvedValue({ approval: decidedApproval("rejected", null), applied: true });
+
+    const res = await request(await createApp()).post("/api/approvals/approval-9/reject").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
