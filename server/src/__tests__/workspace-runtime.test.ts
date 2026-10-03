@@ -6602,7 +6602,6 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const executionWorkspaceId = randomUUID();
     const provisionMarkerPath = path.join(workspaceRoot, "runtime-provisioning.marker");
     const markerPath = path.join(workspaceRoot, "runtime-spawned.marker");
-    const readinessReleasePath = path.join(workspaceRoot, "runtime-readiness.release");
     const provisionScript = [
       `require("node:fs").writeFileSync(${JSON.stringify(provisionMarkerPath)}, "provisioning");`,
       "setTimeout(() => {}, 1200);",
@@ -6611,10 +6610,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       `${JSON.stringify(process.execPath)} -e ${JSON.stringify(provisionScript)}`;
     const serverScript = [
       `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "spawned");`,
-      // Keep starting observable until the PID-bearing row is committed.
-      "const ready = setInterval(() => {",
-      `  if (!require("node:fs").existsSync(${JSON.stringify(readinessReleasePath)})) return;`,
-      "  clearInterval(ready);",
+      "setTimeout(() => {",
       "  require(\"node:http\")",
       "    .createServer((_req, res) => { res.end(\"ok\"); })",
       "    .listen(Number(process.env.PORT), \"127.0.0.1\");",
@@ -6677,10 +6673,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       }
       throw new Error("Timed out waiting for runtime service process marker");
     };
-    const waitForPersistedStatus = async (
-      status: string,
-      isReady: (row: typeof workspaceRuntimeServices.$inferSelect) => boolean = () => true,
-    ) => {
+    const waitForPersistedStatus = async (status: string) => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         const row = await db
@@ -6688,7 +6681,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           .from(workspaceRuntimeServices)
           .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId))
           .then((rows) => rows[0] ?? null);
-        if (row?.status === status && isReady(row)) return row;
+        if (row?.status === status) return row;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       throw new Error(`Timed out waiting for persisted runtime service status ${status}`);
@@ -6750,39 +6743,44 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         executionWorkspaceId,
         serviceName: "web",
         status: "provisioning",
+        healthStatus: "unknown",
         providerRef: null,
       });
       expect(existsSync(markerPath)).toBe(false);
 
       await waitForMarker(markerPath);
-      const startingRow = await waitForPersistedStatus(
-        "starting",
-        (row) => row.providerRef !== null && row.port !== null,
-      );
-      expect(startingRow).toMatchObject({
+      // Readiness begins before the PID-bearing transaction commits. Keep the
+      // listener independent of DB reads and verify the completed records.
+      const services = await startPromise;
+      expect(services).toHaveLength(1);
+      expect(services[0]).toMatchObject({
+        id: provisioningRow.id,
         companyId,
         projectId,
         projectWorkspaceId,
         executionWorkspaceId,
         issueId,
         serviceName: "web",
-        status: "starting",
-        healthStatus: "unknown",
-      });
-      expect(startingRow.providerRef).toMatch(/^\d+$/);
-      expect(startingRow.port).toEqual(expect.any(Number));
-      await fs.writeFile(readinessReleasePath, "ready");
-
-      const services = await startPromise;
-      expect(services).toHaveLength(1);
-      expect(services[0]).toMatchObject({
-        id: startingRow.id,
         status: "running",
         healthStatus: "healthy",
       });
+      expect(services[0]!.providerRef).toMatch(/^\d+$/);
+      expect(services[0]!.port).toEqual(expect.any(Number));
 
       const runningRow = await waitForPersistedStatus("running");
-      expect(runningRow.id).toBe(startingRow.id);
+      expect(runningRow).toMatchObject({
+        id: provisioningRow.id,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        issueId,
+        serviceName: "web",
+        status: "running",
+        healthStatus: "healthy",
+        providerRef: services[0]!.providerRef,
+        port: services[0]!.port,
+      });
       await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
       const runtimeProvisionOperations = await db
         .select()
