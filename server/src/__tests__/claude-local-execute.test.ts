@@ -1362,6 +1362,109 @@ describe("claude execute", () => {
     }
   });
 
+  it("links skills into the managed CLAUDE_CONFIG_DIR because --setting-sources user skips --add-dir skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-managed-skills-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const capturePath = path.join(root, "capture.json");
+    const managedConfigDir = path.join(root, "managed", "provider");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(managedConfigDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+
+    try {
+      await execute({
+        runId: "run-managed-skills",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          managedAiConnection: true,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, CLAUDE_CONFIG_DIR: managedConfigDir },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[]; claudeConfigDir: string };
+      expect(capture.argv.join(" ")).toContain("--setting-sources user");
+      expect(capture.claudeConfigDir).toBe(managedConfigDir);
+      const link = path.join(managedConfigDir, "skills", "paperclip");
+      expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+      await expect(fs.access(path.join(link, "SKILL.md"))).resolves.toBeUndefined();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))("keeps managed CLAUDE_CONFIG_DIR skill links readable inside a real bwrap sandbox", async () => {
+    // Needs the skill-source mounts from the workspace sandbox (#14340).
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-managed-bwrap-"));
+    const workspace = path.join(root, "workspace");
+    // Own directory: the sandbox mounts the command's directory, which must not expose the test root.
+    const commandPath = path.join(root, "bin", "claude");
+    const managedConfigDir = path.join(root, "managed", "provider");
+    const seenPath = path.join(workspace, "seen.txt");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(managedConfigDir, { recursive: true });
+    await fs.mkdir(path.dirname(commandPath), { recursive: true });
+    // Plain sh so the fake runs inside the confined root without a node mount.
+    await fs.writeFile(commandPath, `#!/bin/sh
+case " $* " in *" --setting-sources user "*) cat "$CLAUDE_CONFIG_DIR/skills/paperclip/SKILL.md" > ${JSON.stringify(seenPath)} 2>&1;; esac
+exit 0
+`, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+
+    try {
+      await execute({
+        runId: "run-managed-bwrap-skills",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          managedAiConnection: true,
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: process.env.PAPERCLIP_TEST_BWRAP,
+          env: { CLAUDE_CONFIG_DIR: managedConfigDir },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(await fs.readFile(seenPath, "utf8")).toMatch(/^---\n/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");

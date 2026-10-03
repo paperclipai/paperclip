@@ -33,6 +33,7 @@ import {
   parseJson,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
+  ensurePaperclipSkillSymlink,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
@@ -565,6 +566,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  if (config.managedAiConnection && sharedClaudeConfigDir && !executionTargetIsRemote) {
+    // --setting-sources user skips the --add-dir skills; link them into the managed user config dir.
+    const userSkillsHome = path.join(sharedClaudeConfigDir, "skills");
+    await fs.mkdir(userSkillsHome, { recursive: true });
+    for (const entry of mountableSkillEntries) {
+      await ensurePaperclipSkillSymlink(entry.source, path.join(userSkillsHome, entry.runtimeName));
+    }
+  }
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
