@@ -1537,6 +1537,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let consecutivePollFailures = 0;
       while (true) {
         let fileNames: string[];
+        // stop() promises to drain requests already queued. A listing that
+        // started before stop() can miss a request written just before it, so
+        // only an empty listing that began after stop() ends the drain.
+        const listingStartedWhileStopping = stopping;
         try {
           fileNames = await withTimeout(
             input.client.listJsonFiles(directories.requestsDir),
@@ -1575,7 +1579,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
         if (actionableFileNames.length === 0) {
           lastSuccessfulIterationAt = Date.now();
           if (stopping) {
-            break;
+            if (listingStartedWhileStopping) break;
+            continue;
           }
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;

@@ -10,6 +10,7 @@ import {
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
   parseLocalProcessSandboxExtraPaths,
+  resolveRunScratchManagedPath,
 } from "./local-process-sandbox.js";
 import { runChildProcess } from "./server-utils.js";
 
@@ -101,6 +102,55 @@ describe("local process sandbox", () => {
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
+  });
+
+  it.runIf(process.platform === "linux")("binds the run scratch dir after the empty /tmp tmpfs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const scratch = path.join(root, "paperclip-run-scratch");
+    await fs.mkdir(workspace);
+    await fs.mkdir(scratch);
+    const managed = await resolveRunScratchManagedPath({ PAPERCLIP_RUN_SCRATCH_DIR: scratch });
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "0"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        managedPaths: managed ? [managed] : [],
+      },
+    });
+
+    const tmpfsAt = target.args.indexOf("--tmpfs", target.args.indexOf("/dev"));
+    const bindAt = target.args.findIndex(
+      (arg, i) => arg === "--bind" && target.args[i + 1] === scratch && target.args[i + 2] === scratch,
+    );
+    expect(target.args[tmpfsAt + 1]).toBe("/tmp");
+    expect(bindAt).toBeGreaterThan(tmpfsAt);
+    expect(target.args.some((arg, i) => arg === "--bind" && target.args[i + 1] === "/tmp")).toBe(false);
+  });
+
+  describe("resolveRunScratchManagedPath", () => {
+    it("returns a rw path for an existing absolute scratch dir", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-scratch-"));
+      cleanup.push(dir);
+      await expect(resolveRunScratchManagedPath({ PAPERCLIP_RUN_SCRATCH_DIR: ` ${dir} ` })).resolves.toEqual({
+        path: dir,
+        access: "rw",
+      });
+    });
+
+    it("returns null when unset, relative or missing", async () => {
+      await expect(resolveRunScratchManagedPath({})).resolves.toBeNull();
+      await expect(resolveRunScratchManagedPath({ PAPERCLIP_RUN_SCRATCH_DIR: "  " })).resolves.toBeNull();
+      await expect(resolveRunScratchManagedPath({ PAPERCLIP_RUN_SCRATCH_DIR: "relative/dir" })).resolves.toBeNull();
+      await expect(
+        resolveRunScratchManagedPath({ PAPERCLIP_RUN_SCRATCH_DIR: path.join(os.tmpdir(), "paperclip-missing-xyz") }),
+      ).resolves.toBeNull();
+    });
   });
 
   it.runIf(process.platform === "linux")("binds a confined absolute alias to the synchronized workspace", async () => {

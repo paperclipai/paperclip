@@ -314,3 +314,65 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     expect(result.executionResult.errorMessage).toBe("provider failed first");
   });
 });
+
+describe("codex execute — run scratch dir in the workspace sandbox", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function runLocal(scratchFor: (rootDir: string) => Promise<string | null>) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-scratch-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const scratch = await scratchFor(rootDir);
+    await execute({
+      runId: "run-scratch",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: "codex",
+        engine: "cli",
+        filesystemScope: "workspace",
+        env: {
+          CODEX_HOME: path.join(rootDir, "codex-home"),
+          ...(scratch ? { PAPERCLIP_RUN_SCRATCH_DIR: scratch } : {}),
+        },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      onLog: async () => {},
+    } as never);
+    const calls = runChildProcess.mock.calls as unknown as Array<[string, string, string[], { localProcessSandbox?: { managedPaths?: Array<{ path: string; access: string }> } }]>;
+    return { scratch, managedPaths: calls.at(-1)?.[3]?.localProcessSandbox?.managedPaths };
+  }
+
+  it("binds an existing run scratch dir read-write", async () => {
+    const { scratch, managedPaths } = await runLocal(async (rootDir) => {
+      const dir = path.join(rootDir, "run-scratch");
+      await mkdir(dir);
+      return dir;
+    });
+    expect(managedPaths).toContainEqual({ path: scratch, access: "rw" });
+  });
+
+  it("adds nothing when the scratch dir is unset or missing", async () => {
+    const unset = await runLocal(async () => null);
+    expect(unset.managedPaths).toBeDefined();
+    expect(unset.managedPaths?.some((entry) => entry.path.endsWith("run-scratch"))).toBe(false);
+    const missing = await runLocal(async (rootDir) => path.join(rootDir, "never-created"));
+    expect(missing.managedPaths).toBeDefined();
+    expect(missing.managedPaths?.some((entry) => entry.path === missing.scratch)).toBe(false);
+  });
+});
