@@ -37,6 +37,17 @@ export interface InstanceGeneralSettings {
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
+  /**
+   * Company/instance default adapter run wall clock in seconds, applied to
+   * every agent that does not set `adapterConfig.timeoutSec` on a local or SSH
+   * target. `null` (the default) means no policy and keeps the historical
+   * unlimited behavior; positive adds a wall clock; negative opts out for the
+   * whole deployment. Bare 0 reads as "unset" because the adapter config UI
+   * persists 0 for untouched per-agent fields. `PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC`
+   * supplies the value when this is `null`. Sandbox targets ignore it and keep
+   * their own transport default.
+   */
+  adapterRunTimeoutSec: number | null;
 }
 
 export interface InstanceExperimentalSettings {

@@ -60,6 +60,54 @@ For local adapters, set:
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 
+### Run-timeout policy
+
+`adapterConfig.timeoutSec` is the per-agent value, but it is not the only one.
+The effective wall clock for a run is resolved in this order:
+
+1. **Per-agent `adapterConfig.timeoutSec`** — a positive value wins; a negative
+   value is the documented "no wall-clock timeout" opt-out and beats every
+   default. A stored `0` is *not* an opt-out: the adapter config UI persists
+   the schema default of `0` for untouched fields, so `0` reads as "unset".
+2. **Sandbox transport default** — sandbox targets keep their own built-in
+   backstop (`DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC`, 4h), which matches
+   the recovery watchdog's critical threshold. The policy below does not
+   rescale it.
+3. **Company/instance default** — the `adapterRunTimeoutSec` instance setting
+   (Instance → General → "Agent run timeout"), applied to every local and SSH
+   agent that never set `timeoutSec`.
+4. **Env-var override** — `PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC` supplies the
+   value when the instance setting is unset.
+5. **Unlimited** — with no policy configured, local and SSH targets resolve to
+   `{ timeoutSec: 0, source: "unlimited" }`, exactly as before.
+
+The policy exists so the run-timeout policy is one value an operator owns
+instead of N independent per-agent rows. Adopting it is a deliberate action:
+with no policy set, nothing changes for existing runs, and a negative value
+from either layer opts the whole deployment out.
+
+The Instance → General control offers "Use env default" (store `null`, inherit
+the env var or stay unlimited) and "No limit" (store `-1`, which beats the env
+layer). Storing `null` for "No limit" would leave the env value in force while
+the button claimed otherwise, so the opt-out is the negative value.
+
+The resolved source is always named in the run-start log and in the
+`Timed out after Ns` message, so a run can be attributed to the policy default
+or to an explicit per-agent value:
+
+```
+[paperclip] Adapter execution timeout: timeoutSec=7200 (company/instance default adapterRunTimeoutSec; set adapterConfig.timeoutSec to override).
+```
+
+Sandbox targets ignore the policy and keep their transport default.
+
+The instance setting is read once per run. If that read throws, the run is not
+blocked and the last value read successfully in this process is reused, so a
+transient settings failure degrades to a slightly stale policy rather than
+dropping the operator's wall clock. Only a cold start with no successful read
+falls through to the env layer, and that case is logged as a possibly-unbounded
+run.
+
 ## 3.4 Prompt templates
 
 You can set:

@@ -31,6 +31,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
+  // Company/instance default adapter run wall clock, in seconds, applied to
+  // every agent that does not set `adapterConfig.timeoutSec` on a local or SSH
+  // target. This is the one place the run-timeout policy lives, instead of N
+  // independent per-agent values. null (the default) = no policy, which keeps
+  // the historical unlimited behavior; a positive value adds a wall clock; a
+  // negative value opts out for the whole deployment. Bare 0 is treated as
+  // "unset" by the resolver because the adapter config UI persists 0 for
+  // untouched per-agent fields. `PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC` supplies
+  // the value when this setting is null. Sandbox targets keep their own
+  // transport default and ignore this setting.
+  adapterRunTimeoutSec: z.number().int().nullable().default(null),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

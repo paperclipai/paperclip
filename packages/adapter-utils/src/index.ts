@@ -71,6 +71,18 @@ export {
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
+  ADAPTER_RUN_TIMEOUT_SEC_ENV_KEY,
+  parseAdapterRunTimeoutPolicySec,
+  readAdapterRunTimeoutPolicyFromEnv,
+  resolveAdapterRunTimeoutPolicy,
+} from "./adapter-timeout-policy.js";
+export type { AdapterRunTimeoutPolicySources } from "./adapter-timeout-policy.js";
+export type {
+  AdapterExecutionTargetTimeoutPolicy,
+  AdapterExecutionTargetTimeoutPolicySource,
+  AdapterExecutionTargetTimeoutSource,
+} from "./execution-target.js";
+export {
   buildAdapterEnvConfig,
   parseEnvBindings,
   parseEnvVars,

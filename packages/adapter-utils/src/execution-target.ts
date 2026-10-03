@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { ADAPTER_RUN_TIMEOUT_SEC_ENV_KEY } from "./adapter-timeout-policy.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -559,7 +560,38 @@ export function describeAdapterExecutionTarget(
 export type AdapterExecutionTargetTimeoutSource =
   | "configured"
   | "sandbox_default"
+  | "instance_default"
+  | "env_default"
   | "unlimited";
+
+/** The two policy layers that can supply a default below the per-agent value. */
+export type AdapterExecutionTargetTimeoutPolicySource = Extract<
+  AdapterExecutionTargetTimeoutSource,
+  "instance_default" | "env_default"
+>;
+
+/**
+ * Deployment-wide default wall-clock timeout, resolved by the host and handed
+ * to the adapter on the execution context. This is the knob that makes the
+ * run-timeout policy a single company/instance value instead of N per-agent
+ * `adapterConfig.timeoutSec` rows.
+ *
+ * Precedence inside the resolver, highest first:
+ *   1. per-agent `adapterConfig.timeoutSec` (positive wins, negative opts out)
+ *   2. the sandbox transport default (sandbox targets only)
+ *   3. this policy (instance setting, else env var)
+ *   4. `{ timeoutSec: 0, source: "unlimited" }`
+ *
+ * Sign conventions match the per-agent field: positive adds a wall clock,
+ * negative removes it, and bare 0 carries no intent (the adapter config UI
+ * persists 0 for untouched fields) so it reads as "no policy" and falls through.
+ */
+export interface AdapterExecutionTargetTimeoutPolicy {
+  /** Policy wall clock in seconds; negative opts out of any default. */
+  timeoutSec: number;
+  /** Which layer supplied the policy, so logs name the owner of the value. */
+  source: AdapterExecutionTargetTimeoutPolicySource;
+}
 
 export interface AdapterExecutionTargetTimeoutResolution {
   /** Resolved wall-clock timeout in seconds; 0 means no adapter timeout. */
@@ -571,6 +603,7 @@ export interface AdapterExecutionTargetTimeoutResolution {
 export function resolveAdapterExecutionTargetTimeout(
   target: AdapterExecutionTarget | null | undefined,
   configuredTimeoutSec: number | null | undefined,
+  policy?: AdapterExecutionTargetTimeoutPolicy | null,
 ): AdapterExecutionTargetTimeoutResolution {
   if (typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec)) {
     // Preserve fractional (sub-second) configured values instead of flooring:
@@ -588,13 +621,32 @@ export function resolveAdapterExecutionTargetTimeout(
       return { timeoutSec: 0, source: "configured" };
     }
   }
-  // Local and SSH adapters preserve the historical "0 means no adapter
-  // timeout" behavior. Sandbox-backed runs execute through provider RPCs
-  // that usually apply their own shorter command defaults, so request an
-  // explicit longer timeout for full adapter runs when the adapter leaves
-  // timeoutSec unset.
+  // Local and SSH adapters used to preserve the historical "0 means no
+  // adapter timeout" behavior, which left every unconfigured local agent
+  // unbounded. Sandbox-backed runs execute through provider RPCs that usually
+  // apply their own shorter command defaults, so they keep their own built-in
+  // backstop. Local and SSH instead fall through to the deployment policy
+  // below, so a single instance/company value covers every agent that never
+  // set adapterConfig.timeoutSec. With no policy the outcome is unchanged
+  // ({ timeoutSec: 0, source: "unlimited" }): adopting the policy is a
+  // deliberate operator action, never a silent migration of existing runs.
   if (target?.kind === "remote" && target.transport === "sandbox") {
     return { timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC, source: "sandbox_default" };
+  }
+  if (
+    policy &&
+    typeof policy.timeoutSec === "number" &&
+    Number.isFinite(policy.timeoutSec)
+  ) {
+    if (policy.timeoutSec > 0) {
+      return { timeoutSec: policy.timeoutSec, source: policy.source };
+    }
+    // A negative policy value is the deployment-level "no wall clock" opt-out,
+    // mirroring the per-agent escape hatch, and is reported under the policy's
+    // own source so an operator can see which layer turned the default off.
+    if (policy.timeoutSec < 0) {
+      return { timeoutSec: 0, source: policy.source };
+    }
   }
   return { timeoutSec: 0, source: "unlimited" };
 }
@@ -602,8 +654,9 @@ export function resolveAdapterExecutionTargetTimeout(
 export function resolveAdapterExecutionTargetTimeoutSec(
   target: AdapterExecutionTarget | null | undefined,
   configuredTimeoutSec: number | null | undefined,
+  policy?: AdapterExecutionTargetTimeoutPolicy | null,
 ): number {
-  return resolveAdapterExecutionTargetTimeout(target, configuredTimeoutSec).timeoutSec;
+  return resolveAdapterExecutionTargetTimeout(target, configuredTimeoutSec, policy).timeoutSec;
 }
 
 function describeAdapterExecutionTimeoutSource(
@@ -614,9 +667,47 @@ function describeAdapterExecutionTimeoutSource(
       return "configured via adapterConfig.timeoutSec";
     case "sandbox_default":
       return "sandbox default";
+    case "instance_default":
+      return "company/instance default adapterRunTimeoutSec";
+    case "env_default":
+      return `${ADAPTER_RUN_TIMEOUT_SEC_ENV_KEY} override`;
     case "unlimited":
       return "no adapter wall-clock timeout";
   }
+}
+
+/**
+ * One-line statement of the effective wall-clock timeout and the knob that
+ * owns it, used by both the run-start log and the timeout error message. The
+ * source is always named, so an operator reading a run can tell a
+ * deployment policy default from an explicit per-agent value.
+ */
+export function formatAdapterExecutionTimeoutSummary(
+  resolution: AdapterExecutionTargetTimeoutResolution,
+): string {
+  if (resolution.timeoutSec <= 0) {
+    if (resolution.source === "configured") {
+      return (
+        "Adapter execution timeout: none " +
+        "(explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one)."
+      );
+    }
+    if (resolution.source === "instance_default" || resolution.source === "env_default") {
+      return (
+        "Adapter execution timeout: none " +
+        `(${describeAdapterExecutionTimeoutSource(resolution.source)} is negative; ` +
+        "set a positive value to add a wall clock)."
+      );
+    }
+    return (
+      "Adapter execution timeout: none " +
+      "(no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one)."
+    );
+  }
+  return (
+    `Adapter execution timeout: timeoutSec=${resolution.timeoutSec} ` +
+    `(${describeAdapterExecutionTimeoutSource(resolution.source)}; set adapterConfig.timeoutSec to override).`
+  );
 }
 
 /**
@@ -641,22 +732,7 @@ export function formatAdapterExecutionTimeoutErrorMessage(
 export function formatAdapterExecutionTimeoutStartLogLine(
   resolution: AdapterExecutionTargetTimeoutResolution,
 ): string {
-  if (resolution.timeoutSec <= 0) {
-    if (resolution.source === "configured") {
-      return (
-        "Adapter execution timeout: none " +
-        "(explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one)."
-      );
-    }
-    return (
-      "Adapter execution timeout: none " +
-      "(no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one)."
-    );
-  }
-  return (
-    `Adapter execution timeout: timeoutSec=${resolution.timeoutSec} ` +
-    `(${describeAdapterExecutionTimeoutSource(resolution.source)}; set adapterConfig.timeoutSec to override).`
-  );
+  return formatAdapterExecutionTimeoutSummary(resolution);
 }
 
 function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {

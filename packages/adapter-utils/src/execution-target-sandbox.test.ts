@@ -2030,6 +2030,43 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("keeps the sandbox backstop independent of the local/SSH run-timeout policy", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+    const policy = { timeoutSec: 7_200, source: "instance_default" as const };
+
+    // The sandbox default matches the recovery watchdog's critical threshold,
+    // so the company/instance policy (which only covers local and SSH targets)
+    // must not rescale it.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 0, policy)).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+    // The per-agent knobs still rank above everything else, policy included.
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, 90, policy)).toEqual({
+      timeoutSec: 90,
+      source: "configured",
+    });
+    expect(resolveAdapterExecutionTargetTimeout(sandboxTarget, -1, policy)).toEqual({
+      timeoutSec: 0,
+      source: "configured",
+    });
+    // A negative policy value cannot switch off the sandbox backstop either.
+    expect(
+      resolveAdapterExecutionTargetTimeout(sandboxTarget, 0, {
+        timeoutSec: -1,
+        source: "env_default",
+      }),
+    ).toEqual({
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      source: "sandbox_default",
+    });
+  });
+
   it("formats self-describing timeout errors naming the timer and knob", () => {
     expect(
       formatAdapterExecutionTimeoutErrorMessage({

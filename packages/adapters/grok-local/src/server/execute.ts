@@ -390,6 +390,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
       asNumber(config.timeoutSec, 0),
+      ctx.adapterTimeoutPolicy,
     );
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
