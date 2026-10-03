@@ -145,5 +145,60 @@ describe("issue-reference", () => {
       const links = paragraphChildren(tree).filter((node) => node.type === "link");
       expect(links.map((node) => node.url)).toEqual(["/issues/PAP-1", "/issues/JIRA-2"]);
     });
+
+    it("does not crash on inline code with malformed percent escape or bash expansion", () => {
+      const tree: TreeNode = {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [
+              { type: "text", value: "Run " },
+              { type: "inlineCode", value: "${PAPERCLIP_API_URL%/}/issues/PAP-1" },
+              { type: "text", value: " or " },
+              { type: "inlineCode", value: "${PAPERCLIP_API_URL%/}/issues/%" },
+              { type: "text", value: " now." },
+            ],
+          },
+        ],
+      };
+      expect(() => remarkLinkIssueReferences()(tree)).not.toThrow();
+
+      const children = paragraphChildren(tree);
+      expect(children[1]).toEqual({
+        type: "link",
+        url: "/issues/PAP-1",
+        children: [{ type: "inlineCode", value: "${PAPERCLIP_API_URL%/}/issues/PAP-1" }],
+      });
+      // The undecodable percent sequence should remain an unlinked inlineCode node
+      expect(children[3]).toEqual({
+        type: "inlineCode",
+        value: "${PAPERCLIP_API_URL%/}/issues/%",
+      });
+    });
+
+    it("does not crash on text containing lone percent or undecodable issue URI", () => {
+      const tree = paragraph("Check /issues/% or issue://% or /issues/%E0%A4%A safely.");
+      expect(() => remarkLinkIssueReferences()(tree)).not.toThrow();
+    });
+  });
+
+  describe("undecodable and malformed percent escapes", () => {
+    it("safely handles lone percent in issue path segment without throwing", () => {
+      expect(parseIssuePathIdFromPath("/issues/%")).toBeNull();
+      expect(parseIssuePathIdFromPath("/issues/foo%")).toBeNull();
+      expect(parseIssuePathIdFromPath("/issues/%E0%A4%A")).toBeNull();
+      expect(parseIssuePathIdFromPath("/issues/${VAR%}")).toBeNull();
+    });
+
+    it("correctly extracts valid issue id when preceding path segment has percent", () => {
+      expect(parseIssuePathIdFromPath("${PAPERCLIP_API_URL%/}/issues/PAP-100")).toBe("PAP-100");
+    });
+
+    it("safely handles malformed issue scheme href without throwing", () => {
+      expect(parseIssueReferenceFromHref("issue://%")).toBeNull();
+      expect(parseIssueReferenceFromHref("issue://%E0%A4%A")).toBeNull();
+      expect(parseIssueReferenceFromHref("issue://foo%")).toBeNull();
+    });
   });
 });

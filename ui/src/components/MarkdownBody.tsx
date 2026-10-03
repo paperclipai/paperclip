@@ -20,8 +20,12 @@ const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
 /** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
 function caseIdentifierFromHref(href: string | undefined): string | null {
   if (!href) return null;
-  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
-  return match ? match[1]!.toUpperCase() : null;
+  try {
+    const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
+    return match ? match[1]!.toUpperCase() : null;
+  } catch {
+    return null;
+  }
 }
 import {
   createRemarkWorkspaceFileRefs,
