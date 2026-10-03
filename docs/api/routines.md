@@ -62,6 +62,7 @@ Fields:
 | `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created |
 | `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
 | `always_enqueue` | Always create a new run regardless of active runs |
+| `cancel_previous` | Cancel open predecessor issues with no live heartbeat, mark their runs failed, and create the newest run; coalesce when a predecessor still has a live heartbeat |
 
 **Catch-up policies:**
 
