@@ -9,7 +9,7 @@ import { StringDecoder } from "node:string_decoder";
  *
  * This is only a sensible default. Every public function in this module accepts
  * an optional `secretEnvVars` list, so an operator (or the `server` package,
- * which owns the authoritative `RUNTIME_SECRET_ENV_VARS`) can inject its own set
+ * which may keep a broader list) can inject its own set
  * at the call site. Injection — rather than importing the list from `server` —
  * keeps the dependency direction clean: `@paperclip/db` must not depend on
  * `server`. The default below is a safety net for callers that do not inject.

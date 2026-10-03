@@ -34,11 +34,13 @@ export type RunDatabaseBackupOptions = {
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
   /**
-   * Env-var names whose `NAME=value` assignments are redacted from the dump
-   * (RES-2769). Forwarded to every backup path (pg_dump stream, JS `emit`, raw
-   * COPY). Defaults to `REDACTED_SECRET_ENV_VARS` when omitted; a consumer that
-   * owns a broader secret list (e.g. the server's `RUNTIME_SECRET_ENV_VARS`) can
-   * pass it here so `@paperclip/db` needs no dependency on that package.
+   * Env-var names whose `NAME=value` assignments are redacted from the dump.
+   * Forwarded to every backup path (pg_dump stream, JS `emit`, raw COPY).
+   * Defaults to `REDACTED_SECRET_ENV_VARS` when omitted, which covers the
+   * signing secrets this repo issues (`PAPERCLIP_AGENT_JWT_SECRET`,
+   * `BETTER_AUTH_SECRET`). A deployment that keeps additional secrets in env
+   * vars can widen the set here without `@paperclip/db` depending on the
+   * caller.
    */
   secretEnvVars?: readonly string[];
 };
@@ -361,7 +363,7 @@ async function runPgDumpBackup(opts: {
   }
 
   await Promise.all([
-    // RES-2769: scrub known signing secrets out of the dump stream at generation,
+    // Scrub known signing secrets out of the dump stream at generation,
     // before it is gzipped to disk and swept offsite by the backup set.
     pipeline(child.stdout, createSecretRedactionTransform(opts.secretEnvVars), createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
@@ -595,7 +597,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await sql`SELECT 1`;
 
-    // RES-2769: mirror the pg_dump-path redaction on the JS engine's emitted
+    // Mirror the pg_dump-path redaction on the JS engine's emitted
     // lines (schema DDL never contains a secret assignment; the INSERT-fallback
     // data path does). Idempotent and cheap.
     const emit = (line: string) => writer.emit(redactSecretAssignments(line, opts.secretEnvVars));
@@ -962,7 +964,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
-          // RES-2769: the raw COPY sub-path bypasses `emit`, so redact its bytes
+          // The raw COPY sub-path bypasses `emit`, so redact its bytes
           // on line boundaries as they stream (secret rows live here).
           const copyRedactor = createLineRedactor(opts.secretEnvVars);
           for await (const chunk of copyStream) {
