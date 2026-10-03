@@ -604,6 +604,8 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
       recursive: true,
       force: true,
       preserveTimestamps: true,
+      // Keep relative symlink targets instead of resolving them into the staging dir.
+      verbatimSymlinks: true,
     });
   }));
 }

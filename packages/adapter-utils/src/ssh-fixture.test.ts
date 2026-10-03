@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -634,6 +634,57 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(256 * 1024, 1),
     );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("keeps relative symlink targets when restoring from ssh", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-overlay");
+    const restoreDir = path.join(rootDir, "restore-target");
+
+    await mkdir(localDir, { recursive: true });
+    await writeFile(path.join(localDir, "CLAUDE.md"), "instructions\n", "utf8");
+    await symlink("CLAUDE.md", path.join(localDir, "AGENTS.md"));
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH restore symlink test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "restore-symlinks");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+    await syncDirectoryFromSsh({ spec, remoteDir, localDir: restoreDir });
+
+    await expect(readlink(path.join(restoreDir, "AGENTS.md"))).resolves.toBe("CLAUDE.md");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("keeps committed relative symlinks through the managed runtime restore", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "CLAUDE.md"), "instructions\n", "utf8");
+    await symlink("CLAUDE.md", path.join(localRepo, "AGENTS.md"));
+    await git(localRepo, ["add", "."]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH managed restore symlink test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      runId: "run-symlink",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    await prepared.restoreWorkspace();
+
+    await expect(readlink(path.join(localRepo, "AGENTS.md"))).resolves.toBe("CLAUDE.md");
+    expect(await git(localRepo, ["status", "--short"])).toBe("");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("reports exact git-history import percentage from the known bundle size", async () => {
