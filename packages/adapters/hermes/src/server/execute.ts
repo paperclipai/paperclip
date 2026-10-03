@@ -31,6 +31,7 @@ import {
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  applyPaperclipWorkspaceEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -76,6 +77,59 @@ function cfgStringArray(v: unknown): string[] | undefined {
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+// Variables that describe the workspace of one run. The server process can
+// inherit copies from another run, so they are cleared before this run sets its own.
+const WORKSPACE_ENV_KEYS = [
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_STRATEGY",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_REPO_URL",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
+
+// One environment string must stay well below the operating system limit
+// (128 KiB on Linux), or the agent process cannot start.
+const MAX_WORKSPACES_JSON_CHARS = 32 * 1024;
+
+/**
+ * Serialize the workspace hints of a run to at most `maxChars` characters.
+ * Hints of referenced projects (they carry a projectId other than the anchor
+ * project's) are kept first, because the server prepared them for this run.
+ * Each hint is serialized once, and the order of the kept hints does not change.
+ */
+function serializeWorkspaceHints(
+  hints: unknown[],
+  anchorProjectId: string | undefined,
+  maxChars: number,
+): string | undefined {
+  const entries: Array<{ json: string; referenced: boolean }> = [];
+  for (const hint of hints) {
+    const json = JSON.stringify(hint);
+    if (json === undefined) continue;
+    const projectId =
+      hint && typeof hint === "object" ? cfgString((hint as Record<string, unknown>).projectId) : undefined;
+    entries.push({ json, referenced: projectId !== undefined && projectId !== anchorProjectId });
+  }
+
+  const kept = new Set<number>();
+  let length = 2; // the brackets of the JSON array
+  for (const pickReferenced of [true, false]) {
+    entries.forEach((entry, index) => {
+      if (entry.referenced !== pickReferenced) return;
+      const next = length + entry.json.length + (kept.size > 0 ? 1 : 0); // one comma
+      if (next > maxChars) return;
+      kept.add(index);
+      length = next;
+    });
+  }
+  if (kept.size === 0) return undefined;
+  return `[${entries.filter((_, index) => kept.has(index)).map((entry) => entry.json).join(",")}]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -510,8 +564,41 @@ export async function execute(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  // Start in the execution workspace Paperclip realized for this run, as the
+  // other local adapters do. A configured cwd only wins when the run has no
+  // project workspace (source "agent_home").
+  const workspaceContext: Record<string, unknown> =
+    ctxContext.paperclipWorkspace && typeof ctxContext.paperclipWorkspace === "object"
+      ? ctxContext.paperclipWorkspace
+      : {};
+  const workspaceSource = cfgString(workspaceContext.source);
+  const configuredCwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir);
+  const workspaceCwd =
+    workspaceSource === "agent_home" && configuredCwd ? undefined : cfgString(workspaceContext.cwd);
+  const cwd = workspaceCwd || configuredCwd || ".";
+  // Keep configured copies, drop inherited ones, then set this run's values.
+  for (const key of WORKSPACE_ENV_KEYS) {
+    if (!userEnv || !(key in userEnv)) delete env[key];
+  }
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd,
+    workspaceSource,
+    workspaceStrategy: cfgString(workspaceContext.strategy),
+    workspaceId: cfgString(workspaceContext.workspaceId),
+    workspaceRepoUrl: cfgString(workspaceContext.repoUrl),
+    workspaceRepoRef: cfgString(workspaceContext.repoRef),
+    workspaceBranch: cfgString(workspaceContext.branchName),
+    workspaceWorktreePath: cfgString(workspaceContext.worktreePath),
+    agentHome: cfgString(workspaceContext.agentHome),
+  });
+  if (Array.isArray(ctxContext.paperclipWorkspaces)) {
+    const workspacesJson = serializeWorkspaceHints(
+      ctxContext.paperclipWorkspaces,
+      cfgString(workspaceContext.projectId),
+      MAX_WORKSPACES_JSON_CHARS,
+    );
+    if (workspacesJson) env.PAPERCLIP_WORKSPACES_JSON = workspacesJson;
+  }
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
