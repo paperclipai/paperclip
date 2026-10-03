@@ -30,6 +30,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -2104,6 +2105,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("reports failing health and an attention item when dispatch is refused, and clears both on the next success", async () => {
+    let shouldFail = true;
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        if (shouldFail) throw new Error("Agent is not invokable");
+        return { id: randomUUID() };
+      },
+    });
+
+    const failedRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(failedRun.status).toBe("failed");
+    expect(failedRun.failureReason).toContain("Agent is not invokable");
+
+    // The routine read model must surface the refusal without the routine
+    // itself ever being paused — a routine that keeps firing into a refusal
+    // is still "active" by design; only its health is allowed to change.
+    const listAfterFailure = await svc.list(companyId);
+    const listedAfterFailure = listAfterFailure.find((item) => item.id === routine.id);
+    expect(listedAfterFailure?.status).toBe("active");
+    expect(listedAfterFailure?.health).toMatchObject({
+      state: "failing",
+      consecutiveFailures: 1,
+    });
+    expect(listedAfterFailure?.health.reason).toContain("Agent is not invokable");
+
+    const detailAfterFailure = await svc.getDetail(routine.id);
+    expect(detailAfterFailure?.status).toBe("active");
+    expect(detailAfterFailure?.health).toMatchObject({
+      state: "failing",
+      consecutiveFailures: 1,
+    });
+    expect(detailAfterFailure?.health.reason).toContain("Agent is not invokable");
+
+    const feedAfterFailure = await attentionService(db).list(companyId, { userId: "board-user" });
+    const attentionItem = feedAfterFailure.items.find(
+      (item) => item.sourceKind === "routine_dispatch_failed" && item.subject.id === routine.id,
+    );
+    expect(attentionItem).toBeTruthy();
+    expect(attentionItem?.subject.status).toBe("active");
+
+    // A later successful firing clears both the health state and the attention item.
+    shouldFail = false;
+    const succeededRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(succeededRun.status).toBe("issue_created");
+
+    const listAfterSuccess = await svc.list(companyId);
+    const listedAfterSuccess = listAfterSuccess.find((item) => item.id === routine.id);
+    expect(listedAfterSuccess?.health).toMatchObject({
+      state: "ok",
+      consecutiveFailures: 0,
+    });
+
+    const detailAfterSuccess = await svc.getDetail(routine.id);
+    expect(detailAfterSuccess?.health).toMatchObject({
+      state: "ok",
+      consecutiveFailures: 0,
+    });
+
+    const feedAfterSuccess = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(
+      feedAfterSuccess.items.some(
+        (item) => item.sourceKind === "routine_dispatch_failed" && item.subject.id === routine.id,
+      ),
+    ).toBe(false);
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
