@@ -17,6 +17,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),

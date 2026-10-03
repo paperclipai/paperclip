@@ -31,7 +31,9 @@ const mockWorkspaceRuntimeLeaseService = vi.hoisted(() => ({
   release: vi.fn(async () => ({ released: false, ownerKey: null })),
   get: vi.fn(async () => null),
 }));
-const mockHeartbeatService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({

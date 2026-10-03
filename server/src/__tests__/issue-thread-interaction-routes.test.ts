@@ -48,6 +48,7 @@ const mockInteractionService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   cancelRun: vi.fn(async () => null),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)

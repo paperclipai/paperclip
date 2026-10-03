@@ -67,7 +67,9 @@ vi.mock("../services/index.js", () => ({
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
   environmentService: () => mockEnvironmentService,
-  heartbeatService: () => ({}),
+  heartbeatService: () => ({
+    repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
+  }),
   issueApprovalService: () => ({}),
   issueService: () => ({}),
   logActivity: mockLogActivity,
@@ -99,7 +101,9 @@ function registerModuleMocks() {
     builtInAgentService: () => mockBuiltInAgentService,
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
-    heartbeatService: () => ({}),
+    heartbeatService: () => ({
+    repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
+  }),
     issueApprovalService: () => ({}),
     issueService: () => ({}),
     logActivity: mockLogActivity,

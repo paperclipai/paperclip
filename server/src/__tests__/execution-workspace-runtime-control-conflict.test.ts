@@ -20,7 +20,9 @@ const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 const mockEnvironmentService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockSecretService = vi.hoisted(() => ({ normalizeEnvBindingsForPersistence: vi.fn() }));
 const mockProjectService = vi.hoisted(() => ({ getById: vi.fn() }));
-const mockHeartbeatService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
