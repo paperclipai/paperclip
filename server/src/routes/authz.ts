@@ -23,6 +23,38 @@ function throwOrShadowResponsibleUserCompanyAccessDeny(
   throw new HttpError(403, message, { code });
 }
 
+/**
+ * Emit a machine-readable authorization denial directly on the response
+ * (for route-local authz helpers that respond instead of throwing
+ * `HttpError`). Always JSON with an explicit content type — so an edge
+ * proxy cannot content-negotiate the body into an HTML error page
+ * (paperclipai/paperclip#11267) — and a stable top-level `code` alongside
+ * the human-readable `error`.
+ */
+export function respondAuthzDenial(
+  res: Response,
+  status: number,
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  res.status(status).type("application/json").json({
+    error: message,
+    code,
+    ...(details !== undefined ? { details } : {}),
+  });
+}
+
+/** 403 shorthand for `respondAuthzDenial`. */
+export function respondForbidden(
+  res: Response,
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  respondAuthzDenial(res, 403, code, message, details);
+}
+
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();
