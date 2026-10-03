@@ -22,6 +22,13 @@ function counterDb(
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          // The target-ownership lookup: the target belongs to another agent.
+          if (Object.keys(selection).includes("assigneeAgentId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve([{ assigneeAgentId: "another-agent", checkoutRunId: null }]),
+            };
+          }
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{

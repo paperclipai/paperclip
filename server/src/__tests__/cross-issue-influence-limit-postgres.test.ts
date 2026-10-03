@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -31,6 +32,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -112,5 +114,71 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("scopes an unscoped run to its agent's own issues, and a scoped run to its source and checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const timerRunId = randomUUID();
+    const scopedRunId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const ownIssueId = randomUUID();
+    const ownCheckedOutByScopedRunId = randomUUID();
+    const otherAgentsIssueId = randomUUID();
+    const unassignedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values([agentId, otherAgentId].map((id, index) => ({
+      id,
+      companyId,
+      name: `Scoped Agent ${index}`,
+      role: "engineer",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    })));
+    await db.insert(heartbeatRuns).values([
+      // A heartbeat timer wake: no issue or task in the run's context.
+      { id: timerRunId, companyId, agentId, status: "running", invocationSource: "timer",
+        responsibleUserId: "board-user", contextSnapshot: { wakeReason: "heartbeat_timer" } },
+      { id: scopedRunId, companyId, agentId, status: "running", invocationSource: "assignment",
+        responsibleUserId: "board-user", contextSnapshot: { issueId: sourceIssueId } },
+    ]);
+    await db.insert(issues).values([
+      { id: ownIssueId, companyId, title: "Own", status: "in_progress", assigneeAgentId: agentId },
+      { id: ownCheckedOutByScopedRunId, companyId, title: "Own, checked out", status: "in_progress",
+        assigneeAgentId: agentId, checkoutRunId: scopedRunId },
+      { id: otherAgentsIssueId, companyId, title: "Other agent", status: "in_progress", assigneeAgentId: otherAgentId },
+      { id: unassignedIssueId, companyId, title: "Unassigned", status: "todo" },
+    ]);
+
+    const attempt = (runId: string, targetIssueId: string) => observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    });
+
+    // Unscoped: its agent's own issues are its work — checkout or not, nothing counted.
+    await expect(attempt(timerRunId, ownIssueId)).resolves.toBeNull();
+    await expect(attempt(timerRunId, ownCheckedOutByScopedRunId)).resolves.toBeNull();
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, timerRunId))).toHaveLength(0);
+    // ...and anything else is still refused outright.
+    await expect(attempt(timerRunId, otherAgentsIssueId)).rejects.toMatchObject({ status: 403 });
+    await expect(attempt(timerRunId, unassignedIssueId)).rejects.toMatchObject({ status: 403 });
+
+    // Scoped: the issue it holds the checkout on is its own; another of the agent's
+    // issues is still cross-issue and counted, exactly as before.
+    await expect(attempt(scopedRunId, ownCheckedOutByScopedRunId)).resolves.toBeNull();
+    await expect(attempt(scopedRunId, ownIssueId)).resolves.toMatchObject({ allowed: true, count: 1 });
   });
 });
