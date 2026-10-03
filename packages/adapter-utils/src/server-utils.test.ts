@@ -14,8 +14,10 @@ import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  defaultPathForPlatform,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
@@ -4034,5 +4036,62 @@ describe("wake continuation comment ownership", () => {
       executionContinuation: { ...continuation([]), objective },
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
+  });
+});
+
+const isWin32 = process.platform === "win32";
+
+describe.skipIf(isWin32)("defaultPathForPlatform", () => {
+  it("includes ~/.bun/bin ahead of the other default dirs when HOME is set", () => {
+    const result = defaultPathForPlatform({ HOME: "/Users/example" } as NodeJS.ProcessEnv);
+    expect(result.split(":")).toEqual([
+      "/Users/example/.bun/bin",
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+      "/usr/local/sbin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+    ]);
+  });
+
+  it("omits the bun dir when HOME is unset", () => {
+    const result = defaultPathForPlatform({} as NodeJS.ProcessEnv);
+    expect(result.split(":")).not.toContain("/.bun/bin");
+    expect(result.startsWith("/usr/local/bin")).toBe(true);
+  });
+});
+
+describe.skipIf(isWin32)("ensurePathInEnv", () => {
+  it("fills PATH entirely when it is missing", () => {
+    const result = ensurePathInEnv({ HOME: "/Users/example" } as NodeJS.ProcessEnv);
+    expect(result.PATH).toBe(defaultPathForPlatform({ HOME: "/Users/example" } as NodeJS.ProcessEnv));
+  });
+
+  it("appends missing default dirs instead of leaving a minimal PATH untouched", () => {
+    const result = ensurePathInEnv({
+      HOME: "/Users/example",
+      PATH: "/opt/homebrew/Cellar/node/26.8.1/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    } as NodeJS.ProcessEnv);
+    const dirs = (result.PATH ?? "").split(":");
+    // Existing entries are preserved, in order, and take precedence.
+    expect(dirs.slice(0, 5)).toEqual([
+      "/opt/homebrew/Cellar/node/26.8.1/bin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+    ]);
+    // Missing defaults (including bun) get appended.
+    expect(dirs).toContain("/Users/example/.bun/bin");
+    expect(dirs).toContain("/usr/local/bin");
+    expect(dirs).toContain("/opt/homebrew/bin");
+  });
+
+  it("is a no-op when PATH already has everything", () => {
+    const full = defaultPathForPlatform({ HOME: "/Users/example" } as NodeJS.ProcessEnv);
+    const env = { HOME: "/Users/example", PATH: full } as NodeJS.ProcessEnv;
+    expect(ensurePathInEnv(env)).toBe(env);
   });
 });
