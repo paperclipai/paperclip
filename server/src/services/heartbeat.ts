@@ -1256,6 +1256,13 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
+export const ISSUE_MONITOR_DUE_WAKE_REASON = "issue_monitor_due";
+export const ISSUE_MONITOR_MANUAL_CHECK_WAKE_REASON =
+  "issue_monitor_manual_check";
+const MONITOR_DISPATCH_WAKE_REASONS: ReadonlySet<string> = new Set([
+  ISSUE_MONITOR_DUE_WAKE_REASON,
+  ISSUE_MONITOR_MANUAL_CHECK_WAKE_REASON,
+]);
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
@@ -11996,7 +12003,7 @@ export function heartbeatService(
       now,
       source: "on_demand",
       triggerDetail: "manual",
-      wakeReason: input?.wakeReason ?? "issue_monitor_due",
+      wakeReason: input?.wakeReason ?? ISSUE_MONITOR_MANUAL_CHECK_WAKE_REASON,
       actorType,
       actorId,
       agentId: input?.agentId ?? null,
@@ -12065,7 +12072,7 @@ export function heartbeatService(
           now,
           source: "automation",
           triggerDetail: "system",
-          wakeReason: "issue_monitor_due",
+          wakeReason: ISSUE_MONITOR_DUE_WAKE_REASON,
           actorType: "system",
           actorId: "heartbeat_scheduler",
           agentId: null,
@@ -19257,7 +19264,8 @@ export function heartbeatService(
       ...new Set(
         activeRuns.flatMap(({ run }) => {
           const runContext = parseObject(run.contextSnapshot);
-          if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due")
+          const wakeReason = readNonEmptyString(runContext.wakeReason);
+          if (!wakeReason || !MONITOR_DISPATCH_WAKE_REASONS.has(wakeReason))
             return [];
           const issueId = readNonEmptyString(runContext.issueId);
           return issueId ? [issueId] : [];
@@ -19425,8 +19433,10 @@ export function heartbeatService(
       const monitorNextCheckAt = monitorIssueId
         ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
         : undefined;
+      const wakeReason = readNonEmptyString(runContext.wakeReason);
       const monitorDispatchLostWithoutFutureWake =
-        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        wakeReason !== null &&
+        MONITOR_DISPATCH_WAKE_REASONS.has(wakeReason) &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const shouldRetry =
