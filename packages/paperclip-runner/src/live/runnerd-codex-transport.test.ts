@@ -4495,6 +4495,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
     const handles: ReturnType<typeof durableControlPlane.spawnRunner>[] = [];
     let armed = false;
     let heldEvent: PrpEvent | null = null;
+    let committedOldAuthority: (typeof cores)[number]["store"]["state"] | null = null;
     let releaseCommit!: () => void;
     let enteredCommit!: () => void;
     const commitGate = new Promise<void>((resolveCommit) => {
@@ -4541,6 +4542,18 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
               }
             }
           },
+        });
+        const save = core.store.save.bind(core.store);
+        vi.spyOn(core.store, "save").mockImplementation(() => {
+          save();
+          if (committedOldAuthority === null && heldEvent !== null) {
+            const committed = core.store.state.committedEvents.find(
+              (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+            );
+            if (committed !== undefined) {
+              committedOldAuthority = structuredClone(core.store.state);
+            }
+          }
         });
         cores.push(core);
         return core;
@@ -4696,10 +4709,11 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        const retired = committedOldAuthority ?? rotations[0]!;
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;
+        expect(attachedEvent).toBeDefined();
         expect(attachedEvent.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,
