@@ -13,12 +13,9 @@ export const PRESET_LABELS: Record<DatePreset, string> = {
 
 export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
 
-// note: computeRange is called inside a useMemo that re-evaluates once per minute
-// (driven by minuteTick). this means sliding windows (7d, 30d) advance their upper
-// bound at most once per minute — acceptable for a cost dashboard.
 function computeRange(preset: DatePreset): { from: string; to: string } {
   const now = new Date();
-  const to = now.toISOString();
+  const to = "";
   switch (preset) {
     case "mtd": {
       const d = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -69,9 +66,8 @@ export function useDateRange(): UseDateRangeResult {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
-  // tick at the next calendar minute boundary, then every 60s, so sliding presets
-  // (7d, 30d) advance their upper bound in sync with wall clock minutes rather than
-  // drifting by the mount offset.
+  // tick at the next calendar minute boundary, then every 60s, so preset start dates
+  // move at local midnight rather than drifting by the mount offset.
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [minuteTick, setMinuteTick] = useState(() => floorToMinute(new Date()));
   useEffect(() => {
@@ -100,7 +96,7 @@ export function useDateRange(): UseDateRangeResult {
       from: fromDate ? fromDate.toISOString() : "",
       to: toDate ? toDate.toISOString() : "",
     };
-  // minuteTick drives re-evaluation of sliding presets once per minute.
+  // minuteTick re-evaluates preset start dates once per minute.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, customFrom, customTo, minuteTick]);
 

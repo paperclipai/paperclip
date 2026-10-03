@@ -157,6 +157,50 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes cost queries for every date range when a cost event arrives", () => {
+    const queryClient = new QueryClient();
+    const monthToDate = queryKeys.costs("company-1", "2026-09-01T00:00:00.000Z", undefined);
+    const providersMonthToDate = queryKeys.usageByProvider("company-1", "2026-09-01T00:00:00.000Z", undefined);
+    const billersMonthToDate = queryKeys.usageByBiller("company-1", "2026-09-01T00:00:00.000Z", undefined);
+    const allTime = queryKeys.costs("company-1");
+    const keys = [monthToDate, providersMonthToDate, billersMonthToDate, allTime];
+    for (const key of keys) queryClient.setQueryData(key, {});
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient,
+      "company-1",
+      { entityType: "cost_event", entityId: "cost-1", action: "cost.reported", details: null },
+      { userId: null, agentId: null },
+    );
+
+    for (const key of keys) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+  });
+
+  it("refreshes finance queries for every date range when a finance event arrives", () => {
+    const queryClient = new QueryClient();
+    const financeKey = (from?: string) => [
+      queryKeys.financeSummary("company-1", from, undefined),
+      queryKeys.financeByBiller("company-1", from, undefined),
+      queryKeys.financeByKind("company-1", from, undefined),
+      queryKeys.financeEvents("company-1", from, undefined, 18),
+    ];
+    const keys = [financeKey("2026-09-01T00:00:00.000Z"), financeKey()];
+    for (const key of keys) queryClient.setQueryData(key, {});
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient,
+      "company-1",
+      { entityType: "finance_event", entityId: "finance-1", action: "finance_event.reported", details: null },
+      { userId: null, agentId: null },
+    );
+
+    for (const key of keys) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+  });
+
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

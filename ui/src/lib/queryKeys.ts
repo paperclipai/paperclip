@@ -679,12 +679,16 @@ export const queryKeys = {
   inboxDismissals: (companyId: string) =>
     ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
+  costsAll: (companyId: string) => ["costs", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  usageByProviderAll: (companyId: string) => ["usage-by-provider", companyId] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
+  usageByBillerAll: (companyId: string) => ["usage-by-biller", companyId] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>
     ["usage-by-biller", companyId, from, to] as const,
+  financeSummaryAll: (companyId: string) => ["finance-summary", companyId] as const,
   financeSummary: (companyId: string, from?: string, to?: string) =>
     ["finance-summary", companyId, from, to] as const,
   financeByBiller: (companyId: string, from?: string, to?: string) =>

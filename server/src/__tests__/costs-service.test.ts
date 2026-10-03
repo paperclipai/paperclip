@@ -221,6 +221,16 @@ describe("cost routes", () => {
     });
   });
 
+  it("ends a range with only a start date at the request time and leaves All Time unbounded", async () => {
+    const { parseCostDateRange } = loadCostParsers();
+    const before = Date.now();
+    const range = parseCostDateRange({ from: "2026-01-01T00:00:00.000Z" });
+    expect(range?.from).toEqual(new Date("2026-01-01T00:00:00.000Z"));
+    expect(range?.to?.getTime()).toBeGreaterThanOrEqual(before);
+    expect(range?.to?.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(parseCostDateRange({})).toBeUndefined();
+  });
+
   it("returns 400 for an invalid 'from' date string", async () => {
     const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ from: "not-a-date" })).toThrow(/invalid 'from' date/i);
