@@ -33,6 +33,12 @@ export interface RunForIssue {
   wakeCommentId?: string | null;
   contextCommentId?: string | null;
   contextIssueId?: string | null;
+  /**
+   * Why the run is in this issue's ledger: `context` when the run's own wake
+   * scope names the issue, `activity` when it only matched through an activity
+   * row it left here (an unscoped or foreign run).
+   */
+  attribution?: "context" | "activity";
   contextSnapshot?: Record<string, unknown> | null;
   environment?: {
     id: string;
