@@ -21163,11 +21163,21 @@ export function heartbeatService(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
       let aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
-      // Provider-quota failover: a retry that recovery marked for failover runs
-      // on the binding's configured fallback account, not the limited primary.
+      // Failover: run on the binding's configured fallback account when this run
+      // is marked for failover, or when it retries a run that itself ran on the
+      // primary and failed for a provider-quota or connection-unavailable reason.
+      // Deciding here, at execution, covers every retry path (bounded transient
+      // retry, provider-quota recovery, stranded recovery). Single hop: a run that
+      // already ran on the fallback is not failed over again.
       const quotaFallbackTarget = aiBinding ? bindingQuotaFallback(aiBinding) : undefined;
-      if (quotaFallbackTarget && parseObject(run.contextSnapshot).aiConnectionQuotaFailover === true)
-        aiBinding = quotaFallbackBinding(quotaFallbackTarget);
+      let aiConnectionFailover = quotaFallbackTarget ? parseObject(run.contextSnapshot).aiConnectionQuotaFailover === true : false;
+      if (quotaFallbackTarget && !aiConnectionFailover && run.retryOfRunId) {
+        const parentRun = (await db.select({ errorCode: heartbeatRuns.errorCode, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.retryOfRunId)).limit(1))[0];
+        const parentOnPrimary = parentRun && parseObject(parentRun.contextSnapshot).aiConnectionQuotaFailover !== true;
+        if (parentOnPrimary && (parentRun.errorCode === "provider_quota" || parentRun.errorCode === "configuration_incomplete"))
+          aiConnectionFailover = true;
+      }
+      if (aiConnectionFailover && quotaFallbackTarget) aiBinding = quotaFallbackBinding(quotaFallbackTarget);
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(aiBinding),
@@ -21222,7 +21232,7 @@ export function heartbeatService(
         Object.assign(resolvedConfig, managedAiRuntime.config);
         for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
         context.aiConnection = { ...managedAiRuntime.attribution, identity: managedAiRuntime.identity };
-        await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+        await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(aiConnectionFailover ? { aiConnectionQuotaFailover: true } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
       }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
