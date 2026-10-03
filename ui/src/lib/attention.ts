@@ -60,6 +60,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   failed_run: { label: "Failed run" },
   budget_alert: { label: "Budget" },
   agent_error_alert: { label: "Agent error" },
+  mention: { label: "Mention" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -241,7 +242,12 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "budget":
       return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
-    case "generic":
+    case "mention": {
+      const q = quote(detail.commentExcerpt);
+      return detail.authorLabel && q
+        ? `${detail.authorLabel} — ${q}`
+        : (detail.authorLabel ?? q);
+    }    case "generic":
       return quote(detail.summaryExcerpt);
     default:
       return null;
