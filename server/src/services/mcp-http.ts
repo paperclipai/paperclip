@@ -124,13 +124,20 @@ function looksLikeJsonRpcMessage(value: unknown): boolean {
   return "result" in record || "error" in record || "method" in record || "id" in record;
 }
 
+function looksLikeJsonRpcResponse(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return "result" in record || "error" in record;
+}
+
 /**
  * Parse the body of an MCP Streamable HTTP response into its JSON-RPC payload.
  *
  * Handles both response shapes the transport allows:
  *  - `application/json`: the body is the JSON-RPC message directly.
  *  - `text/event-stream`: one or more SSE events; we return the JSON payload of
- *    the first `data:` event that parses as a JSON-RPC message.
+ *    the first `data:` event carrying a JSON-RPC response, skipping any
+ *    notifications (such as `notifications/progress`) sent ahead of it.
  *
  * Falls back to a plain JSON parse when the content type is unknown so we stay
  * compatible with non-compliant servers that ignore the Accept header.
@@ -146,7 +153,9 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   const events = bodyText.replace(/\r\n/g, "\n").split(/\n\n+/);
   let lastError: unknown = null;
   let firstParsed: unknown;
+  let firstMessage: unknown;
   let sawData = false;
+  let sawMessage = false;
   for (const event of events) {
     const dataLines = event
       .split("\n")
@@ -165,10 +174,18 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
       firstParsed = parsed;
       sawData = true;
     }
-    if (looksLikeJsonRpcMessage(parsed)) {
+    // Only a message carrying `result`/`error` is the response. Servers may
+    // interleave notifications first, so keep scanning rather than returning
+    // the notification as if it were the result.
+    if (looksLikeJsonRpcResponse(parsed)) {
       return parsed;
     }
+    if (!sawMessage && looksLikeJsonRpcMessage(parsed)) {
+      firstMessage = parsed;
+      sawMessage = true;
+    }
   }
+  if (sawMessage) return firstMessage;
   if (sawData) return firstParsed;
   if (lastError) throw lastError;
   throw new SyntaxError("MCP SSE response contained no data events");
