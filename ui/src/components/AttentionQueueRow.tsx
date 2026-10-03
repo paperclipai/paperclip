@@ -524,7 +524,7 @@ function CompactDecisionActions({
       // A policy denial is permanent, so it keeps the server's reason and names
       // the real responder instead of asking for a retry that will fail again.
       pushToast({
-        title: `Could not ${decisionLabel(action)}`,
+        title: decisionFailureTitle(action),
         body: interactionResolutionErrorMessage(error, audience),
         tone: "error",
       });
@@ -564,6 +564,12 @@ function decisionLabel(action: CompactDecisionAction): string {
   if (action === "request_revision") return "sent for revision";
   if (action === "accept" || action === "approve") return "approved";
   return "rejected";
+}
+
+function decisionFailureTitle(action: CompactDecisionAction): string {
+  if (action === "request_revision") return "Could not request revision";
+  if (action === "accept" || action === "approve") return `Could not ${action}`;
+  return "Could not reject";
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
@@ -828,8 +834,19 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
   );
 }
 
+function useDecisionErrorToast(item: AttentionItem) {
+  const { pushToast } = useToastActions();
+  return (action: CompactDecisionAction) => (error: Error) =>
+    pushToast({
+      title: decisionFailureTitle(action),
+      body: interactionResolutionErrorMessage(error, describeAttentionResolverAudience(item)),
+      tone: "error",
+    });
+}
+
 function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
+  const toastError = useDecisionErrorToast(item);
   const [note, setNote] = useState("");
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -838,14 +855,17 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
   const approve = useMutation({
     mutationFn: () => approvalsApi.approve(item.subject.id, note.trim() || undefined),
     onSuccess: invalidate,
+    onError: toastError("approve"),
   });
   const reject = useMutation({
     mutationFn: () => approvalsApi.reject(item.subject.id, note.trim() || undefined),
     onSuccess: invalidate,
+    onError: toastError("reject"),
   });
   const revise = useMutation({
     mutationFn: () => approvalsApi.requestRevision(item.subject.id, note.trim() || undefined),
     onSuccess: invalidate,
+    onError: toastError("request_revision"),
   });
   const pending = approve.isPending || reject.isPending || revise.isPending;
 
@@ -879,6 +899,7 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
 
 function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
+  const toastError = useDecisionErrorToast(item);
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
@@ -886,10 +907,12 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
   const approve = useMutation({
     mutationFn: () => accessApi.approveJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onError: toastError("approve"),
   });
   const reject = useMutation({
     mutationFn: () => accessApi.rejectJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onError: toastError("reject"),
   });
   const pending = approve.isPending || reject.isPending;
 
