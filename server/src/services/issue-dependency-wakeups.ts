@@ -5,6 +5,38 @@ import { agentWakeupRequests } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
+/**
+ * Whether moving an issue into `blocked` should immediately wake its assignee
+ * because every recorded blocker is already resolved ("blockers restored").
+ *
+ * The assignee agent blocking its own issue is declaring a wait on something
+ * outside the blocker graph (a pending confirmation, a human action). Waking it
+ * straight back made it re-block in a loop: every re-block stamps a new
+ * `blockedTransitionAt`, so the ready-state dedup key never matched and the
+ * agent was woken again on each run (five wakes in four minutes observed).
+ * Board or other-actor transitions and assignee changes still wake, and the
+ * dependency backstop still covers a genuinely stranded issue.
+ */
+export function shouldWakeOnRestoredBlockedDependency(input: {
+  previousStatus: string;
+  nextStatus: string;
+  previousAssigneeAgentId: string | null;
+  nextAssigneeAgentId: string | null;
+  blockerSetEdited: boolean;
+  actorType: string;
+  actorAgentId: string | null;
+}): boolean {
+  if (input.nextStatus !== "blocked" || !input.nextAssigneeAgentId) return false;
+  const assigneeChanged = input.previousAssigneeAgentId !== input.nextAssigneeAgentId;
+  if (input.previousStatus === "blocked" && !input.blockerSetEdited && !assigneeChanged) return false;
+  const selfBlockedByAssignee =
+    input.actorType === "agent" &&
+    input.actorAgentId !== null &&
+    input.actorAgentId === input.nextAssigneeAgentId &&
+    !assigneeChanged;
+  return !selfBlockedByAssignee;
+}
+
 // A wake counts as "already delivered or in flight for the current ready state"
 // for these statuses. The level-triggered state key uses this full set so that
 // one wake for a ready state suppresses further wakes for the SAME state. This
