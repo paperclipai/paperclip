@@ -92,6 +92,21 @@ describe("decideScheduledRetryGate", () => {
     });
   });
 
+  it("preserves dependency-blocker diagnostics before generic parked-blocked suppression", () => {
+    expect(decideScheduledRetryGate({
+      ...baseGateFacts(),
+      issueStatus: "blocked",
+      dependenciesBlocked: {
+        unresolvedBlockerIssueIds: ["blocker-1"],
+        unresolvedBlockerCount: 1,
+      },
+    }, NOW)).toMatchObject({
+      allowed: false,
+      errorCode: "issue_dependencies_blocked",
+      details: { unresolvedBlockerIssueIds: ["blocker-1"] },
+    });
+  });
+
   it.each([
     {
       name: "budget_blocked",
@@ -456,6 +471,62 @@ describe("decideQueuedRunStaleness", () => {
       expect(decideQueuedRunStaleness({ ...reportingFacts(), ...overrides }, NOW))
         .toMatchObject({ stale: true, errorCode });
     });
+  });
+
+  it.each(["issue_commented", "issue_blockers_resolved", "issue_assigned", "issue_status_changed"])(
+    "allows a parked blocked issue to proceed for the explicit %s wake",
+    (wakeReason) => {
+      expect(decideQueuedRunStaleness({
+        ...baseStalenessFacts(),
+        issueStatus: "blocked",
+        wakeReason,
+      }, NOW)).toEqual({ stale: false });
+    },
+  );
+
+  it.each([
+    { wakeCommentIdPresent: true },
+    { resumeIntent: true },
+    { isInteractionWake: true },
+  ])("preserves an explicit unblock fact when adapter metadata is false: %j", (signal) => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "blocked",
+      unblockingEventPresent: false,
+      ...signal,
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it("does not reuse comment, resume, or interaction markers copied into an automatic retry", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "blocked",
+      retryReason: "workspace_busy",
+      wakeReason: "issue_commented",
+      wakeCommentIdPresent: true,
+      resumeIntent: true,
+      isInteractionWake: true,
+      unblockingEventPresent: false,
+    }, NOW)).toMatchObject({ stale: true, errorCode: "issue_blocked" });
+  });
+
+  it("allows a resolved interaction to resume a parked blocked issue", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "blocked",
+      isResolvedInteractionContinuation: true,
+      unblockingEventPresent: false,
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it("does not allow a blocked issue to bypass connection-continuation status checks", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "blocked",
+      isResolvedInteractionContinuation: true,
+      isConnectionContinuation: true,
+      unblockingEventPresent: true,
+    }, NOW)).toMatchObject({ stale: true, errorCode: "issue_not_in_progress" });
   });
 
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {

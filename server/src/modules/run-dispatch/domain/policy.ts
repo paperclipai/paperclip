@@ -5,6 +5,8 @@
 // then packs the result into a facts object. This file only branches on
 // that facts object; it never queries a database or reads the clock.
 
+import { hasIssueUnblockingEvent } from "./wake-context.js";
+
 /** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
   | "max_turn_continuation"
@@ -105,6 +107,13 @@ export type ScheduledRetryFacts = {
   dispositionRepair: DispositionRepairFacts | null;
   /** A conversation retry must wait for unresolved questions and approvals. */
   pendingResponse?: "interaction" | "approval" | null;
+  /**
+   * SON-4370: true when an unblocking event (new comment or interaction,
+   * status or assignee change, explicit manual dispatch, or a wake naming
+   * the issue) authorizes re-dispatch of a parked `blocked` issue. Absent
+   * means no such event: parked blocked cards are inert to auto re-dispatch.
+   */
+  unblockingEventPresent?: boolean;
 };
 
 export type QueuedRunStalenessErrorCode =
@@ -154,6 +163,14 @@ export type QueuedRunFacts = {
   /** Verified from current company-scoped parent/child state immediately before dispatch. */
   isCompletedOnboardingHandoffWake?: boolean;
 
+  /**
+   * SON-4370: caller-computed unblocking event signal (new comment or
+   * interaction, status or assignee change, explicit manual dispatch, or a
+   * wake naming the issue). When absent, the wake's own comment/resume/
+   * interaction signals below decide whether a parked `blocked` issue may
+   * still be dispatched.
+   */
+  unblockingEventPresent?: boolean;
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
   continuationParkApplies: boolean;
   /** The pre-classified verdict on whatever continuation summary body applies; only meaningful when continuationParkApplies is true. */
@@ -476,6 +493,28 @@ export function decideScheduledRetryGate(
     };
   }
 
+  // SON-4370: parked `blocked` cards are inert to auto re-dispatch. Only an
+  // unblocking event (new comment/interaction, status or assignee change,
+  // explicit manual dispatch, or a wake naming the issue) may re-dispatch.
+  // Dependency readiness is checked first so a real dependency blocker keeps
+  // its specific suppression reason. Even bounded infrastructure retries may
+  // re-enter the normal executor, so a parked issue requires an explicit
+  // unblock before any automatic retry can proceed.
+  if (
+    facts.issueStatus === "blocked" &&
+    facts.retryReasonKind !== "max_turn_continuation" &&
+    facts.unblockingEventPresent !== true
+  ) {
+    return {
+      allowed: false,
+      issueId: facts.issueId,
+      errorCode: "issue_blocked",
+      reason:
+        "Scheduled retry suppressed because the issue is parked blocked and no unblocking event has occurred (new comment/interaction, status or assignee change, explicit manual dispatch, or a wake naming the issue)",
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+
   if (facts.pendingResponse) {
     return {
       allowed: false,
@@ -513,7 +552,14 @@ export function decideQueuedRunStaleness(
       requiresInProgress: facts.issueStatus !== "in_review",
       terminalBypass: true,
     });
-    if (earlyStatus === "not_in_progress") {
+    const explicitlyUnblockedParkedInteraction =
+      facts.issueStatus === "blocked" &&
+      facts.isResolvedInteractionContinuation &&
+      !facts.isConnectionContinuation;
+    if (
+      earlyStatus === "not_in_progress" &&
+      !explicitlyUnblockedParkedInteraction
+    ) {
       return {
         stale: true,
         errorCode: "issue_not_in_progress",
@@ -558,6 +604,39 @@ export function decideQueuedRunStaleness(
         retryReason: facts.retryReason,
         nextAction: facts.continuationSummaryBody,
       },
+    };
+  }
+
+  // SON-4370: a parked `blocked` issue is inert to auto re-dispatch. A queued
+  // run may still proceed when the wake itself carries the unblocking event:
+  // a comment wake, an explicit resume, an interaction wake, a resolved
+  // interaction continuation, or an event the caller folded into
+  // unblockingEventPresent.
+  // A scheduled retry carries a snapshot of the original wake. Its comment,
+  // manual-wake and interaction markers are historical, not a fresh unblock.
+  // The adapter may still provide an independently verified current event via
+  // unblockingEventPresent.
+  const unblockingEvent =
+    facts.unblockingEventPresent === true ||
+    (!facts.retryReason &&
+      Boolean(
+        facts.resumeIntent ||
+          facts.wakeCommentIdPresent ||
+          facts.isInteractionWake ||
+          facts.isResolvedInteractionContinuation ||
+          hasIssueUnblockingEvent({ wakeReason: facts.wakeReason }),
+      ));
+  if (
+    facts.issueStatus === "blocked" &&
+    facts.retryReasonKind !== "max_turn_continuation" &&
+    !unblockingEvent
+  ) {
+    return {
+      stale: true,
+      errorCode: "issue_blocked",
+      reason:
+        "Cancelled because the issue is parked blocked with no unblocking event (new comment/interaction, status or assignee change, explicit dispatch, or a wake naming the issue) before the queued run could start",
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
 

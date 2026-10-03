@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { mergeCoalescedContextSnapshot } from "../services/heartbeat.ts";
+import { hasIssueUnblockingEvent } from "../modules/run-dispatch/domain/wake-context.js";
 
 describe("native status wake context provenance", () => {
+  it("keeps a fresh comment wake when it coalesces into a retry with old wake metadata", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        retryReason: "workspace_busy",
+        wakeReason: "issue_commented",
+        wakeCommentId: "old-comment",
+        wakeCommentIds: ["old-comment"],
+      },
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        wakeCommentId: "new-comment",
+        wakeCommentIds: ["new-comment"],
+      },
+    );
+
+    expect(merged.retryReason).toBeUndefined();
+    expect(merged.wakeCommentIds).toEqual(["old-comment", "new-comment"]);
+    expect(hasIssueUnblockingEvent(merged)).toBe(true);
+  });
+
   it("preserves a verified chat source when status control flow coalesces into the run", () => {
     const merged = mergeCoalescedContextSnapshot(
       {

@@ -3,6 +3,7 @@ import {
   allowsIssueInteractionWake,
   deriveCommentId,
   extractWakeCommentIds,
+  hasIssueUnblockingEvent,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -46,6 +47,34 @@ describe("wake context", () => {
     [{ wakeCommentId: "  " }, { commentId: "  " }, null],
   ])("derives comment ids by canonical precedence", (context, payload, expected) => {
     expect(deriveCommentId(context, payload)).toBe(expected);
+  });
+
+  it("recognizes only explicit issue-unblocking wakes, not timer retries", () => {
+    expect(hasIssueUnblockingEvent({ wakeReason: "issue_blockers_resolved" })).toBe(true);
+    expect(hasIssueUnblockingEvent({ wakeReason: "issue_commented" })).toBe(true);
+    expect(hasIssueUnblockingEvent({ wakeSource: "on_demand", wakeTriggerDetail: "manual" })).toBe(true);
+    expect(hasIssueUnblockingEvent({ wakeReason: "heartbeat_timer" })).toBe(false);
+    expect(hasIssueUnblockingEvent({ wakeReason: "issue_monitor_due" })).toBe(false);
+  });
+
+  it("recognizes an authenticated manual retry of a failed run as an explicit dispatch", () => {
+    expect(hasIssueUnblockingEvent({
+      wakeReason: "retry_failed_run",
+      wakeSource: "on_demand",
+      wakeTriggerDetail: "manual",
+      forceFreshSession: true,
+      previousRunId: "failed-run",
+    })).toBe(true);
+  });
+
+  it("does not treat copied wake metadata on an automatic retry as a fresh unblock", () => {
+    expect(hasIssueUnblockingEvent({
+      wakeReason: "issue_commented",
+      wakeCommentId: "old-comment",
+      wakeSource: "on_demand",
+      wakeTriggerDetail: "manual",
+      retryReason: WORKSPACE_BUSY_RETRY_REASON,
+    })).toBe(false);
   });
 
   it("allows interaction wakes only for an allowed reason with a comment id", () => {

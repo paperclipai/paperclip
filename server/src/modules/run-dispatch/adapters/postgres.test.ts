@@ -239,6 +239,84 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
   });
 
+  it("does not reuse inherited wake markers on a blocked automatic retry", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "blocked" });
+    const retryId = await seedRun({
+      companyId,
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryReason: "workspace_busy",
+      contextSnapshot: {
+        issueId,
+        retryReason: "workspace_busy",
+        wakeReason: "issue_commented",
+        wakeCommentId: randomUUID(),
+        wakeSource: "on_demand",
+        wakeTriggerDetail: "manual",
+      },
+    });
+    const adapter = createPostgresRunDispatchAdapter(db);
+
+    expect(await adapter.evaluateScheduledRetryGate({
+      companyId,
+      runId: retryId,
+      retryReasonOverride: "workspace_busy",
+      now: new Date(),
+    })).toMatchObject({ allowed: false, errorCode: "issue_blocked" });
+
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, retryId));
+    expect(await adapter.cancelStaleQueuedRun({
+      companyId,
+      runId: retryId,
+      expectedStatus: "queued",
+      now: new Date(),
+    })).toMatchObject({ outcome: "cancelled", errorCode: "issue_blocked" });
+  });
+
+  it.each(["comment", "manual retry"] as const)(
+    "dispatches a fresh %s wake through the Postgres adapter on a blocked issue",
+    async (wakeKind) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "blocked" });
+      const commentId = randomUUID();
+      const contextSnapshot = wakeKind === "comment"
+        ? { issueId, wakeReason: "issue_commented", wakeCommentId: commentId, wakeCommentIds: [commentId] }
+        : {
+            issueId,
+            wakeReason: "retry_failed_run",
+            wakeSource: "on_demand",
+            wakeTriggerDetail: "manual",
+            forceFreshSession: true,
+            previousRunId: randomUUID(),
+          };
+      const runId = await seedRun({ companyId, agentId, status: "queued", contextSnapshot });
+      const adapter = createPostgresRunDispatchAdapter(db);
+
+      expect(await adapter.cancelStaleQueuedRun({
+        companyId,
+        runId,
+        expectedStatus: "queued",
+        now: new Date(),
+      })).toMatchObject({ outcome: "not_stale" });
+
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+      const dispatch = vi.fn(async () => undefined);
+      expect(await adapter.dispatchResolvedInteractionIfCurrent({
+        companyId,
+        runId,
+        expectedStatus: "running",
+        now: new Date(),
+        dispatch,
+      })).toMatchObject({ dispatched: true });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
+    },
+  );
+
   it.each(["queued", "final", "resolved"] as const)("rechecks late native replacement dependencies at %s dispatch", async mode => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID(), blockerId = randomUUID();
@@ -518,9 +596,68 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         errorCode: "issue_terminal_status",
       });
     });
+
+    it("suppresses a bounded retry whose copied wake metadata is stale for a blocked issue", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        status: "scheduled_retry",
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: {
+          issueId,
+          retryReason: "transient_failure",
+          wakeReason: "issue_commented",
+          wakeCommentId: randomUUID(),
+          wakeSource: "on_demand",
+          wakeTriggerDetail: "manual",
+        },
+      });
+
+      const result = await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({
+        runId,
+        companyId,
+        retryReasonOverride: "transient_failure",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({ allowed: false, errorCode: "issue_blocked" });
+    });
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it("cancels a queued automatic retry with inherited unblock markers and preserves the parked status", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          retryReason: "transient_failure",
+          wakeReason: "issue_commented",
+          wakeCommentId: randomUUID(),
+          wakeSource: "on_demand",
+          wakeTriggerDetail: "manual",
+        },
+      });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_blocked" });
+      const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+      expect(issue?.status).toBe("blocked");
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {

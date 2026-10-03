@@ -18,6 +18,11 @@
  * wakes deliberately stay in the normal throttle class so a cross-issue write
  * cannot smuggle human wake privileges.
  *
+ * SON-4370: comments authored by a run are wake INPUT, not run progress — a
+ * keep-alive comment must not reset the no-progress streak. At a streak of
+ * >=3 within the 6h lookback the decision also raises a single attention
+ * flag so the churn is surfaced instead of silently cooled down.
+ *
  * Server-side recovery retries (process-loss retries, missing-comment
  * follow-ups) insert their runs directly and never pass through this gate, so
  * crash recovery stays immediate; only repeated no-op re-invocations slow
@@ -39,6 +44,9 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
+/** SON-4370: no-progress streak at which the churn guard raises one attention flag. */
+export const ISSUE_REWAKE_ATTENTION_FLAG_STREAK = 3;
+
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
@@ -56,12 +64,13 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
  * Activity actions that count as issue-visible progress when attributed to a
  * run. Deliberately narrower than run-liveness "concrete action evidence":
  * tool calls inside the workspace do not move the issue, so they do not reset
- * the streak — a run must leave a comment, mutation, document, work product,
- * interaction, or scheduled continuation behind.
+ * the streak — a run must leave a mutation, document, work product, interaction,
+ * or scheduled continuation behind. Comments are deliberately absent
+ * (SON-4370): a run-authored comment is input for the next wake, not
+ * evidence the previous run progressed.
  */
 export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
   "issue.updated",
-  "issue.comment_added",
   "issue.created",
   "issue.child_created",
   "issue.assigned",
@@ -91,6 +100,12 @@ export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
  */
 export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   ...ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  // SON-4370: comments are deliberately absent from the progress set above
+  // (a run-authored keep-alive comment is not progress) but remain new
+  // external input — a board comment on the issue must still admit the next
+  // wake (AC2). The agent-authored exclusion for agent comment wakes is
+  // applied by the caller's query, not by this set.
+  "issue.comment_added",
   "issue.thread_interaction_accepted",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",
@@ -140,6 +155,8 @@ export type IssueRewakeThrottleDecision =
   | {
       blocked: true;
       noProgressStreak: number;
+      /** SON-4370: true when the streak is deep enough to raise one attention flag. */
+      raiseAttentionFlag: boolean;
       cooldownMs: number;
       lastRunFinishedAt: Date;
       nextAllowedAt: Date;
@@ -176,7 +193,14 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
   if (input.now.getTime() < nextAllowedAt.getTime()) {
-    return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
+    return {
+      blocked: true,
+      noProgressStreak,
+      raiseAttentionFlag: noProgressStreak >= ISSUE_REWAKE_ATTENTION_FLAG_STREAK,
+      cooldownMs,
+      lastRunFinishedAt,
+      nextAllowedAt,
+    };
   }
   return { blocked: false, noProgressStreak };
 }

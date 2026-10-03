@@ -21,6 +21,19 @@ export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const ISSUE_UNBLOCKING_WAKE_REASONS: ReadonlySet<string> = new Set([
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_children_completed",
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_recovery_action_restored",
+  "issue_reopened_via_comment",
+  "issue_resumed",
+  "issue_status_changed",
+  "issue_tree_restored",
+  "issue_tree_resumed",
+]);
 export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "accepted",
   "answered",
@@ -71,6 +84,29 @@ export function deriveCommentId(
     readNonEmptyString(contextSnapshot?.commentId) ??
     readNonEmptyString(payload?.commentId) ??
     null
+  );
+}
+
+/**
+ * True only when persisted wake context records an event that can legitimately
+ * restart work parked in `blocked`. Automatic retries and timer/monitor wakes
+ * are deliberately absent from this allowlist.
+ */
+export function hasIssueUnblockingEvent(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): boolean {
+  const context = contextSnapshot ?? {};
+  // scheduleBoundedRetryForRun preserves the predecessor's wake snapshot and
+  // adds retryReason. Those historical comments/manual markers must not turn
+  // a later park into a fresh authorization to re-dispatch.
+  if (readNonEmptyString(context.retryReason)) return false;
+  const wakeReason = readNonEmptyString(context.wakeReason)?.trim() ?? "";
+  const wakeSource = readNonEmptyString(context.wakeSource)?.trim();
+  const wakeTriggerDetail = readNonEmptyString(context.wakeTriggerDetail)?.trim();
+  return (
+    Boolean(deriveCommentId(context)) ||
+    ISSUE_UNBLOCKING_WAKE_REASONS.has(wakeReason) ||
+    (wakeSource === "on_demand" && wakeTriggerDetail === "manual")
   );
 }
 
