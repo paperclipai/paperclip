@@ -49,7 +49,7 @@ import {
 } from "@/lib/provider-credential";
 import { defaultCreateValues } from "../agent-config-defaults";
 import { ModelDropdown } from "../AgentConfigForm";
-import { Field } from "../agent-config-primitives";
+import { DraftNumberInput, Field, help } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -141,6 +141,8 @@ function Setup({
   const [model, setModel] = useState("");
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
+  const [timeoutSec, setTimeoutSec] = useState(0);
+  const supportsExecutionTimeout = adapterType === "claude_local" || adapterType === "codex_local";
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
   const [provider, setProvider] = useState("openrouter");
@@ -338,6 +340,7 @@ function Setup({
       model:
         model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
+      ...(supportsExecutionTimeout ? { timeoutSec } : {}),
       dangerouslyBypassSandbox: adapterType === "codex_local",
       envBindings: nextConnection?.env ?? {},
       ...(isRunner
@@ -834,6 +837,20 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">Runtime</h3>
+                        {supportsExecutionTimeout && (
+                          <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                            <DraftNumberInput
+                              value={timeoutSec}
+                              onCommit={(v) => {
+                                setTimeoutSec(v);
+                                resetTest();
+                              }}
+                              immediate
+                              min={0}
+                              className={controlClass}
+                            />
+                          </Field>
+                        )}
                         {aiProviderForAdapter(brandType) && (
                           connection && !aiBinding ? (
                             <div className="space-y-3">

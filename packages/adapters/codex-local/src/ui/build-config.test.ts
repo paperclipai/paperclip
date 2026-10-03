@@ -67,6 +67,17 @@ describe("buildCodexLocalConfig", () => {
     expect(values.adapterSchemaValues?.acpxAgent).toBe("grok");
   });
 
+  it.each(["auto", "cli", "acp"] as const)("preserves explicit timeouts with the %s engine", (codexEngine) => {
+    expect(buildCodexLocalConfig(makeValues({ codexEngine, timeoutSec: 1800 })).timeoutSec).toBe(1800);
+    expect(buildCodexLocalConfig(makeValues({ codexEngine, timeoutSec: 0 })).timeoutSec).toBe(0);
+  });
+
+  it("uses schema-backed timeouts and retains the unlimited default", () => {
+    expect(buildCodexLocalConfig(makeValues({ adapterSchemaValues: { timeoutSec: 900 } })).timeoutSec).toBe(900);
+    expect(buildCodexLocalConfig(makeValues({ timeoutSec: 0, adapterSchemaValues: { timeoutSec: 900 } })).timeoutSec).toBe(0);
+    expect(buildCodexLocalConfig(makeValues()).timeoutSec).toBe(0);
+  });
+
   it("omits engine for the auto default so runtime fallback remains available", () => {
     const config = buildCodexLocalConfig(makeValues({ codexEngine: "auto" }));
 

@@ -1954,6 +1954,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            {(adapterType === "claude_local" || adapterType === "codex_local") && (
+              <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                <DraftNumberInput
+                  value={val!.timeoutSec ?? 0}
+                  onCommit={(v) => set!({ timeoutSec: v })}
+                  immediate
+                  min={0}
+                  className={inputClass}
+                />
+              </Field>
+            )}
             <CollapsibleSection title="Advanced Run Policy" open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
               <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
             </CollapsibleSection>
@@ -1979,6 +1990,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
+              {isLocal && (
+                adapterType === "claude_local" || adapterType === "codex_local" ||
+                !configSchema?.fields.some((field) => field.key === "timeoutSec")
+              ) && (
+                <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <DraftNumberInput
+                    value={eff("adapterConfig", "timeoutSec", Number(config.timeoutSec ?? 0))}
+                    onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
+                    immediate
+                    min={0}
+                    className={inputClass}
+                  />
+                </Field>
+              )}
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
@@ -1989,23 +2014,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className="space-y-3">
               {renderAdapterFields("runPolicy")}
               {isLocal && (<>
-              {/* Edit-only: timeout + grace period */}
+              {/* Edit-only: grace period */}
               {!isCreate && (
                 <>
-                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  )}
                   {!configSchema?.fields.some((field) => field.key === "graceSec") && (
                   <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
                     <DraftNumberInput

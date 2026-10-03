@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useId } from "react";
 import {
   Tooltip,
   TooltipTrigger,
@@ -53,7 +53,7 @@ export const help: Record<string, string> = {
   webhookUrl: "The URL that receives POST requests when the agent is invoked.",
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
   intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
+  timeoutSec: "Maximum seconds a run can take before being terminated. Use a non-negative value. 0 uses the execution target default: no adapter timeout on local or SSH targets, and a four-hour adapter timeout on remote sandbox targets.",
   graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
   cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
@@ -348,6 +348,9 @@ export function DraftNumberInput({
   onCommit,
   immediate,
   className,
+  min,
+  max,
+  onBlur,
   ...props
 }: {
   value: number;
@@ -356,23 +359,48 @@ export function DraftNumberInput({
   className?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className" | "type">) {
   const [draft, setDraft] = useState(String(value));
+  const errorId = useId();
   useEffect(() => setDraft(String(value)), [value]);
 
+  function validationError(text: string) {
+    const num = Number(text);
+    if (!Number.isFinite(num)) return "Enter a finite number.";
+    if (min !== undefined && min !== "" && num < Number(min)) return `Enter a number of at least ${min}.`;
+    if (max !== undefined && max !== "" && num > Number(max)) return `Enter a number of at most ${max}.`;
+    return null;
+  }
+  const error = validationError(draft);
+
   return (
-    <input
-      type="number"
-      className={className}
-      value={draft}
-      onChange={(e) => {
-        setDraft(e.target.value);
-        if (immediate) onCommit(Number(e.target.value) || 0);
-      }}
-      onBlur={() => {
-        const num = Number(draft) || 0;
-        if (num !== value) onCommit(num);
-      }}
-      {...props}
-    />
+    <>
+      <input
+        {...props}
+        type="number"
+        className={className}
+        value={draft}
+        min={min}
+        max={max}
+        aria-invalid={error ? true : props["aria-invalid"]}
+        aria-describedby={error ? [props["aria-describedby"], errorId].filter(Boolean).join(" ") : props["aria-describedby"]}
+        onChange={(e) => {
+          const next = e.target.value;
+          setDraft(next);
+          if (immediate && next.trim() !== "" && !e.target.validity.badInput && !validationError(next)) {
+            onCommit(Number(next));
+          }
+        }}
+        onBlur={(event) => {
+          if (error || event.currentTarget.validity.badInput) {
+            setDraft(String(value));
+          } else {
+            const num = Number(draft);
+            if (num !== value) onCommit(num);
+          }
+          onBlur?.(event);
+        }}
+      />
+      {error && <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
+    </>
   );
 }
 
