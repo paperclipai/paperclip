@@ -630,6 +630,9 @@ const ACPX_INHERITED_PROVIDER_ENV_KEYS: Readonly<Record<string, ReadonlySet<stri
     "KIMI_MODEL_PROVIDER_TYPE",
     "KIMI_CODE_HOME",
   ]),
+  kimchi: new Set([
+    "KIMCHI_API_KEY",
+  ]),
   grok: new Set(["XAI_API_KEY"]),
 };
 
@@ -863,6 +866,11 @@ async function resolveBuiltInAgentCommand(input: {
     // Kimi Code exposes its ACP server via the `kimi acp` subcommand (stdio),
     // rather than a flag (gemini) or a dedicated bin (claude/codex).
     return { command: "kimi acp", shellCommand: "kimi acp" };
+  }
+  if (agent === "kimchi") {
+    // Kimchi exposes its ACP server via the `--mode acp` flag (v0.0.7+), not a
+    // subcommand like kimi or a dedicated bin like claude/codex.
+    return { command: "kimchi --mode acp", shellCommand: "kimchi --mode acp" };
   }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;

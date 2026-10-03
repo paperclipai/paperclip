@@ -34,10 +34,12 @@ import { models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import { models as geminiModels } from "@paperclipai/adapter-gemini-local";
 import { models as grokModels } from "@paperclipai/adapter-grok-local";
 import { models as kimiModels } from "@paperclipai/adapter-kimi-local";
+import { models as kimchiModels } from "@paperclipai/adapter-kimchi-local";
 
 const modelLists = {
   claude_local: claudeModels, codex_local: codexModels, opencode_local: openCodeModels,
   cursor: cursorModels, gemini_local: geminiModels, grok_local: grokModels, kimi_local: kimiModels,
+  kimchi_local: kimchiModels,
   cursor_cloud: [], pi_local: [], hermes_local: [],
 };
 
@@ -45,7 +47,7 @@ const modelLists = {
 // importing this from Storybook never creates an agent or contacts a provider.
 export const NEW_AGENT_ADAPTERS = [
   "claude_local", "codex_local", "cursor", "cursor_cloud", "gemini_local",
-  "grok_local", "kimi_local", "opencode_local", "pi_local", "hermes_local", "paperclip_runner",
+  "grok_local", "kimi_local", "kimchi_local", "opencode_local", "pi_local", "hermes_local", "paperclip_runner",
 ] as const;
 export type NewAgentAdapter = typeof NEW_AGENT_ADAPTERS[number];
 export type NewAgentScreen = "name" | "adapter" | "connect" | "runtime" | "saved";
