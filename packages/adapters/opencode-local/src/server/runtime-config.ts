@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asString } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -15,6 +15,21 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
     (typeof process.env.XDG_CONFIG_HOME === "string" && process.env.XDG_CONFIG_HOME.trim()) ||
     path.join(os.homedir(), ".config")
   );
+}
+
+// why: OpenCode v2 moved all local state (sessions, provider accounts/logins,
+// model cache) into a SQLite database defaulting to
+// $XDG_DATA_HOME/opencode/opencode.db (i.e. ~/.local/share/opencode/opencode.db).
+// OPENCODE_DB overrides that path (r4 delta §4 / M13, M14). v1 ignores
+// OPENCODE_DB. Ordinary runs must leave the operator's default DB resolution in
+// place (v1 parity: shared persistent state) — v2 logins live in that database
+// and `--session` resume reads it, so forcing a throwaway database every run
+// destroys state that has to survive between runs. OPENCODE_DB is pinned ONLY
+// where isolation is explicitly required: managed credential homes
+// (prepareManagedOpenCodeRemoteHomes) or an operator opt-in via
+// `adapterConfig.opencodeDataDir`.
+function resolveOpenCodeDbPath(dataDir: string): string {
+  return path.join(dataDir, "opencode.db");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -107,11 +122,30 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
+  // Opt-in state isolation: operators who want a run-scoped v2 database set
+  // `adapterConfig.opencodeDataDir`; OPENCODE_DB then points at
+  // <opencodeDataDir>/opencode.db instead of the shared operator database.
+  // Applied before the early returns so an explicit isolation opt-in is honoured
+  // even when the permission-injection path below is disabled.
+  const notes: string[] = [];
+  let env = input.env;
+  const opencodeDataDir = asString(input.config.opencodeDataDir, "").trim();
+  if (opencodeDataDir) {
+    const dataDir = path.resolve(opencodeDataDir);
+    // SQLite creates the database file but not its parent directories.
+    await fs.mkdir(dataDir, { recursive: true });
+    const dbPath = resolveOpenCodeDbPath(dataDir);
+    env = { ...env, OPENCODE_DB: dbPath };
+    notes.push(
+      `Pinned OpenCode state database at ${dbPath} via OPENCODE_DB (adapterConfig.opencodeDataDir).`,
+    );
+  }
+
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
     return {
-      env: input.env,
-      notes: [],
+      env,
+      notes,
       cleanup: async () => {},
     };
   }
@@ -123,8 +157,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // host-fs helper is local-only.
   if (input.targetIsRemote) {
     return {
-      env: input.env,
-      notes: [],
+      env,
+      notes,
       cleanup: async () => {},
     };
   }
@@ -149,9 +183,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const notes = [
+  notes.push(
     "Injected runtime OpenCode config with permission=allow for all tools and connections.",
-  ];
+  );
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -225,7 +259,11 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   return {
     env: {
-      ...input.env,
+      // why: OPENCODE_DB is deliberately NOT forced here — ordinary runs share
+      // the operator's persistent v2 database (v1 parity) so logins and
+      // `--session` resume survive between runs. Isolation happens only via
+      // `adapterConfig.opencodeDataDir` above or the managed remote homes.
+      ...env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
     notes,
@@ -246,11 +284,16 @@ export function prepareManagedOpenCodeRemoteHomes(input: {
   if (!input.config.managedAiConnection) return;
   if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
   const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
+  const dataHome = path.posix.join(home, "data");
   Object.assign(input.env, {
     HOME: home,
     XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
-    XDG_DATA_HOME: path.posix.join(home, "data"),
+    XDG_DATA_HOME: dataHome,
     XDG_CACHE_HOME: path.posix.join(home, "cache"),
     XDG_STATE_HOME: path.posix.join(home, "state"),
+    // why: v2 keeps its SQLite state under XDG_DATA_HOME/opencode/opencode.db.
+    // XDG_DATA_HOME already redirects the default, but pin OPENCODE_DB too so a
+    // managed credential can never land in a host/global database (M14).
+    OPENCODE_DB: path.posix.join(dataHome, "opencode", "opencode.db"),
   });
 }

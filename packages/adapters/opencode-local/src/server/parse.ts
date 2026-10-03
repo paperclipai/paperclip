@@ -12,6 +12,10 @@ function errorText(value: unknown): string {
   if (name) return name;
   const code = asString(rec.code, "").trim();
   if (code) return code;
+  // v2 failure/cancellation envelopes sometimes carry only a `type`
+  // discriminator and no message, so use it as a last textual fallback.
+  const errorType = asString(rec.type, "").trim();
+  if (errorType) return errorType;
   try {
     return JSON.stringify(rec);
   } catch {
@@ -71,7 +75,12 @@ export function parseOpenCodeJsonl(stdout: string) {
       continue;
     }
 
-    if (type === "error") {
+    if (type === "error" || Object.prototype.hasOwnProperty.call(event, "error")) {
+      // v1 errors set `type: "error"`; v2 failure/cancellation emits a single
+      // object with no top-level `type`:
+      //   {"error":{"type":"unknown","message":"Command cancelled"},"content":[]}
+      // Detecting the top-level `error` key keeps a cancelled/failed v2 run from
+      // being reported as a clean success.
       const text = errorText(event.error ?? event.message).trim();
       if (text) errors.push(text);
       continue;
@@ -95,7 +104,12 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\b.*\bnot\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session/i.test(
+  // why: the exact v2 stale/missing-session error wording could not be verified
+  // against a live probe (the referenced r3/r4 research notes were unavailable in
+  // this clone), so this keeps the v1 patterns and adds a conservative superset
+  // of plausible v2 variants. Every added alternative still requires the word
+  // "session" so unrelated output cannot trip the detector.
+  return /unknown\s+session|session\b.*\bnot\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session|no\s+such\s+session|(?:invalid|missing|expired|stale)\s+session|session\b.*\b(?:does\s+not\s+exist|doesn't\s+exist|expired|invalid|missing)|(?:could\s+not|unable\s+to|failed\s+to)\s+(?:find|load|resume|locate)\s+session/i.test(
     haystack,
   );
 }

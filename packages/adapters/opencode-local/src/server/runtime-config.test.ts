@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  prepareManagedOpenCodeRemoteHomes,
+  prepareOpenCodeRuntimeConfig,
+} from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -319,5 +322,150 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("leaves OPENCODE_DB untouched on ordinary runs so v2 state stays in the operator's persistent database", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    // why: v2 logins live in the operator's database and `--session` resume
+    // reads it — forcing a throwaway database every run destroyed that state.
+    expect(prepared.env.OPENCODE_DB).toBeUndefined();
+    expect(prepared.notes.some((note) => note.includes("OPENCODE_DB"))).toBe(false);
+
+    await prepared.cleanup();
+  });
+
+  it("preserves a caller-provided OPENCODE_DB on ordinary runs", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    expect(prepared.env.OPENCODE_DB).toBe("/operator/opencode.db");
+    await prepared.cleanup();
+  });
+
+  it("pins OPENCODE_DB at <opencodeDataDir>/opencode.db when adapterConfig.opencodeDataDir is set", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(root);
+    const dataDir = path.join(root, "opencode-state");
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: { opencodeDataDir: dataDir },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const dbPath = path.join(dataDir, "opencode.db");
+    // The explicit isolation opt-in wins over a caller-provided OPENCODE_DB.
+    expect(prepared.env.OPENCODE_DB).toBe(dbPath);
+    // SQLite creates the db file but not its parent directory, so it must exist.
+    await expect(fs.access(dataDir)).resolves.toBeUndefined();
+    expect(prepared.notes.some((note) => note.includes(dbPath))).toBe(true);
+
+    await prepared.cleanup();
+    // The operator's data dir is persistent — never removed with the runtime home.
+    await expect(fs.access(dataDir)).resolves.toBeUndefined();
+  });
+
+  it("honours adapterConfig.opencodeDataDir even when the runtime config injection is disabled", async () => {
+    const configHome = await makeConfigHome();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(root);
+    const dataDir = path.join(root, "opencode-state");
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { opencodeDataDir: dataDir, dangerouslySkipPermissions: false },
+    });
+
+    expect(prepared.env.XDG_CONFIG_HOME).toBe(configHome);
+    expect(prepared.env.OPENCODE_DB).toBe(path.join(dataDir, "opencode.db"));
+    await prepared.cleanup();
+  });
+
+  it("preserves a caller-provided OPENCODE_DB when isolation is disabled", async () => {
+    const configHome = await makeConfigHome();
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: { dangerouslySkipPermissions: false },
+    });
+
+    expect(prepared.env).toEqual({
+      XDG_CONFIG_HOME: configHome,
+      OPENCODE_DB: "/operator/opencode.db",
+    });
+    expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+
+  it("leaves the env untouched for a remote execution target", async () => {
+    const configHome = await makeConfigHome();
+    const env = { XDG_CONFIG_HOME: configHome };
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env,
+      config: {},
+      targetIsRemote: true,
+    });
+
+    expect(prepared.env).toEqual(env);
+    expect(prepared.env.OPENCODE_DB).toBeUndefined();
+    expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+});
+
+describe("prepareManagedOpenCodeRemoteHomes", () => {
+  it("redirects the v2 state database into the managed run home", () => {
+    const env: Record<string, string> = {};
+
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: { managedAiConnection: true },
+      runtimeRootDir: "/remote/root",
+      runId: "run-1",
+    });
+
+    const home = "/remote/root/managed-auth/run-1";
+    expect(env.HOME).toBe(home);
+    expect(env.XDG_DATA_HOME).toBe(`${home}/data`);
+    expect(env.OPENCODE_DB).toBe(`${home}/data/opencode/opencode.db`);
+  });
+
+  it("leaves the env untouched without a managed connection", () => {
+    const env: Record<string, string> = { HOME: "/existing" };
+
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: {},
+      runtimeRootDir: "/remote/root",
+      runId: "run-1",
+    });
+
+    expect(env).toEqual({ HOME: "/existing" });
+    expect(env.OPENCODE_DB).toBeUndefined();
+  });
+
+  it("throws without an isolated runtime root for managed auth", () => {
+    expect(() =>
+      prepareManagedOpenCodeRemoteHomes({
+        env: {},
+        config: { managedAiConnection: true },
+        runtimeRootDir: null,
+        runId: "run-1",
+      }),
+    ).toThrow("Managed OpenCode authentication requires an isolated remote runtime directory.");
   });
 });

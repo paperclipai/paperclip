@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import type { OpenCodeVersionLine } from "./version.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -80,13 +81,34 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+// Both CLI lines print one `provider/model` per line: v1 (`opencode-ai`) and
+// v2 (`@opencode/cli`). The v2 catalog may carry a `#variant` suffix (e.g.
+// `opencode-go/mimo-v2.6-pro#thinking`), which must round-trip byte-for-byte.
+// Stray non-model lines (column headers, banners, usage text, URLs, cache
+// paths) are dropped rather than misparsed into bogus model ids.
+const MODEL_COLUMN_HEADER_PATTERN = /^provider\/model$/i;
+
+function isModelIdToken(token: string): boolean {
+  if (!token.includes("/")) return false;
+  if (MODEL_COLUMN_HEADER_PATTERN.test(token)) return false;
+  if (token.includes("://")) return false; // URL, not a model id
+  const slashIndex = token.indexOf("/");
+  const provider = token.slice(0, slashIndex).trim();
+  // A path-like token (`~/.cache/...`, `./rel/...`) has no real provider
+  // segment; reject it instead of emitting a `~//...` pseudo-id.
+  if (!provider || provider.startsWith("~") || provider.startsWith(".")) {
+    return false;
+  }
+  return Boolean(token.slice(slashIndex + 1).trim());
+}
+
 export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
     const firstToken = line.split(/\s+/)[0]?.trim() ?? "";
-    if (!firstToken.includes("/")) continue;
+    if (!isModelIdToken(firstToken)) continue;
     const provider = firstToken.slice(0, firstToken.indexOf("/")).trim();
     const model = firstToken.slice(firstToken.indexOf("/") + 1).trim();
     if (!provider || !model) continue;
@@ -133,6 +155,27 @@ function pruneExpiredDiscoveryCache(now: number) {
   for (const [key, value] of discoveryCache.entries()) {
     if (value.expiresAt <= now) discoveryCache.delete(key);
   }
+}
+
+// `opencode models --refresh` exists on the v1 CLI (`opencode-ai`) from
+// 1.18.17, but support on the v2 CLI (`@opencode/cli`) is UNVERIFIED. Detect a
+// CLI that rejects the flag — a non-zero exit whose output shows usage text or
+// an unknown/unrecognized-option complaint — so the caller can degrade to a
+// plain `opencode models` listing instead of failing the request.
+function isRefreshRejectedByCli(result: {
+  timedOut: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}): boolean {
+  if (result.timedOut || (result.exitCode ?? 1) === 0) return false;
+  const output = `${result.stderr}\n${result.stdout}`;
+  return (
+    /--refresh\b/.test(output) ||
+    /\busage\s*:/i.test(output) ||
+    /unknown (?:option|flag|argument|parameter)/i.test(output) ||
+    /unrecognized (?:option|flag|argument)/i.test(output)
+  );
 }
 
 export async function discoverOpenCodeModels(
@@ -190,6 +233,14 @@ export async function discoverOpenCodeModels(
         `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`,
       );
     } else if ((result.exitCode ?? 1) !== 0) {
+      if (input.refresh && isRefreshRejectedByCli(result)) {
+        // Capability tolerance: this CLI rejected `--refresh`, so degrade to a
+        // plain `opencode models` listing rather than failing the request.
+        console.warn(
+          "[opencode-local] `opencode models --refresh` is not supported by this CLI; falling back to a plain `opencode models` listing.",
+        );
+        return discoverOpenCodeModels({ ...input, refresh: false });
+      }
       const detail =
         firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
       lastError = new Error(
@@ -266,11 +317,25 @@ export function isTruthyEnvFlag(value: string | undefined): boolean {
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
+  variant?: unknown;
+  line?: OpenCodeVersionLine;
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+
+  // why: v2 runs address the configured model as `provider/model#variant`
+  // (args.ts folds the variant into --model), while `opencode models` may list
+  // either the variant-qualified id or the bare model. Accept BOTH forms so a
+  // valid config is not rejected just because the catalog carries the other
+  // form — e.g. a catalog listing only `provider/model#thinking` must pass for
+  // model=provider/model variant=thinking on the v2 line.
+  const acceptedIds = new Set<string>([model]);
+  const variant = asString(input.variant, "").trim();
+  if (input.line === "v2" && variant && !model.includes("#")) {
+    acceptedIds.add(`${model}#${variant}`);
+  }
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -317,7 +382,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [{ id: model, label: model }];
   }
 
-  if (!models.some((entry) => entry.id === model)) {
+  if (!models.some((entry) => acceptedIds.has(entry.id))) {
     // `opencode models` reads a persistent models.dev cache. Long-lived runner
     // hosts can therefore report a stale non-empty catalog even while the
     // configured provider serves the model. Refresh once before treating a
@@ -329,7 +394,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
         cwd: input.cwd,
         env: input.env,
       });
-      if (refreshedModels.some((entry) => entry.id === model)) {
+      if (refreshedModels.some((entry) => acceptedIds.has(entry.id))) {
         return refreshedModels;
       }
       if (refreshedModels.length > 0) models = refreshedModels;

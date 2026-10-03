@@ -5,7 +5,25 @@ import path from "node:path";
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
+  return {
+    ...actual,
+    runAdapterExecutionTargetProcess: vi.fn(),
+    startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+      env: {},
+      stop: async () => {},
+    })),
+  };
+});
+
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
+    restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
+    runSshCommand: vi.fn(async () => ({ stdout: "/home/agent", stderr: "", exitCode: 0 })),
+    syncDirectoryToSsh: vi.fn(async () => undefined),
+  };
 });
 
 import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
@@ -245,6 +263,129 @@ describe("OpenCode local skill injection", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { line: "v1", banner: "1.18.32", inV1Home: true, inV2Home: false },
+    { line: "v2", banner: "opencode v2.0.18", inV1Home: false, inV2Home: true },
+    { line: "unknown", banner: null, inV1Home: true, inV2Home: true },
+  ])(
+    "routes skill injection to the homes for the detected OpenCode line (line=$line)",
+    async ({ line, banner, inV1Home, inV2Home }) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-line-home-"));
+      const home = path.join(root, "agent-home");
+      const workspace = path.join(root, "workspace");
+      const commandPath = path.join(root, "opencode");
+      const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+      await fs.mkdir(workspace, { recursive: true });
+      const script = banner
+        ? `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "${banner}"\n  exit 0\nfi\nexit 0\n`
+        : "#!/bin/sh\nexit 0\n";
+      await fs.writeFile(commandPath, script, "utf8");
+      await fs.chmod(commandPath, 0o755);
+
+      const isSkillLink = async (target: string) =>
+        (await fs.lstat(target).catch(() => null))?.isSymbolicLink() ?? false;
+      // Inspect the skills homes AT RUN TIME: the v2 home follows the run's
+      // effective XDG_CONFIG_HOME (the isolated runtime config home when
+      // active), which is cleaned up when the run ends.
+      const runTimeSkills: { xdgConfigHome: string | null; v1Link: boolean; v2Link: boolean } = {
+        xdgConfigHome: null,
+        v1Link: false,
+        v2Link: false,
+      };
+
+      runProcessMock.mockReset();
+      runProcessMock.mockImplementation(async (_runId, _target, _cmd, _args, options) => {
+        const runEnv = (options as { env: Record<string, string> }).env;
+        const effectiveXdgConfigHome = runEnv.XDG_CONFIG_HOME ?? path.join(home, ".config");
+        runTimeSkills.xdgConfigHome = runEnv.XDG_CONFIG_HOME ?? null;
+        runTimeSkills.v1Link = await isSkillLink(path.join(home, ".claude", "skills", "paperclip"));
+        runTimeSkills.v2Link = await isSkillLink(
+          path.join(effectiveXdgConfigHome, "opencode", "skills", "paperclip"),
+        );
+        return probeResult({
+          stdout: JSON.stringify({
+            type: "text",
+            sessionID: `session-line-${line}`,
+            part: { text: "done" },
+          }),
+        });
+      });
+      const logs: string[] = [];
+
+      try {
+        const result = await execute({
+          runId: `run-line-${line}`,
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "OpenCode Coder",
+            adapterType: "opencode_local",
+            adapterConfig: {},
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey: null,
+          },
+          config: {
+            command: commandPath,
+            cwd: workspace,
+            model: "openai/gpt-5",
+            env: {
+              HOME: home,
+              OPENCODE_ALLOW_ALL_MODELS: "1",
+            },
+            paperclipRuntimeSkills: [{
+              key: "paperclipai/paperclip/paperclip",
+              runtimeName: "paperclip",
+              source: skillSource,
+            }],
+            promptTemplate: "Run the task.",
+          },
+          context: {},
+          onLog: async (_stream, chunk) => {
+            logs.push(chunk);
+          },
+        });
+
+        expect(result.exitCode).toBe(0);
+        // The detected line decides the skill home: v1 → the HOME-based
+        // ~/.claude/skills, v2 → the EFFECTIVE config home the run sees (its own
+        // XDG_CONFIG_HOME, i.e. the isolated runtime config home when active),
+        // undetectable → both (legacy-safe).
+        expect(runTimeSkills.v1Link).toBe(inV1Home);
+        expect(runTimeSkills.v2Link).toBe(inV2Home);
+        const logText = logs.join("");
+        const effectiveXdgConfigHome = runTimeSkills.xdgConfigHome ?? path.join(home, ".config");
+        if (inV2Home) {
+          // The injected v2 path must match the run's actual XDG_CONFIG_HOME.
+          expect(runTimeSkills.xdgConfigHome).toBeTruthy();
+          expect(logText).toContain(
+            `Injected OpenCode skill "paperclipai/paperclip/paperclip" into ${path.join(effectiveXdgConfigHome, "opencode", "skills")}`,
+          );
+        } else {
+          // A v1 run never touches a v2 home.
+          await expect(
+            fs.lstat(path.join(home, ".config", "opencode", "skills", "paperclip")),
+          ).rejects.toThrow();
+        }
+        if (banner) {
+          expect(logText).toContain(`Detected OpenCode ${banner} (line: ${line}).`);
+        } else {
+          expect(logText).toContain("version probe returned no version");
+        }
+        // Local runs leave OPENCODE_DB untouched so v2 state resolves to the
+        // operator's persistent database (isolation is opt-in via
+        // adapterConfig.opencodeDataDir or the managed remote homes).
+        const runCall = runProcessMock.mock.calls.at(-1)!;
+        expect((runCall[4] as { env: Record<string, string> }).env.OPENCODE_DB).toBeUndefined();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
@@ -349,4 +490,103 @@ describe("ensureRemoteOpenCodeModelConfiguredAndAvailable — probe is non-fatal
       ensureRemoteOpenCodeModelConfiguredAndAvailable({ ...base, model: "openai/gpt-5" }),
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
   });
+});
+
+describe("remote execution target OpenCode state database", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    runProcessMock.mockReset();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it.each([false, true])(
+    "never points OPENCODE_DB at a host temp path for remote targets (managed=%s)",
+    async (managed) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-db-"));
+      cleanupDirs.push(root);
+      const workspaceDir = path.join(root, "workspace");
+      await fs.mkdir(workspaceDir, { recursive: true });
+
+      runProcessMock.mockReset();
+      runProcessMock.mockResolvedValue(probeResult({
+        stdout: JSON.stringify({
+          type: "text",
+          sessionID: "session-remote-db",
+          part: { text: "done" },
+        }),
+      }));
+
+      const runId = managed ? "run-remote-db-managed" : "run-remote-db";
+      const managedRemoteWorkspace = `/remote/workspace/.paperclip-runtime/runs/${runId}/workspace`;
+
+      const result = await execute({
+        runId,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Builder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "opencode",
+          model: "openai/gpt-5",
+          env: {
+            XDG_CONFIG_HOME: path.join(root, "config"),
+            OPENCODE_ALLOW_ALL_MODELS: "1",
+          },
+          ...(managed ? {
+            managedAiConnection: { provider: "openrouter", method: "api_key" },
+          } : {}),
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const runCall = runProcessMock.mock.calls.at(-1)!;
+      const runEnv = (runCall[4] as { env: Record<string, string> }).env;
+      if (managed) {
+        // Managed remote runs re-pin OPENCODE_DB inside the remote managed home.
+        const runtimeRootDir = `${managedRemoteWorkspace}/.paperclip-runtime/opencode`;
+        expect(runEnv.OPENCODE_DB).toBe(
+          `${runtimeRootDir}/managed-auth/${runId}/data/opencode/opencode.db`,
+        );
+      } else {
+        // Unmanaged remote runs omit it entirely rather than inheriting a
+        // host temp path the target cannot see.
+        expect(runEnv.OPENCODE_DB).toBeUndefined();
+      }
+      // The pre-fix value pointed into the host's isolated config temp dir.
+      expect(runEnv.OPENCODE_DB ?? "").not.toContain("paperclip-opencode-config-");
+    },
+  );
 });

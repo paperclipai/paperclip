@@ -30,6 +30,7 @@ function errorText(value: unknown): string {
     asString(rec.message) ||
     asString(data?.message) ||
     asString(rec.name) ||
+    asString(rec.type) ||
     "";
   if (msg) return msg;
   try {
@@ -143,7 +144,9 @@ export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEnt
     ];
   }
 
-  if (type === "error") {
+  if (type === "error" || Object.prototype.hasOwnProperty.call(parsed, "error")) {
+    // Mirrors the server parser: v2 failures/cancellations emit a single object
+    // with no top-level `type`, e.g. {"error":{"type":"unknown","message":"Command cancelled"},"content":[]}.
     const text = errorText(parsed.error ?? parsed.message);
     return [{ kind: "stderr", ts, text: text || line }];
   }
