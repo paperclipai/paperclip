@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1066,6 +1066,28 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
+/**
+ * Oldest exhausted-failure timestamp per agent. The attention feed's
+ * newer-run scan is bounded per agent: a newer run can only suppress a
+ * failed run of the same agent+issue pair, so an agent's window only needs
+ * to reach back to its own oldest exhausted failure. Keeping this as a pure
+ * function makes the window math directly unit-testable; collapsing it back
+ * into a single global window would erase the per-agent bounds this
+ * optimization depends on.
+ */
+export function oldestExhaustedFailureByAgent(
+  rows: ReadonlyArray<{ agentId: string; createdAt: Date }>,
+): ReadonlyMap<string, Date> {
+  const oldestByAgent = new Map<string, Date>();
+  for (const row of rows) {
+    const oldest = oldestByAgent.get(row.agentId);
+    if (!oldest || row.createdAt < oldest) {
+      oldestByAgent.set(row.agentId, row.createdAt);
+    }
+  }
+  return oldestByAgent;
+}
+
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
@@ -1663,11 +1685,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
-      const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
-      }, null);
+      // Bound the newer-run scan per agent: one ancient failure no longer
+      // re-opens a window over every run of every failed agent. See
+      // oldestExhaustedFailureByAgent for the window math and its invariants.
+      const oldestFailedRunCreatedAtByAgent = oldestExhaustedFailureByAgent(failedRows);
       const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
         issueSummaryMap(
           db,
@@ -1675,7 +1696,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           failedIssueIds,
         ),
         issueImageMap(db, companyId, failedIssueIds),
-        oldestFailedRunCreatedAt && failedAgentIds.length > 0
+        oldestFailedRunCreatedAtByAgent.size > 0
           ? db
             .select({
               agentId: heartbeatRuns.agentId,
@@ -1688,8 +1709,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .from(heartbeatRuns)
             .where(and(
               eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, failedAgentIds),
-              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
+              or(
+                ...[...oldestFailedRunCreatedAtByAgent.entries()].map(([agentId, oldestCreatedAt]) =>
+                  and(
+                    eq(heartbeatRuns.agentId, agentId),
+                    gt(heartbeatRuns.createdAt, oldestCreatedAt),
+                  )),
+              ),
             ))
           : Promise.resolve([]),
       ]);

@@ -41,7 +41,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
-import { attentionService } from "../services/attention.js";
+import { attentionService, oldestExhaustedFailureByAgent } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -1025,6 +1025,108 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
+  });
+
+  it("bounds the newer-run scan per agent without changing failed-run feed results", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("AGW");
+    const workerIssueId = await insertIssue({
+      companyId,
+      identifier: "AGW-1",
+      title: "Worker failed task",
+      status: "in_progress",
+    });
+    const reviewerIssueId = await insertIssue({
+      companyId,
+      identifier: "AGW-2",
+      title: "Reviewer failed task",
+      status: "in_progress",
+    });
+    // The worker's exhausted failure is much older than the reviewer's. The
+    // newer-run window must be computed per agent: the reviewer's window
+    // starts at its own failure, so the old worker run and the stale
+    // pre-failure reviewer run must not leak into it, while the reviewer's
+    // newer succeeded run on the same issue still suppresses its failure.
+    const workerFailureId = randomUUID();
+    const workerFailureAt = new Date("2026-07-01T12:00:00.000Z");
+    const reviewerFailureId = randomUUID();
+    const reviewerFailureAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      {
+        id: workerFailureId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "worker adapter failed",
+        contextSnapshot: { issueId: workerIssueId },
+        createdAt: workerFailureAt,
+        updatedAt: workerFailureAt,
+        finishedAt: workerFailureAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        // Older than the reviewer's failure: outside its per-agent window
+        // and never a "newer run" for the failure either way.
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: new Date("2026-07-08T12:00:00.000Z"),
+        updatedAt: new Date("2026-07-08T12:00:00.000Z"),
+        finishedAt: new Date("2026-07-08T12:00:00.000Z"),
+      },
+      {
+        id: reviewerFailureId,
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "reviewer adapter failed",
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: reviewerFailureAt,
+        updatedAt: reviewerFailureAt,
+        finishedAt: reviewerFailureAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        // Newer run for the same issue/agent pair: suppresses the failure.
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values([
+      {
+        companyId,
+        runId: workerFailureId,
+        agentId: workerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-01T12:00:01.000Z"),
+      },
+      {
+        companyId,
+        runId: reviewerFailureId,
+        agentId: reviewerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
+    expect(failures.map((item) => item.subject.id)).toEqual([workerFailureId]);
+    expect(failures[0]?.relatedIssue?.id).toBe(workerIssueId);
   });
 
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
@@ -2127,5 +2229,34 @@ describeEmbeddedPostgres("attention service", () => {
       expect(byKey.get(key)).toMatchObject({ shelf: true, retentionDays: 30, archivedAt: null });
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
+  });
+});
+
+describe("oldestExhaustedFailureByAgent", () => {
+  it("bounds each agent's window to its own oldest exhausted failure", () => {
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    const aOldest = new Date("2026-06-13T00:00:00.000Z");
+    const aNewer = new Date("2026-07-01T00:00:00.000Z");
+    const bOldest = new Date("2026-09-09T12:00:00.000Z");
+    const bNewer = new Date("2026-09-09T13:00:00.000Z");
+
+    const windows = oldestExhaustedFailureByAgent([
+      { agentId: agentA, createdAt: aNewer },
+      { agentId: agentB, createdAt: bNewer },
+      { agentId: agentA, createdAt: aOldest },
+      { agentId: agentB, createdAt: bOldest },
+    ]);
+
+    // Per-agent bounds: one agent's ancient failure must not widen the other
+    // agent's window. The pre-fix global window scanned every run since the
+    // oldest failure across all failed agents (#12500).
+    expect(windows.get(agentA)).toEqual(aOldest);
+    expect(windows.get(agentB)).toEqual(bOldest);
+    expect([...windows.keys()].sort()).toEqual([agentA, agentB].sort());
+  });
+
+  it("returns an empty map when there are no exhausted failures", () => {
+    expect(oldestExhaustedFailureByAgent([]).size).toBe(0);
   });
 });
