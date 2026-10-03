@@ -89,6 +89,10 @@ export const storageConfigSchema = z.object({
 
 export const secretsLocalEncryptedConfigSchema = z.object({
   keyFilePath: z.string().default("~/.paperclip/instances/default/secrets/master.key"),
+  // Opt-in deployment boundary: the server must use a service UID distinct
+  // from the host agent UID and dispatch agents only to isolated sandboxes.
+  requireIsolatedAgentRuntime: z.boolean().optional(),
+  hostAgentUid: z.number().int().nonnegative().optional(),
 }).passthrough();
 
 export const secretsConfigSchema = z.object({

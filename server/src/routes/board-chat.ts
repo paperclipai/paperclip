@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -95,6 +95,10 @@ export function boardChatRoutes(
   }
 
   router.post("/board/chat/stream", async (req, res) => {
+    // This route launches a host process with the server's UID and environment.
+    // A company-scoped agent JWT must never authorize that process.
+    assertInstanceAdmin(req);
+
     // Conference Room Chat is an experimental surface (PAP-136/PAP-137): the
     // API is gated alongside the UI so the endpoint is inert while the flag
     // is off, not just hidden.

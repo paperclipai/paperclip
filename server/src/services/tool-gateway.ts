@@ -5036,6 +5036,16 @@ export function createToolGatewayService(
         },
       });
     }
+    // Both connected tools and MCP context requests reach this function. All
+    // remaining templates may spawn under the server UID, which can read the
+    // local master key even when the agent runs in a separate Kubernetes pod.
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      throw new ToolGatewayHttpError(
+        403,
+        "Local stdio MCP connections are unavailable with isolated local secrets",
+        "local_stdio_unavailable_in_isolated_mode",
+      );
+    }
     if (!input.template.command) {
       throw new ToolGatewayHttpError(
         501,

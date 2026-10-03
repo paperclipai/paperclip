@@ -3045,6 +3045,11 @@ async function recordWorkspaceCommandOperation(
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },
 ) {
+  // These commands run on the Paperclip host as the service UID, before the
+  // sandbox agent starts. That UID owns the local master key in isolated mode.
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    throw new Error("Isolated local secrets forbid host workspace commands.");
+  }
   if (!recorder) {
     await runWorkspaceCommand(input);
     return null;
@@ -5908,6 +5913,9 @@ function createProvisioningRuntimeServiceRecord(
 }
 
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    throw new Error("Isolated local secrets forbid host runtime services.");
+  }
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
   const identity = resolveRuntimeServiceReuseIdentity({

@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
 import type {
@@ -16,6 +16,45 @@ interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   iv: string;
   tag: string;
   ciphertext: string;
+}
+
+/** Fail before the server opens its database or dispatches an agent. */
+export function assertIsolatedLocalSecretsKey(input: {
+  enabled: boolean;
+  keyFilePath: string;
+  hostAgentUid: number | null;
+}): void {
+  if (!input.enabled) return;
+  const serverUid = process.getuid?.();
+  if (process.platform !== "linux" || serverUid === undefined) {
+    throw new Error("Isolated local secrets require Linux UID separation.");
+  }
+  if (serverUid === 0) {
+    throw new Error("Isolated local secrets require a non-root Paperclip service UID.");
+  }
+  if (!Number.isSafeInteger(input.hostAgentUid) || input.hostAgentUid === null || input.hostAgentUid <= 0) {
+    throw new Error("Isolated local secrets require a non-root hostAgentUid.");
+  }
+  if (serverUid === input.hostAgentUid) {
+    throw new Error("The Paperclip service UID and host agent UID must differ.");
+  }
+  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()) {
+    throw new Error("Isolated local secrets require a key file; an inline master key is forbidden.");
+  }
+
+  const keyPath = path.resolve(input.keyFilePath);
+  const key = lstatSync(keyPath); // Missing keys must fail closed, never auto-create during cutover.
+  if (!key.isFile() || key.isSymbolicLink() || key.uid !== serverUid || (key.mode & 0o077) !== 0) {
+    throw new Error("Isolated secrets key must be a regular service-owned file with mode 0600 or stricter.");
+  }
+  for (let directory = path.dirname(keyPath); ; directory = path.dirname(directory)) {
+    const entry = lstatSync(directory);
+    if (!entry.isDirectory() || entry.isSymbolicLink() || (entry.uid !== serverUid && entry.uid !== 0) ||
+        (entry.mode & 0o022) !== 0) {
+      throw new Error(`Isolated secrets key has an unsafe ancestor directory: ${directory}`);
+    }
+    if (directory === path.dirname(directory)) break;
+  }
 }
 
 function resolveMasterKeyFilePath() {
@@ -46,6 +85,14 @@ function decodeMasterKey(raw: string): Buffer | null {
 }
 
 function loadOrCreateMasterKey(): Buffer {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    const rawAgentUid = process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID;
+    assertIsolatedLocalSecretsKey({
+      enabled: true,
+      keyFilePath: resolveMasterKeyFilePath(),
+      hostAgentUid: rawAgentUid === undefined ? null : Number(rawAgentUid),
+    });
+  }
   const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
     const fromEnv = decodeMasterKey(envKeyRaw);
@@ -107,6 +154,22 @@ function prepareManagedVersion(value: string): PreparedSecretVersion {
 }
 
 async function inspectLocalEncryptedHealth(): Promise<SecretProviderHealthCheck> {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    try {
+      const rawAgentUid = process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID;
+      assertIsolatedLocalSecretsKey({
+        enabled: true,
+        keyFilePath: resolveMasterKeyFilePath(),
+        hostAgentUid: rawAgentUid === undefined ? null : Number(rawAgentUid),
+      });
+    } catch (error) {
+      return {
+        provider: "local_encrypted",
+        status: "error",
+        message: error instanceof Error ? error.message : "Isolated local key preflight failed",
+      };
+    }
+  }
   const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
     if (!decodeMasterKey(envKeyRaw)) {

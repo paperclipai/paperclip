@@ -34,6 +34,7 @@ describe("agent local JWT", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     if (originalEnv.secret === undefined) delete process.env[secretEnv];
     else process.env[secretEnv] = originalEnv.secret;
     if (originalEnv.betterAuthSecret === undefined) delete process.env[betterAuthSecretEnv];
@@ -65,6 +66,14 @@ describe("agent local JWT", () => {
       iss: "paperclip",
       aud: "paperclip-api",
     });
+  });
+
+  it("keeps run-scoped JWT issuance when local key isolation is enabled", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).not.toBeNull();
+    expect(verifyLocalAgentJwt(token!)?.run_id).toBe("run-1");
   });
 
   it("round-trips a skill_test run scope", () => {

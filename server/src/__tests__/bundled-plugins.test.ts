@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -145,6 +145,38 @@ describe("resolveBundledPluginInstalls", () => {
         localPath: "/somewhere/else/kubernetes",
       },
     ]);
+  });
+
+  it("refuses an external Kubernetes override in isolation mode before provisioning", () => {
+    const external = makeTempDir("external-kubernetes-");
+    expect(() => resolveBundledPluginInstalls(["kubernetes"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {
+        PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true",
+        PAPERCLIP_KUBERNETES_PLUGIN_PATH: external,
+      },
+      enforceCatalogRoot: false,
+    })).toThrow(/bundled Kubernetes sandbox provider; refusing to start/);
+  });
+
+  it("pins a trusted alias to the canonical bundle before the alias can change", () => {
+    const root = makeTempDir("kubernetes-catalog-");
+    const bundle = path.join(root, "sandbox-providers/kubernetes");
+    const alias = path.join(root, "alias");
+    const replacement = makeTempDir("kubernetes-replacement-");
+    mkdirSync(bundle, { recursive: true });
+    symlinkSync(bundle, alias);
+    const [install] = resolveBundledPluginInstalls(["kubernetes"], {
+      catalogRoot: root,
+      env: {
+        PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true",
+        PAPERCLIP_KUBERNETES_PLUGIN_PATH: alias,
+      },
+      enforceCatalogRoot: false,
+    });
+    rmSync(alias);
+    symlinkSync(replacement, alias);
+    expect(install?.localPath).toBe(realpathSync(bundle));
   });
 
   it("honors an env override that stays inside the catalog root under enforcement", () => {

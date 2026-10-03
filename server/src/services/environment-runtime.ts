@@ -87,6 +87,7 @@ import {
   type SandboxOrphanCleanupSpool,
 } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
+import { isTrustedBundledKubernetesProvider } from "./bundled-plugins.js";
 
 // The constant error kind for the durable orphan-cleanup-write-failed log. The
 // log never reads the caught exception, because the exception can carry a
@@ -1855,6 +1856,12 @@ function createSandboxEnvironmentDriver(
           throw new Error(
             `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
           );
+        }
+        // Another installed plugin can declare the same "kubernetes" driver
+        // key and win lookup. Only the trusted provider may build the pod.
+        if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" &&
+            !isTrustedBundledKubernetesProvider(pluginProvider.resolved.plugin)) {
+          throw new Error("Isolated local secrets require the bundled Kubernetes sandbox provider.");
         }
 
         const workerConfig = stripSandboxProviderEnvelope(parsed.config);

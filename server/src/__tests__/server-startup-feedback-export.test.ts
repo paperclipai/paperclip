@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -435,6 +436,49 @@ describe("startServer feedback export wiring", () => {
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
+
+  it("refuses local_trusted before database startup when master-key isolation is enabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentMode: "local_trusted",
+      secretsRequireIsolatedAgentRuntime: true,
+    }));
+
+    await expect(startServer()).rejects.toThrow(/require authenticated deployment mode/);
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== "linux" || process.getuid?.() === 0 || process.getuid?.() === undefined)(
+    "starts authenticated isolation with a synthetic service key and keeps run-scoped JWT issuance",
+    async () => {
+      const root = mkdtempSync(path.join(process.cwd(), ".paperclip-isolated-startup-"));
+      const keyDir = path.join(root, "secrets");
+      const keyPath = path.join(keyDir, "master.key");
+      const serverUid = process.getuid!();
+      const agentUid = serverUid === 1000 ? 1001 : 1000;
+      mkdirSync(keyDir, { mode: 0o700 });
+      writeFileSync(keyPath, Buffer.alloc(32, 7).toString("base64"), { mode: 0o600 });
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", keyPath);
+      vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+      vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String(agentUid));
+      loadConfigMock.mockReturnValue(buildTestConfig({
+        secretsRequireIsolatedAgentRuntime: true,
+        secretsHostAgentUid: agentUid,
+        secretsMasterKeyFilePath: keyPath,
+      }));
+
+      try {
+        expect((await startServer()).server).toBe(fakeServer);
+        const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
+        expect(token).not.toBeNull();
+        expect(verifyLocalAgentJwt(token!)?.run_id).toBe("run-1");
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {
     const originalHome = process.env.PAPERCLIP_HOME;

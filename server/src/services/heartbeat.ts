@@ -21387,6 +21387,8 @@ export function heartbeatService(
         // tenant-set env var can land untrusted execution on the tenant
         // container.
         managedSandboxOnly,
+        requireIsolatedAgentRuntime:
+          process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true",
       };
       const executionForcedToKubernetes =
         isExecutionForcedToKubernetes(executionPolicy);
@@ -21464,6 +21466,15 @@ export function heartbeatService(
           : selectedEnvironmentId
             ? await environmentsSvc.getById(selectedEnvironmentId)
             : null;
+      if (executionPolicy.requireIsolatedAgentRuntime) {
+        const decision = evaluateExecutionAllowlist(executionPolicy, {
+          driver: selectedEnvironmentForConfig?.driver ?? "local",
+          provider: typeof selectedEnvironmentForConfig?.config?.provider === "string"
+            ? selectedEnvironmentForConfig.config.provider
+            : null,
+        });
+        if (!decision.allowed) throw new Error(decision.reason);
+      }
       const nativeChatWorkspaceScope = await findNativeChatWorkspaceScope(db, {
         adapterType: agent.adapterType,
         environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
@@ -22702,6 +22713,10 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      if (executionPolicy.requireIsolatedAgentRuntime &&
+          (executionTarget?.kind !== "remote" || executionTarget.transport !== "sandbox")) {
+        throw new Error("Isolated local secrets require a remote sandbox execution target.");
+      }
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
       const recordInstructionSave = async (saved: NonNullable<Awaited<ReturnType<typeof instructionCopies.get>>>) => {

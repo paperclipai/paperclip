@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -50,7 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
-import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { resolveBundledCatalogRoot, trustedBundledKubernetesProviderPath, trustedBundledPluginPath } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,6 +59,20 @@ export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugi
 export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
+const KUBERNETES_PLUGIN_KEY = "paperclip.kubernetes-sandbox-provider";
+const KUBERNETES_PACKAGE_NAME = "@paperclipai/plugin-kubernetes";
+const ISOLATED_KUBERNETES_ERROR = "Isolated local secrets require the bundled Kubernetes sandbox provider.";
+const ISOLATED_PLUGIN_ERROR = "Isolated local secrets require a verified release-bundled plugin.";
+
+function requiresIsolatedLocalSecrets(): boolean {
+  return process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
+}
+
+function requireTrustedKubernetesPath(packagePath: string): string {
+  const trustedPath = trustedBundledKubernetesProviderPath(packagePath);
+  if (!trustedPath) throw new Error(ISOLATED_KUBERNETES_ERROR);
+  return trustedPath;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -279,6 +293,8 @@ export interface PluginLoaderOptions {
     /** Persisted grants, supplied before a runtime manifest refresh is saved. */
     previousManifest?: PaperclipPluginManifestV1;
   }) => void;
+  /** Digest-verified distribution bundles from the image catalog. */
+  trustedDistributionPlugins?: readonly { pluginKey: string; localPath: string }[];
   /**
    * Path to the local plugin directory to scan.
    * Defaults to ~/.paperclip/plugins/
@@ -1155,6 +1171,7 @@ export function pluginLoader(
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
     assertPackageActivation,
+    trustedDistributionPlugins = [],
   } = options;
 
   const registry = pluginRegistryService(db);
@@ -1162,6 +1179,24 @@ export function pluginLoader(
   const capabilityValidator = pluginCapabilityValidator();
   const log = logger.child({ service: "plugin-loader" });
   const hostVersion = runtimeServices?.instanceInfo.hostVersion;
+
+  // A manifest is executable code. In isolation mode, its source must be
+  // known before import or local build, regardless of package name/manifest ID.
+  function requireTrustedIsolationPath(packagePath: string, declaredKey?: string) {
+    const builtIn = trustedBundledPluginPath(packagePath);
+    let trusted = builtIn;
+    if (!trusted) {
+      try {
+        const actual = realpathSync(packagePath);
+        const distribution = trustedDistributionPlugins.find((entry) => entry.localPath === actual);
+        if (distribution) trusted = { packagePath: actual, pluginKey: distribution.pluginKey };
+      } catch { /* Missing source must not fall back to npm. */ }
+    }
+    if (!trusted || (declaredKey && trusted.pluginKey !== declaredKey)) {
+      throw new Error(declaredKey === KUBERNETES_PLUGIN_KEY ? ISOLATED_KUBERNETES_ERROR : ISOLATED_PLUGIN_ERROR);
+    }
+    return trusted;
+  }
 
   async function assertPageRoutePathsAvailable(manifest: PaperclipPluginManifestV1): Promise<void> {
     const requestedRoutePaths = getDeclaredPageRoutePaths(manifest);
@@ -1214,11 +1249,18 @@ export function pluginLoader(
       throw new Error("Either packageName or localPath must be provided");
     }
 
+    // No npm artifact has release provenance. Reject it before npm install,
+    // local build, or executable manifest import when the key is isolated.
+    if (requiresIsolatedLocalSecrets() && !localPath) {
+      throw new Error(packageName === KUBERNETES_PACKAGE_NAME ? ISOLATED_KUBERNETES_ERROR : ISOLATED_PLUGIN_ERROR);
+    }
+
     const targetInstallDir = installDir ?? localPluginDir;
 
     // Step 1 & 2: Resolve and install package
     let resolvedPackagePath: string;
     let resolvedPackageName: string;
+    let trustedPackage: ReturnType<typeof requireTrustedIsolationPath> | undefined;
 
     if (localPath) {
       // Local path install — validate the directory exists
@@ -1226,12 +1268,21 @@ export function pluginLoader(
       if (!existsSync(absLocalPath)) {
         throw new Error(`Local plugin path does not exist: ${absLocalPath}`);
       }
-      resolvedPackagePath = absLocalPath;
-      const pkgJson = await readPackageJson(absLocalPath);
+      // Pin a local alias before reading metadata or running its build step.
+      const localPackagePath = requiresIsolatedLocalSecrets()
+        ? realpathSync(absLocalPath)
+        : absLocalPath;
+      const pkgJson = await readPackageJson(localPackagePath);
       resolvedPackageName =
         typeof pkgJson?.["name"] === "string"
           ? pkgJson["name"]
-          : path.basename(absLocalPath);
+          : path.basename(localPackagePath);
+      trustedPackage = requiresIsolatedLocalSecrets()
+        ? requireTrustedIsolationPath(localPackagePath,
+          packageName === KUBERNETES_PACKAGE_NAME || resolvedPackageName === KUBERNETES_PACKAGE_NAME
+            ? KUBERNETES_PLUGIN_KEY : undefined)
+        : undefined;
+      resolvedPackagePath = trustedPackage?.packagePath ?? localPackagePath;
 
       log.info(
         { localPath: absLocalPath, packageName: resolvedPackageName },
@@ -1298,7 +1349,11 @@ export function pluginLoader(
       );
     }
 
-    const manifest = await loadManifestFromPath(manifestPath);
+    const trustedManifestPath = trustedPackage
+      ? resolveTrustedBundleEntrypoint(resolvedPackagePath, manifestPath)
+      : manifestPath;
+    const manifest = await loadManifestFromPath(trustedManifestPath);
+    if (trustedPackage && manifest.id !== trustedPackage.pluginKey) throw new Error(ISOLATED_PLUGIN_ERROR);
     assertPackageActivation?.({ packageRoot: resolvedPackagePath, pluginKey: manifest.id, manifest });
 
     // Step 4: Reject incompatible plugin API versions
@@ -1371,6 +1426,7 @@ export function pluginLoader(
 
   async function loadManifestFromPackageRoot(
     packageRoot: string,
+    strictBundleRoot?: string,
   ): Promise<PaperclipPluginManifestV1 | null> {
     const pkgJson = await readPackageJson(packageRoot);
     if (!pkgJson) return null;
@@ -1378,14 +1434,17 @@ export function pluginLoader(
     const manifestPath = resolveManifestPath(packageRoot, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) return null;
 
-    return loadManifestFromPath(manifestPath);
+    return loadManifestFromPath(strictBundleRoot
+      ? resolveTrustedBundleEntrypoint(strictBundleRoot, manifestPath)
+      : manifestPath);
   }
 
   async function refreshPluginManifestFromPackage(
     plugin: PluginRecord,
     packageRoot: string,
   ): Promise<PluginRecord> {
-    const manifest = await loadManifestFromPackageRoot(packageRoot);
+    const manifest = await loadManifestFromPackageRoot(packageRoot,
+      requiresIsolatedLocalSecrets() ? packageRoot : undefined);
     if (!manifest) {
       throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
     }
@@ -1423,11 +1482,12 @@ export function pluginLoader(
     packagePath: string,
     source: PluginSource,
   ): Promise<DiscoveredPlugin | null> {
-    assertPackageActivation?.({ packageRoot: packagePath });
-    const pkgJson = await readPackageJson(packagePath);
+    const packageRoot = requiresIsolatedLocalSecrets() ? realpathSync(packagePath) : packagePath;
+    const pkgJson = await readPackageJson(packageRoot);
     if (!pkgJson) return null;
 
     const packageName = typeof pkgJson["name"] === "string" ? pkgJson["name"] : "";
+    assertPackageActivation?.({ packageRoot });
     const version = typeof pkgJson["version"] === "string" ? pkgJson["version"] : "0.0.0";
 
     // Determine if this is a plugin package at all
@@ -1438,12 +1498,16 @@ export function pluginLoader(
       return null;
     }
 
-    const manifestPath = resolveManifestPath(packagePath, pkgJson);
+    const trustedPackage = requiresIsolatedLocalSecrets()
+      ? requireTrustedIsolationPath(packageRoot, packageName === KUBERNETES_PACKAGE_NAME ? KUBERNETES_PLUGIN_KEY : undefined)
+      : undefined;
+
+    const manifestPath = resolveManifestPath(packageRoot, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
       // Found a potential plugin package but no manifest entry point — treat
       // as a discovery-only result with no manifest
       return {
-        packagePath,
+        packagePath: packageRoot,
         packageName,
         version,
         source,
@@ -1452,10 +1516,13 @@ export function pluginLoader(
     }
 
     try {
-      const manifest = await loadManifestFromPath(manifestPath);
-      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
+      const manifest = await loadManifestFromPath(trustedPackage
+        ? resolveTrustedBundleEntrypoint(packageRoot, manifestPath)
+        : manifestPath);
+      if (trustedPackage && manifest.id !== trustedPackage.pluginKey) throw new Error(ISOLATED_PLUGIN_ERROR);
+      assertPackageActivation?.({ packageRoot, pluginKey: manifest.id, manifest });
       return {
-        packagePath,
+        packagePath: packageRoot,
         packageName,
         version,
         source,
@@ -1706,23 +1773,31 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async loadManifest(packagePath: string): Promise<PaperclipPluginManifestV1 | null> {
-      assertPackageActivation?.({ packageRoot: packagePath });
-      const pkgJson = await readPackageJson(packagePath);
+      const packageRoot = requiresIsolatedLocalSecrets() ? realpathSync(packagePath) : packagePath;
+      const pkgJson = await readPackageJson(packageRoot);
       if (!pkgJson) return null;
 
       const hasPaperclipPlugin = "paperclipPlugin" in pkgJson;
       const packageName = typeof pkgJson["name"] === "string" ? pkgJson["name"] : "";
+      assertPackageActivation?.({ packageRoot });
       const nameMatchesConvention = isPluginPackageName(packageName);
 
       if (!hasPaperclipPlugin && !nameMatchesConvention) {
         return null;
       }
 
-      const manifestPath = resolveManifestPath(packagePath, pkgJson);
+      const trustedPackage = requiresIsolatedLocalSecrets()
+        ? requireTrustedIsolationPath(packageRoot, packageName === KUBERNETES_PACKAGE_NAME ? KUBERNETES_PLUGIN_KEY : undefined)
+        : undefined;
+
+      const manifestPath = resolveManifestPath(packageRoot, pkgJson);
       if (!manifestPath || !existsSync(manifestPath)) return null;
 
-      const manifest = await loadManifestFromPath(manifestPath);
-      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
+      const manifest = await loadManifestFromPath(trustedPackage
+        ? resolveTrustedBundleEntrypoint(packageRoot, manifestPath)
+        : manifestPath);
+      if (trustedPackage && manifest.id !== trustedPackage.pluginKey) throw new Error(ISOLATED_PLUGIN_ERROR);
+      assertPackageActivation?.({ packageRoot, pluginKey: manifest.id, manifest });
       return manifest;
     },
 
@@ -1815,9 +1890,17 @@ export function pluginLoader(
         // For local-path installs, fall back to the stored packagePath so
         // `upgradePlugin` can re-read the manifest from disk without needing
         // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        localPath: requestedLocalPath = plugin.packagePath ?? undefined,
         version,
       } = upgradeOptions;
+      const kubernetesUpgrade = requiresIsolatedLocalSecrets() &&
+        (oldManifest.id === KUBERNETES_PLUGIN_KEY || plugin.packageName === KUBERNETES_PACKAGE_NAME);
+      if (kubernetesUpgrade && (packageName !== KUBERNETES_PACKAGE_NAME || !requestedLocalPath)) {
+        throw new Error(ISOLATED_KUBERNETES_ERROR);
+      }
+      const localPath = kubernetesUpgrade
+        ? requireTrustedKubernetesPath(requestedLocalPath!)
+        : requestedLocalPath;
 
       log.info(
         { pluginId, packageName, version, localPath },
@@ -2256,6 +2339,20 @@ export function pluginLoader(
     } = runtimeServices;
 
     try {
+      // Persisted npm rows (including renamed identities) must be rejected
+      // before manifest import, migrations, or worker startup. Never resolve a
+      // missing release bundle through the npm fallback path.
+      const isolated = requiresIsolatedLocalSecrets();
+      if (isolated && pluginKey === KUBERNETES_PLUGIN_KEY && activePlugin.packageName !== KUBERNETES_PACKAGE_NAME) {
+        throw new Error(ISOLATED_KUBERNETES_ERROR);
+      }
+      if (isolated && !activePlugin.packagePath) {
+        throw new Error(pluginKey === KUBERNETES_PLUGIN_KEY ? ISOLATED_KUBERNETES_ERROR : ISOLATED_PLUGIN_ERROR);
+      }
+      const trustedBundlePath = isolated
+        ? requireTrustedIsolationPath(activePlugin.packagePath!, pluginKey).packagePath
+        : undefined;
+      if (trustedBundlePath) activePlugin = { ...activePlugin, packagePath: trustedBundlePath };
       log.info(
         { pluginId, pluginKey, version: plugin.version },
         "plugin-loader: activating plugin",
@@ -2264,12 +2361,12 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      const packageRoot = trustedBundlePath ?? resolvePluginPackageRoot(activePlugin, localPluginDir);
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
-      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
+      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir, trustedBundlePath);
 
       // ------------------------------------------------------------------
       // 2. Apply restricted database migrations before worker startup
@@ -2567,9 +2664,15 @@ export function pluginLoader(
 function resolveWorkerEntrypoint(
   plugin: PluginRecord & { packagePath?: string | null },
   localPluginDir: string,
+  strictBundleRoot?: string,
 ): string {
   const manifest = plugin.manifestJson;
   const workerRelPath = manifest.entrypoints.worker;
+
+  if (strictBundleRoot) {
+    // A missing bundle or worker must fail instead of trying node_modules.
+    return resolveTrustedBundleEntrypoint(strictBundleRoot, workerRelPath);
+  }
 
   // For local-path installs we persist the resolved package path; use it first
   if (plugin.packagePath && existsSync(plugin.packagePath)) {
@@ -2620,6 +2723,18 @@ function resolveWorkerEntrypoint(
       `Checked: ${path.resolve(packageDir, workerRelPath)}, ` +
       `${path.resolve(directDir, workerRelPath)}`,
   );
+}
+
+function resolveTrustedBundleEntrypoint(bundleRoot: string, entrypoint: string): string {
+  const candidate = path.resolve(bundleRoot, entrypoint);
+  if (!isPathInsideDir(candidate, bundleRoot)) {
+    throw new Error("Verified release bundle entrypoint escapes its package root");
+  }
+  const actual = realpathSync(candidate);
+  if (!isPathInsideDir(actual, bundleRoot)) {
+    throw new Error("Verified release bundle entrypoint escapes its package root");
+  }
+  return actual;
 }
 
 function resolvePluginPackageRoot(

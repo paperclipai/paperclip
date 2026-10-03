@@ -1450,6 +1450,19 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("refuses to copy an isolated master key into an agent-accessible worktree", () => {
+    const sourceConfig = buildSourceConfig();
+    sourceConfig.secrets.localEncrypted.requireIsolatedAgentRuntime = true;
+    const targetKeyFilePath = path.join(process.cwd(), ".paperclip-isolation-key-must-not-exist");
+    expect(() => copySeededSecretsKey({
+      sourceConfigPath: path.join(process.cwd(), "source-config.json"),
+      sourceConfig,
+      sourceEnvEntries: {},
+      targetKeyFilePath,
+    })).toThrow(/cannot be copied/);
+    expect(fs.existsSync(targetKeyFilePath)).toBe(false);
+  });
+
   it("writes the source inline secrets master key into the seeded worktree instance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
     try {

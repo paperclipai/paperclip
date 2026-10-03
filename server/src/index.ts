@@ -45,6 +45,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { assertIsolatedLocalSecretsKey } from "./secrets/local-encrypted-provider.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -225,6 +226,24 @@ async function startServerWithDatabaseTeardown(
   }
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
+  if (config.secretsRequireIsolatedAgentRuntime) {
+    if (config.secretsProvider !== "local_encrypted") {
+      throw new Error("Isolated local secrets require the local_encrypted provider.");
+    }
+    if (config.deploymentMode !== "authenticated") {
+      throw new Error("Isolated local secrets require authenticated deployment mode; local_trusted grants implicit board access to requests without credentials.");
+    }
+    assertIsolatedLocalSecretsKey({
+      enabled: true,
+      keyFilePath: config.secretsMasterKeyFilePath,
+      hostAgentUid: config.secretsHostAgentUid,
+    });
+  }
+  process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME =
+    config.secretsRequireIsolatedAgentRuntime ? "true" : "false";
+  if (config.secretsRequireIsolatedAgentRuntime && config.secretsHostAgentUid !== null) {
+    process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID = String(config.secretsHostAgentUid);
   }
   
   type MigrationSummary =
