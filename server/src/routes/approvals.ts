@@ -202,6 +202,79 @@ export function approvalRoutes(
     return false;
   }
 
+
+  router.get("/approvals", async (req, res) => {
+    const companyId = req.actor.type === "agent" ? req.actor.companyId : req.actor.companyIds?.[0];
+    if (!companyId) {
+      res.status(400).json({ error: "Missing companyId context." });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
+    const status = req.query.status as string | undefined;
+    const result = await svc.list(companyId, status);
+    res.json(result.map((approval) => redactApprovalPayload(approval)));
+  });
+
+  router.post("/approvals", validate(createApprovalSchema), async (req, res) => {
+    const companyId = req.actor.type === "agent" ? req.actor.companyId : req.actor.companyIds?.[0];
+    if (!companyId) {
+      res.status(400).json({ error: "Missing companyId context." });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
+    if (!(await assertApprovalMutationAllowedByRunContext(req, res, companyId))) return;
+    const rawIssueIds = req.body.issueIds;
+    const issueIds = Array.isArray(rawIssueIds)
+      ? rawIssueIds.filter((value: unknown): value is string => typeof value === "string")
+      : [];
+    const uniqueIssueIds = Array.from(new Set(issueIds));
+    const { issueIds: _issueIds, ...approvalInput } = req.body;
+    const normalizedPayload =
+      approvalInput.type === "hire_agent"
+        ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
+            companyId,
+            approvalInput.payload,
+            { strictMode: strictSecretsMode },
+          )
+        : approvalInput.payload;
+
+    const actor = getActorInfo(req);
+    const approval = await svc.create(companyId, {
+      ...approvalInput,
+      payload: normalizedPayload,
+      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByAgentId:
+        approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
+      status: "pending",
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    if (uniqueIssueIds.length > 0) {
+      await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "approval.created",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { type: approval.type, issueIds: uniqueIssueIds },
+    });
+
+    res.status(201).json(redactApprovalPayload(approval));
+  });
+
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
