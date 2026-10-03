@@ -349,6 +349,18 @@ const manifest: PaperclipPluginManifestV1 = {
       }
     },
     {
+      name: "wiki_inspect_page",
+      displayName: "Inspect Wiki Page Metadata",
+      description: "Return a page hash, frontmatter keys/value hashes, and safe declared source references without returning body content. Operation agents should pass the issue's spaceSlug; omitting it uses the default space.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: { type: "string" }, wikiId: { type: "string" }, spaceSlug: { type: "string" }, path: { type: "string" }
+        },
+        required: ["companyId", "wikiId", "path"]
+      }
+    },
+    {
       name: "wiki_write_page",
       displayName: "Write Wiki Page",
       description: "Atomically write a markdown wiki page in one wiki space after plugin path validation and optional hash conflict checks. Operation agents should pass the issue's spaceSlug; omitting it uses the default space. Protected control files such as AGENTS.md and IDEA.md are excluded from agent-tool writes.",
