@@ -13,6 +13,7 @@ export const issueWatchdogs = pgTable(
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     watchdogAgentId: uuid("watchdog_agent_id").notNull().references(() => agents.id),
     instructions: text("instructions"),
+    configurationRevision: integer("configuration_revision").notNull().default(0),
     status: text("status").notNull().default("active"),
     watchdogIssueId: uuid("watchdog_issue_id").references(() => issues.id, { onDelete: "set null" }),
     lastObservedFingerprint: text("last_observed_fingerprint"),

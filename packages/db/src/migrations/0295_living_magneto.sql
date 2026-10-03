@@ -1,0 +1,1 @@
+ALTER TABLE "issue_watchdogs" ADD COLUMN "configuration_revision" integer DEFAULT 0 NOT NULL;
