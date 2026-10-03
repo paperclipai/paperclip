@@ -134,6 +134,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { startProcessMemoryMonitor } from "./services/process-memory-monitor.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -923,6 +924,8 @@ async function startServerWithDatabaseTeardown(
     managedPluginAutoInstall,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  let stopProcessMemoryMonitor: (() => void) | null = null;
+  server.once("close", () => stopProcessMemoryMonitor?.());
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -1001,6 +1004,7 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  stopProcessMemoryMonitor = startProcessMemoryMonitor();
 
   try {
     const result = await workspaceOperationService(db as any)
