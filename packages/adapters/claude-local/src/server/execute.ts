@@ -61,6 +61,7 @@ import {
   parseLocalProcessNetworkScope,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
+import { createSandboxNetworkEventChannel } from "@paperclipai/adapter-utils/sandbox-network-event-channel";
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
@@ -417,7 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return executeClaudeAcp(ctx);
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -586,6 +587,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             env.PAPERCLIP_API_URL,
             ...runtimeMcpServers.map((server) => server.url),
           ].filter((value): value is string => typeof value === "string" && value.length > 0),
+          // Host-authored run-event channel, never the child's log stream: a confined process can
+          // forge and suppress lines on its own stdout, and it cannot write a run event at all.
+          // See createSandboxNetworkEventChannel for the full reasoning and the ordering guarantee.
+          onNetworkDecision: createSandboxNetworkEventChannel({
+            identity: { runId, agentId: agent.id, companyId: agent.companyId },
+            onEvent,
+            onLog,
+          }),
           command: asString(config.filesystemSandboxCommand, "bwrap"),
         }
       : null;

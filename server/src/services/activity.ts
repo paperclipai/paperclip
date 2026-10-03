@@ -19,6 +19,7 @@ import {
 import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { agentActivityRunEventCondition } from "./run-event-activity.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -275,8 +276,8 @@ export function activityService(db: Db) {
 
       const [eventStats] = await db
         .select({
-          count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-          latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+          count: sql<number>`count(*) filter (where ${agentActivityRunEventCondition(heartbeatRunEvents.eventType)})::int`,
+          latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${agentActivityRunEventCondition(heartbeatRunEvents.eventType)})`,
         })
         .from(heartbeatRunEvents)
         .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, run.id)));

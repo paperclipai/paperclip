@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -64,6 +64,15 @@ const MAX_PATH_CHARS = 600;
 const MAX_SKILLS = 20;
 const MAX_INSTRUCTION_FILES = 20;
 const MAX_TRACE_FILE_CHARS = 10_000_000;
+/**
+ * Run events carried in a feedback bundle. Unbounded, this select let the run with the most events
+ * decide the bundle's size — and a confined run's `sandbox.network.*` stream is generated at the
+ * child's request rate, so the run that trips it need not be the run anyone is giving feedback about.
+ * The earliest events are kept: the bundle is read forward from the start of the run, and the tail is
+ * already covered by the full run log alongside it. `eventCount` stays the true total, so a reader can
+ * see what was left out rather than infer a short run.
+ */
+const MAX_RUN_EVENTS = 5_000;
 const DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY = "default";
 const FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED = "Feedback export backend is not configured";
 
@@ -1520,11 +1529,18 @@ async function buildFeedbackTraceBundleFromRow(
       appendNote(notes, "source_run_unavailable");
     } else {
       adapterType = run.adapterType;
+      const [eventTotals] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run.id));
+      const eventCount = eventTotals?.count ?? 0;
       const events = await db
         .select()
         .from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, run.id))
-        .orderBy(asc(heartbeatRunEvents.seq));
+        .orderBy(asc(heartbeatRunEvents.seq))
+        .limit(MAX_RUN_EVENTS);
+      if (eventCount > events.length) appendNote(notes, "run_events_truncated");
       const logText = await readFullRunLog(run);
       const logEntries = parseRunLogEntries(logText);
       const stdoutText = logEntries
@@ -1559,7 +1575,7 @@ async function buildFeedbackTraceBundleFromRow(
           logRef: run.logRef,
           logBytes: run.logBytes,
           logSha256: run.logSha256,
-          eventCount: events.length,
+          eventCount,
         },
         state,
         "bundle.paperclipRun",
