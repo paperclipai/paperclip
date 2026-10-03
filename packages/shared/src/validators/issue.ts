@@ -1026,6 +1026,13 @@ export const issueCommentMetadataSectionSchema = z
   })
   .strict();
 
+export const issueCommentCrossAssigneeContextSchema = z.object({
+  trigger: z.enum(["linked_checkout", "mention", "visible_issue"]),
+  viaIssueId: z.string().guid().nullable().optional(),
+}).strict();
+
+export type IssueCommentCrossAssigneeContext = z.infer<typeof issueCommentCrossAssigneeContextSchema>;
+
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
@@ -1046,6 +1053,7 @@ export const issueCommentMetadataSchema = z
       reason: z.string().trim().min(1).max(160),
       assigneeAgentId: z.string().guid().nullable(),
     }).strict().optional(),
+    crossAssignee: issueCommentCrossAssigneeContextSchema.nullable().optional(),
     sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
   })
   .strict();

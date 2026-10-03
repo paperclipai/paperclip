@@ -123,6 +123,8 @@ import {
   type IssueBlockerDiagnosticNode,
   type IssueBlockerDiagnosticsReadiness,
   type IssueBlockerDiagnosticsResponse,
+  type IssueCommentCrossAssigneeContext,
+  type IssueCommentMetadata,
   type IssueSubtreeDiagnosticEdge,
   type IssueSubtreeDiagnosticNode,
   type IssueSubtreeDiagnosticsResponse,
@@ -5370,6 +5372,67 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  /**
+   * Cross-assignee evidence comments: attribution for a comment-only write
+   * (no reopen/resume/interrupt intent) that a non-assignee agent appends to
+   * another agent's issue.
+   *
+   * This is not an authorization path. The standard comment gate
+   * (`assertAgentIssueCommentAllowed`: watchdog scope, low-trust containment,
+   * default-open visible-issue writes, mention grants, direct-parent reports)
+   * has already allowed the write before this runs; the decision it produced
+   * is the only access input. A watchdog-scoped run resolves to the literal
+   * `true` decision and is never treated as cross-assignee evidence, so the
+   * persisted watchdog scope can never be widened here. The link lookup only
+   * names the issue the evidence came from — an agent linking its own issue
+   * to the target gains nothing it did not already have from the gate.
+   *
+   * Returns null when the comment is not a cross-assignee evidence comment.
+   */
+  async function evaluateCrossAssigneeEvidenceComment(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      parentId: string | null;
+      assigneeAgentId: string | null;
+    },
+    commentAccessDecision: true | Awaited<ReturnType<typeof decideIssueAccess>>,
+    intents: { reopen: boolean; resume: boolean; interrupt: boolean },
+  ): Promise<{
+    trigger: IssueCommentCrossAssigneeContext["trigger"];
+    viaIssueId: string | null;
+  } | null> {
+    if (req.actor.type !== "agent") return null;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return null;
+    if (!issue.assigneeAgentId || issue.assigneeAgentId === actorAgentId) return null;
+    if (commentAccessDecision === true || !commentAccessDecision.allowed) return null;
+    if (intents.reopen || intents.resume || intents.interrupt) return null;
+    let link: { viaIssueId: string } | null = null;
+    try {
+      link = await svc.findCrossAssigneeEvidenceLink({
+        companyId: issue.companyId,
+        actorAgentId,
+        actorRunId: req.actor.runId?.trim() || null,
+        targetIssueId: issue.id,
+        targetParentId: issue.parentId,
+      });
+    } catch (err) {
+      // Attribution is best effort: a failed link lookup degrades the label,
+      // never the (already decided) access.
+      logger.warn(
+        { err, issueId: issue.id, actorAgentId },
+        "failed to resolve cross-assignee evidence link",
+      );
+    }
+    if (link) return { trigger: "linked_checkout", viaIssueId: link.viaIssueId };
+    if (isIssueMentionGrantDecision(commentAccessDecision)) {
+      return { trigger: "mention", viaIssueId: null };
+    }
+    return { trigger: "visible_issue", viaIssueId: null };
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -17391,6 +17454,19 @@ export function issueRoutes(
       const reopenRequested = req.body.reopen === true;
       const resumeRequested = req.body.resume === true;
       const interruptRequested = req.body.interrupt === true;
+      // Attribution only, derived after the comment gate decided access. Set
+      // solely for comment-only writes by a non-assignee agent, so every
+      // reopen/resume/interrupt intent keeps its existing gate below.
+      const crossAssigneeEvidence = await evaluateCrossAssigneeEvidenceComment(
+        req,
+        issue,
+        commentAccessDecision,
+        {
+          reopen: reopenRequested,
+          resume: resumeRequested,
+          interrupt: interruptRequested,
+        },
+      );
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
       const crossIssueCommentOnlyGrant =
@@ -17501,9 +17577,15 @@ export function issueRoutes(
       // blocker, and run-cap gate passes. A rejected comment must not rebuild and
       // republish the workspace as active, because the issue stays terminal and the
       // reaper then skips the leaked workspace.
+      // A cross-assignee evidence comment is append-only and can never move the
+      // issue out of its terminal state, so it must not rebuild and republish a
+      // closed workspace (or fail with 409/503 when that workspace cannot be
+      // reopened) just to append a comment the reaper would then reclaim.
+      const skipClosedWorkspaceReopen =
+        crossAssigneeEvidence !== null && !effectiveMoveToTodoRequested;
       let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
       let reopenedGeneration: number | null = null;
-      if (closedExecutionWorkspace) {
+      if (closedExecutionWorkspace && !skipClosedWorkspaceReopen) {
         const reopenOutcome =
           await reopenClosedIssueExecutionWorkspaceOrRespond(
             req,
@@ -17649,6 +17731,37 @@ export function issueRoutes(
         }
       }
 
+      const commentMetadata: IssueCommentMetadata | null = crossAssigneeEvidence
+        ? {
+            version: 1,
+            crossAssignee: {
+              trigger: crossAssigneeEvidence.trigger,
+              viaIssueId: crossAssigneeEvidence.viaIssueId,
+            },
+            sections: [
+              {
+                title: "Cross-assignee evidence",
+                rows: [
+                  {
+                    type: "key_value",
+                    label: "Trigger",
+                    value: crossAssigneeEvidence.trigger,
+                  },
+                  ...(crossAssigneeEvidence.viaIssueId
+                    ? [
+                        {
+                          type: "issue_link" as const,
+                          label: "Evidence from",
+                          issueId: crossAssigneeEvidence.viaIssueId,
+                        },
+                      ]
+                    : []),
+                ],
+              },
+            ],
+          }
+        : (req.body.metadata ?? null);
+
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
@@ -17712,7 +17825,7 @@ export function issueRoutes(
             req.body.authorType ??
             (actor.actorType === "agent" ? "agent" : "user"),
           presentation: commentPresentation,
-          metadata: req.body.metadata ?? null,
+          metadata: commentMetadata,
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
@@ -17825,7 +17938,7 @@ export function issueRoutes(
             req.body.authorType ??
             (actor.actorType === "agent" ? "agent" : "user"),
           presentation: commentPresentation,
-          metadata: req.body.metadata ?? null,
+          metadata: commentMetadata,
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
@@ -17932,6 +18045,15 @@ export function issueRoutes(
           identifier: currentIssue.identifier,
           issueTitle: currentIssue.title,
           authorizationReason: commentAuthorizationReason,
+          ...(crossAssigneeEvidence
+            ? {
+                crossAssignee: true,
+                crossAssigneeTrigger: crossAssigneeEvidence.trigger,
+                ...(crossAssigneeEvidence.viaIssueId
+                  ? { crossAssigneeViaIssueId: crossAssigneeEvidence.viaIssueId }
+                  : {}),
+              }
+            : {}),
           ...(isDirectParentReportDecision(commentAccessDecision)
             ? { directParentReportGrant: true }
             : {}),
