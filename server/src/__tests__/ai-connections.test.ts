@@ -685,7 +685,7 @@ describe("managed AI connections", () => {
       expect((await request(app).post(url).set("x-local", "yes").send(codex)).status).toBe(422);
       const prepared = await request(app).post(attempts).set("x-local", "yes").send(codex);
       expect(prepared.status).toBe(201);
-      expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login --device-auth\)$/);
+      expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login --device-auth( && chown -R \d+:\d+ "\$CODEX_HOME")?\)$/);
       expect((await request(app).post(attempts).set("x-local", "yes").send(codex)).body).toEqual(prepared.body);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-test-user", "bob").send()).status).toBe(404);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-local", "yes").send()).status).toBe(200);
