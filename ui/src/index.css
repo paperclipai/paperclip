@@ -315,7 +315,6 @@
      task, project, agent, and future hosts render the same Codex-like chrome. */
   --side-panel-header-height: var(--sz-60px);
   --side-panel-tab-height: var(--sz-30px);
-  --side-panel-streamlined-tab-min-width: var(--sz-72px);
   --side-panel-streamlined-tab-max-width: var(--sz-160px);
   --side-panel-tab-edge-fade-width: var(--sz-32px);
   --side-panel-tab-label-max-width: var(--sz-100px);
@@ -330,6 +329,8 @@
   --streamlined-task-detail-bg: var(--background);
   --side-panel-tab-active-bg: color-mix(in oklab, var(--accent) 88%, var(--background));
   --side-panel-tab-hover-bg: color-mix(in oklab, var(--accent) 58%, transparent);
+  --side-panel-streamlined-tab-hover-bg: oklch(0.9675 0 0);
+  --side-panel-streamlined-tab-active-bg: oklch(0.9581 0 0);
   --radius-task-composer: 16px;
   --tc-interaction-card-max-h: 50dvh;
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
@@ -396,6 +397,8 @@
   --side-panel-bg: var(--background);
   --side-panel-fg: oklch(0.985 0 0);
   --streamlined-task-detail-bg: var(--background);
+  --side-panel-streamlined-tab-hover-bg: var(--side-panel-tab-hover-bg);
+  --side-panel-streamlined-tab-active-bg: color-mix(in oklab, color-mix(in oklab, var(--accent) 92%, var(--background)) 97%, var(--foreground) 3%);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
@@ -1084,9 +1087,7 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
   pointer-events: none;
 }
 
-.side-panel-tab-label-fade,
-.side-panel-tab-label-close-fade[data-truncated="true"],
-[data-appearance="streamlined-task"]:is(:hover, :focus-within) .side-panel-tab-label-close-fade {
+.side-panel-tab-label-fade {
   -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
   mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
   -webkit-mask-repeat: no-repeat;

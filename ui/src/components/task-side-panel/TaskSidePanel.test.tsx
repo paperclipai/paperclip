@@ -350,9 +350,9 @@ describe("TaskSidePanel", () => {
     const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
     expect(propertiesTab?.className).toContain("text-sm");
     expect(propertiesTab?.querySelector("svg")).toBeNull();
-    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.className).toContain("mx-1.5");
+    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.parentElement?.className).toContain("mx-0.75");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.className)
-      .toContain("opacity-0");
+      .toContain("opacity-100");
     const addButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
     expect(addButton?.className).toContain("h-(--side-panel-tab-height)");
     expect(addButton?.className).toContain("w-(--side-panel-tab-height)");
