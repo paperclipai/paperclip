@@ -871,6 +871,7 @@ describe("issue execution policy transitions", () => {
     it("clears execution state when policy removed and returns to executor", () => {
       // Use a real UUID for currentStageId so parseIssueExecutionState succeeds
       const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const removedPolicy = reviewOnlyPolicy();
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_review",
@@ -890,6 +891,7 @@ describe("issue execution policy transitions", () => {
           },
         },
         policy: null,
+        previousPolicy: removedPolicy,
         requestedStatus: undefined,
         requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
@@ -929,6 +931,230 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.executionState).toBeNull();
       // Not in_review, so no status/assignee change
       expect(result.patch.status).toBeUndefined();
+    });
+
+    it("preserves execution state when pending participant posts a plain PATCH with no requestedStatus", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      // The participant is posting without a decision — execution state must be preserved.
+      expect(result.patch.executionState).toBeUndefined();
+      expect(result.patch.status).toBeUndefined();
+    });
+
+    it("clears execution state when a non-participant posts a plain PATCH with no requestedStatus", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { agentId: ctoAgentId },
+      });
+
+      // A non-participant plain PATCH must still clear execution state (existing behaviour).
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    });
+
+    it("clears execution state when the pending participant is an agent (not a user)", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      // Agent participants are not protected — execution state must be cleared.
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    });
+
+    it("Approve (requestedStatus done) with policy=null does not force in_progress", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      // Approve sends requestedStatus "done" — clearExecutionStatePatch must not override it with in_progress.
+      expect(result.patch.status).not.toBe("in_progress");
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("Request Changes (requestedStatus in_progress) with policy=null restores return assignee", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      // Request Changes sends requestedStatus "in_progress" — hand-back must restore return assignee.
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      // Status is driven by the caller, not forced here; patch.status must not be "in_progress" from this helper.
+      expect(result.patch.status).toBeUndefined();
+    });
+  });
+
+  describe("stale stage ID (stage-ID drift)", () => {
+    // A valid UUID that will not match any stage in any policy constructed by the helpers above.
+    const staleStagedId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+    it("pending user-participant free comment with drifted stage ID preserves execution state", () => {
+      const policy = approvalOnlyPolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: staleStagedId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      // Pending participant posting a free comment — state must be preserved even with a drifted stage ID.
+      expect(result.patch).toEqual({});
+    });
+
+    it("non-participant with drifted stage ID still has execution state cleared", () => {
+      const policy = approvalOnlyPolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: staleStagedId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { agentId: ctoAgentId },
+      });
+
+      // Non-participant must still have state cleared on stage-ID drift.
+      expect(result.patch.executionState).toBeNull();
     });
   });
 

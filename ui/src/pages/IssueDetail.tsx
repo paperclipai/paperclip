@@ -294,6 +294,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
+import { isPendingExecutionParticipant } from "../lib/issue-execution-policy";
 import { openSkillPanelState, shouldSuppressTaskPanelUntilPlan } from "../lib/task-side-panel-state";
 import {
   interactionReadinessRefetchInterval,
@@ -6938,7 +6939,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const reopenComposerHint = closedIsolatedWorkspaceReopenPending
     ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
     : null;
-  const composerHint = activePauseHold ? null : reopenComposerHint;
+  // LOC-124: plain-English approval reopens the issue, so spell out the two paths
+  // that actually close it while this user is the stage's pending participant.
+  const pendingApprovalHint =
+    !isTerminalIssue && isPendingExecutionParticipant(issue, currentUserId)
+      ? "To approve: click Approve in the properties panel, or type exactly: ## Review: APPROVED"
+      : null;
+  const composerHint = activePauseHold
+    ? null
+    : ([reopenComposerHint, pendingApprovalHint].filter(Boolean).join(" · ") || null);
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold
     ? "hold"
     : "active_run";
