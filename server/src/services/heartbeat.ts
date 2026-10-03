@@ -418,6 +418,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { assertProjectRunAdmissionOpen } from "./project-run-admission.js";
 import {
   blockRunnerGoalRecovery,
   failRunnerGoalAction,
@@ -27401,6 +27402,11 @@ export function heartbeatService(
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+          await assertProjectRunAdmissionOpen(
+            tx as unknown as Db,
+            agent.companyId,
+            projectId,
+          );
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -28912,6 +28918,11 @@ export function heartbeatService(
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
+      await assertProjectRunAdmissionOpen(
+        tx as unknown as Db,
+        agent.companyId,
+        projectId,
+      );
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
