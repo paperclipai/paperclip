@@ -684,4 +684,18 @@ describe("New agent setup", () => {
       applyStoredClaudeLogin: true,
     });
   });
+
+  it("does not force an OpenRouter aiConnection prefill for opencode_local", async () => {
+    await render("opencode_local");
+    expect(container.textContent).toContain("opencode auth / subscription");
+    await fill("Model", "opencode-go/mimo-v2.6-pro");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      adapterType: "opencode_local",
+      runtimeConfig: expect.not.objectContaining({
+        aiConnection: expect.anything(),
+      }),
+    });
+  });
 });
