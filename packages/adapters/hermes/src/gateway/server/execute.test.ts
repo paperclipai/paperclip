@@ -42,6 +42,26 @@ function sseStream(text: string): ReadableStream<Uint8Array> {
   });
 }
 
+function completedRunResponse(): Response {
+  return new Response(
+    sseStream(
+      ["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n"),
+    ),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+function runCreateInit(fetchMock: { mock: { calls: Array<[unknown, RequestInit?]> } }): RequestInit {
+  const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/v1/runs"));
+  expect(call).toBeTruthy();
+  return call?.[1] as RequestInit;
+}
+
+function loggedText(ctx: AdapterExecutionContext): string {
+  const calls = (ctx.onLog as unknown as { mock: { calls: Array<[string, string]> } }).mock.calls;
+  return calls.map(([, chunk]) => chunk).join("");
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -70,6 +90,30 @@ describe("resolveSessionKey", () => {
       }),
     ).toBeNull();
   });
+
+  it("falls back to the stable agent key instead of a run-scoped key without issue id", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "issue",
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        issueId: null,
+      }),
+    ).toBe("paperclip:company:company-1:agent:agent-1");
+  });
+
+  it("keeps run-scoped keys for the explicit run strategy only", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "run",
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        issueId: "issue-1",
+      }),
+    ).toBe("paperclip:run:run-1");
+  });
 });
 
 describe("parseSseFramesForTest", () => {
@@ -93,6 +137,130 @@ describe("execute", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_plain_http_remote_denied");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("issue strategy without issue id does not produce a run-scoped key", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) return completedRunResponse();
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      sessionKeyStrategy: "issue",
+    });
+    ctx.context = {
+      issueId: null,
+      wakeReason: "manual",
+      paperclipWake: { issue: { identifier: "CRE-29", title: "Do the thing" } },
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const init = runCreateInit(fetchMock);
+    const headers = init.headers as Record<string, string>;
+    expect(headers["X-Hermes-Session-Key"]).toBe("paperclip:company:company-1:agent:agent-1");
+    expect(headers["X-Hermes-Session-Key"]).not.toContain(`:run:${ctx.runId}`);
+    expect(JSON.parse(String(init.body)).session_id).toBe("paperclip:company:company-1:agent:agent-1");
+    // The missing issue context is reported instead of being swallowed.
+    expect(loggedText(ctx)).toContain("no issue context");
+    expect(loggedText(ctx)).toContain(ctx.runId);
+  });
+
+  it("refuses the dispatch when missingIssueContext is fail and no issue context is present", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      missingIssueContext: "fail",
+    });
+    ctx.context = {
+      issueId: null,
+      paperclipWake: { issue: { identifier: "CRE-29", title: "Do the thing" } },
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_missing_issue_context");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(loggedText(ctx)).toContain("refusing dispatch");
+  });
+
+  it("gateway rejects a run for a different agent", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      agentId: "agent-2",
+    });
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("agent_identity_mismatch");
+    expect(result.errorMeta).toMatchObject({
+      reason: "agent_identity_mismatch",
+      status: 409,
+      gatewayAgentId: "agent-2",
+      runAgentId: "agent-1",
+      runId: "pc-run-1",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(loggedText(ctx)).toContain("refusing run pc-run-1");
+  });
+
+  it("keeps the gateway's named cause when the gateway refuses the run for another agent", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: { code: "agent_identity_mismatch", message: "gateway serves agent-2" } }),
+      { status: 409, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      agentId: "agent-1",
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("agent_identity_mismatch");
+    expect(result.errorMeta?.status).toBe(409);
+    expect(result.errorMessage).toContain("exactly one Paperclip agent");
+  });
+
+  it("tags the run with the identity of the agent the gateway serves", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) return completedRunResponse();
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      agentId: "agent-1",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(runCreateInit(fetchMock).headers).toMatchObject({ "X-Hermes-Agent-Id": "agent-1" });
   });
 
   it("reports dispatch before starting the remote run create request", async () => {

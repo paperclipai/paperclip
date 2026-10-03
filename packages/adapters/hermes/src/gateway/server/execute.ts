@@ -65,7 +65,20 @@ const CRITICAL_HEADERS = new Set([
   "accept",
   "idempotency-key",
   "x-hermes-session-key",
+  "x-hermes-agent-id",
 ]);
+
+/**
+ * Named cause used when a run is admitted to the wrong gateway. One Hermes
+ * gateway process serves exactly one Paperclip agent, so a run whose agent
+ * identity differs from the gateway identity is rejected instead of being
+ * multiplexed into the same gateway (and the same Hermes sessions).
+ */
+const AGENT_IDENTITY_MISMATCH_ERROR = "agent_identity_mismatch";
+const AGENT_IDENTITY_MISMATCH_HINT =
+  "One Hermes gateway process serves exactly one Paperclip agent; point adapterConfig.apiBaseUrl at the gateway dedicated to this agent.";
+const MISSING_ISSUE_CONTEXT_ERROR = "hermes_gateway_missing_issue_context";
+const HERMES_AGENT_ID_HEADER = "X-Hermes-Agent-Id";
 
 const SENSITIVE_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)/i;
@@ -144,6 +157,19 @@ function apiUrl(baseUrl: URL, path: string): string {
   return `${base}${path}`;
 }
 
+function agentScopedSessionKey(companyId: string, agentId: string): string {
+  return `paperclip:company:${companyId}:agent:${agentId}`;
+}
+
+function normalizeMissingIssueContext(value: unknown): "agent" | "fail" {
+  return asString(value, "agent").trim().toLowerCase() === "fail" ? "fail" : "agent";
+}
+
+/**
+ * Reads the issue identity for this run. `null` means the run arrived without
+ * issue context; the caller is responsible for logging that (see `execute`),
+ * because a silent miss used to create a brand new Hermes session per run.
+ */
 function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
@@ -157,13 +183,19 @@ export function resolveSessionKey(input: {
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
+    return agentScopedSessionKey(input.companyId, input.agentId);
   }
   if (input.strategy === "run") {
     return `paperclip:run:${input.runId}`;
   }
-  const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  // Strategy "issue" must never fall back to a run-scoped key: one key per run
+  // means one Hermes session per run, and two sessions for the same issue then
+  // race each other (duplicate comments, overwritten artifacts). Without issue
+  // context the stable agent-scoped key is the only safe choice.
+  if (!input.issueId) {
+    return agentScopedSessionKey(input.companyId, input.agentId);
+  }
+  return `${agentScopedSessionKey(input.companyId, input.agentId)}:issue:${input.issueId}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -249,6 +281,7 @@ function buildHeaders(input: {
   apiKey: string;
   sessionKey: string | null;
   runId: string;
+  agentId?: string | null;
   extraHeaders: Record<string, string>;
   accept: string;
   contentType?: string;
@@ -259,6 +292,7 @@ function buildHeaders(input: {
     Accept: input.accept,
     ...(input.contentType ? { "Content-Type": input.contentType } : {}),
     "Idempotency-Key": input.runId,
+    ...(input.agentId ? { [HERMES_AGENT_ID_HEADER]: input.agentId } : {}),
     ...(input.sessionKey ? { "X-Hermes-Session-Key": input.sessionKey } : {}),
   };
 }
@@ -350,9 +384,30 @@ async function readResponseJson(response: Response): Promise<unknown> {
   }
 }
 
-function classifyHttpError(status: number): { code: string; family: AdapterExecutionResult["errorFamily"] | null } {
+/** Extracts the gateway's own named error code from a JSON error payload. */
+function namedGatewayErrorCode(body: unknown): string | null {
+  const record = asRecord(body);
+  if (!record) return null;
+  const direct = nonEmpty(record.code) ?? nonEmpty(record.error);
+  if (direct) return direct;
+  const nested = asRecord(record.error);
+  return nested ? nonEmpty(nested.code) ?? nonEmpty(nested.message) : null;
+}
+
+function classifyHttpError(
+  status: number,
+  body?: unknown,
+): { code: string; family: AdapterExecutionResult["errorFamily"] | null } {
   if (status === 401 || status === 403) return { code: "hermes_gateway_auth_failed", family: null };
   if (status === 404) return { code: "hermes_gateway_runs_unsupported", family: null };
+  if (status === 409) {
+    // A gateway bound to another agent refuses the run. Keep the gateway's own
+    // named cause instead of flattening it into a generic protocol error.
+    const named = namedGatewayErrorCode(body);
+    if (named === AGENT_IDENTITY_MISMATCH_ERROR) {
+      return { code: AGENT_IDENTITY_MISMATCH_ERROR, family: null };
+    }
+  }
   if (status === 429) return { code: "hermes_gateway_rate_limited", family: "transient_upstream" };
   if (status >= 500) return { code: "hermes_gateway_upstream_error", family: "transient_upstream" };
   return { code: "hermes_gateway_protocol_error", family: null };
@@ -381,7 +436,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   }
   const body = await readResponseJson(response);
   if (!response.ok) {
-    const classified = classifyHttpError(response.status);
+    const classified = classifyHttpError(response.status, body);
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
@@ -762,9 +817,12 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const baseMessage = redactErrorMessage(err, redactText);
   const errorMessage = code === "hermes_gateway_auth_failed"
-    ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
-    : redactErrorMessage(err, redactText);
+    ? `${baseMessage}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
+    : code === AGENT_IDENTITY_MISMATCH_ERROR
+      ? `${baseMessage}. ${AGENT_IDENTITY_MISMATCH_HINT}`
+      : baseMessage;
   return {
     exitCode: 1,
     signal: null,
@@ -823,23 +881,77 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  // Isolation guard: one Hermes gateway process serves exactly one Paperclip
+  // agent. Admitting a second agent multiplexes unrelated runs into the same
+  // Hermes sessions, so a mismatched run is rejected before anything is sent.
+  const gatewayAgentId = nonEmpty(ctx.config.agentId);
+  if (gatewayAgentId && gatewayAgentId !== ctx.agent.id) {
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] refusing run ${ctx.runId} for agent ${ctx.agent.id}: gateway is bound to agent ${gatewayAgentId}\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: AGENT_IDENTITY_MISMATCH_ERROR,
+      errorMessage:
+        `Hermes gateway is bound to agent ${gatewayAgentId} (adapterConfig.agentId) but this run belongs to agent ${ctx.agent.id}. ` +
+        AGENT_IDENTITY_MISMATCH_HINT,
+      errorMeta: {
+        reason: AGENT_IDENTITY_MISMATCH_ERROR,
+        status: 409,
+        gatewayAgentId,
+        runAgentId: ctx.agent.id,
+        runId: ctx.runId,
+      },
+    };
+  }
+
   const timeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
   const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const issueId = issueIdFromContext(ctx);
+  if (strategy === "issue" && !issueId) {
+    // A run without issue context used to mint a run-scoped session key, which
+    // gave every run its own Hermes session; make the miss loud instead.
+    const missingIssueContext = normalizeMissingIssueContext(ctx.config.missingIssueContext);
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] warning: run ${ctx.runId} has no issue context (context.taskId and context.issueId are both empty); ${
+        missingIssueContext === "fail"
+          ? "refusing dispatch (adapterConfig.missingIssueContext=fail)"
+          : "using the stable agent-scoped session key instead of a run-scoped one"
+      }\n`,
+    );
+    if (missingIssueContext === "fail") {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: MISSING_ISSUE_CONTEXT_ERROR,
+        errorMessage:
+          `Run ${ctx.runId} has no issue context and adapterConfig.missingIssueContext is "fail"; ` +
+          "refusing to start a Hermes run without an issue-scoped session key.",
+        errorMeta: { strategy, runId: ctx.runId },
+      };
+    }
+  }
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
     runId: ctx.runId,
-    issueId: issueIdFromContext(ctx),
+    issueId,
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   const runHeaders = buildHeaders({
     apiKey,
     sessionKey,
     runId: ctx.runId,
+    agentId: ctx.agent.id,
     extraHeaders,
     accept: "application/json",
     contentType: "application/json",
@@ -848,6 +960,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: ctx.runId,
+    agentId: ctx.agent.id,
     extraHeaders,
     accept: "text/event-stream",
   });
@@ -870,6 +983,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      agentId: ctx.agent.id,
+      gatewayAgentId,
+      issueContextPresent: Boolean(issueId),
     },
   });
   await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);

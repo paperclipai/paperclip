@@ -111,6 +111,38 @@ Important URL roles:
 - `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` are injected runtime values for
   Hermes-originated Paperclip API calls after the agent is approved.
 
+## One Gateway Serves One Agent
+
+A Hermes gateway process holds the Hermes sessions of every run it accepts, so
+one gateway serves exactly one Paperclip agent. Two config keys enforce that:
+
+- `agentDefaultsPayload.agentId` — the Paperclip agent ID the gateway is
+  dedicated to. When set, a run for any other agent is rejected before any HTTP
+  request is sent, with the named cause `agent_identity_mismatch` (`errorMeta.status`
+  is `409`). The adapter also tags every `POST /v1/runs` with
+  `X-Hermes-Agent-Id: <run agent id>` so a gateway can log and refuse a
+  mismatch on its own side too.
+- `agentDefaultsPayload.missingIssueContext` — `agent` (default) or `fail`. It
+  applies when `sessionKeyStrategy` is `issue` and the run carries no issue
+  context. `agent` uses the stable agent-scoped session key
+  (`paperclip:company:<companyId>:agent:<agentId>`); `fail` refuses the dispatch
+  with cause `hermes_gateway_missing_issue_context`. The session key on this
+  path is never run-scoped.
+
+Session key shapes:
+
+| Strategy | Key |
+| --- | --- |
+| `issue` with issue context | `paperclip:company:<companyId>:agent:<agentId>:issue:<issueId>` |
+| `issue` without issue context | `paperclip:company:<companyId>:agent:<agentId>` plus a warning |
+| `agent` | `paperclip:company:<companyId>:agent:<agentId>` |
+| `run` | `paperclip:run:<runId>` |
+| `none` | no `X-Hermes-Session-Key` header |
+
+Every run without issue context logs a warning that names the run ID, so a
+silently missing issue ID is visible in the run log instead of quietly opening
+a new Hermes session per run.
+
 ## Approve And Claim
 
 After Hermes submits the join request:
