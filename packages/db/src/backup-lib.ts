@@ -6,6 +6,13 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { type BackupDeadline, createBackupDeadline } from "./backup-deadline.js";
+export {
+  DatabaseBackupTimeoutError,
+  MAX_BACKUP_DEADLINE_MS,
+  normalizeBackupDeadlineMs,
+  type BackupDeadline,
+} from "./backup-deadline.js";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -28,6 +35,33 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Overall deadline for the backup. The returned promise rejects with a
+   * {@link DatabaseBackupTimeoutError} once it elapses, *even if the work it is
+   * waiting on never settles* — a COPY whose consumer stopped draining blocks
+   * PostgreSQL in `ClientWrite` while Node waits for the query to finish, and
+   * neither side can move again. Defaults to
+   * {@link DEFAULT_BACKUP_TIMEOUT_SECONDS}.
+   */
+  timeoutSeconds?: number;
+  /**
+   * `statement_timeout` applied to the backup connections. Defaults to the
+   * overall deadline, so no single statement can outlive the backup itself.
+   */
+  statementTimeoutSeconds?: number;
+  /**
+   * Bound on `sql.end()`. `postgres.js` waits for in-flight queries forever
+   * without it, which is how the close in a `finally` becomes the second half
+   * of the deadlock. Defaults to {@link DEFAULT_BACKUP_CLOSE_TIMEOUT_SECONDS}.
+   */
+  closeTimeoutSeconds?: number;
+  /**
+   * Minimum age before an uncompressed `.sql` file left behind by an earlier
+   * run is treated as an orphan and deleted. Defaults to the overall deadline
+   * (at least {@link DEFAULT_ORPHAN_GRACE_SECONDS}) so a backup running
+   * concurrently in another process is never touched.
+   */
+  orphanGraceSeconds?: number;
 };
 
 export type RunDatabaseBackupResult = {
@@ -40,6 +74,8 @@ export type RunDatabaseRestoreOptions = {
   connectionString: string;
   backupFile: string;
   connectTimeoutSeconds?: number;
+  /** See {@link RunDatabaseBackupOptions.closeTimeoutSeconds}. */
+  closeTimeoutSeconds?: number;
 };
 
 type SequenceDefinition = {
@@ -71,6 +107,11 @@ const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
+/** One hour: comfortably above a real backup, far below "silently wedged". */
+export const DEFAULT_BACKUP_TIMEOUT_SECONDS = 60 * 60;
+export const DEFAULT_BACKUP_CLOSE_TIMEOUT_SECONDS = 10;
+const DEFAULT_ORPHAN_GRACE_SECONDS = 60 * 60;
+
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
 function sanitizeRestoreErrorMessage(error: unknown): string {
@@ -85,6 +126,165 @@ function sanitizeRestoreErrorMessage(error: unknown): string {
     return severity ? `${severity}: ${message}` : message;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Applies the backup's server-side timeouts to `tx` **transaction-locally**.
+ *
+ * The third `set_config` argument is `true` (`SET LOCAL`) on purpose, and this
+ * must only ever be called on a handle that is already inside an explicit
+ * transaction. That is what makes the setting survive a transaction-mode
+ * pooler: pgbouncer and Supavisor hand a client a server backend for the
+ * duration of a transaction and no longer, so a session-scoped setting issued
+ * as its own statement lands on a backend the protected statement may never
+ * see. It is also the idiom the rest of this repo already uses — every
+ * `set_config` under `server/src/services/` passes `true` from inside a
+ * `db.transaction(...)`.
+ */
+export async function applyLocalBackupTimeouts(
+  tx: Pick<postgres.Sql, "unsafe">,
+  statementTimeoutMs: number,
+): Promise<void> {
+  await tx.unsafe(
+    "select set_config('statement_timeout', $1, true), set_config('idle_in_transaction_session_timeout', $1, true)",
+    [String(Math.max(1000, Math.trunc(statementTimeoutMs)))],
+  );
+}
+
+type BackupConnection = {
+  sql: postgres.Sql;
+  /**
+   * Runs `fn` inside an explicit transaction that has the backup timeouts
+   * applied locally, so the bound is in force on the very backend that runs
+   * the guarded statement even through a transaction-mode pooler.
+   */
+  withLocalTimeouts<T>(fn: (tx: postgres.Sql) => Promise<T>): Promise<T>;
+  /** Bounded close. Never rejects, never outlives `closeTimeoutSeconds`. */
+  close(): Promise<void>;
+};
+
+function openBackupConnection(
+  connectionString: string,
+  options: { connectTimeoutSeconds: number; statementTimeoutSeconds: number; closeTimeoutSeconds: number },
+  deadline: BackupDeadline,
+): BackupConnection {
+  const statementTimeoutMs = Math.max(1000, Math.trunc(options.statementTimeoutSeconds * 1000));
+  const sql = postgres(connectionString, {
+    max: 1,
+    connect_timeout: options.connectTimeoutSeconds,
+    connection: {
+      // Only parameters a transaction-mode pooler tracks may go in the startup
+      // packet. pgbouncer and Supavisor reject the *whole connection* when it
+      // names one they do not (`unsupported startup parameter`), and the pooled
+      // URL is exactly what a backup gets: `resolveConnectionString` prefers
+      // `DATABASE_URL`, which these deployments point at the pooler. Everything
+      // else is applied after connect, below.
+      application_name: "paperclip-backup",
+    },
+  });
+  // Server-side backstop for the short metadata queries, so an abandoned
+  // statement cannot hold a snapshot — and with it the cluster-wide vacuum
+  // horizon — indefinitely. `max: 1` makes this the first statement on the only
+  // connection in the pool, so it is in force before any backup query runs.
+  //
+  // This one is session-scoped, and that is only reliable on a direct or
+  // session-pooled connection: a transaction-mode pooler releases the backend
+  // when this statement's implicit transaction ends, so a later statement may
+  // run somewhere that never saw it. It is therefore best-effort, and the long
+  // guarded operations do not depend on it — they apply their own bound inside
+  // their own transaction via `withLocalTimeouts`. A failure here is not fatal
+  // (`deadline` is the primary bound and still fires), so the rejection is
+  // swallowed rather than left unhandled.
+  void sql`
+    select
+      set_config('statement_timeout', ${String(statementTimeoutMs)}, false),
+      set_config('idle_in_transaction_session_timeout', ${String(statementTimeoutMs)}, false)
+  `.catch(() => {});
+  // `end({ timeout: 0 })` destroys the socket instead of waiting for the query,
+  // which is what actually unblocks a backend parked in `ClientWrite`.
+  const unregister = deadline.onExpire(() => {
+    void sql.end({ timeout: 0 }).catch(() => {});
+  });
+
+  let closed = false;
+  return {
+    sql,
+    async withLocalTimeouts<T>(fn: (tx: postgres.Sql) => Promise<T>): Promise<T> {
+      return (await sql.begin(async (tx) => {
+        await applyLocalBackupTimeouts(tx, statementTimeoutMs);
+        return await fn(tx as unknown as postgres.Sql);
+      })) as T;
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      unregister();
+      try {
+        await Promise.race([
+          sql.end({ timeout: options.closeTimeoutSeconds }),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, (options.closeTimeoutSeconds + 1) * 1000);
+            timer.unref?.();
+          }),
+        ]);
+      } catch {
+        // A close that fails still leaves nothing for the caller to do.
+      }
+    },
+  };
+}
+
+/**
+ * Deletes uncompressed `.sql` files left behind by a backup that never reached
+ * its cleanup — a wedged run settles neither its `catch` nor `writer.abort()`,
+ * so the partial dump survives and keeps consuming the disk that failed it.
+ */
+function pruneOrphanedRawBackups(
+  backupDir: string,
+  filenamePrefix: string,
+  opts: { graceMs: number; nowMs?: number },
+): number {
+  if (!existsSync(backupDir)) return 0;
+  const now = opts.nowMs ?? Date.now();
+  let deleted = 0;
+
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql")) continue;
+    const fullPath = resolve(backupDir, name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(fullPath).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (now - mtimeMs < opts.graceMs) continue;
+    try {
+      unlinkSync(fullPath);
+      deleted += 1;
+    } catch {
+      // A file we cannot remove is not a reason to abandon the backup.
+    }
+  }
+
+  return deleted;
+}
+
+/**
+ * Applies retention to a backup directory. Exported so callers can enforce
+ * retention on a schedule of their own: pruning that only runs after a
+ * successful backup stops running exactly when a stuck backup makes it matter.
+ */
+export function pruneDatabaseBackups(opts: {
+  backupDir: string;
+  retention: BackupRetentionPolicy;
+  filenamePrefix?: string;
+  orphanGraceSeconds?: number;
+}): number {
+  const filenamePrefix = opts.filenamePrefix ?? "paperclip";
+  const graceMs = Math.max(0, Math.trunc((opts.orphanGraceSeconds ?? DEFAULT_ORPHAN_GRACE_SECONDS) * 1000));
+  const orphaned = pruneOrphanedRawBackups(opts.backupDir, filenamePrefix, { graceMs });
+  return orphaned + pruneOldBackups(opts.backupDir, opts.retention, filenamePrefix);
 }
 
 function timestamp(date: Date = new Date()): string {
@@ -321,6 +521,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  deadline: BackupDeadline;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -346,10 +547,24 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  // Without this the child outlives an abandoned backup, still holding the
+  // snapshot that pins the cluster's vacuum horizon.
+  const unregister = opts.deadline.onExpire(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Best effort: the deadline fires either way.
+    }
+  });
+
+  try {
+    await Promise.all([
+      pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } finally {
+    unregister();
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -524,23 +739,70 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
   };
 }
 
+/**
+ * Runs a database backup under an overall deadline.
+ *
+ * Every await inside the backup used to be unbounded — the only bound anywhere
+ * was `connect_timeout`, which covers connection setup and nothing else. That
+ * is how a backup whose consumer stops draining becomes a *mutual* deadlock
+ * rather than a failure: PostgreSQL blocks writing COPY rows to a client that
+ * stopped reading, and `finally { await sql.end() }` waits for that same query
+ * to finish before closing the socket. Neither side can move, the promise never
+ * settles, and no `finally` on the stack — including the caller's in-flight
+ * guard — ever runs.
+ *
+ * The deadline therefore releases the *caller* whether or not the work settles,
+ * and destroys the backup connections on the way out so the abandoned backend
+ * stops pinning the cluster's vacuum horizon.
+ */
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
+  const timeoutMs = Math.max(1, Math.trunc((opts.timeoutSeconds ?? DEFAULT_BACKUP_TIMEOUT_SECONDS) * 1000));
+  const deadline = createBackupDeadline(timeoutMs);
+  try {
+    return await deadline.guard(runBoundedDatabaseBackup(opts, deadline), "running the backup");
+  } finally {
+    deadline.dispose();
+  }
+}
+
+async function runBoundedDatabaseBackup(
+  opts: RunDatabaseBackupOptions,
+  deadline: BackupDeadline,
+): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  const timeoutSeconds = deadline.timeoutMs / 1000;
+  const connectionOptions = {
+    connectTimeoutSeconds: connectTimeout,
+    statementTimeoutSeconds: Math.max(1, opts.statementTimeoutSeconds ?? timeoutSeconds),
+    closeTimeoutSeconds: Math.max(0, opts.closeTimeoutSeconds ?? DEFAULT_BACKUP_CLOSE_TIMEOUT_SECONDS),
+  };
   const backupEngine = opts.backupEngine ?? "auto";
   let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
-  let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  let connection = openBackupConnection(opts.connectionString, connectionOptions, deadline);
+  let sql = connection.sql;
   let sqlClosed = false;
   const closeSql = async () => {
     if (sqlClosed) return;
     sqlClosed = true;
-    await sql.end();
+    await connection.close();
   };
   mkdirSync(opts.backupDir, { recursive: true });
+
+  // Retention runs *before* the dump, not only after a successful one. Pruning
+  // that lives at the end of `runDatabaseBackup` stops running the moment a
+  // backup wedges — precisely when a filling disk is what wedged it.
+  let prunedCount = pruneDatabaseBackups({
+    backupDir: opts.backupDir,
+    retention,
+    filenamePrefix,
+    orphanGraceSeconds: opts.orphanGraceSeconds ?? Math.max(timeoutSeconds, DEFAULT_ORPHAN_GRACE_SECONDS),
+  });
+
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
@@ -554,10 +816,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          deadline,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        prunedCount += pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
@@ -571,7 +834,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           throw error;
         }
         effectiveBackupEngine = "javascript";
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        connection = openBackupConnection(opts.connectionString, connectionOptions, deadline);
+        sql = connection.sql;
         sqlClosed = false;
       }
     }
@@ -937,16 +1201,36 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        const copyConnection = openBackupConnection(opts.connectionString, connectionOptions, deadline);
         try {
-          const copyStream = await copySql
-            .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
-            .readable();
-          for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-          }
+          await deadline.guard(
+            // The COPY is the statement that can pin the vacuum horizon, so its
+            // timeout is applied in the *same transaction* that runs it. A
+            // transaction-mode pooler keeps one backend for a whole
+            // transaction, which is what makes the bound reach the backend
+            // doing the copying; a session-scoped `set_config` issued as its
+            // own statement would not survive the hop.
+            copyConnection.withLocalTimeouts(async (tx) => {
+              const copyStream = await tx
+                .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
+                .readable();
+              try {
+                for await (const chunk of copyStream) {
+                  await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+                }
+              } finally {
+                // A consumer that stops draining leaves PostgreSQL blocked in
+                // `ClientWrite`; destroying the stream is what lets the backend
+                // notice and give up.
+                copyStream.destroy();
+              }
+            }),
+            `copying ${schema_name}.${tablename}`,
+          );
         } finally {
-          await copySql.end();
+          // Bounded, unlike the bare `end()` this replaces: that one waits for
+          // the very query the consumer has stopped draining.
+          await copyConnection.close();
         }
         await writer.writeRaw("\\.\n");
         emitStatementBoundary();
@@ -1027,7 +1311,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    prunedCount += pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
@@ -1064,6 +1348,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
   }
 
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const closeTimeoutSeconds = Math.max(0, opts.closeTimeoutSeconds ?? DEFAULT_BACKUP_CLOSE_TIMEOUT_SECONDS);
 
   try {
     await sql`SELECT 1`;
@@ -1082,7 +1367,9 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
       `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}${psqlMessage}`,
     );
   } finally {
-    await sql.end();
+    // Bounded: a bare `end()` waits for the in-flight statement to finish,
+    // which is unbounded whenever the statement is the thing that is stuck.
+    await sql.end({ timeout: closeTimeoutSeconds });
   }
 }
 
