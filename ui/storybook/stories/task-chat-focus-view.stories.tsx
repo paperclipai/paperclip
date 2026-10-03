@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import {
+  saveTaskChatViewMode,
+  TASK_CHAT_VIEW_MODE_STORAGE_KEY,
   TaskChatViewModeProvider,
   TaskChatViewModeToggle,
   type TaskChatViewMode,
@@ -91,12 +93,21 @@ function FocusViewReview({
   initialMode: TaskChatViewMode;
   locale?: string;
 }) {
-  const [mode, setMode] = useState<TaskChatViewMode>(initialMode);
+  // Like TaskChatThread, a stored choice wins over the story default and
+  // survives a reload. Each visual test starts with empty storage.
+  const [mode, setMode] = useState<TaskChatViewMode>(() => {
+    const stored = localStorage.getItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY);
+    return stored === "full" || stored === "focus" ? stored : initialMode;
+  });
+  const changeMode = (next: TaskChatViewMode) => {
+    setMode(next);
+    saveTaskChatViewMode(next);
+  };
   return (
     <LocaleFrame locale={locale}>
       <div className="flex max-w-xl flex-col gap-2 rounded-lg border border-border bg-background p-4">
         <TaskChatViewModeProvider mode={mode}>
-          <TaskChatViewModeToggle mode={mode} onChange={setMode} />
+          <TaskChatViewModeToggle mode={mode} onChange={changeMode} />
           <TaskChatRunnerTurn
             runId="storybook-focus-run"
             agentName="CodexRunner"
