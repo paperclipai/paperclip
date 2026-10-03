@@ -148,6 +148,54 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+/**
+ * Resolve a caller-supplied run_id to a value safe to write into the
+ * FK-constrained `activity_log.run_id` column (FK → `heartbeat_runs.id`).
+ *
+ * Process-adapter callers can self-mint a run_id that was never registered in
+ * `heartbeat_runs` (they did not go through the executor, which is what
+ * registers the row). Writing such a value verbatim violates
+ * `activity_log_run_id_heartbeat_runs_id_fk` (SQLSTATE 23503) and 500s an
+ * issue/comment create whose main row has already committed — inviting
+ * duplicate-create retries. Degrade gracefully: keep the run_id only when it is
+ * a well-formed UUID that resolves to a `heartbeat_runs` row for this company;
+ * otherwise substitute NULL (matching existing null-run_id behavior) and emit an
+ * observability warning.
+ *
+ * The lookup runs on the same `db` handle (which may be a transaction), so the
+ * substitution happens before commit and the FK error is never triggered. The FK
+ * constraint itself is left in place — we avoid triggering it rather than
+ * weakening it. This is the `activity_log.run_id` sibling of the
+ * `comments.created_by_run_id` guard in `issueService.addComment` (BLU-14531).
+ */
+export async function resolveActivityLogRunId(
+  db: Db,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  const candidate = readNonEmptyString(runId);
+  if (!candidate || !isUuidLike(candidate)) {
+    if (candidate) {
+      logger.warn(
+        { companyId, runId: candidate },
+        "activity-log: run_id is not a well-formed UUID; writing activity_log with run_id=null",
+      );
+    }
+    return null;
+  }
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, candidate)))
+    .then((rows) => rows[0] ?? null);
+  if (run) return candidate;
+  logger.warn(
+    { companyId, runId: candidate },
+    "activity-log: run_id not found in heartbeat_runs; writing activity_log with run_id=null",
+  );
+  return null;
+}
+
 export function publishActivity(publication: ActivityPublication) {
   publishLiveEvent({
     companyId: publication.companyId,
@@ -160,6 +208,7 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const resolvedRunId = await resolveActivityLogRunId(db, input.companyId, input.runId);
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +217,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: resolvedRunId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
@@ -180,7 +229,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: resolvedRunId,
     responsibleUserId,
     details: redactedDetails,
   };
@@ -198,7 +247,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
         payload: {
           ...redactedDetails,
           agentId: input.agentId ?? null,
-          runId: input.runId ?? null,
+          runId: resolvedRunId,
           responsibleUserId,
         },
       }
