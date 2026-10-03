@@ -24,9 +24,10 @@ export type ReleaseTransactionResult = {
 };
 
 /**
- * The three host callbacks the release use case needs. These members do
- * not run on the module's own transaction, which is why two of them take
- * the transaction-scoped issue snapshot instead of an issue id.
+ * The three host callbacks the release use case needs. The Postgres
+ * adapter binds each one to its own release transaction, so every read a
+ * callback makes shares that transaction's connection. Two of them also
+ * take the transaction-scoped issue snapshot instead of an issue id.
  */
 export interface WakeQueueHost {
   /**
