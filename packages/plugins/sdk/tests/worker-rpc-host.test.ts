@@ -157,6 +157,81 @@ describe("worker performAction context", () => {
   });
 });
 
+describe("worker outbound request ids", () => {
+  it("namespaces worker-to-host ids away from host numeric ids", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<number, (response: JsonRpcResponse) => void>();
+    const outboundIds: Array<string | number | null> = [];
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => ctx.companies.get("company-a"));
+      },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(id: number, method: string, params: unknown) {
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        if (typeof message.id === "number") {
+          pending.get(message.id)?.(message);
+          pending.delete(message.id);
+        }
+        return;
+      }
+      if (!isJsonRpcRequest(message) || message.method !== "companies.get") return;
+      outboundIds.push(message.id);
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, { id: "company-a" })));
+    });
+
+    try {
+      await callWorker(1, "initialize", {
+        manifest: {
+          id: "paperclip.rpc-id-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "RPC id test",
+          description: "RPC id test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["companies.read"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+      await expect(callWorker(2, "getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: {},
+      })).resolves.toEqual({ id: "company-a" });
+      expect(outboundIds).toEqual(["worker:1"]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker invocation scope propagation", () => {
   it("keeps overlapping company scopes local to each getData invocation", async () => {
     const hostToWorker = new PassThrough();
