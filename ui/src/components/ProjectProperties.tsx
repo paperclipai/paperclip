@@ -73,7 +73,7 @@ const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   },
 ];
 
-function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
+export function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   if (state === "saving") {
     return (
       <span className="inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
