@@ -1,6 +1,10 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { parse as parseEnvFileContents } from "dotenv";
 import { normalizeAgentApiKeyScope, type AgentApiKeyScope } from "@paperclipai/shared";
+import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@paperclipai/shared/env-file";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
+import { resolvePaperclipEnvPath } from "./paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -117,6 +121,49 @@ function safeCompare(a: string, b: string) {
   const right = Buffer.from(b);
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
+}
+
+export type AgentJwtSecretBootstrap = {
+  source: "process_env" | "env_file" | "generated";
+  envFilePath: string;
+};
+
+/**
+ * Guarantees the local agent JWT secret exists for a local_trusted instance.
+ *
+ * Without a secret, `createLocalAgentJwt` returns null and every heartbeat run
+ * spawns with no PAPERCLIP_API_KEY — the agent's unauthenticated API writes are
+ * then attributed to the implicit local board actor (human-authored chat
+ * bubbles, board-attributed comments). Onboarding via the CLI provisions the
+ * secret, but servers started directly (`pnpm dev`, launchd) previously only
+ * got a startup-banner warning, so a missing secret silently poisoned every
+ * run's attribution. Mirrors `ensureAgentJwtSecret` in cli/src/config/env.ts.
+ */
+export function ensureLocalTrustedAgentJwtSecret(
+  envFilePath = resolvePaperclipEnvPath(),
+): AgentJwtSecretBootstrap {
+  if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim()) {
+    return { source: "process_env", envFilePath };
+  }
+
+  const previousContents = existsSync(envFilePath) ? readFileSync(envFilePath, "utf8") : null;
+  const fileSecret = previousContents
+    ? parseEnvFileContents(previousContents).PAPERCLIP_AGENT_JWT_SECRET?.trim()
+    : undefined;
+  if (fileSecret) {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = fileSecret;
+    return { source: "env_file", envFilePath };
+  }
+
+  const secret = randomBytes(32).toString("hex");
+  const nextContents = updateEnvFileContents(
+    previousContents ?? "",
+    { PAPERCLIP_AGENT_JWT_SECRET: secret },
+    { valueEncoding: "minimal" },
+  );
+  writeEnvFileAtomicallyIfChanged(envFilePath, previousContents, nextContents);
+  process.env.PAPERCLIP_AGENT_JWT_SECRET = secret;
+  return { source: "generated", envFilePath };
 }
 
 export function createLocalAgentJwt(
