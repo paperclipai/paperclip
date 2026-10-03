@@ -689,7 +689,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const [updated] = await db.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
       ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning();
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
-    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
+    // `agentId` is the *origin* agent, not the cancelling actor: the event bus matches
+    // an `{ agentId }` subscription filter against `payload.agentId` for every
+    // non-agent entity, so a cancellation without it is invisible to the subscribers
+    // that asked for that agent's decisions — exactly the ones waiting on the outcome.
+    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: updated.originAgentId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id, details: { originAgentId: updated.originAgentId } });
     await deliverContinuation(updated, "cancelled");
     return (await get(id))!;
   }

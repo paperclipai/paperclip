@@ -263,6 +263,53 @@ describeEmbeddedPostgres("decision queue routes", () => {
     ))).toHaveLength(0);
   });
 
+  it("publishes the issue identity of a manually added request and omits it when the source proves none", async () => {
+    const { companyId, issueId, interactionId, approvalId } = await seed();
+    const board = boardActor(companyId);
+    await request(app(board)).post(`/api/companies/${companyId}/decision-queues`).send({
+      key: "triage",
+      title: "Triage",
+    }).expect(201);
+
+    for (const source of [
+      { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+      { sourceKind: "review", sourceId: issueId },
+      { sourceKind: "approval", sourceId: approvalId },
+    ]) {
+      await request(app(board))
+        .post(`/api/companies/${companyId}/decision-queues/triage/items`)
+        .send(source)
+        .expect(201);
+    }
+
+    const added = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "decision_queue_item.added"),
+    ));
+    const detailsFor = (sourceKind: string, sourceId: string) => added.find((row) => {
+      const details = row.details as { sourceKind?: string; sourceId?: string } | null;
+      return details?.sourceKind === sourceKind && details?.sourceId === sourceId;
+    })?.details as Record<string, unknown> | undefined;
+
+    // Both of these sources prove which issue they belong to, so the published
+    // request can name the work a subscriber is being asked to decide on.
+    expect(detailsFor("issue_thread_interaction", interactionId)).toMatchObject({
+      issueId,
+      identifier: "DQC-1",
+      title: "Review the rollout",
+    });
+    expect(detailsFor("review", issueId)).toMatchObject({
+      issueId,
+      identifier: "DQC-1",
+      title: "Review the rollout",
+    });
+    // An approval with no issue link proves nothing, so it stays a source reference.
+    expect(detailsFor("approval", approvalId)).toEqual({
+      sourceKind: "approval",
+      sourceId: approvalId,
+    });
+  });
+
   it("materializes data-backed starter queues from plan, question, and pull-request signals", async () => {
     const { companyId, issueId, interactionId } = await seed();
     await db.insert(issueWorkProducts).values({
