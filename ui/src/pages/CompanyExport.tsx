@@ -586,13 +586,33 @@ function ExportPreviewPane({
 
 // ── Main page ─────────────────────────────────────────────────────────
 
+/** Encode each path segment so `#`, `?`, and `%` survive deep-link round-trips. */
+export function encodeExportFilePath(filePath: string): string {
+  return filePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+/** Decode a path written by `encodeExportFilePath` (or a legacy encodeURI URL). */
+export function decodeExportFilePath(encodedPath: string): string {
+  if (!encodedPath) return "";
+  return encodedPath
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join("/");
+}
+
 /** Extract the file path from the current URL pathname (after /company/export/files/) */
 function filePathFromLocation(pathname: string): string | null {
   const marker = "/company/export/files/";
   const relativePathname = toCompanyRelativePath(pathname);
   const idx = relativePathname.indexOf(marker);
   if (idx === -1) return null;
-  const filePath = decodeURIComponent(relativePathname.slice(idx + marker.length));
+  const filePath = decodeExportFilePath(relativePathname.slice(idx + marker.length));
   return filePath || null;
 }
 
@@ -706,7 +726,7 @@ export function CompanyExport() {
     (filePath: string | null, replace = false) => {
       setSelectedFile(filePath);
       if (filePath) {
-        navigate(`/company/export/files/${encodeURI(filePath)}`, { replace });
+        navigate(`/company/export/files/${encodeExportFilePath(filePath)}`, { replace });
       } else {
         navigate("/company/export", { replace });
       }
