@@ -62,7 +62,7 @@ describe("deriveIssueUserContext", () => {
     expect(context.isUnreadForMe).toBe(true);
   });
 
-  it("uses issue updated time as fallback touch point for assignee", () => {
+  it("keeps external comments unread for an assignee after issue updates", () => {
     const context = deriveIssueUserContext(
       makeIssue({ assigneeUserId: "user-1", updatedAt: new Date("2026-03-06T15:00:00.000Z") }),
       "user-1",
@@ -73,8 +73,23 @@ describe("deriveIssueUserContext", () => {
       },
     );
 
-    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T15:00:00.000Z");
-    expect(context.isUnreadForMe).toBe(false);
+    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T10:00:00.000Z");
+    expect(context.isUnreadForMe).toBe(true);
+  });
+
+  it("uses an assignee's read receipt instead of later issue updates", () => {
+    const context = deriveIssueUserContext(
+      makeIssue({ assigneeUserId: "user-1", updatedAt: new Date("2026-03-06T15:00:00.000Z") }),
+      "user-1",
+      {
+        myLastCommentAt: null,
+        myLastReadAt: new Date("2026-03-06T12:00:00.000Z"),
+        lastExternalCommentAt: new Date("2026-03-06T13:00:00.000Z"),
+      },
+    );
+
+    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T12:00:00.000Z");
+    expect(context.isUnreadForMe).toBe(true);
   });
 
   it("uses latest read timestamp to clear unread without requiring a comment", () => {

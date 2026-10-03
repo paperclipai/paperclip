@@ -2087,6 +2087,66 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
   });
 
+  it("keeps assigned issues unread after agent comments and clears them on read", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const unreadIssueId = randomUUID();
+    const readIssueId = randomUUID();
+    const otherAssigneeIssueId = randomUUID();
+    const createdAt = new Date("2026-03-26T10:00:00.000Z");
+    const readAt = new Date("2026-03-26T11:00:00.000Z");
+    const commentAt = new Date("2026-03-26T12:00:00.000Z");
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Worker",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+    await db.insert(issues).values([
+      { id: unreadIssueId, assigneeUserId: userId },
+      { id: readIssueId, assigneeUserId: userId },
+      { id: otherAssigneeIssueId, assigneeUserId: "other-user" },
+    ].map(({ id, assigneeUserId }) => ({
+      id,
+      companyId,
+      title: "Assigned issue",
+      status: "todo" as const,
+      priority: "medium" as const,
+      assigneeUserId,
+      createdAt,
+      updatedAt: createdAt,
+    })));
+    await svc.markRead(companyId, readIssueId, userId, readAt);
+    for (const issueId of [unreadIssueId, readIssueId, otherAssigneeIssueId]) {
+      await svc.addComment(issueId, "Worker update", { agentId }, { createdAt: commentAt });
+    }
+
+    const filters = { touchedByUserId: userId, unreadForUserId: userId };
+    const unreadIssues = await svc.list(companyId, filters);
+    expect(new Set(unreadIssues.map((issue) => issue.id))).toEqual(new Set([
+      unreadIssueId,
+      readIssueId,
+    ]));
+    expect(unreadIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: unreadIssueId, myLastTouchAt: createdAt, isUnreadForMe: true }),
+      expect.objectContaining({ id: readIssueId, myLastTouchAt: readAt, isUnreadForMe: true }),
+    ]));
+    await expect(svc.count(companyId, filters)).resolves.toBe(2);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(2);
+
+    await svc.markRead(companyId, readIssueId, userId, new Date("2026-03-26T13:00:00.000Z"));
+    await expect(svc.list(companyId, filters)).resolves.toEqual([
+      expect.objectContaining({ id: unreadIssueId, isUnreadForMe: true }),
+    ]);
+    await expect(svc.count(companyId, filters)).resolves.toBe(1);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
+  });
+
   it("excludes plugin operation issues from unread inbox counts", async () => {
     const companyId = randomUUID();
     const userId = "board-user";
