@@ -1172,7 +1172,7 @@ describe("renderPaperclipWakePrompt", () => {
       "[continuation summary truncated]",
     );
     expect(incompleteResumePrompt).toContain(
-      "a successful process exit or final response is not sufficient",
+      "Execution contract: unchanged from the session start",
     );
   });
 
@@ -1522,8 +1522,11 @@ describe("renderPaperclipWakePrompt", () => {
       fallbackFetchNeeded: false,
     };
 
+    const trimmed = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(trimmed).toContain("Execution contract: unchanged from the session start");
+    expect(trimmed).not.toContain("Execution contract: take concrete");
     for (const prompt of [
-      renderPaperclipWakePrompt(payload, { resumedSession: true }),
+      renderPaperclipWakePrompt(payload, { resumedSession: true, includeExecutionContract: true }),
       renderPaperclipWakePrompt(payload, { includeExecutionContract: true }),
     ]) {
       expect(prompt).toContain(
