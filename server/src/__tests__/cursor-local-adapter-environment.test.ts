@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { testEnvironment } from "@paperclipai/adapter-cursor-local/server";
+import { createSandboxToolPath } from "./helpers/sandbox-tool-path.js";
 
 async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): Promise<string> {
   const commandPath = path.join(binDir, "agent");
@@ -54,7 +55,7 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
-function createLocalSandboxRunner() {
+function createLocalSandboxRunner(sandboxPath: string) {
   let counter = 0;
   return {
     execute: async (input: {
@@ -70,7 +71,7 @@ function createLocalSandboxRunner() {
       counter += 1;
       return await runChildProcess(`cursor-sandbox-env-${counter}`, input.command, input.args ?? [], {
         cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
+        env: { PATH: sandboxPath, ...input.env },
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
         graceSec: 5,
@@ -191,6 +192,7 @@ describe("cursor environment diagnostics", () => {
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
     await fs.mkdir(remoteCwd, { recursive: true });
     await writeFakeCursorAgentCommand(cursorAgentPath);
+    const sandboxPath = await createSandboxToolPath(root);
 
     const previousHome = process.env.HOME;
     process.env.HOME = homeDir;
@@ -203,7 +205,7 @@ describe("cursor environment diagnostics", () => {
           kind: "remote",
           transport: "sandbox",
           remoteCwd,
-          runner: createLocalSandboxRunner(),
+          runner: createLocalSandboxRunner(sandboxPath),
           timeoutMs: 30_000,
         },
         config: {
@@ -212,6 +214,7 @@ describe("cursor environment diagnostics", () => {
           env: {
             CURSOR_API_KEY: "test-key",
             PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+            PATH: sandboxPath,
           },
         },
       });

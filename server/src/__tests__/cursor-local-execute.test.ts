@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
+import { createSandboxToolPath } from "./helpers/sandbox-tool-path.js";
 
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -50,6 +51,7 @@ const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   path: process.env.PATH || "",
+  skill: fs.readFileSync(require("node:path").join(process.env.HOME, ".cursor", "skills", "fixture-skill", "SKILL.md"), "utf8"),
 };
 fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(payload), "utf8");
 console.log(JSON.stringify({
@@ -74,7 +76,7 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
-function createLocalSandboxRunner() {
+function createLocalSandboxRunner(sandboxPath: string) {
   let counter = 0;
   return {
     execute: async (input: {
@@ -90,7 +92,7 @@ function createLocalSandboxRunner() {
       counter += 1;
       return await runChildProcess(`cursor-sandbox-execute-${counter}`, input.command, input.args ?? [], {
         cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
+        env: { PATH: sandboxPath, ...input.env },
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
         graceSec: 5,
@@ -333,9 +335,12 @@ describe("cursor execute", () => {
     const remoteWorkspace = path.join(root, "remote-workspace");
     const capturePath = path.join(root, "capture.json");
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
+    const skillDir = await createSkillDir(root, "fixture-skill");
+    const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
     await writeFakeSandboxCursorAgent(cursorAgentPath, capturePath);
+    const sandboxPath = await createSandboxToolPath(root);
 
     const previousHome = process.env.HOME;
     process.env.HOME = homeDir;
@@ -360,29 +365,35 @@ describe("cursor execute", () => {
           kind: "remote",
           transport: "sandbox",
           remoteCwd: remoteWorkspace,
-          runner: createLocalSandboxRunner(),
+          runner: createLocalSandboxRunner(sandboxPath),
           timeoutMs: 30_000,
         },
         config: {
           command: "agent",
           cwd: workspace,
+          env: { PATH: sandboxPath },
+          paperclipRuntimeSkills: [{ name: "fixture-skill", source: skillDir }],
+          paperclipSkillSync: { desiredSkills: ["fixture-skill"] },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
-        onLog: async () => {},
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
       });
 
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode, logs.join("")).toBe(0);
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
         command: string;
         argv: string[];
         prompt: string;
         path: string;
+        skill: string;
       };
       expect(capture.command).toBe(cursorAgentPath);
       expect(capture.path.split(":")[0]).toBe(path.join(homeDir, ".local", "bin"));
       expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
+      expect(capture.skill).toBe(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8"));
+      expect(logs.join("")).not.toMatch(/not found|Failed to .*skill/);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -398,10 +409,13 @@ describe("cursor execute", () => {
     const capturePath = path.join(root, "capture.json");
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
     const customCommandPath = path.join(root, "bin", "custom-cursor");
+    const skillDir = await createSkillDir(root, "fixture-skill");
+    const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
     await writeFakeSandboxCursorAgent(cursorAgentPath, path.join(root, "unused.json"));
     await writeFakeSandboxCursorAgent(customCommandPath, capturePath);
+    const sandboxPath = await createSandboxToolPath(root);
 
     const previousHome = process.env.HOME;
     process.env.HOME = homeDir;
@@ -426,22 +440,27 @@ describe("cursor execute", () => {
           kind: "remote",
           transport: "sandbox",
           remoteCwd: remoteWorkspace,
-          runner: createLocalSandboxRunner(),
+          runner: createLocalSandboxRunner(sandboxPath),
           timeoutMs: 30_000,
         },
         config: {
           command: customCommandPath,
           cwd: workspace,
+          env: { PATH: sandboxPath },
+          paperclipRuntimeSkills: [{ name: "fixture-skill", source: skillDir }],
+          paperclipSkillSync: { desiredSkills: ["fixture-skill"] },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
-        onLog: async () => {},
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
       });
 
-      expect(result.exitCode).toBe(0);
-      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { command: string };
+      expect(result.exitCode, logs.join("")).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { command: string; skill: string };
       expect(capture.command).toBe(customCommandPath);
+      expect(capture.skill).toBe(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8"));
+      expect(logs.join("")).not.toMatch(/not found|Failed to .*skill/);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
