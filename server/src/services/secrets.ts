@@ -2526,9 +2526,9 @@ export function secretService(db: Db | DbTransaction) {
       // rows. A credential write-back locks the parent secret row first, then
       // calls this function. If this transaction updated the version rows
       // first instead, the two transactions would take their two row locks
-      // in opposite order and could deadlock. Matching the order here removes
-      // that risk: every caller now locks the parent row before the version
-      // rows, so a lock cycle between the two tables cannot form.
+      // in opposite order and could deadlock. Every writer that touches both
+      // tables must lock the parent row before the version rows. That order
+      // keeps a lock cycle between the two tables from forming.
       return await db.transaction(async (tx) => {
         const updated = await tx
           .update(companySecrets)
