@@ -75,6 +75,21 @@ npx paperclipai agent list
 npx paperclipai agent get <agent-id>
 ```
 
+## Run Commands
+
+```sh
+# List heartbeat runs. Returns the 200 most recent runs by default.
+npx paperclipai run list [--agent-id <agent-id>] [--limit <n>] [--all]
+npx paperclipai run get <run-id>
+npx paperclipai run log <run-id> [--offset <bytes>] [--limit-bytes <bytes>]
+```
+
+`run list` returns a bounded page. If the page comes back full, the command
+prints a notice on stderr, because more runs can exist than the page holds. The
+server accepts a `--limit` up to 1000 and reduces a larger value to 1000. Use
+`--all` to request every run for the company. The response is then unbounded,
+and it can be tens of megabytes on a long-lived instance.
+
 ## Skills Commands
 
 ```sh
