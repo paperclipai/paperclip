@@ -7988,6 +7988,14 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
+    if (req.query.sort !== undefined) {
+      res.status(400).json({ error: "Unknown parameter 'sort'. Use 'sortField' instead." });
+      return;
+    }
+    if (req.query.order !== undefined) {
+      res.status(400).json({ error: "Unknown parameter 'order'. Use 'sortDir' instead." });
+      return;
+    }
     if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
       res
         .status(400)
