@@ -975,7 +975,27 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
 } from "./access.js";
-export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export type { QuotaWindow, QuotaWindowKind, ProviderQuotaResult } from "./quota.js";
+export type {
+  QuotaPacingMode,
+  QuotaPacingModeSetting,
+  QuotaPacingProvider,
+  QuotaPacingProviderState,
+  QuotaPacingReason,
+  QuotaPacingSettings,
+  QuotaPacingState,
+  QuotaPacingWindowState,
+} from "./quota-pacing.js";
+export {
+  DEFAULT_QUOTA_PACING_SETTINGS,
+  QUOTA_PACING_MAX_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT,
+  QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT,
+  QUOTA_PACING_MIN_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MODE_SETTINGS,
+  QUOTA_PACING_MODES,
+  QUOTA_PACING_PROVIDERS,
+} from "./quota-pacing.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

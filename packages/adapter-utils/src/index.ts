@@ -34,6 +34,7 @@ export type {
   AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,
+  QuotaWindowKind,
   ProviderQuotaResult,
   TranscriptEntry,
   PaperclipQuestion,

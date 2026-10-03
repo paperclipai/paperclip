@@ -1350,6 +1350,13 @@ Per-agent schedule fields in `adapter_config`:
 - `intervalSec` integer (minimum 30)
 - `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
 
+Optional instance-level quota pacing (`general.quotaPacing`, off by default)
+can lower the effective `maxConcurrentRuns` of `claude_local` and `codex_local`
+agents to half or one while provider usage runs ahead of an even pace across
+the session and weekly quota windows. It limits new starts only, never
+cancels a running run, never changes agent config, and fails open to the
+configured limit when quota data is missing or stale.
+
 Scheduler must skip invocation when:
 
 - agent is paused/terminated

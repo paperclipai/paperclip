@@ -1627,7 +1627,16 @@ export type {
   FieldDef,
   OAuthRedirectConstraints,
   QuotaWindow,
+  QuotaWindowKind,
   ProviderQuotaResult,
+  QuotaPacingMode,
+  QuotaPacingModeSetting,
+  QuotaPacingProvider,
+  QuotaPacingProviderState,
+  QuotaPacingReason,
+  QuotaPacingSettings,
+  QuotaPacingState,
+  QuotaPacingWindowState,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";
 export {
@@ -1770,6 +1779,17 @@ export {
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
+export {
+  DEFAULT_QUOTA_PACING_SETTINGS,
+  QUOTA_PACING_MAX_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT,
+  QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT,
+  QUOTA_PACING_MIN_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MODE_SETTINGS,
+  QUOTA_PACING_MODES,
+  QUOTA_PACING_PROVIDERS,
+} from "./types/quota-pacing.js";
+
 export type {
   SmokeLabServiceStatus,
   SmokeRun,
@@ -1804,7 +1824,10 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  quotaPacingSettingsSchema,
+  patchQuotaPacingSettingsSchema,
   type PatchInstanceGeneralSettings,
+  type PatchQuotaPacingSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
   managedSettingMetadataSchema,

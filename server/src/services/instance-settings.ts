@@ -14,6 +14,7 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_QUOTA_PACING_SETTINGS,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -208,13 +209,32 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
+      quotaPacing: parsed.data.quotaPacing ?? DEFAULT_QUOTA_PACING_SETTINGS,
     };
   }
   return {
     censorUsernameInLogs: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    quotaPacing: DEFAULT_QUOTA_PACING_SETTINGS,
   };
+}
+
+/**
+ * Merge a general-settings patch over the stored settings. Top-level keys
+ * replace the stored value; pacing settings merge key by key so a caller can
+ * change one pacing field without echoing the rest.
+ */
+export function applyGeneralSettingsPatch(
+  stored: InstanceGeneralSettings,
+  patch: PatchInstanceGeneralSettings,
+): InstanceGeneralSettings {
+  const { quotaPacing: quotaPacingPatch, ...topLevelPatch } = patch;
+  return normalizeGeneralSettings({
+    ...stored,
+    ...topLevelPatch,
+    quotaPacing: { ...stored.quotaPacing, ...quotaPacingPatch },
+  });
 }
 
 export function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
@@ -535,7 +555,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       // so changing or unsetting the variable later still takes effect.
       const nextGeneral = stripOperatorGeneralEchoes(
         storedGeneral,
-        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        applyGeneralSettingsPatch(storedGeneral, patch),
         operatorDefaults,
       );
       const now = new Date();

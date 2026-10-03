@@ -66,6 +66,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
+const mockGetQuotaPacingState = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
@@ -125,6 +126,9 @@ function registerModuleMocks() {
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+  vi.doMock("../services/quota-pacing.js", () => ({
+    getQuotaPacingState: mockGetQuotaPacingState,
   }));
 }
 
@@ -276,6 +280,78 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+  });
+
+  describe("quota pacing state", () => {
+    const pacingState = {
+      enabled: true,
+      settings: { enabled: true, mode: "auto", sessionReservePercent: 20, weeklyAllowancePercent: 8, pollIntervalSec: 300 },
+      lastPolledAt: "2026-09-30T12:00:00.000Z",
+      nextPollAt: "2026-09-30T12:05:00.000Z",
+      lastError: null,
+      providers: [
+        {
+          provider: "anthropic",
+          mode: "half",
+          reason: "session_ahead",
+          session: { usedPercent: 45, targetPercent: 40, aheadPercent: 5, elapsedPercent: 50, resetsAt: "2026-09-30T14:30:00.000Z", windowSeconds: 18000 },
+          weekly: null,
+          lastPolledAt: "2026-09-30T12:00:00.000Z",
+          lastError: null,
+        },
+      ],
+    };
+
+    it("returns the cached pacing state to board users with company access", async () => {
+      mockCompanyService.getById.mockResolvedValue({ id: "company-1", name: "Paperclip" });
+      mockGetQuotaPacingState.mockReturnValue(pacingState);
+      const app = createApp();
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-pacing");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(pacingState);
+      expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 for an unknown company", async () => {
+      mockCompanyService.getById.mockResolvedValue(null);
+      const app = createApp();
+
+      const res = await request(app).get("/api/companies/__none__/costs/quota-pacing");
+
+      expect(res.status).toBe(404);
+      expect(mockGetQuotaPacingState).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent callers", async () => {
+      const app = createAppWithActor({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-pacing");
+
+      expect(res.status).toBe(403);
+      expect(mockGetQuotaPacingState).not.toHaveBeenCalled();
+    });
+
+    it("rejects board users outside the company", async () => {
+      const app = createAppWithActor({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: ["company-2"],
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-pacing");
+
+      expect(res.status).toBe(403);
+      expect(mockGetQuotaPacingState).not.toHaveBeenCalled();
+    });
   });
 
   it("rejects company budget updates for board users outside the company", async () => {

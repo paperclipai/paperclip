@@ -45,6 +45,24 @@ GET /api/companies/{companyId}/costs/by-project
 
 Returns per-project cost breakdown for the current month.
 
+## Quota Pacing State
+
+```
+GET /api/companies/{companyId}/costs/quota-pacing
+```
+
+Returns the run pacing state: `enabled`, `settings`, `lastPolledAt`,
+`nextPollAt`, `lastError`, and one entry per paced provider (`anthropic`,
+`openai`) with `mode` (`full`, `half`, or `low`), `reason`, the most
+constraining `session` and `weekly` window (`usedPercent`, `targetPercent`,
+`aheadPercent`, `elapsedPercent`, `resetsAt`, `windowSeconds`),
+`lastPolledAt`, and `lastError`. The route returns cached state and does not poll a provider.
+Board access to the company is required.
+
+Change pacing settings with `PATCH /api/instance/settings/general` and a
+`quotaPacing` object (instance admins only). See
+[Costs and Budgets](/guides/board-operator/costs-and-budgets) for the fields.
+
 ## Budget Management
 
 ### Set Company Budget
