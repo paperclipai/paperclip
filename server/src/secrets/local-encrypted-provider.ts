@@ -175,8 +175,10 @@ async function inspectLocalEncryptedHealth(): Promise<SecretProviderHealthCheck>
     };
   }
 
+  // Windows has no POSIX permission bits: stat() reports 0o666 for any writable
+  // file and chmod cannot restrict it, so this check would always warn there.
   const warnings =
-    mode !== null && (mode & 0o077) !== 0
+    process.platform !== "win32" && mode !== null && (mode & 0o077) !== 0
       ? [`Secrets key file permissions are ${mode.toString(8)}; run chmod 600 ${keyPath}`]
       : [];
   return {
