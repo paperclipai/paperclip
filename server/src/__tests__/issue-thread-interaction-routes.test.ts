@@ -2850,6 +2850,98 @@ describe.sequential("issue thread interaction routes", () => {
     expect(board.status).toBe(200);
   });
 
+  it("allows the addressed human to resolve a legacy email-addressed interaction with a verified email", async () => {
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+      email: "reviewer@example.com",
+      emailVerified: true,
+    };
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-email-addressed",
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeUserId: "Reviewer@Example.com",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve this action?" },
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-email-addressed",
+        companyId: "company-1",
+        issueId: ISSUE_ID,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "none",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        payload: { version: 1, prompt: "Approve this action?" },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-email-addressed/accept`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-email-addressed",
+      {},
+      expect.objectContaining({
+        userId: "user-1",
+        verifiedEmail: "reviewer@example.com",
+      }),
+    );
+  });
+
+  it("does not use an unverified email to resolve an email-addressed interaction", async () => {
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+      email: "reviewer@example.com",
+      emailVerified: false,
+    };
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-unverified-email-addressed",
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeUserId: "reviewer@example.com",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve this action?" },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-unverified-email-addressed/accept`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "interaction_addressee_mismatch" });
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("preserves creator exclusion for legacy board_or_agents rows", async () => {
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-2",

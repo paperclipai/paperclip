@@ -780,6 +780,10 @@ A cap never widens the requested audience. Tool-action confirmations and
 other hard-governed action cards remain `human_only` (or move to the formal approval
 system) regardless of a requested open audience.
 
+For a historical row whose `addresseeUserId` contains an email address, the
+addressed user may resolve it only when that address matches their verified
+account email. An unverified email does not grant access.
+
 Surfaces that offer a resolution must state the effective audience before the
 operator acts, from server metadata rather than a client-side policy inference.
 Issue-thread cards read it from the interaction snapshot; attention rows read it

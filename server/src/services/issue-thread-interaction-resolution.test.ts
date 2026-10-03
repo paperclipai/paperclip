@@ -63,6 +63,32 @@ describe("issue-thread interaction resolver audience", () => {
     })).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
   });
 
+  it("accepts a legacy email addressee only when it matches the user's verified email", () => {
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: {
+        type: "user",
+        userId: "alice-id",
+        verifiedEmail: "Alice@example.com",
+      },
+      interaction: interaction({
+        addresseeUserId: " alice@EXAMPLE.com ",
+        effectiveResolverPolicy: "human_only",
+      }),
+    })).toMatchObject({ allowed: true, reason: "allow_addressee" });
+
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: {
+        type: "user",
+        userId: "alice-id",
+        verifiedEmail: null,
+      },
+      interaction: interaction({
+        addresseeUserId: "alice@example.com",
+        effectiveResolverPolicy: "human_only",
+      }),
+    })).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
+  });
+
   it("requires run attribution for agents", () => {
     const decision = evaluateIssueThreadInteractionResolverAudience({
       actor: { type: "agent", agentId: "agent-1", runId: null },

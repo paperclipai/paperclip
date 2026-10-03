@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agentWakeupRequests,
+  authUsers,
   toolActionDeliveries,
   agents,
   approvals,
@@ -575,7 +576,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(requests).toHaveLength(1);
     const [interaction] = await db.select().from(issueThreadInteractions);
     expect(interaction.payload).toMatchObject({ supersedeOnUserComment: false, toolAction: { risk: "read", rememberActionScope: expect.any(String) } });
-    const approve = () => gateway.approveActionRequest({ companyId: company.id, actionRequestId: requests[0].id, rememberAction: true, actor: { userId: "reviewer" } });
+    const reviewerId = randomUUID();
+    await db.insert(authUsers).values({
+      id: reviewerId,
+      name: "Review board member",
+      email: "reviewer@example.com",
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const unverifiedReviewerId = randomUUID();
+    await db.insert(authUsers).values({
+      id: unverifiedReviewerId,
+      name: "Unverified reviewer",
+      email: "unverified@example.com",
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.update(issueThreadInteractions)
+      .set({ addresseeUserId: "unverified@example.com" })
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    await expect(
+      gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: requests[0].id,
+        rememberAction: true,
+        actor: { userId: unverifiedReviewerId },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      (await db.select().from(toolActionRequests))[0].status,
+    ).toBe("pending");
+
+    await db.update(issueThreadInteractions)
+      .set({ addresseeUserId: "reviewer@example.com" })
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    const approve = () => gateway.approveActionRequest({ companyId: company.id, actionRequestId: requests[0].id, rememberAction: true, actor: { userId: reviewerId } });
     await Promise.all([approve(), approve()]);
     expect(calls).toBe(1);
     const rules = await db.select().from(toolPolicies).where(eq(toolPolicies.policyType, "trust_rule"));

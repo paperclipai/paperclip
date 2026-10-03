@@ -5,6 +5,7 @@ import {
   toolActionRequests,
   toolInvocations,
   toolActionDeliveries,
+  authUsers,
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
@@ -130,8 +131,25 @@ export async function commitToolActionReview(
         payload.toolAction.invocationId !== current.invocationId
       )
         throw conflict("Tool review context does not match");
+      const verifiedEmail =
+        input.actor.userId && interaction.addresseeUserId?.includes("@")
+          ? await tx
+              .select({
+                email: authUsers.email,
+                emailVerified: authUsers.emailVerified,
+              })
+              .from(authUsers)
+              .where(eq(authUsers.id, input.actor.userId))
+              .then((rows) =>
+                rows[0]?.emailVerified ? rows[0].email : null,
+              )
+          : null;
       assertIssueThreadInteractionResolverAudience({
-        actor: { type: "user", userId: input.actor.userId ?? "board" },
+        actor: {
+          type: "user",
+          userId: input.actor.userId ?? "board",
+          verifiedEmail,
+        },
         interaction,
         governedAction: true,
       });
