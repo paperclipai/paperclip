@@ -101,6 +101,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Kimi Code CLI harness",
     icon: Moon,
   },
+  crush_local: {
+    label: "Crush",
+    description: "Charmbracelet Crush coding agent",
+    icon: Terminal,
+  },
   hermes_gateway: {
     label: "Hermes Gateway",
     description: "Remote Hermes API server",
