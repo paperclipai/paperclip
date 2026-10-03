@@ -11,6 +11,7 @@ import {
   parseClaudeCliUsageText,
   readClaudeToken,
   claudeConfigDir,
+  resetClaudeQuotaThrottleForTests,
 } from "@paperclipai/adapter-claude-local/server";
 
 import {
@@ -501,6 +502,10 @@ describe("readCodexToken", () => {
 describe("fetchClaudeQuota", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    // Throttle/cache state is per-token module state (see #8118) — reset it
+    // so each test's mock response is actually exercised instead of a
+    // previous test's cached result being served for the shared "token" literal.
+    resetClaudeQuotaThrottleForTests();
   });
 
   afterEach(() => {
@@ -632,6 +637,84 @@ describe("fetchClaudeQuota", () => {
       valueLabel: "$67.93 / $140.00",
       detail: "Monthly extra usage pool",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchClaudeQuota — throttle, cache, and 429 backoff (#8118)
+// ---------------------------------------------------------------------------
+
+describe("fetchClaudeQuota throttle/backoff", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+    resetClaudeQuotaThrottleForTests();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function mockFetchOnce(body: unknown, ok = true, status = 200) {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok,
+      status,
+      text: async () => JSON.stringify(body),
+      json: async () => body,
+    } as Response);
+  }
+
+  it("skips a live refetch within the 60s throttle window and returns the cached result", async () => {
+    mockFetchOnce({ five_hour: { utilization: 10, resets_at: null } });
+    const first = await fetchClaudeQuota("throttle-token");
+    const second = await fetchClaudeQuota("throttle-token");
+    expect(second).toEqual(first);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does a live refetch once the throttle window elapses", async () => {
+    mockFetchOnce({ five_hour: { utilization: 10, resets_at: null } });
+    await fetchClaudeQuota("throttle-token");
+    vi.advanceTimersByTime(61_000);
+    mockFetchOnce({ five_hour: { utilization: 20, resets_at: null } });
+    const second = await fetchClaudeQuota("throttle-token");
+    expect(second[0]!.usedPercent).toBe(20);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves the stale cache instead of throwing when a later fetch 429s", async () => {
+    mockFetchOnce({ five_hour: { utilization: 10, resets_at: null } });
+    const first = await fetchClaudeQuota("throttle-token");
+    vi.advanceTimersByTime(61_000);
+    mockFetchOnce({}, false, 429);
+    const second = await fetchClaudeQuota("throttle-token");
+    expect(second).toEqual(first);
+  });
+
+  it("throws on 429 with no prior cache to fall back on", async () => {
+    mockFetchOnce({}, false, 429);
+    await expect(fetchClaudeQuota("throttle-token")).rejects.toThrow(/rate limited/);
+  });
+
+  it("keeps returning the cache while backed off, without calling fetch again", async () => {
+    mockFetchOnce({ five_hour: { utilization: 10, resets_at: null } });
+    await fetchClaudeQuota("throttle-token");
+    vi.advanceTimersByTime(61_000);
+    mockFetchOnce({}, false, 429); // triggers backoff
+    await fetchClaudeQuota("throttle-token");
+    const callsAfterBackoffTriggered = (fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    vi.advanceTimersByTime(5_000); // still within the backoff window
+    await fetchClaudeQuota("throttle-token");
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterBackoffTriggered);
+  });
+
+  it("scopes cache and backoff per token so one login can't read or block on another's state", async () => {
+    mockFetchOnce({}, false, 429);
+    await expect(fetchClaudeQuota("token-a")).rejects.toThrow();
+
+    mockFetchOnce({ five_hour: { utilization: 42, resets_at: null } });
+    const windows = await fetchClaudeQuota("token-b");
+    expect(windows[0]!.usedPercent).toBe(42);
   });
 });
 
