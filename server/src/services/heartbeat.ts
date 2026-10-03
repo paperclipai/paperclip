@@ -5356,6 +5356,22 @@ export function resolveLedgerCostStatus(input: {
     : "unpriced";
 }
 
+/**
+ * Identity of the run on the remote runtime, as reported by the adapter.
+ *
+ * An adapter that drives a remote runtime (a gateway, a sandboxed runner, ...)
+ * is the only place that identity is visible, so it is worth one named rule:
+ * blank and non-string values mean "the adapter did not report one" and must
+ * not erase a value the run already carries.
+ */
+export function resolveExternalRunId(result: {
+  externalRunId?: string | null;
+}): string | null {
+  const value =
+    typeof result.externalRunId === "string" ? result.externalRunId.trim() : "";
+  return value.length > 0 ? value : null;
+}
+
 export function resolveCacheAdjustedCostUsd(input: {
   costUsd?: number | null;
   cacheAdjustedCostUsd?: number | null;
@@ -19953,6 +19969,16 @@ export function heartbeatService(
     normalizedUsage?: UsageTotals | null,
   ) {
     await ensureRuntimeState(agent);
+    // The adapter's result is the only place the remote run identity appears.
+    // Record it before anything else here can fail, so a reader can pair this
+    // run with the provider's own record instead of guessing from logs.
+    const externalRunId = resolveExternalRunId(result);
+    if (externalRunId && externalRunId !== run.externalRunId) {
+      await db
+        .update(heartbeatRuns)
+        .set({ externalRunId, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;

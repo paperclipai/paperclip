@@ -545,6 +545,7 @@ describe("execute", () => {
       hermesRunId: "run-hermes-1",
       strategy: "agent",
     });
+    expect(result.externalRunId).toBe("run-hermes-1");
     expect(logText).toContain("[redacted-session-key]");
     expect(logText).not.toContain(agentSessionKey);
   });
