@@ -303,3 +303,41 @@ export const MessageTailMediaAndTypedChips: Story = {
     </div>
   ),
 };
+
+const LOCAL_BRANCH: IssueWorkProduct = {
+  ...product(KINDS[2], STATES[0]),
+  id: "local-branch-no-remote",
+  title: "Company skill update entrypoint",
+  provider: "git",
+  updatedAt: new Date("2026-10-03T11:52:54.448Z"),
+  url: null,
+  metadata: null,
+  status: "active",
+  summary: "Uncommitted implementation changes are in the execution working tree on branch company-skill-update-entrypoint. Includes a guarded skill API, runner tool, docs, and focused regressions. No commit or push was requested.",
+};
+
+/** A work product without a remote URL still explains what it is and opens its own details. */
+export const BranchWithoutRemoteLink: Story = {
+  args: { workProduct: LOCAL_BRANCH, href: null },
+  render: (args) => (
+    <div className="w-(--container-md) max-w-full p-6">
+      <RichWorkProductCard {...args} />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.textContent).toContain("Branch · no remote link");
+    expect(canvasElement.textContent).not.toContain("Uncommitted implementation changes");
+    expect(canvasElement.querySelector('button[aria-label^="Show details:"]')).not.toBeNull();
+  },
+};
+
+export const BranchDetailsExpanded: Story = {
+  ...BranchWithoutRemoteLink,
+  play: async ({ canvasElement, userEvent }) => {
+    const button = canvasElement.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
+    await userEvent.click(button!);
+    expect(canvasElement.textContent).toContain("git · active · Updated");
+    expect(canvasElement.textContent).toContain("Saved description");
+    expect(canvasElement.querySelector("details")?.open).toBe(false);
+  },
+};
