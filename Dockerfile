@@ -29,6 +29,10 @@ COPY packages/paperclip-runner/package.json packages/paperclip-runner/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/tailscale-https-broker/package.json packages/tailscale-https-broker/
 COPY packages/teams-catalog/package.json packages/teams-catalog/
+COPY packages/voice-data-lifecycle/package.json packages/voice-data-lifecycle/
+COPY packages/voice-disclosure-gate/package.json packages/voice-disclosure-gate/
+COPY packages/voice-health-controls/package.json packages/voice-health-controls/
+COPY packages/voice-training-guard/package.json packages/voice-training-guard/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
