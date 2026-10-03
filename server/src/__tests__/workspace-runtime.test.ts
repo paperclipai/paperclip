@@ -1756,6 +1756,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
     const repoRoot = await createTempRepo();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
     await writeRegisteredSourceConfig(repoRoot, "worktree-base-source");
     const previousCwd = process.cwd();
     const previousPath = process.env.PATH;
@@ -1771,14 +1772,16 @@ describe("realizeExecutionWorkspace", () => {
     const sharedConfigPath = path.join(sharedConfigDir, "config.json");
     const sharedEnvPath = path.join(sharedConfigDir, ".env");
 
-    process.env.PAPERCLIP_HOME = paperclipHome;
-    process.env.PAPERCLIP_INSTANCE_ID = instanceId;
-    process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
-    delete process.env.PAPERCLIP_CONFIG;
     // Keep this server-side fixture on provision-worktree.sh's config writer path;
-    // CLI/database seeding is covered by the CLI worktree tests.
+    // CLI/database seeding is covered by the CLI worktree tests. Include only
+    // required tools, so pnpm/paperclipai stay absent even on non-FHS hosts.
     await fs.symlink(process.execPath, path.join(isolatedBin, "node"));
-    process.env.PATH = `${isolatedBin}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    for (const command of ["bash", "sh", "git", "env", "dirname", "basename", "mkdir", "find", "sed", "ln"]) {
+      const { stdout } = await execFileAsync("/bin/sh", ["-c", 'command -v "$1"', "sh", command]);
+      const executable = stdout.trim();
+      expect(path.isAbsolute(executable)).toBe(true);
+      await fs.symlink(executable, path.join(isolatedBin, command));
+    }
 
     await fs.mkdir(sharedConfigDir, { recursive: true });
     await fs.writeFile(
@@ -1853,7 +1856,13 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["commit", "-m", "Add worktree provision script"]);
 
     try {
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+      process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
+      delete process.env.PAPERCLIP_CONFIG;
+      process.env.PATH = isolatedBin;
       const workspaceInput = {
+        recorder,
         base: {
           baseCwd: repoRoot,
           source: "project_primary",
@@ -1939,6 +1948,12 @@ describe("realizeExecutionWorkspace", () => {
       expect(reusedConfigContents.server.port).toBe(preservedPort);
       expect(reusedConfigContents.database.embeddedPostgresDataDir).toBe(path.join(expectedInstanceRoot, "db"));
       expect(reusedEnvContents).toContain('PAPERCLIP_WORKTREE_COLOR="#112233"');
+      // A failed process substitution can still leave the shell exit code at zero.
+      const provisions = operations.filter((entry) => entry.phase === "workspace_provision");
+      expect(provisions).toHaveLength(2);
+      for (const operation of provisions) {
+        expect(operation.result.stderr ?? "").not.toMatch(/command not found/);
+      }
     } finally {
       process.chdir(previousCwd);
       if (previousPath === undefined) {
