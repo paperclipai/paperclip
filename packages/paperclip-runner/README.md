@@ -246,7 +246,7 @@ pnpm --filter @paperclipai/paperclip-runner verify
 ```
 
 The verification command requires a stable Rust toolchain with `cargo` on
-`PATH`, in addition to Node.js 24.11+ and pnpm 9+.
+`PATH`, in addition to Node.js 24.11+ and pnpm 11+.
 
 Minimal Debian/Ubuntu hosts without root access can extract the required
 Playwright browser libraries into a user-owned cache and run the same acceptance

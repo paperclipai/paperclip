@@ -101,20 +101,11 @@ function reachableCopies(target: string): string[] {
 
 describe("codemirror single-instance invariant", () => {
   for (const [pkg, major] of SINGLE_INSTANCE_PACKAGES) {
-    it(`keeps the ${pkg} override in the root manifest and its workspace mirror`, () => {
-      // Removing the override is the only way a second copy can come
-      // back (an override rewrites every dependent's range), so the
-      // override's presence is the other half of the invariant.
-      expect(
-        rootManifest.pnpm?.overrides?.[pkg],
-        `${pkg} must stay in pnpm.overrides (root package.json); without ` +
-          "it the graph can resolve two copies and shared editor " +
-          "primitives no longer have the same identity.",
-      ).toMatch(new RegExp(`^\\^${major}\\.`));
+    it(`keeps the ${pkg} override in the workspace manifest and proves package.json#pnpm is removed`, () => {
+      expect(rootManifest.pnpm).toBeUndefined();
       expect(
         workspaceManifest,
-        `pnpm-workspace.yaml mirrors the pnpm.overrides block and must ` +
-          `carry the same ${pkg} entry.`,
+        `pnpm-workspace.yaml is the single authority for overrides and must carry the ${pkg} entry.`,
       ).toMatch(new RegExp(`^\\s+"${pkg}":`, "m"));
     });
 
@@ -129,7 +120,7 @@ describe("codemirror single-instance invariant", () => {
         `the installed graph carries multiple physical copies of ${pkg}, ` +
           "which break shared primitives inside the editor. Reinstall " +
           "against the current manifests; if the copies persist, fix the " +
-          "pnpm.overrides entry in the root package.json instead of " +
+          "overrides entry in pnpm-workspace.yaml instead of " +
           "allowing a second copy.",
       ).toHaveLength(1);
     });

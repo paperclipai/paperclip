@@ -16,7 +16,7 @@ You will start the Rust mock core. The tracer validates one fixture and prints a
 
 - repository checkout on the assigned runner branch;
 - Node.js 20 or newer;
-- pnpm 9 or newer;
+- pnpm 11 or newer;
 - stable Rust with `cargo` on `PATH`;
 - commands run from the repository root.
 

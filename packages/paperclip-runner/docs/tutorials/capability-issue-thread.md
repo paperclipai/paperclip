@@ -24,8 +24,8 @@ on the issue-thread surface and the live loop.
 
 ## What you need
 
-- Node.js 20 or newer and pnpm 9 or newer. This tutorial was verified with Node
-  22.22.2 and pnpm 9.15.4.
+- Node.js 20 or newer and pnpm 11 or newer. This tutorial was verified with Node
+  24 and pnpm 11.27.0.
 - No Rust toolchain for the fake-mode steps (steps 1–4). The optional live steps
   (step 5) build the `paperclip-runnerd` binary and need a Rust toolchain and a
   locally authenticated Codex.

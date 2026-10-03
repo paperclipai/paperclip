@@ -13,8 +13,10 @@ packages:
   - ui
   - cli
 
-# Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
-# versions read patch configuration only from the workspace manifest.
+# pnpm-workspace.yaml is the single active authority for pnpm patches,
+# overrides, and build/security policy in pnpm 11.
+autoInstallPeers: false
+
 patchedDependencies:
   postgres@3.4.9: patches/postgres@3.4.9.patch
   embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch
@@ -47,3 +49,17 @@ overrides:
   # Parsers and highlighters must share NodeProp IDs from one Lezer instance.
   # Mixed copies can interpret unrelated node metadata as highlighting tags.
   "@lezer/common": "^1.5.2"
+
+# Make pnpm 11 build-script policy explicit and fail-closed:
+# Permit only verified binaries that require postinstall setup (embedded-postgres, esbuild, opencode-ai).
+# Deny unneeded native compilation / lifecycle scripts (cpu-features, protobufjs, ssh2).
+allowBuilds:
+  "@embedded-postgres/darwin-arm64": true
+  "@embedded-postgres/darwin-x64": true
+  "@embedded-postgres/linux-arm64": true
+  "@embedded-postgres/linux-x64": true
+  esbuild: true
+  opencode-ai: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
