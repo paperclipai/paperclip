@@ -292,4 +292,57 @@ describe("errorHandler", () => {
       },
     );
   });
+
+  it("maps a Postgres 22P02 (invalid UUID) error to 400 instead of 500", () => {
+    // Real bug: a non-UUID actor.runId reaching any of the many heartbeat_runs lookups
+    // across the codebase throws this Postgres error, wrapped by drizzle-orm as a
+    // DrizzleQueryError with the original PostgresError chained via Error.cause. Before
+    // this fix it fell through to the generic 500 branch below, reporting a crash for
+    // what is actually a caller-input problem.
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const postgresError = Object.assign(new Error('invalid input syntax for type uuid: "manual-orchestrator-nudge"'), {
+      name: "PostgresError",
+      code: "22P02",
+    });
+    const drizzleError = new Error("Failed query: select ... from heartbeat_runs", { cause: postgresError });
+    drizzleError.name = "DrizzleQueryError";
+
+    errorHandler(drizzleError, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "bad_uuid_input",
+      details: { message: "Failed query: select ... from heartbeat_runs" },
+    });
+    // Caller error, not a server crash -- must not attach error context or report a crash.
+    expect(res.err).toBeUndefined();
+    expect(res.__errorContext).toBeUndefined();
+  });
+
+  it("does not coerce an unrelated Postgres error code to 400", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = Object.assign(new Error("connection terminated unexpectedly"), {
+      name: "PostgresError",
+      code: "57P01",
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+  });
+
+  it("does not coerce a plain error with no Postgres code to 400", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new Error("something else broke"), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });
