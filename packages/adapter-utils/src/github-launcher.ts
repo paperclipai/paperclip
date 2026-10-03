@@ -1,3 +1,11 @@
+/**
+ * Placeholder credential handed to a launcher child when the broker issued none.
+ * It is deliberately not a valid token: gh prefers an environment token over its
+ * keychain-backed secure storage, so filling the name denies the host user's
+ * stored credential instead of merely declining to provide one.
+ */
+export const WITHHELD_GITHUB_CREDENTIAL = "paperclip-github-identity-withheld";
+
 /** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
 export function githubLauncherSource(): string {
   return String.raw`#!/usr/bin/env node
@@ -39,6 +47,10 @@ async function main() {
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      // Apple Git keeps reading its own system configuration when that path is
+      // redirected, and it ships an osxkeychain credential helper. Only the
+      // no-system switch actually drops it, so set both.
+      GIT_CONFIG_NOSYSTEM: '1',
       GIT_TERMINAL_PROMPT: '0',
       // The inherited identity was deleted above. Empty identity env values
       // override even explicit repository/command config and break local commits.
@@ -98,6 +110,15 @@ async function main() {
       }
     } else { diagnostic('capability_missing'); }
     } catch { diagnostic('broker_transport_unavailable'); }
+  }
+  // gh prefers keychain-backed secure storage, which GH_CONFIG_DIR cannot
+  // namespace, so an empty configuration directory is not containment: a run
+  // with no managed identity would still read the host user's stored token.
+  // An environment token outranks stored credentials, so a sentinel makes the
+  // withheld case fail closed with a legible error. Only unset names are
+  // filled, which leaves an issued credential untouched.
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) {
+    if (!env[key]) env[key] = ${JSON.stringify(WITHHELD_GITHUB_CREDENTIAL)};
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
