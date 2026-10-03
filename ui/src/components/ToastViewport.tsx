@@ -101,7 +101,9 @@ export function ToastViewport() {
     <aside
       aria-live="polite"
       aria-atomic="false"
-      className="pointer-events-none fixed bottom-3 left-3 z-(--z-120) w-full max-w-sm px-1"
+      // Same bottom-left slot as the announcement well, so it clears the
+      // desktop sidebar the same way. Mobile keeps the viewport edge.
+      className="pointer-events-none fixed bottom-3 left-3 z-(--z-120) w-full max-w-sm px-1 md:left-(--overlay-gutter-left) md:w-(--overlay-available-width)"
     >
       <ol className="flex w-full flex-col-reverse gap-2">
         {toasts.map((toast) => (
