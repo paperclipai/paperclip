@@ -11,6 +11,9 @@ interface ParsedPiOutput {
     costUsd: number;
   };
   finalMessage: string | null;
+  /** Provider/model of the last assistant message that did not fail; differs from the configured model after a fallback. */
+  provider: string | null;
+  model: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
 
@@ -40,8 +43,16 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       costUsd: 0,
     },
     finalMessage: null,
+    provider: null,
+    model: null,
     toolCalls: [],
   };
+
+  // Assistant-message failures stay provisional until the run ends: a later
+  // successful auto_retry_end or retry_fallback_succeeded (omp's in-run model
+  // fallback) means another attempt answered, so the failure no longer fails the run.
+  let provisionalErrors: string[] = [];
+  const recoveredErrors = new Set<string>();
 
   let currentToolCall: { toolCallId: string; toolName: string; args: unknown } | null = null;
 
@@ -65,7 +76,14 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       const message = asRecord(rawMessage);
       if (message?.role !== "assistant" || message.stopReason !== "error") continue;
       const error = asString(message.errorMessage, "").trim() || "Pi provider request failed.";
-      if (!result.errors.includes(error)) result.errors.push(error);
+      if (eventType === "agent_end" && recoveredErrors.has(error)) continue;
+      if (!provisionalErrors.includes(error) && !result.errors.includes(error)) provisionalErrors.push(error);
+    }
+
+    if ((eventType === "auto_retry_end" && event.success === true) || eventType === "retry_fallback_succeeded") {
+      for (const error of provisionalErrors) recoveredErrors.add(error);
+      provisionalErrors = [];
+      continue;
     }
 
     // RPC protocol messages - skip these (internal implementation detail)
@@ -113,7 +131,15 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           result.finalMessage = text;
           result.messages.push(text);
         }
-        
+        if (message.role === "assistant" && message.stopReason !== "error") {
+          const provider = asString(message.provider, "").trim();
+          const model = asString(message.model, "").trim();
+          if (provider && model) {
+            result.provider = provider;
+            result.model = model;
+          }
+        }
+
         // Extract usage and cost from assistant message
         const usage = asRecord(message.usage);
         if (usage) {
@@ -228,6 +254,9 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
     }
   }
 
+  for (const error of provisionalErrors) {
+    if (!result.errors.includes(error)) result.errors.push(error);
+  }
   return result;
 }
 

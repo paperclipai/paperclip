@@ -287,4 +287,64 @@ describe("terminal provider failures", () => {
     expect(parsePiJsonl(JSON.stringify({ type: "turn_end", message: { role: "assistant", stopReason: "error" } })).errors)
       .toEqual(["Pi provider request failed."]);
   });
+
+  it("does not fail a run whose failed attempt a model fallback recovered", () => {
+    const failed = {
+      role: "assistant",
+      provider: "cliproxy",
+      model: "opus",
+      content: [],
+      stopReason: "error",
+      errorMessage: "400 unknown provider for model opus",
+    };
+    const answered = {
+      role: "assistant",
+      provider: "cursor",
+      model: "claude-opus-5-5",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message: failed },
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_applied", from: "cliproxy/opus", to: "cursor/claude-opus-5-5" },
+      { type: "auto_retry_start", attempt: 1, errorMessage: failed.errorMessage },
+      { type: "message_end", message: answered },
+      { type: "retry_fallback_succeeded", model: "cursor/claude-opus-5-5" },
+      { type: "turn_end", message: answered },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.finalMessage).toBe("done");
+    expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "cursor", model: "claude-opus-5-5" });
+  });
+
+  it("still fails when every fallback attempt failed", () => {
+    const first = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
+    const second = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "ERROR_NOT_LOGGED_IN" };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: first },
+      { type: "retry_fallback_applied", from: "cliproxy/opus", to: "cursor/opus" },
+      { type: "turn_end", message: second },
+      { type: "auto_retry_end", success: false, finalError: "ERROR_NOT_LOGGED_IN" },
+      { type: "agent_end", messages: [second] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect([...parsed.errors].sort()).toEqual(["ERROR_NOT_LOGGED_IN", "timed out"]);
+    expect(parsed.provider).toBeNull();
+  });
+
+  it("fails on an error that follows a recovered fallback", () => {
+    const failed = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
+    const answered = { role: "assistant", provider: "cursor", model: "opus", content: "ok", stopReason: "stop" };
+    const later = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "context limit" };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_succeeded", model: "cursor/opus" },
+      { type: "turn_end", message: answered },
+      { type: "turn_end", message: later },
+      { type: "agent_end", messages: [failed, answered, later] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual(["context limit"]);
+    expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "cursor", model: "opus" });
+  });
 });
