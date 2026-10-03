@@ -5,6 +5,7 @@ import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-co
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   appendFileSync,
   existsSync,
@@ -83,6 +84,7 @@ import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js"
 // build artifacts do not. Normalize once so a source build cannot be
 // misclassified as an external provider pack by a string-only comparison.
 const packageRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const requireFromRunner = createRequire(import.meta.url);
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
@@ -90,6 +92,14 @@ const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
+
+function resolveInstalledPackageFile(
+  packageName: string,
+  relativePath: string,
+  resolveManifest: (specifier: string) => string = requireFromRunner.resolve,
+): string {
+  return resolve(dirname(resolveManifest(`${packageName}/package.json`)), relativePath);
+}
 
 function readLocalProcessStartedAt(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
@@ -4478,7 +4488,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const opencodeExecutable =
       provider === "opencode"
         ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+          resolveInstalledPackageFile("opencode-ai", "bin/opencode.exe"))
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -5100,7 +5110,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const opencodeExecutable =
       provider === "opencode"
         ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+          resolveInstalledPackageFile("opencode-ai", "bin/opencode.exe"))
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -6756,6 +6766,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   acpxProviderPackageAuthority,
   acpxRunnerLaunchProfile,
   resolveBuildOwnedCliArtifact,
+  resolveInstalledPackageFile,
   maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });

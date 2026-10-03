@@ -362,6 +362,7 @@ describe("server adapter registry", () => {
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedPiInstall = `if ! command -v 'pi' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@earendil-works/pi-coding-agent@0.74.0")}; fi`;
     const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.156.0")}; fi`;
     const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.32")}; fi`;
 
@@ -384,6 +385,11 @@ describe("server adapter registry", () => {
       command: "opencode",
       detectCommand: "opencode",
       installCommand: expectedOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("pi_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "pi",
+      detectCommand: "pi",
+      installCommand: expectedPiInstall,
     });
     expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "codex" })).toEqual({
       command: "codex",

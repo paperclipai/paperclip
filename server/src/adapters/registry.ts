@@ -129,7 +129,10 @@ import {
   sessionCodec as piSessionCodec,
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
-import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+import {
+  agentConfigurationDoc as piAgentConfigurationDoc,
+  PI_CODING_AGENT_PACKAGE,
+} from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -857,7 +860,7 @@ const piLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
+    buildNpmRuntimeCommandSpec(config, "pi", PI_CODING_AGENT_PACKAGE),
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 

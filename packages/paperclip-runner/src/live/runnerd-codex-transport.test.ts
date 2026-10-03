@@ -1418,6 +1418,21 @@ it.each(["acpx-runtime-sidecar.cjs", "opencode-app-server-proxy.cjs"] as const)(
   },
 );
 
+it("resolves the OpenCode executable from the installed package instead of the vendored runner path", () => {
+  const serverPackage = "/app/server/node_modules/opencode-ai/package.json";
+
+  expect(
+    runnerdLaunchProfileInternals.resolveInstalledPackageFile(
+      "opencode-ai",
+      "bin/opencode.exe",
+      (specifier) => {
+        expect(specifier).toBe("opencode-ai/package.json");
+        return serverPackage;
+      },
+    ),
+  ).toBe("/app/server/node_modules/opencode-ai/bin/opencode.exe");
+});
+
 it("derives the ACPX package authority only from the verified dist/cli layout", () => {
   const runnerPackageRoot = fileURLToPath(new URL("../..", import.meta.url));
   expect(

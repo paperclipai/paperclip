@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 const packageJsonPath = fileURLToPath(
   new URL("../../package.json", import.meta.url),
 );
+const runnerPackageJsonPath = fileURLToPath(
+  new URL("../../../packages/paperclip-runner/package.json", import.meta.url),
+);
+const dockerfilePath = fileURLToPath(
+  new URL("../../../Dockerfile", import.meta.url),
+);
 const runnerShimPath = fileURLToPath(
   new URL("../vendor/paperclip-runner/index.ts", import.meta.url),
 );
@@ -76,6 +82,26 @@ describe("server package build script", () => {
     expect(packageJson.scripts?.build).toContain(
       "node scripts/verify-runner-vendor-dependencies.mjs",
     );
+  });
+
+  it("installs the runner-owned OpenCode package where vendored code can resolve it", () => {
+    const serverPackage = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    const runnerPackage = JSON.parse(readFileSync(runnerPackageJsonPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(serverPackage.dependencies?.["opencode-ai"]).toBe("1.18.32");
+    expect(serverPackage.dependencies?.["opencode-ai"]).toBe(
+      runnerPackage.dependencies?.["opencode-ai"],
+    );
+  });
+
+  it("installs the adapter-qualified Pi runtime in the production image", () => {
+    const dockerfile = readFileSync(dockerfilePath, "utf8");
+
+    expect(dockerfile).toContain("@earendil-works/pi-coding-agent@0.74.0");
   });
 
   it("loads runner source when the source server starts before workspace builds", () => {
