@@ -3708,9 +3708,13 @@ export function issueThreadInteractionService(
           // Build a per-creator filter: agents filter by createdByAgentId,
           // board users filter by createdByUserId. If neither is set (system
           // actor with no identity), skip supersede.
+          // Board users may address independent questions to different agents on
+          // the same issue; superseding across different addressees would expire
+          // the first agent's pending ask. Limit user-actor supersede to
+          // request_confirmation (the double-submit case) only.
           const actorCreatorFilter = actor.agentId
             ? eq(issueThreadInteractions.createdByAgentId, actor.agentId)
-            : actor.userId
+            : actor.userId && data.kind === "request_confirmation"
               ? eq(issueThreadInteractions.createdByUserId, actor.userId)
               : null;
           if (!actorCreatorFilter || !canSupersedeSiblingCards) {
