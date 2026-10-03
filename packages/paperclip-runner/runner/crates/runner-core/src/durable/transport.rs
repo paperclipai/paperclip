@@ -2412,13 +2412,54 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            transport.socket.read_timeout().unwrap(),
-            Some(RUNTIME_READ_TIMEOUT)
+        let read_timeout = transport.socket.read_timeout().unwrap();
+        assert!(
+            is_read_timeout_set_to(read_timeout, RUNTIME_READ_TIMEOUT),
+            "steady-state read timeout {read_timeout:?} is not {RUNTIME_READ_TIMEOUT:?} \
+             (rounded up to at most one kernel tick)",
         );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();
+    }
+
+    /// Linux stores `SO_RCVTIMEO` in whole scheduler ticks and rounds a
+    /// requested timeout up to the next tick, so `read_timeout()` reads back
+    /// the requested value only when it is a whole number of ticks: 250 ms
+    /// reads back as 252 ms on a `CONFIG_HZ=250` kernel (4 ms ticks, 62.5 ticks
+    /// rounded up to 63). A tick is at most 10 ms (`CONFIG_HZ=100`), and other
+    /// platforms return the value unchanged.
+    const MAX_KERNEL_TIMER_TICK: Duration = Duration::from_millis(10);
+
+    fn is_read_timeout_set_to(actual: Option<Duration>, requested: Duration) -> bool {
+        actual
+            .is_some_and(|actual| actual >= requested && actual < requested + MAX_KERNEL_TIMER_TICK)
+    }
+
+    #[test]
+    fn read_timeout_check_tolerates_only_kernel_tick_rounding() {
+        for accepted in [
+            RUNTIME_READ_TIMEOUT,
+            Duration::from_millis(252),
+            RUNTIME_READ_TIMEOUT + MAX_KERNEL_TIMER_TICK - Duration::from_micros(1),
+        ] {
+            assert!(
+                is_read_timeout_set_to(Some(accepted), RUNTIME_READ_TIMEOUT),
+                "{accepted:?} must be accepted"
+            );
+        }
+        for rejected in [
+            None,
+            Some(Duration::ZERO),
+            Some(RUNTIME_READ_TIMEOUT - Duration::from_millis(1)),
+            Some(RUNTIME_READ_TIMEOUT + MAX_KERNEL_TIMER_TICK),
+            Some(WELCOME_TIMEOUT),
+        ] {
+            assert!(
+                !is_read_timeout_set_to(rejected, RUNTIME_READ_TIMEOUT),
+                "{rejected:?} must be rejected"
+            );
+        }
     }
 
     #[test]
