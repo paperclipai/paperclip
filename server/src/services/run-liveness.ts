@@ -367,3 +367,212 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   return output("empty_response", "Run succeeded without useful output");
 }
+
+// ---------------------------------------------------------------------------
+// False-liveness detector (ALM-6138)
+//
+// A dead adapter can keep exiting cleanly: the run is marked `succeeded`, the
+// provider is never actually reached, and the agent looks alive on the board
+// while doing nothing. GeminiEng ran 63 such runs before a human noticed.
+//
+// The signal is a run that succeeded while the provider reported no usage and
+// no cost at all.
+// ---------------------------------------------------------------------------
+
+/**
+ * Consecutive zero-usage successes required before an agent is marked
+ * unavailable.
+ *
+ * Derived from the observed streak distribution over 90 days of
+ * `heartbeat_runs`, not guessed: live agents top out at 3 consecutive
+ * zero-usage successes (CodexEng, a `codex_local` usage-reporting gap on
+ * runs that produced real output), while both known-dead episodes ran 63
+ * (GeminiEng) and 105 (QwenEng). 5 sits in that gap, so the detector never
+ * fires on the reporting gap and still catches a real death within 5 runs.
+ */
+export const FALSE_LIVENESS_STREAK_THRESHOLD = 5;
+
+/**
+ * How many of an agent's most recent succeeded runs to read when measuring the
+ * streak.
+ *
+ * Larger than the threshold because runs that recorded no usage are skipped
+ * rather than counted, so reading exactly `FALSE_LIVENESS_STREAK_THRESHOLD`
+ * rows would let a few skipped runs starve the streak and the detector could
+ * never trip. The bound fails safe in the other direction too: if the window is
+ * all skipped runs the streak is 0 and nothing happens, so a usage-recording
+ * outage defers the detector rather than firing it.
+ */
+export const FALSE_LIVENESS_SCAN_LIMIT = 5 * FALSE_LIVENESS_STREAK_THRESHOLD;
+
+/**
+ * Stored verbatim in `agents.error_reason` when the detector trips, and read
+ * back to tell this fault apart from a generic adapter failure. Escalation is
+ * keyed on an exact match, so changing this string re-fires the escalation
+ * once per affected agent.
+ */
+export const FALSE_LIVENESS_ERROR_REASON =
+  "Adapter credential/config fault: the last " +
+  `${FALSE_LIVENESS_STREAK_THRESHOLD} runs exited cleanly but the provider ` +
+  "reported no tokens and no cost, so the model never ran. Check this " +
+  "agent's adapter credentials and configuration.";
+
+/**
+ * The usage measures that prove the provider actually ran the model.
+ *
+ * These are the RAW provider counters plus cost. The normalized `inputTokens`
+ * and `outputTokens` are deliberately NOT read: a run that resumes a session
+ * records `usageSource: "session_delta"` and reports zero normalized tokens
+ * while the model genuinely ran and billed. Over 90 days, 348 such runs on the
+ * CEO and FoundingEng carry zero normalized tokens against non-zero raw tokens
+ * and real cost. A detector reading the normalized counters would mark those
+ * agents unavailable.
+ */
+export const PROVIDER_USAGE_MEASURE_KEYS = [
+  "rawInputTokens",
+  "rawOutputTokens",
+  "rawCachedInputTokens",
+  "costUsd",
+] as const;
+
+export interface RunUsageSample {
+  status: HeartbeatRunStatus | string;
+  usageJson?: Record<string, unknown> | null;
+}
+
+/**
+ * Read one usage measure. Absent, malformed, and non-finite all read as 0 so a
+ * partially-populated usage object still resolves; a non-zero value of any kind
+ * disqualifies the run, which fails safe toward NOT tripping.
+ */
+function readUsageMeasure(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+/**
+ * True when the provider affirmatively reported zero usage and zero cost.
+ *
+ * An absent or empty `usageJson` returns FALSE. That is the load-bearing half:
+ * "no usage was recorded" is an instrumentation gap, not evidence the model
+ * produced nothing. Measured over 90 days of live runs, every zero-usage run on
+ * a healthy agent (FoundingEng, AdversarialEng, CTO, CEO, CMO — 27 runs) has a
+ * NULL `usage_json`, while every one on a dead agent (GeminiEng, QwenEng,
+ * CodexEng — 221 runs) carries a populated object with explicit zeros. Treating
+ * absent usage as a match would put FoundingEng one run away from being marked
+ * unavailable.
+ */
+export function hasProviderUsageRecord(
+  usageJson: Record<string, unknown> | null | undefined,
+): usageJson is Record<string, unknown> {
+  if (!usageJson || typeof usageJson !== "object" || Array.isArray(usageJson)) {
+    return false;
+  }
+  // At least one measure must be present. An object that carries none of them
+  // reports nothing, and `every` over an empty set is vacuously true, so
+  // without this the guard would fail open on any future adapter that writes
+  // usage metadata without usage numbers. Live runs carry either all four
+  // measures (16,104 runs) or the three raw counters without `costUsd` (962),
+  // so requiring one still lets a partially-reporting adapter trip.
+  return PROVIDER_USAGE_MEASURE_KEYS.some((key) => key in usageJson);
+}
+
+export function reportsZeroProviderUsage(
+  usageJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!hasProviderUsageRecord(usageJson)) return false;
+  return PROVIDER_USAGE_MEASURE_KEYS.filter((key) => key in usageJson).every(
+    (key) => readUsageMeasure(usageJson[key]) === 0,
+  );
+}
+
+/** True for a `succeeded` run whose provider reported no usage and no cost. */
+export function isFalseLivenessRun(run: RunUsageSample): boolean {
+  return run.status === "succeeded" && reportsZeroProviderUsage(run.usageJson);
+}
+
+/**
+ * Count the agent's current trailing streak of zero-usage successes.
+ *
+ * `runsNewestFirst` must be ordered newest run first. Accounting, per the
+ * ALM-6090 plan:
+ *   - `succeeded` + zero usage  -> increment
+ *   - `succeeded` + real usage  -> reset (stop counting)
+ *   - any non-succeeded status  -> ignore entirely; neither increment nor reset
+ *
+ * Ignoring failures matters in both directions: 33,516 of the last 30 days'
+ * 33,920 failed runs carry zero tokens, so counting them would double-report
+ * the ordinary failure path, while resetting on them would let an
+ * intermittently-failing dead agent never trip.
+ */
+export function falseLivenessStreak(
+  runsNewestFirst: readonly RunUsageSample[],
+): number {
+  let streak = 0;
+  for (const run of runsNewestFirst) {
+    if (run.status !== "succeeded") continue;
+    // A succeeded run that recorded no usage at all is evidence of neither
+    // life nor death, so it is skipped exactly like a failed run. Counting it
+    // would let a fleet-wide usage-recording regression mark every agent
+    // unavailable at once; resetting on it would let an instrumentation gap
+    // mask a genuinely dead agent.
+    if (!hasProviderUsageRecord(run.usageJson)) continue;
+    if (!reportsZeroProviderUsage(run.usageJson)) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+/** True when the trailing streak has reached the escalation threshold. */
+export function tripsFalseLivenessDetector(
+  runsNewestFirst: readonly RunUsageSample[],
+): boolean {
+  return falseLivenessStreak(runsNewestFirst) >= FALSE_LIVENESS_STREAK_THRESHOLD;
+}
+
+export interface FalseLivenessEscalation {
+  /** Reuses the existing agent unavailability state; no new agent status. */
+  status: "error";
+  errorReason: string;
+  /**
+   * True only on the transition into the fault, so the operator-facing report
+   * fires once per episode rather than on every run.
+   *
+   * Says nothing about whether the fault is durable. This function is reached
+   * only on a finalization entitled to decide the fault, and keeping a
+   * still-dead agent out of `idle` on every OTHER finalization is the caller's
+   * job — see `holdsFalseLivenessFault` in `finalizeAgentStatus`. An earlier
+   * version of this comment claimed the status was rewritten on every
+   * finalization while the streak held; it was not, and an `interrupted` one
+   * cleared the fault (ALM-9523).
+   *
+   * "Every other finalization" includes the ones that land in `error` on their
+   * own. Those carry no risk of advertising the agent as healthy, but they DO
+   * write `agents.errorReason`, which is the column the hold keys on — so
+   * exempting them destroyed the marker and released the fault one hop later
+   * (ALM-9534).
+   */
+  reportEscalation: boolean;
+}
+
+/**
+ * Decide whether an agent's recent run history should mark it unavailable.
+ *
+ * Returns null when the streak has not reached the threshold, leaving the
+ * caller's ordinary status handling untouched.
+ */
+export function resolveFalseLivenessEscalation(
+  runsNewestFirst: readonly RunUsageSample[],
+  currentErrorReason: string | null | undefined,
+): FalseLivenessEscalation | null {
+  if (!tripsFalseLivenessDetector(runsNewestFirst)) return null;
+  return {
+    status: "error",
+    errorReason: FALSE_LIVENESS_ERROR_REASON,
+    reportEscalation: currentErrorReason !== FALSE_LIVENESS_ERROR_REASON,
+  };
+}
