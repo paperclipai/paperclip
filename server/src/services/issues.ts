@@ -1860,6 +1860,7 @@ type IssueScheduledRetryRow = {
   scheduledRetryAt: Date | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  errorFamily: string | null;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
@@ -6697,6 +6698,7 @@ export function issueService(db: Db) {
         scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
         scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        errorFamily: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'errorFamily'`,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
       })

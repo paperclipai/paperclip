@@ -914,6 +914,37 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("shows automatic wakes coalesced during a provider quota hold", () => {
+    const payload = {
+      issue: { id: "root-issue", status: "in_progress" },
+      providerQuotaHeldWakes: [
+        { issueId: "other-issue", source: "automation", reason: "issue_commented", commentIds: ["comment-1"] },
+        { issueId: "root-issue", source: "assignment", reason: "issue_assigned", commentIds: [] },
+      ],
+    };
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Automatic wakes held during provider quota reset (2):");
+    expect(prompt).toContain("issue_commented for issue other-issue (automation); comment ids: comment-1");
+    expect(prompt).toContain("issue_assigned for issue root-issue (assignment)");
+    expect(stringifyPaperclipWakePayload(payload)).toContain('"providerQuotaHeldWakes"');
+  });
+
+  it("bounds held wake prompt entries and points to the run record for the full list", () => {
+    const prompt = renderPaperclipWakePrompt({
+      issue: { id: "root-issue", status: "in_progress" },
+      providerQuotaHeldWakes: Array.from({ length: 21 }, (_, index) => ({
+        issueId: `issue-${index}`, issueIdentifier: `TASK-${index}`,
+        issueTitle: `Held task ${index}`, source: "automation",
+        reason: "issue_commented", commentIds: [],
+      })),
+      providerQuotaHeldWakeCount: 21,
+    });
+    expect(prompt).toContain("Automatic wakes held during provider quota reset (21):");
+    expect(prompt).toContain("Held task 19");
+    expect(prompt).not.toContain("Held task 20");
+    expect(prompt).toContain("GET /api/heartbeat-runs/$PAPERCLIP_RUN_ID");
+  });
+
   it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
     const payload = {
       reason: "issue_commented",
