@@ -34,13 +34,32 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-function readRunSourceIssueId(contextSnapshot: unknown) {
+export function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+/**
+ * Tells if a run scope is a given issue.
+ *
+ * The `contextSnapshot` of a run can hold a UUID or a human identifier. Thus this
+ * function accepts both forms. It is exported because the self-scope service must give
+ * the same answer as the guard. A second copy of this rule can become different from
+ * this one.
+ */
+export function runScopeIsIssue(
+  sourceIssueId: string | null,
+  issue: { id: string; identifier?: string | null },
+): boolean {
+  if (!sourceIssueId) return false;
+  if (sourceIssueId === issue.id) return true;
+  return Boolean(
+    issue.identifier && sourceIssueId.toUpperCase() === issue.identifier.toUpperCase(),
+  );
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -112,8 +131,10 @@ export async function observeCrossIssueInfluence(
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      runScopeIsIssue(sourceIssueId, {
+        id: input.targetIssueId,
+        identifier: input.targetIssueIdentifier ?? null,
+      })
     ) {
       return null;
     }
