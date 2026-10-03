@@ -641,6 +641,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  const configuredSqliteHome =
+    typeof envConfig.CODEX_SQLITE_HOME === "string" && envConfig.CODEX_SQLITE_HOME.trim().length > 0
+      ? path.resolve(envConfig.CODEX_SQLITE_HOME.trim())
+      : null;
   const connectorSourceHome = configuredCodexHome;
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
     && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
@@ -969,6 +973,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    // Codex CLI splits runtime SQLite state (state_5.sqlite, logs_2.sqlite, etc.)
+    // into CODEX_SQLITE_HOME, separate from CODEX_HOME (config/auth/sessions).
+    // Without this, every codex_local agent on a host silently shares one
+    // SQLite state home instead of its own managed one, and concurrent agents
+    // collide with "failed to initialize sqlite state runtime". See #11398.
+    // An operator-configured CODEX_SQLITE_HOME wins on the host. Remote runs keep
+    // it beside the staged home, since a host path does not exist in the sandbox.
+    env.CODEX_SQLITE_HOME = remoteCodexHome ?? configuredSqliteHome ?? effectiveCodexHome;
+    if (!remoteCodexHome && configuredSqliteHome) {
+      // The workspace sandbox only mounts paths that already exist.
+      await fs.mkdir(configuredSqliteHome, { recursive: true });
+    }
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
@@ -1001,7 +1017,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? {
             workspaceDir: effectiveExecutionCwd,
             filesystemScope,
-            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+            managedPaths: [
+              { path: effectiveCodexHome, access: "rw" },
+              ...(configuredSqliteHome ? [{ path: configuredSqliteHome, access: "rw" as const }] : []),
+            ],
             extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
             pathAliases: targetWorkspaceRealization?.mode === "copy"
               ? targetWorkspaceRealization.pathAliases
