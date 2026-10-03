@@ -63415,16 +63415,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await vi.waitFor(() =>
         expect(dm.post).toHaveBeenCalledWith(visibleFailure),
       );
-      await expect(
-        db
-          .select({ kind: chatActions.kind, status: chatActions.status })
-          .from(chatActions)
-          .where(eq(chatActions.deliveryId, delivery.id)),
-      ).resolves.toEqual(
-        expect.arrayContaining([
-          { kind: "inbound_wakeup", status: "failed" },
-          { kind: "provider_effect", status: "processed" },
-        ]),
+      // A `provider_effect` row moves received -> processing -> processed, and
+      // the `processed` write lands in a transaction AFTER the provider call
+      // resolves. So waiting for `dm.post` to have been CALLED does not
+      // synchronise this read with the status it asserts, and all three states
+      // are observable depending on timing: removing the wait above shows
+      // `received`, CI under load showed `processing`, and locally it usually
+      // reaches `processed` before the read. Retry the assertion itself rather
+      // than riding on a correlated earlier event.
+      await vi.waitFor(async () =>
+        expect(
+          await db
+            .select({ kind: chatActions.kind, status: chatActions.status })
+            .from(chatActions)
+            .where(eq(chatActions.deliveryId, delivery.id)),
+        ).toEqual(
+          expect.arrayContaining([
+            { kind: "inbound_wakeup", status: "failed" },
+            { kind: "provider_effect", status: "processed" },
+          ]),
+        ),
       );
     } finally {
       await retirePublicationFixture(service, endpoint.id);
