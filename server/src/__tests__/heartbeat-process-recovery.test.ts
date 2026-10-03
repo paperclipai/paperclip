@@ -5502,6 +5502,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs[0].idempotencyKey).toBe(`issue_disposition_repair:${issueId}:${legacyDispositionFingerprint(companyId, issueId, agentId, runId)}:1`);
   });
 
+  it("gives a successful adapter run returned to todo one corrective disposition attempt", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+      return { exitCode: 0, summary: "Implemented the task but did not record completion.", provider: "test", model: "test-model" };
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0, summary: "Correction ended without a status update.", provider: "test", model: "test-model",
+    }));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const repairs = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+      .filter((wake) => wake.reason === "issue_disposition_repair");
+    expect(repairs).toHaveLength(1);
+    const repair = await heartbeat.getRun(repairs[0].runId!);
+    expect(repair?.contextSnapshot).toMatchObject({
+      legacyDispositionEpisode: { id: runId, attempt: 1, maxAttempts: 1 },
+    });
+    expect(repair?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("blocked");
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedQueuedIssueRunFixture();
@@ -5847,6 +5873,88 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (event) => event.action === "issue.successful_run_handoff_escalated",
       ),
     ).toBe(true);
+  });
+
+  it("escalates an exhausted corrective handoff when the task was returned to todo", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+    });
+    const sourceRunId = randomUUID();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        sourceRunId,
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "todo",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("blocked");
+  });
+
+  it("leaves a todo task open when another run starts during exhausted handoff retry", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "server_shutdown_interrupted",
+    });
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        sourceRunId: randomUUID(),
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const scheduleRecoveryRetry = vi.fn(async (predecessorId: string) => {
+      expect(predecessorId).toBe(runId);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+        startedAt: new Date(),
+      });
+      return null;
+    });
+    const result = await recoveryService(db, {
+      enqueueWakeup: async () => null,
+      scheduleRecoveryRetry,
+      transientRetryBudgetSpent: () => true,
+    }).reconcileStrandedAssignedIssues();
+
+    expect(scheduleRecoveryRetry).toHaveBeenCalledTimes(1);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("todo");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
   });
 
   it("retries an interrupted corrective successful-run handoff instead of escalating it", async () => {

@@ -3761,7 +3761,7 @@ export function recoveryService(
     if (!issueId) return "skipped" as const;
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).limit(1);
     if (!issue) return "skipped" as const;
-    return reconcileDispositionRepair(issue, run, { legacyEpisode: legacyDispositionEpisode(run) });
+    return reconcileDispositionRepair(issue, run, { legacyEpisode: legacyDispositionEpisode(run, issue.status) });
   }
 
   async function reconcileDispositionRepair(
@@ -5099,7 +5099,10 @@ export function recoveryService(
         continue;
       }
 
-      if (issue.status === "todo") {
+      // A productive run that put its task back in todo still needs the
+      // corrective handoff's final disposition. Let an exhausted handoff use
+      // the same bounded escalation as an in-progress task.
+      if (issue.status === "todo" && !isExhaustedSuccessfulRunHandoff(latestRun)) {
         if (!latestRun) {
           // The onboarding first task is deliberately created without a wake:
           // nothing runs and no token is spent until the user types. It is not
@@ -5280,9 +5283,15 @@ export function recoveryService(
           }
         }
 
+        // A run or deferred wake may have started since the sweep's first
+        // live-path check. Do not block the issue under active work.
+        if (await hasActiveExecutionPath(issue.companyId, issue.id, null)) {
+          result.skipped += 1;
+          continue;
+        }
         const updated = await escalateStrandedAssignedIssue({
           issue,
-          previousStatus: "in_progress",
+          previousStatus: issue.status === "todo" ? "todo" : "in_progress",
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,

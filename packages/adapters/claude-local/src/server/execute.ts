@@ -910,11 +910,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
       : renderTemplate(promptTemplate, templateData);
+    const recoveryApiAccessNote =
+      context.conversationMode !== true &&
+      isPaperclipRecoveryWakePayload(context.paperclipWake) &&
+      env.PAPERCLIP_API_URL && env.PAPERCLIP_API_KEY
+        ? "Before recovery work, make an authenticated GET /api/agents/me from your command shell using PAPERCLIP_API_URL and PAPERCLIP_API_KEY. If it fails, report control-plane access failure and do not claim a task update succeeded."
+        : "";
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
       renderedBootstrapPrompt,
       selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
       wakePrompt,
+      recoveryApiAccessNote,
       sessionHandoffNote,
       taskContextNote,
       renderedPrompt,

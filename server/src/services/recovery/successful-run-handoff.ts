@@ -391,6 +391,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   issueTitle: string;
   issueDescription: string | null;
+  issueStatus?: "todo" | "in_progress";
   sourceRunId: string;
   finalReport: string | null;
   nextAction: string | null;
@@ -417,7 +418,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
       : []),
     "",
     "## What happened",
-    "Your last run on this issue ended successfully, but the issue is still `in_progress` and has no valid disposition — Paperclip cannot tell whether the work is finished, blocked, or unfinished.",
+    `Your last run on this issue ended successfully, but the issue is still \`${input.issueStatus ?? "in_progress"}\` and has no valid next step — Paperclip cannot tell whether the work is finished, blocked, or unfinished.`,
     ...(report
       ? [
           "",
@@ -501,7 +502,9 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "issue is no longer assigned to the source run agent" };
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
-  if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  if (issue.status !== "in_progress" && issue.status !== "todo") {
+    return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  }
   if (isChatDrivenWake(run, issue)) return { kind: "skip", reason: "chat conversation already owns the next action" };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (isPluginManagedIssueLifecycle(issue)) {
@@ -534,6 +537,7 @@ export function decideSuccessfulRunHandoff(input: {
     issueIdentifier: issue.identifier,
     issueTitle: issue.title,
     issueDescription: issue.description,
+    issueStatus: issue.status,
     sourceRunId: run.id,
     finalReport: input.finalReport,
     nextAction: input.nextAction,

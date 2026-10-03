@@ -68,6 +68,16 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
+  it("requests a final disposition when productive work returns to todo without a live next step", () => {
+    const decision = decide({ issue: { ...issue, status: "todo" } });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.targetAgentId).toBe(run.agentId);
+    expect(decision.instruction).toContain("still `todo`");
+    expect(decision.instruction).toContain("Mark it `done`");
+  });
+
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 

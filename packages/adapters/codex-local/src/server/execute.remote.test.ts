@@ -695,4 +695,44 @@ describe("codex remote execution", () => {
     expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
   });
 
+  it("gives a credentialed recovery wake an API check in the Codex CLI prompt", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-recovery-prompt-"));
+    cleanupDirs.push(workspaceDir);
+
+    await execute({
+      runId: "run-recovery-prompt",
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "Codex Coder",
+        adapterType: "codex_local", adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "codex", env: { OPENAI_API_KEY: "fixture-openai-key" } },
+      context: {
+        taskId: "issue-1",
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+        paperclipWake: {
+          reason: "source_scoped_recovery_action",
+          issue: { id: "issue-1", identifier: "PAP-1", title: "Recover task", status: "blocked" },
+          recovery: { cause: "process_lost", failureSummary: "adapter stopped", originalAssignee: { id: "agent-1", name: "Coder" } },
+          commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+          comments: [], fallbackFetchNeeded: false,
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1", port: 2222, username: "fixture",
+          remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const prompt = (runChildProcess.mock.calls[0] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    expect(prompt).toContain("Recovery contract: your job is to RECOVER this task");
+    expect(prompt).toContain("Before recovery work, make an authenticated GET /api/agents/me from your command shell");
+    expect(prompt).not.toContain("Execution contract:");
+  });
+
 });

@@ -2,6 +2,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
@@ -211,10 +212,12 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
   "Execution contract:",
+  "- Before deliverable work, make an authenticated GET /api/agents/me from your command shell using the injected PAPERCLIP_API_URL and PAPERCLIP_API_KEY. If it fails, report that control-plane access failed; do not claim a task update succeeded.",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- After the final status write, read the issue back and confirm Paperclip saved that disposition. Returning completed work to `todo` without a queued continuation is not a final disposition.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the heartbeat. Continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
@@ -3230,10 +3233,17 @@ export function buildInvocationEnvForLogs(
 export function buildPaperclipEnv(agent: {
   id: string;
   companyId: string;
-}): Record<string, string> {
+}, options: { executionTargetIsRemote?: boolean } = {}): Record<string, string> {
+  const listenHost = (process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost").trim();
+  const listenerHasLoopback = ["", "localhost", "::1", "0.0.0.0", "::"].includes(listenHost) ||
+    (isIP(listenHost) === 4 && listenHost.startsWith("127."));
+  const useLocalListener = options.executionTargetIsRemote === false &&
+    Boolean(process.env.PAPERCLIP_LISTEN_PORT) && listenerHasLoopback;
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
-    if (!host || host === "0.0.0.0" || host === "::") return "localhost";
+    if (host === "0.0.0.0") return useLocalListener ? "127.0.0.1" : "localhost";
+    if (host === "::") return useLocalListener ? "[::1]" : "localhost";
+    if (!host) return "localhost";
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]"))
       return `[${host}]`;
     return host;
@@ -3242,20 +3252,50 @@ export function buildPaperclipEnv(agent: {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
-  const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
-  );
+  const runtimeHost = resolveHostForUrl(listenHost);
   const runtimePort =
     process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  // An explicit PAPERCLIP_API_URL override must win over the URL derived from
-  // authPublicBaseUrl: the derived URL can be unreachable from inside the
-  // runtime container (e.g. when the public base URL is VPN/tailnet-only).
+  // A host-local process uses HTTP only when the listener accepts loopback.
+  // An explicit LAN bind keeps the configured API URL and its TLS policy.
   const apiUrl =
-    process.env.PAPERCLIP_API_URL ??
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+    useLocalListener
+      ? `http://${runtimeHost}:${runtimePort}`
+      : process.env.PAPERCLIP_API_URL ??
+        process.env.PAPERCLIP_RUNTIME_API_URL ??
+        `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+/** Fail before a host-local agent starts work if its run-scoped API access is unusable. */
+export async function assertLocalPaperclipApiAccess(env: Record<string, string>): Promise<void> {
+  const apiUrl = env.PAPERCLIP_API_URL;
+  const token = env.PAPERCLIP_API_KEY;
+  if (!apiUrl || !token || !env.PAPERCLIP_AGENT_ID || !env.PAPERCLIP_COMPANY_ID) {
+    throw new Error("Paperclip API preflight is missing run identity or access.");
+  }
+  const base = apiUrl.replace(/\/+$/, "").replace(/\/api$/, "");
+  let response: Response;
+  try {
+    response = await fetch(`${base}/api/agents/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    throw new Error("Paperclip API preflight could not reach the local control plane.");
+  }
+  if (!response.ok) {
+    throw new Error(`Paperclip API preflight rejected the run credential (${response.status}).`);
+  }
+  let identity: Record<string, unknown>;
+  try {
+    identity = parseObject(await response.json());
+  } catch {
+    throw new Error("Paperclip API preflight returned an invalid identity response.");
+  }
+  if (identity.id !== env.PAPERCLIP_AGENT_ID || identity.companyId !== env.PAPERCLIP_COMPANY_ID) {
+    throw new Error("Paperclip API preflight returned a different agent identity.");
+  }
 }
 
 export function applyPaperclipWorkspaceEnv(

@@ -39,7 +39,7 @@ export function legacyDispositionEpisode(run: {
   id: string;
   contextSnapshot?: unknown;
   continuationAttempt?: number | null;
-}): LegacyDispositionEpisode {
+}, issueStatus?: string): LegacyDispositionEpisode {
   const context = record(run.contextSnapshot);
   const episode = record(context.legacyDispositionEpisode);
   if (typeof episode.id === "string" && episode.id) {
@@ -53,7 +53,7 @@ export function legacyDispositionEpisode(run: {
   return {
     id: typeof context.dispositionRepairFingerprint === "string" ? context.dispositionRepairFingerprint : typeof context.livenessContinuationSourceRunId === "string" ? context.livenessContinuationSourceRunId : run.id,
     attempt,
-    maxAttempts: handoff || oldRecovery ? 1 : LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS,
+    maxAttempts: handoff || oldRecovery || issueStatus === "todo" ? 1 : LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS,
   };
 }
 export function legacyDispositionFingerprint(companyId: string, issueId: string, agentId: string, episodeId: string) {

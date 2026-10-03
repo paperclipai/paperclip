@@ -122,6 +122,34 @@ describe("claude_local ACP startup fallback", () => {
     );
   });
 
+  it("includes command-shell API access instructions on credentialed Claude CLI recovery wakes", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:4310");
+    const ctx = {
+      ...buildContext({ engine: "cli" }),
+      authToken: "run-token",
+      context: {
+        taskId: "issue-1",
+        paperclipWake: {
+          reason: "source_scoped_recovery_action",
+          issue: { id: "issue-1", identifier: "PAP-1", title: "Recover task", status: "blocked" },
+          recovery: { cause: "process_lost", failureSummary: "adapter stopped", originalAssignee: { id: "agent-1", name: "Coder" } },
+          commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+          comments: [], fallbackFetchNeeded: false,
+        },
+      },
+    };
+
+    await execute(ctx as never);
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { stdin?: string }]
+      | undefined;
+    const prompt = call?.[4].stdin ?? "";
+    expect(prompt).toContain("Recovery contract: your job is to RECOVER this task");
+    expect(prompt).toContain("Before recovery work, make an authenticated GET /api/agents/me from your command shell");
+    expect(prompt).not.toContain("Execution contract:");
+  });
+
   it("keeps explicit ACP strict when startup fails", async () => {
     const ctx = buildContext({ engine: "acp" });
 
