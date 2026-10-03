@@ -115,6 +115,54 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "keeps all backups from the last 24 hours and only the newest per day within the daily tier",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-recent-tier-");
+      const realDateNow = Date.now;
+      // 2026-08-20T12:00:00Z — recent cutoff 2026-08-19T12:00:00Z, daily cutoff 2026-08-13T12:00:00Z
+      Date.now = () => Date.UTC(2026, 7, 20, 12, 0, 0);
+
+      const seed = (name: string, iso: string) => {
+        const filePath = path.join(backupDir, name);
+        fs.writeFileSync(filePath, name);
+        const mtime = new Date(iso);
+        fs.utimesSync(filePath, mtime, mtime);
+        return filePath;
+      };
+
+      // Recent tier (<24h old): all kept even though three share one calendar day
+      const recent1 = seed("paperclip-test-2026-08-20T06-00-00.sql.gz", "2026-08-20T06:00:00Z");
+      const recent2 = seed("paperclip-test-2026-08-20T05-00-00.sql.gz", "2026-08-20T05:00:00Z");
+      const recent3 = seed("paperclip-test-2026-08-19T18-00-00.sql.gz", "2026-08-19T18:00:00Z");
+      // Daily tier: newest per calendar day kept, older same-day file pruned
+      const dailyNewest = seed("paperclip-test-2026-08-19T06-00-00.sql.gz", "2026-08-19T06:00:00Z");
+      const dailyOlder = seed("paperclip-test-2026-08-19T02-00-00.sql.gz", "2026-08-19T02:00:00Z");
+      const dailyOtherDay = seed("paperclip-test-2026-08-15T10-00-00.sql.gz", "2026-08-15T10:00:00Z");
+      // Weekly tier: newest of the week kept
+      const weeklyKept = seed("paperclip-test-2026-08-10T09-00-00.sql.gz", "2026-08-10T09:00:00Z");
+
+      try {
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(1);
+        for (const kept of [recent1, recent2, recent3, dailyNewest, dailyOtherDay, weeklyKept]) {
+          expect(fs.existsSync(kept)).toBe(true);
+        }
+        expect(fs.existsSync(dailyOlder)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
