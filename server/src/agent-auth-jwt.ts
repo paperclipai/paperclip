@@ -24,6 +24,13 @@ export interface LocalAgentJwtClaims {
 
 const JWT_ALGORITHM = "HS256";
 
+/**
+ * Hard floor for run-token lifetime. See `jwtConfig().ttlSeconds`: a run token
+ * is minted once and never refreshed, so shortening the TTL below a run's
+ * length is the direct cause of the JWT-expiry stalls.
+ */
+export const MIN_AGENT_JWT_TTL_SECONDS = 60 * 60 * 48;
+
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -42,13 +49,27 @@ function jwtConfig() {
 
   return {
     secret,
-    // 48h default, matching DEFAULT_AGENT_JWT_TTL_SECONDS in cli/src/commands/env.ts
+    // 48h floor, matching DEFAULT_AGENT_JWT_TTL_SECONDS in cli/src/commands/env.ts
     // and the agent-authentication design doc. Run tokens are minted once at
     // adapter spawn and injected as env, so the TTL must cover the entire run —
     // including host-suspension gaps: heartbeats scheduled while a laptop lid is
     // closed fire during ~2s dark wakes, and the spawned session can then sit
     // frozen for over an hour before it first executes.
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    //
+    // There is no refresh or re-mint path mid-run, so a TTL shorter than a run
+    // silently strips the run of every API call: the next PATCH/comment 401s,
+    // route-level 404s mask it as "Issue not found", and the agent reports the
+    // API as down (AUT-2259, AUT-4454 run 1279713a). Operator TTLs may therefore
+    // only extend coverage past the floor, never shorten it below a run's own
+    // lifetime. The floor does widen the window in which a finished run's token
+    // is still accepted: `agentRunWritesRevoked` rejects writes only for
+    // cancelled (or cancellation-requested) runs, so a completed run keeps write
+    // access until the token expires. That window is bounded by this TTL and by
+    // the agent API key, which the operator can rotate to invalidate live tokens.
+    ttlSeconds: Math.max(
+      parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, MIN_AGENT_JWT_TTL_SECONDS),
+      MIN_AGENT_JWT_TTL_SECONDS,
+    ),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
     // The control-plane instance this process belongs to. The live plane runs as
