@@ -11,6 +11,7 @@ import {
   assertManagedShimWritable,
   buildNextManifest,
   flipCurrentAtomic,
+  managedPathExport,
   payloadPathFor,
   pruneInstallPayloads,
   readInstallManifest,
@@ -324,18 +325,18 @@ async function ensureShimOnPath(options: InstallOptions): Promise<void> {
   const paths = resolveInstallStorePaths();
   const binDir = path.dirname(paths.shimPath);
   if (pathContains(binDir)) return;
-  const manualInstruction = `export PATH="$HOME/.local/bin:$PATH"`;
+  const manualInstruction = `export PATH="${managedPathExport(paths)}:$PATH"`;
   const rcPath = shellRcPath();
   if (!process.stdin.isTTY || !process.stdout.isTTY || !rcPath) {
     console.log(pc.yellow(`Add Paperclip to PATH for this shell:\n  ${manualInstruction}`));
     return;
   }
-  const confirmed = options.yes === true ? true : await p.confirm({ message: `Add ~/.local/bin to PATH in ${rcPath}?`, initialValue: true });
+  const confirmed = options.yes === true ? true : await p.confirm({ message: `Add ${binDir} to PATH in ${rcPath}?`, initialValue: true });
   if (p.isCancel(confirmed) || !confirmed) {
     console.log(pc.yellow(`PATH was not changed. Run:\n  ${manualInstruction}`));
     return;
   }
-  const changed = addManagedPathBlock(rcPath);
+  const changed = addManagedPathBlock(rcPath, paths);
   console.log(changed ? pc.green(`Updated ${rcPath}.`) : pc.dim(`${rcPath} already contains the PATH block.`));
 }
 
