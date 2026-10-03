@@ -27,11 +27,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import {
-  hasCommittedNativeBoardResponseWait,
-  readNativeBoardResponseWaitSource,
-} from "../native-runtime/native-board-response-wait.js";
-import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-attachment-reuse.js";
+import { hasCommittedNativeBoardResponseWait } from "../native-runtime/native-board-response-wait.js";
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -700,6 +696,13 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
+export function shouldHoldRecoveryForPausedAgent(
+  agent: { status: string; companyId: string } | null | undefined,
+  issueCompanyId: string,
+): boolean {
+  return agent?.status === "paused" && agent.companyId === issueCompanyId;
+}
+
 export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
@@ -1147,221 +1150,6 @@ export function recoveryService(
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
-  }
-
-  /**
-   * Pausing an agent does not turn an already committed passive response into
-   * stranded work. This only preserves the exact current wait; it grants no
-   * execution or presentation authority and does not repair historical state.
-   * Keep it separate from the broader monitor/delegated/legacy wait predicate.
-   */
-  async function hasCurrentNativePassiveWait(
-    issue: typeof issues.$inferSelect,
-    latestRun: LatestIssueRun,
-  ): Promise<boolean> {
-    if (
-      issue.status !== "in_progress" ||
-      latestRun?.status !== "succeeded" ||
-      latestRun.agentId !== issue.assigneeAgentId
-    )
-      return false;
-    const binding = {
-      companyId: issue.companyId,
-      issueId: issue.id,
-      runId: latestRun.id,
-      agentId: latestRun.agentId,
-    };
-    const [receipt] = await db
-      .select({
-        run: heartbeatRuns,
-        resultJson: nativeRunResults.resultJson,
-        reason: statusDecisions.reasonCode,
-      })
-      .from(nativeRunFinalizations)
-      .innerJoin(
-        nativeRunResults,
-        and(
-          eq(nativeRunResults.id, nativeRunFinalizations.resultId),
-          eq(nativeRunResults.companyId, nativeRunFinalizations.companyId),
-          eq(nativeRunResults.issueId, nativeRunFinalizations.issueId),
-          eq(nativeRunResults.runId, nativeRunFinalizations.runId),
-          eq(nativeRunResults.schemaStatus, "accepted"),
-        ),
-      )
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.id, nativeRunResults.runId),
-          eq(heartbeatRuns.companyId, nativeRunResults.companyId),
-          eq(heartbeatRuns.nativeIssueId, nativeRunResults.issueId),
-          eq(
-            heartbeatRuns.completionContractId,
-            nativeRunResults.completionContractId,
-          ),
-          eq(heartbeatRuns.agentId, binding.agentId),
-          eq(heartbeatRuns.runtimeMode, "native"),
-          eq(heartbeatRuns.status, "succeeded"),
-        ),
-      )
-      .innerJoin(
-        statusDecisions,
-        and(
-          eq(statusDecisions.id, nativeRunFinalizations.decisionId),
-          eq(statusDecisions.assessmentId, nativeRunFinalizations.assessmentId),
-          eq(statusDecisions.companyId, binding.companyId),
-          eq(statusDecisions.issueId, binding.issueId),
-          eq(statusDecisions.runId, binding.runId),
-          eq(statusDecisions.applicationState, "applied"),
-          eq(statusDecisions.toStatus, "in_progress"),
-          inArray(statusDecisions.reasonCode, [
-            "board_response_waiting",
-            "external_chat_response_waiting",
-          ]),
-        ),
-      )
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.id, binding.issueId),
-          eq(issues.companyId, binding.companyId),
-          eq(issues.assigneeAgentId, binding.agentId),
-          eq(issues.status, "in_progress"),
-          eq(issues.lastStatusDecisionId, statusDecisions.id),
-          isNull(issues.hiddenAt),
-          sql`coalesce(${issues.executionState}->>'status', '') <> 'pending'`,
-        ),
-      )
-      .where(
-        and(
-          eq(nativeRunFinalizations.companyId, binding.companyId),
-          eq(nativeRunFinalizations.issueId, binding.issueId),
-          eq(nativeRunFinalizations.runId, binding.runId),
-          eq(nativeRunFinalizations.phase, "committed"),
-        ),
-      )
-      .limit(1);
-    if (!receipt) return false;
-    const envelope = parseObject(receipt.resultJson);
-    const result = parseObject(envelope.result);
-    const terminal = parseObject(envelope.terminal);
-    const continuation = parseObject(result.continuation);
-    if (
-      result.schema !== "paperclip.run_result.v1" ||
-      result.reportedWorkDisposition !== "yielded" ||
-      continuation.kind !== "response_wake" ||
-      !readNonEmptyString(continuation.idempotencyKey) ||
-      terminal.runTerminalState !== "succeeded" ||
-      terminal.turnTerminalState !== "completed" ||
-      terminal.reportedWorkDisposition !== "yielded" ||
-      !Array.isArray(result.attentionRequests) ||
-      result.attentionRequests.length !== 0
-    )
-      return false;
-    if (receipt.reason === "board_response_waiting") {
-      return (
-        (await hasCommittedNativeBoardResponseWait(db, binding)) &&
-        (await readNativeBoardResponseWaitSource(db, binding)) !== null
-      );
-    }
-
-    const context = parseObject(receipt.run.contextSnapshot);
-    const ids = context.wakeCommentIds;
-    if (
-      !Array.isArray(ids) ||
-      ids.length === 0 ||
-      ids.length > 50 ||
-      ids.some(
-        (id) =>
-          typeof id !== "string" ||
-          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
-            id,
-          ),
-      ) ||
-      new Set(ids).size !== ids.length ||
-      !receipt.run.startedAt
-    )
-      return false;
-    const commentIds = ids as string[];
-    const sources = await db
-      .select({ id: issueComments.id })
-      .from(issueComments)
-      .where(
-        and(
-          eq(issueComments.companyId, binding.companyId),
-          eq(issueComments.issueId, binding.issueId),
-          inArray(issueComments.id, commentIds),
-          isNull(issueComments.createdByRunId),
-          isNull(issueComments.deletedAt),
-          sql`${issueComments.updatedAt} = ${issueComments.createdAt}`,
-          sql`${issueComments.createdAt} <= (select started_at from heartbeat_runs where id = ${binding.runId})`,
-        ),
-      );
-    if (sources.length !== commentIds.length) return false;
-    const [newer, pendingInteraction, pendingApproval] = await Promise.all([
-      db
-        .select({ id: issueComments.id })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.companyId, binding.companyId),
-            eq(issueComments.issueId, binding.issueId),
-            eq(issueComments.authorType, "user"),
-            isNull(issueComments.createdByRunId),
-            isNull(issueComments.deletedAt),
-            sql`(${issueComments.createdAt}, ${issueComments.id}) > (select created_at, id from issue_comments where id in (${sql.join(
-              commentIds.map((id) => sql`${id}::uuid`),
-              sql`, `,
-            )}) order by created_at desc, id desc limit 1)`,
-          ),
-        )
-        .limit(1),
-      db
-        .select({ id: issueThreadInteractions.id })
-        .from(issueThreadInteractions)
-        .where(
-          and(
-            eq(issueThreadInteractions.companyId, binding.companyId),
-            eq(issueThreadInteractions.issueId, binding.issueId),
-            eq(issueThreadInteractions.status, "pending"),
-          ),
-        )
-        .limit(1),
-      db
-        .select({ id: approvals.id })
-        .from(issueApprovals)
-        .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
-        .where(
-          and(
-            eq(issueApprovals.companyId, binding.companyId),
-            eq(issueApprovals.issueId, binding.issueId),
-            eq(approvals.companyId, binding.companyId),
-            inArray(approvals.status, ["pending", "revision_requested"]),
-          ),
-        )
-        .limit(1),
-    ]);
-    if (newer.length || pendingInteraction.length || pendingApproval.length)
-      return false;
-    try {
-      await authorizeChatConversationForBoundRun(
-        db,
-        binding,
-        receipt.run.contextSnapshot,
-        "read",
-      );
-      return true;
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        [
-          "paperclip_runner_chat_attachment_binding_denied",
-          "paperclip_runner_chat_attachment_destination_denied",
-          "paperclip_runner_chat_attachment_principal_denied",
-        ].includes(error.message)
-      )
-        return false;
-      throw error;
-    }
   }
 
   async function hasPersistedDurableWaitPath(
@@ -4455,6 +4243,14 @@ export function recoveryService(
         continue;
       }
 
+      const agent = await getAgent(agentId);
+      // A deliberate pause holds all assigned and review work, including
+      // successful legacy runs. Resume returns it to the normal sweep.
+      if (shouldHoldRecoveryForPausedAgent(agent, issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (latestRun?.status === "succeeded" && issue.status !== "in_review") {
         const [source] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, latestRun.id)).limit(1);
         if (source?.runtimeMode !== "native") {
@@ -4471,19 +4267,10 @@ export function recoveryService(
         }
       }
 
-      const agent = await getAgent(agentId);
       const agentInvokable =
         agent && agent.companyId === issue.companyId
           ? await isAgentInvokable(agent)
           : false;
-      if (
-        agent?.status === "paused" &&
-        agent.companyId === issue.companyId &&
-        (await hasCurrentNativePassiveWait(issue, latestRun))
-      ) {
-        result.skipped += 1;
-        continue;
-      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
