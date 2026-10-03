@@ -21,6 +21,7 @@ export interface NativeBackendFactoryOptions extends Omit<
   "transportFactory"
 > {
   codexTransportFactory?: (context?: {
+    baseInstructions?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,

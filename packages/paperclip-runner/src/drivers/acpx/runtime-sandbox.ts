@@ -28,6 +28,7 @@ import {
 } from "node:path";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
+import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
@@ -494,6 +495,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
           AGENT_CLI_CREDENTIAL_STORE: "memory",
           NO_OPEN_BROWSER: "1",
           NODE_DISABLE_COMPILE_CACHE: "1",
+          PAPERCLIP_CURSOR_INSTRUCTIONS: cursorInstructionBinding(policy.systemInstructions).payload,
         }
       : {}),
     ...(input.agent === "copilot"

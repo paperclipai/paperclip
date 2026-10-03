@@ -2,7 +2,7 @@ export const QUALIFIED_ACPX_VERSION = "0.13.1" as const;
 export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
 
-import type { NativeAcpxAgent } from "../../contracts/native-execution.js";
+import type { NativeAcpxAgent, NativeAcpxProfileSnapshot } from "../../contracts/native-execution.js";
 
 export type QualifiedAcpxAgent = NativeAcpxAgent;
 
@@ -11,7 +11,7 @@ export interface QualifiedAcpxProfile {
   readonly protocolVersion: typeof ACPX_DRIVER_PROTOCOL_VERSION;
   readonly acpxVersion: typeof QUALIFIED_ACPX_VERSION;
   readonly agent: QualifiedAcpxAgent;
-  readonly agentProfileVersion: 1 | 2 | 3 | 4 | 5;
+  readonly agentProfileVersion: NativeAcpxProfileSnapshot["agentProfileVersion"];
   readonly qualificationStatus?: "pending";
   readonly modelPolicy?: "explicit-provider-verified";
   /** Wire identity: an npm package name or a runner-owned builtin: identifier. */
@@ -60,10 +60,10 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
   },
   cursor: {
     driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
-    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 2,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 4,
     agentServerPackage: "cursor-agent", agentServerVersion: "2026.09.26-dd393fe",
     agentRuntimePackage: null, agentRuntimeVersion: null,
-    commandDigest: "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+    commandDigest: "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
     // Authenticated discovery has not established a qualification model. Never
     // turn this empty declaration into a default; callers must select an ID.
     qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",

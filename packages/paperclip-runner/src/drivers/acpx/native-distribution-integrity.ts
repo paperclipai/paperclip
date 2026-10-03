@@ -28,7 +28,7 @@ const MAX_NATIVE_FILE_BYTES = 384 * 1024 * 1024;
 const MAX_NATIVE_MANIFEST_BYTES = 4 * 1024 * 1024;
 // Bound both file descriptors and buffers. A single larger admitted file runs
 // alone and remains subject to MAX_NATIVE_FILE_BYTES.
-const NATIVE_COPY_CONCURRENCY = 8;
+const NATIVE_COPY_CONCURRENCY = 32;
 const NATIVE_COPY_BUFFER_BYTES = 32 * 1024 * 1024;
 const BOOTSTRAP = ".paperclip-native-entry.cjs";
 const GUARD = ".paperclip-native-module-guard.cjs";

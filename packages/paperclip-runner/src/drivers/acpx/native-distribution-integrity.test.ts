@@ -118,7 +118,7 @@ describe("native ACPX execution closure", () => {
     expect(denied.code).not.toBe(0); expect(denied.error).toContain("escaped its closed distribution");
   }, 30_000);
   it("copies concurrently within its descriptor bound and retains canonical manifest order", async () => {
-    const { declaration, entries } = await manyFileFixture(Array.from({ length: 12 }, (_, index) => 100 + index));
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 100 + index));
     const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
     const originalRead = prototype.read;
     const hold = gate(); const sizes: number[] = []; let active = 0; let peak = 0;
@@ -129,12 +129,12 @@ describe("native ACPX execution closure", () => {
     });
     const creating = createNativeAcpxDistributionSnapshot(declaration, entries);
     try {
-      await vi.waitFor(() => expect(sizes).toHaveLength(8));
-      expect(sizes.toSorted()).toEqual(Array.from({ length: 8 }, (_, index) => 100 + index));
+      await vi.waitFor(() => expect(sizes).toHaveLength(32));
+      expect(sizes.toSorted()).toEqual(Array.from({ length: 32 }, (_, index) => 100 + index));
     } finally { hold.release(); }
     const created = await creating;
     try {
-      expect(peak).toBe(8);
+      expect(peak).toBe(32);
       expect(Object.keys(created.snapshot.digests).slice(0, entries.length)).toEqual(entries.map(entry => join(created.snapshot.roots[0]!, entry.path)));
       for (const entry of entries) expect(hash(await readFile(join(created.snapshot.roots[0]!, entry.path)))).toBe(entry.sha256);
     } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
@@ -161,7 +161,7 @@ describe("native ACPX execution closure", () => {
     finally { await created.commandDirectory.close(); await created.snapshot.close(); }
   });
   it("drains every admitted copy before failed-snapshot cleanup and schedules no later batch", async () => {
-    const { declaration, entries } = await manyFileFixture(Array.from({ length: 10 }, (_, index) => 91 + index));
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 91 + index));
     await writeFile(join(declaration.distributionRoot, "file-00"), Buffer.alloc(91, 99));
     const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
     const originalRead = prototype.read;
@@ -185,7 +185,7 @@ describe("native ACPX execution closure", () => {
       expect(settled).toBe(false);
     } finally { hold.release(); }
     await expect(creating).rejects.toThrow("digest mismatch: file-00");
-    expect(readSizes).not.toContain(99);
+    expect(readSizes).not.toContain(123);
     const removals = vi.mocked(rm).mock.calls.slice(removalStart).map(([path]) => String(path)).filter(path => /paperclip-acpx-native-/.test(path));
     expect(removals).toHaveLength(1);
     await new Promise<void>(resolve => setImmediate(resolve));

@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, it, vi } from "vitest";
 import type { ControlPlanePort } from "../contracts/control-plane-port.js";
+import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
 import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type {
   NativeSession,
@@ -47,6 +48,7 @@ import {
   PAPERCLIP_EXECUTION_PROMPT,
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
+  composeNativeSystemInstructions,
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
@@ -521,6 +523,120 @@ it("carries the provider attachment seed across consecutive authority rotations"
     },
     workspace: { cwd: "/workspace" },
   });
+});
+
+it("restores ACPX with the current registered copy after the old run copy is collected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-acpx-context-rotation-"));
+  const priorRoot = join(root, "prior-run-copy");
+  const currentRoot = join(root, "current-run-copy");
+  await Promise.all([mkdir(priorRoot), mkdir(currentRoot)]);
+  const context = (rootPath: string) => {
+    const value = assignedRuntimeContext(join(root, "skills"), join(rootPath, "bundle"));
+    value.instructions.workingCopy = { kind: "agent_files", rootPath, entryPath: "AGENTS.md" };
+    return value;
+  };
+  const prior = context(priorRoot);
+  const current = context(currentRoot);
+  const customInstructions = `Keep custom instructions intact. A historical path example is ${priorRoot}.`;
+  const desired = {
+    runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "new-run",
+    normalizedSessionId: "same-session", turnId: "new-turn", itemId: "new-item",
+  };
+  const provider = {
+    kind: "acpx", agent: "copilot", runId: "old-run",
+    normalizedSessionId: "same-session", commandDigest: "sha256:immutable",
+    model: "explicit-model", runtimeContext: prior,
+    instructions: composeNativeSystemInstructions(prior, customInstructions),
+  };
+  const state = {
+    runAttachTemplate: { provider, workspace: { cwd: root } },
+    commands: [{ type: "turn.start", payload: { text: "must not replay" } }],
+  };
+  try {
+    await rm(priorRoot, { recursive: true });
+    expect(() => bindAcpxAgentFiles(prior, [])).toThrowError(
+      expect.objectContaining({ code: "ENOENT" }),
+    );
+    const restored = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      state, desired, null, undefined, current,
+    );
+    const restoredProvider = restored.provider as typeof provider;
+    expect(restoredProvider).toEqual({
+      ...provider, runId: desired.runId, runtimeContext: current,
+      instructions: composeNativeSystemInstructions(current, customInstructions),
+    });
+    expect(restoredProvider.instructions).toContain(customInstructions);
+    expect(restoredProvider.instructions).not.toContain(`(AGENT_HOME) is ${priorRoot}.`);
+    expect(restoredProvider.instructions).toContain(`(AGENT_HOME) is ${currentRoot}.`);
+    expect(bindAcpxAgentFiles(restoredProvider.runtimeContext, [])?.root).toContain("current-run-copy");
+    expect(restored).not.toHaveProperty("text");
+    expect(state.runAttachTemplate.provider.runtimeContext).toBe(prior);
+    // A reopened provider can retain the current grant on another restoration.
+    const same = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      { runAttachTemplate: restored }, desired, null, undefined, current,
+    );
+    expect(same).toEqual(restored);
+    expect((same.provider as typeof provider).runtimeContext).not.toBe(current);
+    // Live warm attachment has no new provider process and must preserve its
+    // existing context until settlement, rather than replace its filesystem grant.
+    const live = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      state, desired, null, undefined,
+    );
+    expect((live.provider as typeof provider).runtimeContext).toEqual(prior);
+    expect((live.provider as typeof provider).instructions).toBe(provider.instructions);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("retargets only composed instruction framing and retains legacy custom instructions", () => {
+  const prior = assignedRuntimeContext("/skills", "/old-bundle");
+  prior.instructions.workingCopy = { kind: "agent_files", rootPath: "/old-copy", entryPath: "AGENTS.md" };
+  const current = assignedRuntimeContext("/skills", "/new-bundle");
+  current.instructions.workingCopy = { kind: "agent_files", rootPath: "/new-copy", entryPath: "AGENTS.md" };
+  const desired = {
+    runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "new-run",
+    normalizedSessionId: "same-session", turnId: "turn", itemId: "item",
+  };
+  const restore = (
+    oldContext: NativeRuntimeContextSnapshot,
+    nextContext: NativeRuntimeContextSnapshot | null,
+    instructions: string,
+    currentInstructions?: string,
+  ) => (runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { runAttachTemplate: { provider: { kind: "acpx", runtimeContext: oldContext, instructions } } },
+    desired, null, undefined, nextContext,
+    currentInstructions === undefined ? undefined : { text: currentInstructions, context: nextContext },
+  ).provider as { instructions: string }).instructions;
+  // A quoted complete old asset paragraph is custom text, not a rewrite target.
+  const quotedOldBlock = composeNativeSystemInstructions(prior, "").slice(prior.prompt.text.length);
+  for (const custom of ["", `Historical example:${quotedOldBlock}\n\nKeep this exact custom ending.`]) {
+    expect(restore(prior, current, composeNativeSystemInstructions(prior, custom)))
+      .toBe(composeNativeSystemInstructions(current, custom));
+    expect(restore(prior, null, composeNativeSystemInstructions(prior, custom)))
+      .toBe([prior.prompt.text, custom].filter(Boolean).join("\n\n"));
+  }
+  const noWorkingCopy = assignedRuntimeContext("/skills", "/plain-bundle");
+  expect(restore(noWorkingCopy, current, composeNativeSystemInstructions(noWorkingCopy, "Custom")))
+    .toBe(composeNativeSystemInstructions(current, "Custom"));
+  expect(restore(prior, noWorkingCopy, composeNativeSystemInstructions(prior, "Custom")))
+    .toBe(composeNativeSystemInstructions(noWorkingCopy, "Custom"));
+  const opaque = "Legacy custom instructions mention /old-copy; keep every byte.";
+  expect(restore(prior, current, opaque)).toBe(opaque);
+  const fresh = composeNativeSystemInstructions(current, "Updated registered entry content");
+  expect(restore(prior, current, composeNativeSystemInstructions(prior, "Old content"), fresh))
+    .toBe(fresh);
+  const remote = assignedRuntimeContext("/runner/skills", "/runner/context/instructions");
+  remote.instructions.workingCopy = { ...current.instructions.workingCopy, rootPath: "/runner/agent-home" };
+  const custom = "Current instructions keep a literal example /new-copy unchanged.";
+  const remoteProvider = runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { runAttachTemplate: { provider: { kind: "acpx", runtimeContext: prior, instructions: composeNativeSystemInstructions(prior, "Old") } } },
+    desired, null, undefined, remote,
+    { text: composeNativeSystemInstructions(current, custom), context: current },
+  ).provider as { instructions: string; runtimeContext: NativeRuntimeContextSnapshot };
+  expect(remoteProvider.instructions).toBe(composeNativeSystemInstructions(remote, custom));
+  expect(remoteProvider.runtimeContext).toEqual(remote);
+
 });
 
 it("replays the durable run attachment outcome and latest provider identity", () => {

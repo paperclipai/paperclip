@@ -1,8 +1,17 @@
 diff --git a/dist/client-CxNllqui.d.ts b/dist/client-CxNllqui.d.ts
-index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b071ab54a8d 100644
+index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..45aff03c37427071de49b45eb0361a9a808786e0 100644
 --- a/dist/client-CxNllqui.d.ts
 +++ b/dist/client-CxNllqui.d.ts
-@@ -135,6 +135,7 @@ declare class AcpClient {
+@@ -120,6 +120,8 @@ declare class AcpClient {
+   private initializeProtocolConnection;
+   private handleInitializeFailure;
+   private createTappedStream;
++  private cursorSubagentStreamOwner;
++  private handleCursorSubagentNotification;
+   createSession(cwd?: string): Promise<SessionCreateResult>;
+   loadSession(sessionId: string, cwd?: string): Promise<SessionLoadResult>;
+   loadSessionWithOptions(sessionId: string, cwd?: string, options?: LoadSessionOptions): Promise<SessionLoadResult>;
+@@ -135,6 +137,7 @@ declare class AcpClient {
    private throwPromptPermissionFailureIfPresent;
    setSessionMode(sessionId: string, modeId: string): Promise<void>;
    setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<SetSessionConfigOptionResponse>;
@@ -11,7 +20,7 @@ index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b07
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d2e777e9e 100644
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..bafb3b8af8a5478681ff5d73858e0d2f72f51d51 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -259,10 +268,23 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			clientInfo: resolveClientInfo(launch.devinAcp)
  		});
  		const initialized = launch.geminiAcp ? await withTimeout(initializePromise, resolveGeminiAcpStartupTimeoutMs()) : await initializePromise;
-@@ -4358,6 +4430,36 @@ var AcpClient = class {
+@@ -4358,6 +4430,49 @@ var AcpClient = class {
  		throw normalizedError;
  	}
  	createTappedStream(base) {
++		// Policy admission is distinct from best-effort observation. Each new
++		// stdio connection gets fresh authority and a violation tears it down.
++		const protocolGuard = this.options.protocolGuardFactory?.();
++		const enforceProtocol = (direction, message) => {
++			try { protocolGuard?.(direction, message); }
++			catch (error) {
++				this.rejectPendingConnectionRequests(error);
++				abortResponseDeliveries();
++				this.activePrompt?.elicitationController.abort(error);
++				try { this.agent?.kill("SIGTERM"); } catch {}
++				throw error;
++			}
++		};
 +		const deliveries = new Map();
 +		const scope = new AbortController();
 +		const abortResponseDeliveries = () => scope.abort(new Error("ACP response connection closed before delivery"));
@@ -296,10 +318,13 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		const onAcpMessage = () => this.eventHandlers.onAcpMessage;
  		const onAcpOutputMessage = () => this.eventHandlers.onAcpOutputMessage;
  		const elicitationRequestIds = /* @__PURE__ */ new Set();
-@@ -4367,8 +4469,9 @@ var AcpClient = class {
+@@ -4367,8 +4482,12 @@ var AcpClient = class {
  		const shouldSuppressInboundReplaySessionUpdate = (message) => {
  			return this.suppressReplaySessionUpdateMessages && isSessionUpdateNotification(message);
  		};
++		const cursorSubagentOwner = { active: null, children: new Map() };
++		this.cursorSubagentStreamOwner = cursorSubagentOwner;
++		const onCursorSubagentNotification = (message) => this.handleCursorSubagentNotification(message, cursorSubagentOwner);
 +		const onExtensionNotification = (message) => this.handleExtensionNotification(message);
  		const observeInbound = (message) => {
 -			const requestId = elicitationRequestId(message);
@@ -307,7 +332,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			if (requestId !== void 0) {
  				elicitationRequestIds.add(requestId);
  				return;
-@@ -4379,6 +4482,7 @@ var AcpClient = class {
+@@ -4379,6 +4498,7 @@ var AcpClient = class {
  			}
  		};
  		return {
@@ -315,25 +340,37 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			readable: new ReadableStream({ async start(controller) {
  				const reader = base.readable.getReader();
  				try {
-@@ -4387,10 +4491,16 @@ var AcpClient = class {
+@@ -4386,16 +4506,27 @@ var AcpClient = class {
+ 						const { value, done } = await reader.read();
  						if (done) break;
  						if (!value) continue;
++						enforceProtocol("inbound", value);
  						observeInbound(value);
 -						if (isExtensionNotification(value)) continue;
++						if (onCursorSubagentNotification(value)) continue;
 +						if (isExtensionNotification(value)) {
 +							onExtensionNotification(value);
 +							continue;
 +						}
  						controller.enqueue(value);
  					}
++					controller.close();
++				} catch (error) {
++					controller.error(error);
  				} finally {
 +					abortResponseDeliveries();
 +					for (const receipt of deliveries.values()) receipt.cleanup();
 +					deliveries.clear();
  					reader.releaseLock();
- 					controller.close();
+-					controller.close();
  				}
-@@ -4403,10 +4513,20 @@ var AcpClient = class {
+ 			} }),
+ 			writable: new WritableStream({ async write(message) {
++				enforceProtocol("outbound", message);
+ 				const promptOwner = promptRequestOwner(message);
+ 				if (promptOwner) bindPromptOwner(promptOwner);
+ 				const id = responseId(message);
+@@ -4403,10 +4534,20 @@ var AcpClient = class {
  					onAcpOutputMessage()?.("outbound", message);
  					onAcpMessage()?.("outbound", message);
  				}
@@ -354,7 +391,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  					writer.releaseLock();
  				}
  			} })
-@@ -4422,7 +4542,10 @@ var AcpClient = class {
+@@ -4422,7 +4563,10 @@ var AcpClient = class {
  			const createPromise = this.runConnectionRequest(() => connection.newSession({
  				cwd: sessionCwd,
  				mcpServers: this.options.mcpServers ?? [],
@@ -366,7 +403,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			}));
  			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
  		} catch (error) {
-@@ -4864,7 +4987,7 @@ var AcpClient = class {
+@@ -4864,7 +5008,7 @@ var AcpClient = class {
  	}
  	selectAuthMethod(methods) {
  		for (const method of methods) {
@@ -375,7 +412,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			if (envCredential) return {
  				methodId: method.id,
  				credential: envCredential,
-@@ -4890,7 +5013,7 @@ var AcpClient = class {
+@@ -4890,7 +5034,7 @@ var AcpClient = class {
  	}
  	readAgentSpecificEnvCredential(methodId) {
  		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
@@ -384,7 +421,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
  	}
  	selectAgentManagedAuthMethod(methodId) {
-@@ -4915,9 +5038,9 @@ var AcpClient = class {
+@@ -4915,9 +5059,9 @@ var AcpClient = class {
  		await connection.authenticate({ methodId: selected.methodId });
  		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
  	}
@@ -396,7 +433,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		if (hostResponse) return hostResponse;
  		const { response, recorded } = await this.resolvePermissionRequestFromMode(params);
  		if (!recorded) {
-@@ -4926,14 +5049,49 @@ var AcpClient = class {
+@@ -4926,14 +5070,81 @@ var AcpClient = class {
  		}
  		return response;
  	}
@@ -423,6 +460,38 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
 +			signal.removeEventListener("abort", onAbort);
 +		}
 +	}
++	handleCursorSubagentNotification(message, owner) {
++		// Keep the SDK's standard union closed. Cursor child transcripts use
++		// their own session IDs and must never be flattened into the parent.
++		const method = "cursor/subagent_update";
++		if (!this.options.extensionMethods.includes(method) || this.options.clientCapabilities?._meta?.subagents !== true) return false;
++		if (message?.method !== "session/update" || "id" in message) return false;
++		const lifecycle = ["subagent_spawned", "subagent_state_update"].includes(message?.params?.update?.sessionUpdate);
++		const active = this.activePrompt;
++		const connection = this.connection;
++		if (this.cursorSubagentStreamOwner !== owner || this.closing || connection?.signal.aborted) return true;
++		if (!active || !connection || active.elicitationController.signal.aborted) return lifecycle || owner.children.has(message?.params?.sessionId);
++		if (owner.active !== active) { owner.active = active; owner.children.clear(); }
++		if (!lifecycle && message?.params?.sessionId === active.sessionId) return false;
++		try {
++			const params = boundedExtensionRecord(message.params);
++			if (lifecycle) {
++				if (params.sessionId !== active.sessionId && !owner.children.has(params.sessionId)) return true;
++				const child = params.update?.subagentSessionId;
++				if (typeof child !== "string" || !child || child.length > 1000 || child === active.sessionId) return true;
++				if (params.update.sessionUpdate === "subagent_spawned") {
++					if (owner.children.has(child) || owner.children.size >= 256) return true;
++					owner.children.set(child, params.sessionId);
++				} else if (owner.children.get(child) !== params.sessionId) return true;
++				this.options.onExtensionNotification?.(method, { sessionId: active.sessionId, parentSessionId: params.sessionId, update: params.update });
++			} else if (owner.children.has(params.sessionId)) {
++				this.options.onExtensionNotification?.(method, { sessionId: active.sessionId, parentSessionId: owner.children.get(params.sessionId), childSessionId: params.sessionId, update: params.update });
++			}
++		} catch {
++			this.log("Cursor child activity notification was rejected");
++		}
++		return true;
++	}
 +	handleExtensionNotification(message) {
 +		if (!this.options.extensionMethods.includes(message.method) || !this.options.onExtensionNotification || this.closing) return;
 +		const active = this.activePrompt;
@@ -448,7 +517,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		})).then((response) => ({
  			kind: "response",
  			response
-@@ -4970,7 +5128,7 @@ var AcpClient = class {
+@@ -4970,7 +5181,7 @@ var AcpClient = class {
  	isElicitationSessionCancelling(sessionId) {
  		return this.closing || this.cancellingSessionIds.has(sessionId);
  	}
@@ -457,7 +526,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		if (!this.options.onPermissionRequest) return;
  		const signal = this.cancellationSignalForSession(params.sessionId);
  		try {
-@@ -4978,7 +5136,7 @@ var AcpClient = class {
+@@ -4978,7 +5189,7 @@ var AcpClient = class {
  				sessionId: params.sessionId,
  				raw: params,
  				inferredKind: inferToolKind(params)
@@ -466,7 +535,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			return this.hostPermissionDecisionResponse(params, signal, decision);
  		} catch (error) {
  			return this.hostPermissionErrorResponse(params, signal, error);
-@@ -5028,6 +5186,12 @@ var AcpClient = class {
+@@ -5028,6 +5239,12 @@ var AcpClient = class {
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -479,7 +548,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -5771,10 +5935,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
+@@ -5771,10 +5988,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
  	trimConversationForRuntime(conversation);
  	return acpx;
  }
@@ -502,7 +571,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	updateConversationTimestamp(conversation, timestamp);
  	trimConversationForRuntime(conversation);
  	return true;
-@@ -6435,6 +6609,27 @@ async function withConnectedSession(options) {
+@@ -6435,6 +6662,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -530,7 +599,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,7 +6639,22 @@ async function runPromptTurn(params) {
+@@ -6444,7 +6692,22 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -554,7 +623,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			stopReason: response.stopReason,
  			source: "rpc"
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415d1fba4bf 100644
+index e8102acb03c4c38830ad5ec22f356125eb0423b7..377c5d83830640cde0119d77bafbb46931301aa8 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -598,7 +667,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
  } | {
    type: "tool_call";
    text: string;
-@@ -312,7 +323,49 @@ type AcpRuntimeOptions = {
+@@ -312,7 +323,51 @@ type AcpRuntimeOptions = {
    elicitationModes?: readonly AcpElicitationMode[];
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
@@ -634,6 +703,8 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
 +    signal: NodeJS.Signals | null;
 +    exitedAt: string;
 +  }) => void;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
 +  onAcpMessage?: (direction: "inbound" | "outbound", message: unknown) => void;
 +  /** Ephemeral full ACP notification callback; never written to session records. */
 +  onSessionNotification?: (notification: SessionNotification) => void;
@@ -648,7 +719,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
  };
  type AcpFileSessionStoreOptions = {
    stateDir: string;
-@@ -369,6 +422,7 @@ declare class AcpRuntimeManager {
+@@ -369,6 +424,7 @@ declare class AcpRuntimeManager {
    private createAndSaveRuntimeRecord;
    private retainInitializedSessionOwner;
    startTurn(input: {
@@ -656,7 +727,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -414,6 +468,7 @@ declare class AcpRuntimeManager {
+@@ -414,6 +470,7 @@ declare class AcpRuntimeManager {
    private cleanupRuntimeTurn;
    private finalizeRuntimeTurnRecord;
    runTurn(input: {
@@ -665,7 +736,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd43b1a0f77 100644
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..896617544f6467c88da0dedf5c4867fc63e1fffe 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -712,7 +783,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +840,21 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,22 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -727,6 +798,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
 +			onAgentExit: this.options.onAgentExit,
 +			onAcpMessage: this.options.onAcpMessage,
 +			clientCapabilities: this.options.clientCapabilities,
++			protocolGuardFactory: this.options.protocolGuardFactory,
 +			extensionMethods: this.options.extensionMethods,
 +			onExtensionRequest: this.options.onExtensionRequest,
 +			onExtensionNotification: this.options.onExtensionNotification
@@ -735,7 +807,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +863,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +864,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -752,7 +824,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +909,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +910,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -762,7 +834,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1057,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1058,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -771,7 +843,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1137,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1138,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -783,7 +855,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1205,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1206,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -792,7 +864,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1301,6 +1359,7 @@ var AcpRuntimeManager = class {
+@@ -1301,6 +1360,7 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -800,7 +872,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId,
-@@ -1469,6 +1528,10 @@ var AcpRuntimeManager = class {
+@@ -1469,6 +1529,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -811,7 +883,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1638,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1639,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -820,7 +892,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1772,17 @@ var AcpRuntimeManager = class {
+@@ -1707,6 +1773,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -838,7 +910,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2055,6 +2131,7 @@ var AcpxRuntime = class {
+@@ -2055,6 +2132,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -846,7 +918,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2087,6 +2164,7 @@ var AcpxRuntime = class {
+@@ -2087,6 +2165,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -854,7 +926,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2119,6 +2197,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2198,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -870,7 +942,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd2731855ce2e51 100644
+index c3da1645235bbea22de3f8484149051cd7dca56b..3c886f8e52147adc8e45effa2a075a2df63b6454 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -888,7 +960,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
  };
  type AcpElicitationResponseMeta = {
    _meta?: Record<string, unknown> | null;
-@@ -116,6 +119,35 @@ type AcpClientOptions = {
+@@ -116,6 +119,37 @@ type AcpClientOptions = {
      };
      env?: Record<string, string>;
    };
@@ -921,10 +993,12 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
 +    signal: NodeJS.Signals | null;
 +    exitedAt: string;
 +  }) => void;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
-@@ -123,6 +155,8 @@ type AcpClientOptions = {
+@@ -123,6 +157,8 @@ type AcpClientOptions = {
    onPermissionEscalation?: (event: PermissionEscalationEvent) => void;
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
@@ -933,7 +1007,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
    }) => Promise<AcpPermissionDecision | undefined>;
  };
  declare const SESSION_RECORD_SCHEMA: "acpx.session.v1";
-@@ -263,12 +297,15 @@ type SessionRecord = {
+@@ -263,12 +299,15 @@ type SessionRecord = {
    lastAgentDisconnectReason?: string;
    protocolVersion?: number;
    agentCapabilities?: AgentCapabilities;

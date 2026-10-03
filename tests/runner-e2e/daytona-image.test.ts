@@ -200,6 +200,9 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
+      "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
+      "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
+      "packages/paperclip-runner/cursor-distributions.json",
       "packages/paperclip-runner/runner/crates",
       "packages/paperclip-runner/src",
     ]) {
@@ -324,6 +327,28 @@ describe("runner E2E Daytona image contract", () => {
           platform: "linux/arm64",
         }),
       ).not.toBe(baseline);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates the image when the Cursor runtime isolation patch changes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-cursor-image-id-"));
+    const patchPath = "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs";
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(patchPath);
+    const options = {
+      repositoryRoot: root,
+      inputPaths: [patchPath],
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+      candidateProviders: ["cursor"],
+    } as const;
+    try {
+      await mkdir(path.dirname(path.join(root, patchPath)), { recursive: true });
+      await writeFile(path.join(root, patchPath), "export const policy = 'one';\n");
+      const baseline = await computeDaytonaImageContentId(options);
+      await writeFile(path.join(root, patchPath), "export const policy = 'two';\n");
+      expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
