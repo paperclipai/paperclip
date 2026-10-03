@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -568,6 +569,32 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("raises the spawned worker's oom_score_adj above the server's", async () => {
+    if (process.platform !== "linux") return;
+    const serverAdj = readFileSync("/proc/self/oom_score_adj", "utf8").trim();
+    let workerAdj: string | null = null;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('ok')"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        onSpawn: async ({ pid }) => {
+          workerAdj = readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(workerAdj).not.toBeNull();
+    expect(Number(workerAdj)).toBeGreaterThan(Number(serverAdj));
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

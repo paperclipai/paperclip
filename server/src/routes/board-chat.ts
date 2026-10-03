@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
+import { protectSpawnedAgentRun } from "@paperclipai/adapter-utils/oom-score-adj";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -256,6 +257,11 @@ export function boardChatRoutes(
         PAPERCLIP_COMPANY_ID: companyId,
       },
     });
+    // Keep the kernel shedding this short-lived worker instead of the control
+    // plane. See packages/adapter-utils/src/oom-score-adj.ts. Never throws.
+    if (typeof proc.pid === "number" && proc.pid > 0) {
+      protectSpawnedAgentRun(proc.pid);
+    }
 
     let fullResponse = "";
     let streamedViaDelta = false;

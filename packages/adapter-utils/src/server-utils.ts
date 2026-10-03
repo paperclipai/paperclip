@@ -13,6 +13,7 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+import { protectSpawnedAgentRun } from "./oom-score-adj.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -4724,6 +4725,15 @@ export async function runChildProcess(
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        // The server is the largest single process in the cgroup, so an
+        // unguarded `oom_score_adj` makes the kernel kill the control plane when
+        // one agent run leaks. Raise the worker's adjustment so the kernel
+        // sheds this run instead. Applied per spawn, so it re-applies after
+        // every boot and after every restart. Never throws: a failed write
+        // must not fail the run.
+        if (typeof child.pid === "number" && child.pid > 0) {
+          protectSpawnedAgentRun(child.pid);
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 

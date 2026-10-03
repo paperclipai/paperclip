@@ -109,6 +109,7 @@ import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
+import { logOomScoreAdjProtection } from "./services/oom-protection.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
@@ -207,6 +208,11 @@ async function startServerWithDatabaseTeardown(
 ): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
+  // The OOM adjustment must be in place before the first agent run is spawned,
+  // so it runs before any DB connection or HTTP listener exists. See
+  // packages/adapter-utils/src/oom-score-adj.ts for why the worker half is the
+  // load-bearing one.
+  logOomScoreAdjProtection();
 
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.

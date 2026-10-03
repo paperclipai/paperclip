@@ -341,6 +341,44 @@ Notes:
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
 
+## Memory-pressure protection (`oom_score_adj`)
+
+Every agent run a container hosts shares one memory cgroup with the server. The
+server is the largest single process in that cgroup, and the kernel OOM killer
+picks the process with the highest `oom_score` (proportional to RSS), so
+without help a worker that leaks memory takes the control plane down with it —
+a full pod restart instead of one shed run.
+
+The server therefore manages `oom_score_adj` in two places:
+
+- **At startup**, it asks for `PAPERCLIP_OOM_SERVER_SCORE_ADJ` (default `0`).
+  Lowering your own adjustment requires `CAP_SYS_RESOURCE`. An unprivileged
+  container cannot do it, and the server logs a warning instead of failing.
+- **On every spawn**, it raises each agent worker's adjustment to
+  `PAPERCLIP_OOM_WORKER_SCORE_ADJ` (default `1000`, the maximum). Raising is
+  always allowed for the process owner, so this half works in every deployment
+  and is what actually orders the two. It is re-applied per spawn, so it comes
+  back after an OOM restart.
+
+Verify the ordering on a live instance:
+
+```sh
+# the server process
+cat /proc/$(pgrep -f 'server/dist/index.js' | head -1)/oom_score_adj
+# one live worker — must be the higher number
+cat /proc/$(pgrep -f 'opencode run' | head -1)/oom_score_adj
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PAPERCLIP_OOM_PROTECTION` | enabled | `off`/`false`/`0`/`no` disables the mitigation. |
+| `PAPERCLIP_OOM_SERVER_SCORE_ADJ` | `0` | Adjustment the server asks for at startup. Needs `CAP_SYS_RESOURCE` to take effect. |
+| `PAPERCLIP_OOM_WORKER_SCORE_ADJ` | `1000` | Adjustment applied to each spawned agent run. |
+
+This is a mitigation, not a fix: it converts "the control plane dies" into "one
+agent run is shed". Cap agent concurrency so a single run cannot exhaust the
+cgroup in the first place.
+
 ## Native Runner build cache
 
 The image compiles the native Runner in `runner-build`, before copying the
