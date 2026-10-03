@@ -1199,11 +1199,11 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/routines.md:updating-a-routine:212",
+      "id": "skill:skills/paperclip/references/routines.md:operator-rules-manual-run-vs-scheduled-fire:212",
       "sourceKind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/routines.md:212",
-      "title": "Updating a Routine",
-      "expectedSemantics": "Skill guidance headed “Updating a Routine”.",
+      "title": "Operator Rules: Manual Run vs Scheduled Fire",
+      "expectedSemantics": "Skill guidance headed “Operator Rules: Manual Run vs Scheduled Fire”.",
       "primaryDisposition": "optional_agent_tool",
       "requiredGrants": [],
       "assertionClasses": [
@@ -1214,9 +1214,69 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/routines.md:reading-routines-and-runs:223",
+      "id": "skill:skills/paperclip/references/routines.md:pass-the-pending-schedule-trigger-s-triggerid-on-a-manual-run:218",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/routines.md:223",
+      "sourceAnchor": "skills/paperclip/references/routines.md:218",
+      "title": "Pass the pending schedule trigger's `triggerId` on a manual run",
+      "expectedSemantics": "Skill guidance headed “Pass the pending schedule trigger's `triggerId` on a manual run”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:218"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:coalesceifactive-needs-an-open-issue-with-a-live-heartbeat-run:232",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:232",
+      "title": "`coalesce_if_active` needs an OPEN issue with a LIVE heartbeat run",
+      "expectedSemantics": "Skill guidance headed “`coalesce_if_active` needs an OPEN issue with a LIVE heartbeat run”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:232"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:consolidate-transition-boundary-duplicates:245",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:245",
+      "title": "Consolidate transition-boundary duplicates",
+      "expectedSemantics": "Skill guidance headed “Consolidate transition-boundary duplicates”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:245"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:updating-a-routine:258",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:258",
+      "title": "Updating a Routine",
+      "expectedSemantics": "Skill guidance headed “Updating a Routine”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:258"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:reading-routines-and-runs:269",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:269",
       "title": "Reading Routines and Runs",
       "expectedSemantics": "Skill guidance headed “Reading Routines and Runs”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1225,7 +1285,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/routines.md:223"
+        "skill:skills/paperclip/references/routines.md:269"
       ]
     },
     {

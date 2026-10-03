@@ -209,6 +209,52 @@ POST /api/routines/{routineId}/run
 
 ---
 
+## Operator Rules: Manual Run vs Scheduled Fire
+
+These rules matter when you manually trigger a routine that also has a `schedule`
+trigger, and when you rely on `coalesce_if_active` to absorb the next fire. The
+symptoms are duplicate execution issues that do not coalesce.
+
+### Pass the pending schedule trigger's `triggerId` on a manual run
+
+When you call `POST /api/routines/{id}/run` for a routine that has an upcoming
+scheduled fire, pass the **pending schedule trigger's `triggerId`** (the trigger
+whose `nextRunAt` is next due).
+
+- With `triggerId`, the server recomputes that trigger's `next_run_at` from
+  `now`. A fire that is still ahead is **not** moved and runs. A stored fire
+  already due is skipped unless the scheduler already claimed that tick.
+- Without `triggerId`, the scheduled fire is left in place. If you also changed
+  the run payload, the **dispatch fingerprint changes**, so the scheduled fire is
+  a different execution and still creates a **separate execution issue — even
+  under `coalesce_if_active`**.
+
+### `coalesce_if_active` needs an OPEN issue with a LIVE heartbeat run
+
+`coalesce_if_active` does not coalesce against "a recent run". It merges the
+incoming run into an existing execution issue only when **both** are true
+(`findLiveExecutionIssue`, `server/src/services/routines.ts:1514`):
+
+1. the execution issue is still **open** (`OPEN_ISSUE_STATUSES`), and
+2. that issue still has a **live heartbeat run** (`LIVE_HEARTBEAT_RUN_STATUSES`).
+
+So: **keep the first execution issue open with a live heartbeat run if you want
+the next fire to coalesce.** If it is already closed, or its heartbeat run has
+ended, the next fire has nothing live to merge into and creates a new issue.
+
+### Consolidate transition-boundary duplicates
+
+A duplicate run issue can still appear at a timezone or schedule-transition
+boundary (for example a DST change or a month rollover in a non-UTC timezone).
+Treat it as a duplicate:
+
+- **Consolidate and close it.** Keep the original execution as the record of
+  truth; close the duplicate, linking it in a comment.
+- **Never raise a second plan card for the same work.** A duplicate run must not
+  create a second plan-of-record card or re-ask the board.
+
+---
+
 ## Updating a Routine
 
 All create fields are updatable. Agents cannot reassign a routine to another agent.
