@@ -1,8 +1,90 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyWorkspaceRestoreFailure } from "./workspace-restore-merge.js";
-import { withWorkspaceRestoreDiagnostics } from "./workspace-restore-diagnostics.js";
+import {
+  getWorkspaceRestoreDiagnostic, preserveWorkspaceRestoreErrorDiagnostic, recordWorkspaceRestoreDiagnostic,
+  withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep,
+  type WorkspaceRestoreDiagnostic,
+} from "./workspace-restore-diagnostics.js";
 
 describe("workspace restore diagnostics", () => {
+  it.each([new Error("shared nested failure"), "shared primitive failure"])("selects an unlabelled nested failure without retaining a later task's step (%s)", async (error) => {
+    const sink = vi.fn();
+    const snapshots: Array<WorkspaceRestoreDiagnostic | undefined> = [];
+    await expect(withWorkspaceRestoreDiagnostics("workspace", async () => {
+      await Promise.allSettled([
+        withWorkspaceRestoreDiagnostics("workspace", async () => { throw error; }, sink, (value) => { snapshots[0] = value; }),
+        withWorkspaceRestoreDiagnostics("asset", () => withWorkspaceRestoreStep("asset_restore", async () => { throw error; }), sink,
+          (value) => { snapshots[1] = value; }),
+      ]);
+      recordWorkspaceRestoreDiagnostic(error, snapshots[0]);
+      throw error;
+    }, sink)).rejects.toBe(error);
+    expect(snapshots[1]?.step).toBe("asset_restore");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual(typeof error === "object" ? { phase: "workspace", errorCode: "unknown" } : undefined);
+    expect(sink).toHaveBeenCalledExactlyOnceWith('[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"unknown"}\n');
+  });
+
+  it("keeps logging when a diagnostic consumer fails", async () => {
+    const error = new Error("restore failed");
+    const sink = vi.fn();
+    await expect(withWorkspaceRestoreDiagnostics("workspace", async () => { throw error; }, sink,
+      () => { throw new Error("consumer failed"); })).rejects.toBe(error);
+    expect(sink).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a nested step and bounded Git fields across an existing wrapper without a cause", async () => {
+    const source = Object.assign(new Error("private command/path"), { code: 1, stderr: "private stderr" });
+    const wrapper = new Error("existing wrapper");
+    await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("directory_merge", async () => {
+      try {
+        await withWorkspaceRestoreStep("git_integration", async () => { throw source; });
+      } catch (error) { throw preserveWorkspaceRestoreErrorDiagnostic(wrapper, error); }
+    }))).rejects.toBe(wrapper);
+    expect(wrapper).not.toHaveProperty("cause");
+    expect(Object.keys(wrapper)).toEqual([]);
+    expect(getWorkspaceRestoreDiagnostic(wrapper)).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: 1 });
+  });
+
+  it("attributes a reused error to the later failed retry step", async () => {
+    const error = new Error("same failure");
+    await expect(withWorkspaceRestoreDiagnostics("workspace", async () => {
+      await withWorkspaceRestoreStep("git_import", async () => { throw error; }).catch(() => {});
+      await withWorkspaceRestoreStep("git_export", async () => { throw error; });
+    })).rejects.toBe(error);
+    expect(getWorkspaceRestoreDiagnostic(error)?.step).toBe("git_export");
+    await expect(withWorkspaceRestoreDiagnostics("asset", async () => { throw error; })).rejects.toBe(error);
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "asset", errorCode: "unknown" });
+  });
+
+  it("isolates concurrent steps even when their errors share identity", async () => {
+    const error = new Error("shared error");
+    const sink = vi.fn();
+    await Promise.allSettled([
+      withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_import", async () => { throw error; }), sink),
+      withWorkspaceRestoreDiagnostics("asset", () => withWorkspaceRestoreStep("asset_restore", async () => { throw error; }), sink),
+    ]);
+    expect(sink.mock.calls.map(([line]) => JSON.parse(line.split(": ")[1]))).toEqual(expect.arrayContaining([
+      { phase: "workspace", step: "git_import", errorCode: "unknown" },
+      { phase: "asset", step: "asset_restore", errorCode: "unknown" },
+    ]));
+  });
+
+  it("starts a fresh scope for later work inherited from a completed async context", async () => {
+    const error = new Error("later failure");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let later!: Promise<unknown>;
+    const sink = vi.fn();
+    await withWorkspaceRestoreDiagnostics("workspace", async () => {
+      later = gate.then(() => withWorkspaceRestoreDiagnostics("asset", () =>
+        withWorkspaceRestoreStep("asset_restore", async () => { throw error; }), sink)).catch((value) => value);
+    }, sink);
+    release();
+    expect(await later).toBe(error);
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "asset", step: "asset_restore", errorCode: "unknown" });
+    expect(sink).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves successful restores silent", async () => {
     const sink = vi.fn();
     expect(await withWorkspaceRestoreDiagnostics("workspace", async () => 42, sink)).toBe(42);

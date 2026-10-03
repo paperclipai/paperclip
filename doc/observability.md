@@ -504,6 +504,21 @@ or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
 pre-restore result data are not included. A later successful run does not, by
 itself, establish that an earlier failed restore recovered the workspace files.
 
+When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
+`workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
+`workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.
+The phase is `workspace` or `asset`. The failing step is one of `git_export`,
+`git_import`, `workspace_transfer`, `workspace_extract`, `directory_merge`,
+`git_integration`, `index_reset`, `git_ref_cleanup`, or `asset_restore`.
+Nested steps retain the most specific failing operation. Error codes come from
+the restore diagnostic allowlist, with unrecognized codes reported as `unknown`;
+HTTP statuses are integers from 400 through 599 and process exit codes are
+integers from 1 through 255. These fields accompany a known restore failure code
+only. They omit error messages, commands, paths, process output, and arbitrary
+cause data. Git error wrappers preserve only these safe codes and numbers for
+diagnostics, without adding the original error as a cause. This does not change
+restore behavior, retries, timeouts, or recovery policy.
+
 A caught directory-merge lock timeout also records `restoreLockOwnerState`
 (`alive`, `dead`, `unknown`, `missing`, or `invalid`), `restoreLockKnownLocalHolder`,
 and, when available, `restoreLockOwnerSameProcess`, `restoreLockOwnerPredatesProcess`,

@@ -55,6 +55,78 @@ describe("run failure diagnostics", () => {
     },
   );
 
+  it("copies only classified restore diagnostics from the saved result", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreDiagnostic: {
+        phase: "workspace", step: "git_integration", errorCode: "unknown", httpStatus: 503, exitCode: 1,
+        message: "private command failed", path: "/private/workspace", stdout: "private file contents",
+        cause: { code: "EIO", message: "private nested cause" },
+      },
+    } }), {}));
+    expect(result.execution).toEqual({
+      workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace",
+      workspaceRestoreStep: "git_integration", workspaceRestoreErrorCode: "unknown",
+      workspaceRestoreHttpStatus: 503, workspaceRestoreExitCode: 1,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(result.exceptions).toEqual([]);
+  });
+
+  it("requires a known restore failure before reading its diagnostic", () => {
+    const diagnostic = { phase: "workspace", step: "git_import", errorCode: "EIO", exitCode: 1 };
+    for (const code of [undefined, null, "private unknown classification"]) {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: code, workspaceRestoreDiagnostic: diagnostic,
+      } }), {});
+      expect(result.execution).toEqual({});
+    }
+    const resultJson = Object.defineProperty({}, "workspaceRestoreDiagnostic", {
+      get() { throw new Error("must not read unrelated diagnostic"); },
+    });
+    expect(collectRunFailureDiagnostics(run({ resultJson }), {}).execution).toEqual({});
+  });
+
+  it.each([null, false, 1, "private payload", [], { phase: "private phase", errorCode: "EIO" }])(
+    "omits malformed workspace restore diagnostics (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: value,
+      } }), {});
+      expect(result.execution).toEqual({ workspaceRestoreFailure: "restore_failed" });
+      expect(JSON.stringify(result)).not.toContain("private");
+    },
+  );
+
+  it.each([null, -1, Infinity, NaN, 1.5, 600, "private status", {}])(
+    "omits invalid restore status and exit values (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreDiagnostic: {
+          phase: "asset", step: "private step", errorCode: "private code", httpStatus: value, exitCode: value,
+        },
+      } }), {});
+      expect(result.execution).toEqual({
+        workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "asset", workspaceRestoreErrorCode: "unknown",
+      });
+    },
+  );
+
+  it("does not walk restore causes or expose errors from diagnostic getters", () => {
+    const diagnostic = Object.defineProperties({ phase: "workspace", errorCode: "EIO" }, {
+      step: { get() { throw new Error("private getter"); } },
+      httpStatus: { get() { throw new Error("private getter"); } },
+      exitCode: { get() { throw new Error("private getter"); } },
+      cause: { get() { throw new Error("must not walk cause"); } },
+    });
+    const result = collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: diagnostic,
+    } }), {});
+    expect(result.execution).toEqual({
+      workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace", workspaceRestoreErrorCode: "EIO",
+    });
+    expect(result.exceptions).toEqual([]);
+  });
+
   it("includes only bounded ACP activity fields, not tool names, identities, or output", () => {
     const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
       acpLastEventAgeMs: 14_000_000, acpObservedEventCount: 9, acpPendingToolCount: 2,

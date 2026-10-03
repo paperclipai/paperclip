@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createWorkspaceManifest, workspacePaths, WorkspaceNulParser, type WorkspacePaths } from "./workspace-manifest.js";
 import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
+import { preserveWorkspaceRestoreErrorDiagnostic } from "./workspace-restore-diagnostics.js";
 
 export interface GitCommandResult {
   stdout: string;
@@ -931,9 +932,9 @@ export async function integrateImportedGitHead(input: {
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
+      throw preserveWorkspaceRestoreErrorDiagnostic(new Error(
         `Failed to merge concurrent remote git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
-      );
+      ), error);
     }
     const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
     if (!mergedTreeId) {
@@ -990,7 +991,9 @@ export async function resetLocalGitIndexToHead(input: {
         (error as { stdout?: unknown }).stdout,
       ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n")
       : String(error);
-    throw new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`);
+    throw preserveWorkspaceRestoreErrorDiagnostic(
+      new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`), error,
+    );
   }
 
   const hasDiff = async (args: string[]) => {

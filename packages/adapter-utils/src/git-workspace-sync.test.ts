@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { workspacePaths } from "./workspace-manifest.js";
 import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep } from "./workspace-restore-diagnostics.js";
 
 import {
   buildRemoteGitDeltaBundleScript,
@@ -24,6 +25,7 @@ import {
   REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
   REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES,
   runLocalGit,
+  resetLocalGitIndexToHead,
   sanitizeGitRemoteUrl,
   setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
@@ -722,9 +724,31 @@ describe("git workspace sync", () => {
     // object error (exit 128), not the no-ancestor signal (exit 1). The graft
     // must not fire, and the integration keeps its loud failure.
     const missingHead = "0123456789abcdef0123456789abcdef01234567";
-    await expect(integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))
-      .rejects.toThrow(/Failed to merge concurrent remote git histories/);
+    const expectedExit = await runLocalGit(repo, ["merge-tree", "--write-tree", currentHead, missingHead])
+      .catch((error: { code: number }) => error.code);
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_integration", () =>
+      integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/Failed to merge concurrent remote git histories/);
+    expect(error).not.toHaveProperty("cause");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: expectedExit });
     expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+  });
+
+  it("preserves the real Git index reset exit code without attaching its raw error", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-reset-diagnostic-"));
+    cleanupDirs.push(repo);
+    await git(repo, ["init"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev", "commit", "-m", "base"]);
+    await writeFile(path.join(repo, ".git", "index.lock"), "fixture lock\n", "utf8");
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("index_reset", () =>
+      resetLocalGitIndexToHead({ localDir: repo }))).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Failed to reset local git index");
+    expect(error).not.toHaveProperty("cause");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "index_reset", errorCode: "unknown", exitCode: 128 });
   });
 
   describe("readReferencedSourceGitIgnoredPaths", () => {
