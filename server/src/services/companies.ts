@@ -33,6 +33,7 @@ import {
   routineTriggers,
   routineRevisions,
   routines,
+  inboxDismissals,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
@@ -552,13 +553,15 @@ export function companyService(db: Db) {
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
+        // costEvents/financeEvents reference heartbeatRuns via FK; must delete before heartbeatRuns
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
