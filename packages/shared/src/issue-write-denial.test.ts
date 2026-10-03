@@ -86,6 +86,33 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("does not tell an unrecognized run to resend the header it already sent", () => {
+    // The point of splitting this code out: the run-context remedy is
+    // inoperative here, and an inoperative remedy makes an agent retry the
+    // identical request, loop, and give up.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_not_recognized", {
+      actorLabel: "Fable",
+    });
+    expect(copy.status).toBe(403);
+    expect(copy.description).toContain("was present");
+    expect(copy.description).toContain("Fable");
+    expect(copy.sanctionedPath).not.toContain("Send the");
+    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+  });
+
+  it("does not blame an unrecognized run on the run being finished", () => {
+    // The lookup filters on run id + company + agent, never on run status, so a
+    // finished run of this agent still resolves and never produces this code.
+    // Naming it as a cause is the same inoperative-diagnosis defect this code
+    // was split out to fix, one level down.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_not_recognized", {
+      actorLabel: "Fable",
+    });
+    expect(copy.description).not.toContain("from a finished heartbeat");
+    expect(copy.description).toContain("Run age is not the cause");
+    expect(copy.description).toContain("another agent or another company");
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
