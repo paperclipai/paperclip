@@ -17290,18 +17290,20 @@ export function issueRoutes(
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
       // The run-less service-key carve-out further down covers the comment
-      // itself and nothing else. On a closed or blocked issue, `reopen` and
-      // `resume` turn this POST into a task-state change — status back to
-      // todo, a workspace reopen, an assignee wake — and task-state changes
-      // stay attributable to a run. Refuse that case instead of silently
-      // dropping the flag so a misconfigured integration hears the contract
-      // rather than guessing why nothing resumed. On an open issue the route
-      // already treats both flags as a no-op for agent actors, so the comment
-      // falls through to its own authorization. (`interrupt` is board-only
-      // below, so it needs no gate here.)
+      // itself and nothing else. `resume` always does more than comment: on a
+      // closed or blocked issue it moves status back to todo and reopens the
+      // workspace, and on an open issue its one remaining effect is to force
+      // an assignee wake past the self-comment suppression
+      // (shouldWakeAssigneeForIssueComment) — either way it starts a turn,
+      // and turn-starting stays attributable to a run. `reopen` only changes
+      // state on closed/blocked issues; on an open issue the route treats it
+      // as a no-op for agent actors, so that comment falls through to its own
+      // authorization. Refuse instead of silently dropping the flag so a
+      // misconfigured integration hears the contract rather than guessing why
+      // nothing resumed. (`interrupt` is board-only below, so it needs no
+      // gate here.)
       if (
-        (reopenRequested || resumeRequested) &&
-        (isClosed || isBlocked) &&
+        (resumeRequested || (reopenRequested && (isClosed || isBlocked))) &&
         req.actor.type === "agent" &&
         !req.actor.runId &&
         req.actor.keyScope?.kind === "service"

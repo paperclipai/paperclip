@@ -2890,11 +2890,49 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects a run-less service-scoped comment carrying resume intent on an open issue", async () => {
+    // Unlike `reopen`, `resume` is not a no-op on an open issue: an explicit
+    // resume defeats the self-comment wake suppression
+    // (shouldWakeAssigneeForIssueComment), so the assignee's own run-less key
+    // could queue an issue_commented wake and start its agent a new turn.
+    // Turn-starting stays attributable to a run, so the gate fires here too.
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "resuming an open issue without a run", resume: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("lets a run-less service-scoped comment through when reopen is a no-op on an open issue", async () => {
-    // On an open issue the route never applies `reopen`/`resume` for agent
-    // actors, so the flag changes no task state and the comment stands on its
-    // own authorization — same outcome the assignee's key would get with a
-    // run. Only closed/blocked issues keep the run-context requirement.
+    // On an open issue the route never applies `reopen` for agent actors, so
+    // the flag changes no task state and the comment stands on its own
+    // authorization — same outcome the assignee's key would get with a run.
+    // (`resume` is different: it forces an assignee wake even on an open
+    // issue, so it keeps the run-context requirement everywhere — covered by
+    // the tests around this one.)
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.addComment.mockResolvedValue({
