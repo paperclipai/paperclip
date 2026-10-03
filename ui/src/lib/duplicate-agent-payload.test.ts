@@ -37,6 +37,17 @@ const baseAgent: AgentDetail = {
   metadata: { source: "test" },
   createdAt: new Date("2026-05-10T00:00:00.000Z"),
   updatedAt: new Date("2026-05-10T00:00:00.000Z"),
+  configurationAccess: "full",
+  adapterConfigKeys: [
+    "bootstrapPromptTemplate",
+    "instructionsBundleMode",
+    "instructionsEntryFile",
+    "instructionsFilePath",
+    "instructionsRootPath",
+    "model",
+    "promptTemplate",
+  ],
+  runtimeConfigKeys: ["heartbeat"],
   chainOfCommand: [],
   access: {
     canAssignTasks: true,

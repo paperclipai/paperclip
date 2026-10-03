@@ -22,6 +22,11 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
 const agentDetailFixture: AgentDetailRecord = {
   ...storybookAgentMap.get(AGENT_ID)!,
+  // The agent read endpoints always send these. See the ADR
+  // doc/plans/2026-10-03-agent-config-redaction-observability.md.
+  configurationAccess: "full",
+  adapterConfigKeys: Object.keys(storybookAgentMap.get(AGENT_ID)!.adapterConfig ?? {}).sort(),
+  runtimeConfigKeys: Object.keys(storybookAgentMap.get(AGENT_ID)!.runtimeConfig ?? {}).sort(),
   chainOfCommand: [
     { id: "agent-cto", name: "CTO", role: "cto", title: "CTO" },
     { id: AGENT_ID, name: "CodexCoder", role: "engineer", title: "Senior Product Engineer" },
