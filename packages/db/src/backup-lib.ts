@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
-import postgres from "postgres";
+import { connectPostgres as postgres } from "./postgres-connection.js";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;

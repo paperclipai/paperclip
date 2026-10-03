@@ -43,7 +43,23 @@ This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
-## 2. Local PostgreSQL (Docker)
+## 2. Local PostgreSQL
+
+### Unix sockets
+
+For a local PostgreSQL service with Unix sockets, set the socket directory in
+the connection URI's `host` query parameter:
+
+```sh
+export DATABASE_URL='postgresql://paperclip@localhost:5432/paperclip?host=/run/postgresql'
+```
+
+The query parameter selects the socket directory instead of the URI hostname.
+Percent-encoded paths, such as `host=%2Frun%2Fpostgresql`, also work. PostgreSQL's
+local authentication rules still apply. Application connections, migrations,
+database backups, and restores use the same socket setting.
+
+### Docker
 
 For a full PostgreSQL server locally, use the included Docker Compose setup:
 
