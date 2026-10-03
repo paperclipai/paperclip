@@ -16561,6 +16561,25 @@ export function heartbeatService(
       cutoff,
     });
     applyRunDispatchPostCommitEffects(result.postCommitEffects);
+    // One summary per sweep so a held-back quota-recovery backlog is visible
+    // without reconstructing it from run rows. `degraded: true` means the
+    // in-flight count was unreadable and no quota-recovery retry was released
+    // on that sweep, which is worth an alert rather than a debug line.
+    const { decisions, agents, degraded, capPerAgent } = result.releasePlan;
+    const summary = {
+      now: result.releasePlan.now.toISOString(),
+      promoted: result.promoted,
+      released: result.releasePlan.released.length,
+      deferred: result.releasePlan.deferred.length,
+      degraded,
+      capPerAgent,
+      agents: agents.length,
+    };
+    if (degraded) {
+      logger.warn({ ...summary, decisions }, "scheduled retry sweep degraded: in-flight state unreadable, no quota-recovery retry released");
+    } else {
+      logger.info(summary, "scheduled retry sweep");
+    }
     return { promoted: result.promoted, runIds: result.runIds };
   }
 
