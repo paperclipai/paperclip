@@ -518,6 +518,153 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(allowedChild.body.parentId).toBe(watchedChildId);
   });
 
+  it("re-stamps same-run watchdog writes before the next source disposition mutation", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Restamp Watchdog" });
+    const sourceAgentId = await seedAgent(companyId, { name: "Source Agent" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Watched child",
+      parentId: watchedRootId,
+      assigneeAgentId: sourceAgentId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const evidenceComment = await request(app)
+      .post(`/api/issues/${watchedChildId}/comments`)
+      .send({ body: "Evidence: the subtree has no live path." });
+    expect(evidenceComment.status, JSON.stringify(evidenceComment.body)).toBe(201);
+
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: sourceAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "test_same_run_comment_live_flip",
+      payload: { issueId: watchedChildId },
+      runId,
+    });
+
+    const disposition = await request(app)
+      .patch(`/api/issues/${watchedChildId}`)
+      .send({ status: "done" });
+    expect(disposition.status, JSON.stringify(disposition.body)).toBe(200);
+
+    const [restamp] = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.task_watchdog_run_restamped"),
+        eq(activityLog.runId, runId),
+      ));
+    expect(restamp?.details).toMatchObject({
+      watchdogId: expect.any(String),
+      priorFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      observedFingerprint: expect.stringMatching(/^task_watchdog_observed:/),
+      observedState: "live",
+    });
+  });
+
+  it("keeps third-party watchdog liveness changes fenced with the stale-review 409", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Fenced Watchdog" });
+    const sourceAgentId = await seedAgent(companyId, { name: "Source Agent" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Watched child",
+      parentId: watchedRootId,
+      assigneeAgentId: sourceAgentId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: watchdogAgentId,
+      status: "running",
+      contextSnapshot: run.contextSnapshot,
+    });
+    const otherRunApp = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId: otherRunId,
+      source: "agent_jwt",
+    });
+    const currentRunApp = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const otherComment = await request(otherRunApp)
+      .post(`/api/issues/${watchedChildId}/comments`)
+      .send({ body: "Third-party liveness evidence." });
+    expect(otherComment.status, JSON.stringify(otherComment.body)).toBe(201);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: sourceAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "test_third_party_live_flip",
+      payload: { issueId: watchedChildId },
+      runId: otherRunId,
+    });
+
+    const denied = await request(currentRunApp)
+      .patch(`/api/issues/${watchedChildId}`)
+      .send({ status: "done" });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(409);
+    expect(denied.body.error).toBe(
+      "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+    );
+    expect(denied.body.details).toMatchObject({
+      watchedIssueId: watchedRootId,
+      watchdogId: expect.any(String),
+      runStopFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      currentState: "live",
+      currentStopFingerprint: null,
+    });
+  });
+
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
     const companyId = await seedCompany();
     const watchdogAgentId = await seedAgent(companyId, { name: "Product Bug Watchdog" });

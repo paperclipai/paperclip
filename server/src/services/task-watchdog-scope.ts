@@ -24,6 +24,7 @@ export type TaskWatchdogMutationScope =
   | {
       kind: "watchdog";
       watchdogId: string;
+      runId: string;
       companyId: string;
       watchedIssueId: string;
       watchdogIssueId: string | null;
@@ -114,6 +115,7 @@ export async function resolveTaskWatchdogMutationScope(
   return {
     kind: "watchdog",
     watchdogId: watchdog.id,
+    runId: run.id,
     companyId: watchdog.companyId,
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
