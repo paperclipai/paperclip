@@ -155,6 +155,22 @@ export function activityService(db: Db) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
+  // Keep both lookup branches indexable. A correlated OR EXISTS forces a
+  // scan of the company's runs, including large context snapshots. UNION keeps
+  // context-linked and activity-linked runs unique in one statement.
+  function issueRunIds(companyId: string, issueId: string) {
+    return sql`${heartbeatRuns.id} in (
+      select ${heartbeatRuns.id} from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${companyId}
+        and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}
+      union
+      select ${activityLog.runId} from ${activityLog}
+      where ${activityLog.companyId} = ${companyId}
+        and ${activityLog.entityType} = 'issue'
+        and ${activityLog.entityId} = ${issueId}
+    )`;
+  }
+
   async function backfillMissingRunLivenessForIssue(companyId: string, issueId: string) {
     const runs = await db
       .select({
@@ -175,17 +191,7 @@ export function activityService(db: Db) {
           eq(heartbeatRuns.companyId, companyId),
           isNull(heartbeatRuns.livenessState),
           sql`${heartbeatRuns.status} not in ('queued', 'running')`,
-          or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
-          ),
+          issueRunIds(companyId, issueId),
         ),
       )
       .limit(20);
@@ -431,17 +437,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            issueRunIds(companyId, issueId),
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));

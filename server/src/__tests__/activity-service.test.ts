@@ -105,6 +105,42 @@ describeEmbeddedPostgres("activity service", () => {
     expect((await service.getById(task.id))?.workMode).toBe(nextMode);
   });
 
+  it("returns unique context and activity linked runs in order without crossing companies", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Target", issuePrefix: `T${companyId.slice(0, 6)}` },
+      { id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 6)}` },
+    ]);
+    await db.insert(agents).values([
+      { id: agentId, companyId, name: "Target", role: "engineer", adapterType: "process" },
+      { id: otherAgentId, companyId: otherCompanyId, name: "Other", role: "engineer", adapterType: "process" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lookup", status: "in_progress", priority: "medium" });
+    const [contextId, activityId, bothId, unrelatedId, foreignId, foreignLinkId] = Array.from({ length: 6 }, () => randomUUID());
+    await db.insert(heartbeatRuns).values([
+      { id: contextId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId }, createdAt: new Date("2026-09-01T01:00:00Z") },
+      { id: activityId, companyId, agentId, status: "succeeded", contextSnapshot: {}, resultJson: { summary: "I will inspect the repository next." }, createdAt: new Date("2026-09-01T02:00:00Z") },
+      { id: bothId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId }, createdAt: new Date("2026-09-01T03:00:00Z") },
+      { id: unrelatedId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId: randomUUID() } },
+      { id: foreignId, companyId: otherCompanyId, agentId: otherAgentId, status: "succeeded", contextSnapshot: { issueId } },
+      { id: foreignLinkId, companyId, agentId, status: "succeeded", contextSnapshot: {} },
+    ]);
+    await db.insert(activityLog).values([
+      ...[activityId, bothId, bothId, foreignId].map(runId => ({ companyId, actorType: "system", actorId: "system", action: "test.link", entityType: "issue", entityId: issueId, runId })),
+      { companyId: otherCompanyId, actorType: "system", actorId: "system", action: "test.link", entityType: "issue", entityId: issueId, runId: foreignLinkId },
+      { companyId, actorType: "system", actorId: "system", action: "test.link", entityType: "project", entityId: issueId, runId: unrelatedId },
+    ]);
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+    expect(runs.map(run => run.runId)).toEqual([bothId, activityId, contextId]);
+    await waitForIssueRun(activityService(db), companyId, issueId, run => run.runId === activityId && run.livenessState === "advanced");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, activityId)))[0].livenessState).toBe("advanced");
+    expect(await activityService(db).runsForIssue(companyId, randomUUID())).toEqual([]);
+  });
+
   it("limits company activity lists", async () => {
     const companyId = randomUUID();
 
