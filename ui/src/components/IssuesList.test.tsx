@@ -137,6 +137,8 @@ vi.mock("./IssueRow", () => ({
     treeGuides,
     showIdentifier,
     trailingMeta,
+    mobileMeta,
+    mobileTitleMeta,
   }: {
     issue: Issue;
     desktopMetaLeading?: ReactNode;
@@ -152,6 +154,8 @@ vi.mock("./IssueRow", () => ({
     treeGuides?: number;
     showIdentifier?: boolean;
     trailingMeta?: ReactNode;
+    mobileMeta?: ReactNode;
+    mobileTitleMeta?: ReactNode;
   }) => (
     <div
       data-testid="issue-row"
@@ -173,6 +177,8 @@ vi.mock("./IssueRow", () => ({
       {desktopMetaLeading}
       {desktopTrailing}
       {trailingMeta}
+      {mobileTitleMeta ? <span data-testid="issue-row-mobile-title-meta">{mobileTitleMeta}</span> : null}
+      {mobileMeta ? <span data-testid="issue-row-mobile-meta">{mobileMeta}</span> : null}
       {checklistDependencyChips}
     </div>
   ),
@@ -1741,6 +1747,188 @@ describe("IssuesList", () => {
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  describe("assignee picker", () => {
+    const agents = [
+      { id: "agent-1", name: "Agent One" },
+      { id: "agent-2", name: "Agent Two" },
+    ];
+
+    function renderList(
+      issue: Issue,
+      onUpdateIssue: (id: string, patch: Record<string, unknown>) => void,
+    ) {
+      return renderWithQueryClient(
+        <IssuesList
+          issues={[issue]}
+          agents={agents}
+          projects={[]}
+          viewStateKey="paperclip:test-issues"
+          rowPresentation="task"
+          onUpdateIssue={onUpdateIssue}
+        />,
+        container,
+      );
+    }
+
+    async function clickElement(element: Element | null | undefined) {
+      await act(async () => {
+        element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    }
+
+    // The desktop trigger carries no test id, so it is addressed the same way before and
+    // after this change: the row's popover trigger that is not the mobile control.
+    const DESKTOP_TRIGGER = "[data-testid='issue-row'] [data-slot='popover-trigger']:not([data-testid])";
+
+    function openPickerOption(label: string) {
+      const content = document.body.querySelector("[data-slot='popover-content']");
+      if (!content) return undefined;
+      return Array.from(content.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === label);
+    }
+
+    it("opens the desktop assignee picker and assigns an agent", async () => {
+      localStorage.setItem(
+        "paperclip:test-issues:company-1:issue-columns",
+        JSON.stringify(["id", "assignee"]),
+      );
+      const onUpdateIssue = vi.fn();
+
+      const { root } = renderList(createIssue({ title: "Unassigned task" }), onUpdateIssue);
+
+      await waitForAssertion(() => {
+        expect(container.querySelector(DESKTOP_TRIGGER)).not.toBeNull();
+      });
+
+      await clickElement(container.querySelector(DESKTOP_TRIGGER));
+
+      await waitForAssertion(() => {
+        expect(openPickerOption("Agent One")).not.toBeUndefined();
+      });
+
+      await clickElement(openPickerOption("Agent One"));
+
+      expect(onUpdateIssue).toHaveBeenCalledWith("issue-1", {
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+      });
+
+      act(() => root.unmount());
+    });
+
+    it("renders the mobile assignee control with the default task columns", async () => {
+      const onUpdateIssue = vi.fn();
+
+      const { root } = renderList(createIssue({ title: "Unassigned task" }), onUpdateIssue);
+
+      await waitForAssertion(() => {
+        expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+      });
+
+      // The default column set leaves no trailing column in task presentation, so the
+      // desktop picker has no mount point at all — the mobile control is the only one.
+      const row = container.querySelector("[data-testid='issue-row']");
+      expect(row?.getAttribute("data-has-desktop-trailing")).toBe("false");
+      expect(container.querySelector(DESKTOP_TRIGGER)).toBeNull();
+
+      const mobileMeta = container.querySelector("[data-testid='issue-row-mobile-meta']");
+      expect(mobileMeta).not.toBeNull();
+      const trigger = mobileMeta?.querySelector<HTMLButtonElement>(
+        "[data-testid='issue-row-mobile-assignee']",
+      );
+      expect(trigger).toBeTruthy();
+      expect(trigger?.getAttribute("type")).toBe("button");
+      expect(trigger?.textContent).toContain("Assignee");
+
+      act(() => root.unmount());
+    });
+
+    it("assigns from the mobile control with the default task columns", async () => {
+      const onUpdateIssue = vi.fn();
+
+      const { root } = renderList(createIssue({ title: "Unassigned task" }), onUpdateIssue);
+
+      await waitForAssertion(() => {
+        expect(container.querySelector("[data-testid='issue-row-mobile-assignee']")).not.toBeNull();
+      });
+
+      await clickElement(container.querySelector("[data-testid='issue-row-mobile-assignee']"));
+
+      await waitForAssertion(() => {
+        expect(openPickerOption("Agent One")).not.toBeUndefined();
+      });
+
+      await clickElement(openPickerOption("Agent One"));
+
+      expect(onUpdateIssue).toHaveBeenCalledWith("issue-1", {
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+      });
+
+      act(() => root.unmount());
+    });
+
+    it("reassigns an already assigned task from the mobile control", async () => {
+      const onUpdateIssue = vi.fn();
+
+      const { root } = renderList(
+        createIssue({ title: "Assigned task", status: "done", assigneeAgentId: "agent-1" }),
+        onUpdateIssue,
+      );
+
+      await waitForAssertion(() => {
+        expect(container.querySelector("[data-testid='issue-row-mobile-assignee']")?.textContent)
+          .toContain("Agent One");
+      });
+
+      await clickElement(container.querySelector("[data-testid='issue-row-mobile-assignee']"));
+
+      await waitForAssertion(() => {
+        expect(openPickerOption("Agent Two")).not.toBeUndefined();
+      });
+
+      await clickElement(openPickerOption("Agent Two"));
+
+      expect(onUpdateIssue).toHaveBeenCalledWith("issue-1", {
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+      });
+
+      act(() => root.unmount());
+    });
+
+    it("keys the picker per surface so only the tapped control opens", async () => {
+      localStorage.setItem(
+        "paperclip:test-issues:company-1:issue-columns",
+        JSON.stringify(["id", "assignee"]),
+      );
+      const onUpdateIssue = vi.fn();
+
+      const { root } = renderList(createIssue({ title: "Unassigned task" }), onUpdateIssue);
+
+      await waitForAssertion(() => {
+        expect(container.querySelector(DESKTOP_TRIGGER)).not.toBeNull();
+        expect(container.querySelector("[data-testid='issue-row-mobile-assignee']")).not.toBeNull();
+      });
+
+      await clickElement(container.querySelector("[data-testid='issue-row-mobile-assignee']"));
+
+      await waitForAssertion(() => {
+        expect(document.body.querySelectorAll("[data-slot='popover-content']").length).toBe(1);
+      });
+      expect(
+        container
+          .querySelector("[data-testid='issue-row-mobile-assignee']")
+          ?.getAttribute("aria-expanded"),
+      ).toBe("true");
+      expect(
+        container.querySelector(DESKTOP_TRIGGER)?.getAttribute("aria-expanded"),
+      ).toBe("false");
+
+      act(() => root.unmount());
     });
   });
 

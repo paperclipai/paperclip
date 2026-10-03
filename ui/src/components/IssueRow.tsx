@@ -308,7 +308,10 @@ export function IssueRow({
             </span>
             {recoveryIndicator}
             {mobileTitleMeta ? (
-              <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
+              <span
+                data-slot="task-row-mobile-title-meta"
+                className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden"
+              >
                 {mobileTitleMeta}
               </span>
             ) : null}
@@ -317,7 +320,7 @@ export function IssueRow({
             <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>
           ) : null}
           {mobileMeta ? (
-            <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
+            <span data-slot="task-row-mobile-meta" className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
           ) : null}
         </span>
 
