@@ -528,12 +528,11 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       const fakeRmPath = path.join(fakeBinDir, "rm");
       await fs.writeFile(fakeRmPath, "#!/bin/sh\nexit 1\n");
       await fs.chmod(fakeRmPath, 0o755);
-      const originalPath = process.env.PATH;
-      process.env.PATH = `${fakeBinDir}${path.delimiter}${originalPath}`;
+      const commandEnv = { ...process.env, PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}` };
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
       try {
-        const { sandbox } = createRealExecSandbox();
+        const { sandbox } = createRealExecSandbox({ commandEnv });
         const operations: PluginSyncOperation[] = [{
           operationId: "sync-op-1",
           files: [{ sourcePath, targetPath, kind: "file" }],
@@ -559,7 +558,6 @@ describe("daytona file-sync inbound zstd transport compression", () => {
         expect(warning).toContain("1 post-promotion scratch file");
         expect(warning).not.toContain(zstdName as string);
       } finally {
-        process.env.PATH = originalPath;
         warnSpy.mockRestore();
       }
     });
@@ -578,6 +576,9 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       const fakeBinDir = await mkTempDir("paperclip-daytona-zstd-fakebin-");
       const counterFile = path.join(fakeBinDir, "rm-call-count");
       const fakeRmPath = path.join(fakeBinDir, "rm");
+      const realRm = spawnSync("/bin/sh", ["-c", "command -v rm"], { encoding: "utf8" });
+      expect(realRm.status, realRm.stderr).toBe(0);
+      expect(path.isAbsolute(realRm.stdout.trim())).toBe(true);
       await fs.writeFile(
         fakeRmPath,
         [
@@ -587,17 +588,20 @@ describe("daytona file-sync inbound zstd transport compression", () => {
           "n=$((n + 1))",
           `printf '%s' "$n" > "${counterFile}"`,
           '[ "$n" -eq 1 ] && exit 1',
-          'exec /bin/rm "$@"',
+          'exec "$PAPERCLIP_TEST_REAL_RM" "$@"',
           "",
         ].join("\n"),
       );
       await fs.chmod(fakeRmPath, 0o755);
-      const originalPath = process.env.PATH;
-      process.env.PATH = `${fakeBinDir}${path.delimiter}${originalPath}`;
+      const commandEnv = {
+        ...process.env,
+        PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        PAPERCLIP_TEST_REAL_RM: realRm.stdout.trim(),
+      };
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
       try {
-        const { sandbox } = createRealExecSandbox();
+        const { sandbox } = createRealExecSandbox({ commandEnv });
         const operations: PluginSyncOperation[] = [{
           operationId: "sync-op-1",
           files: [{ sourcePath, targetPath, kind: "file" }],
@@ -614,7 +618,6 @@ describe("daytona file-sync inbound zstd transport compression", () => {
         expect(remaining.some((name) => name.endsWith(".zst"))).toBe(false);
         expect(warnSpy).not.toHaveBeenCalled();
       } finally {
-        process.env.PATH = originalPath;
         warnSpy.mockRestore();
       }
     });
