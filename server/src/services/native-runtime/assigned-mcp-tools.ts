@@ -127,11 +127,20 @@ export async function createAssignedMcpTools(input: {
         nextSchemaOffset: end < schema.length ? end : null,
       };
     }
-    const matches = authorized.filter(([name, tool]) =>
+    // Keep offsets anchored to the pinned catalog while fresh grants only
+    // decide which entries are returned from that stable sequence.
+    const authorizedNames = new Set(authorized.map(([name]) => name));
+    const matches = [...tools].filter(([, tool]) => permits(tool)).filter(([name, tool]) =>
       terms.every(term => `${name} ${tool.displayName} ${tool.description}`.toLowerCase().includes(term)))
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const page: ToolDefinition[] = [];
-    for (const [name, tool] of matches.slice(offset, offset + limit)) {
+    let nextOffset = offset;
+    while (nextOffset < matches.length && page.length < limit) {
+      const [name, tool] = matches[nextOffset]!;
+      if (!authorizedNames.has(name)) {
+        nextOffset += 1;
+        continue;
+      }
       let next = definition(name, tool);
       if (Buffer.byteLength(JSON.stringify([next]), "utf8") > SEARCH_PAGE_BYTES) {
         // One large schema must not block browsing the tools after it. Expose
@@ -143,8 +152,9 @@ export async function createAssignedMcpTools(input: {
         break;
       }
       page.push(next);
+      nextOffset += 1;
     }
-    return { tools: page, nextOffset: offset + page.length < matches.length ? offset + page.length : null };
+    return { tools: page, nextOffset: nextOffset < matches.length ? nextOffset : null };
   }
 
   return {

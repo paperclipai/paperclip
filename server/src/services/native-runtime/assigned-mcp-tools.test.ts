@@ -63,6 +63,27 @@ describe("assigned MCP runner tools", () => {
     await expect(assigned.execute({ tool: searchName, arguments: { query: "" } })).rejects.toThrow("gateway_token_revoked");
   });
 
+  it("keeps pagination stable when an earlier tool is revoked between pages", async () => {
+    const descriptors = ["alpha", "bravo", "charlie", "delta"].map(name => descriptor(name));
+    const f = fixture(descriptors);
+    const assigned = await createAssignedMcpTools(f);
+    const definitions = assigned.definitions();
+    const first = await assigned.execute({
+      tool: searchName, arguments: { query: "", offset: 0, limit: 2 },
+    }) as { tools: unknown[]; nextOffset: number };
+    expect(first).toEqual({ tools: definitions.slice(0, 2), nextOffset: 2 });
+
+    f.listToolsForNamedGateway.mockResolvedValue(descriptors.slice(1));
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(2), nextOffset: null });
+
+    f.listToolsForNamedGateway.mockResolvedValue([descriptors[1]!, descriptors[3]!]);
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(3), nextOffset: null });
+  });
+
   it.each(["planning", "ask"] as const)("preserves pinned and fresh %s restrictions through the call wrapper", async mode => {
     const f = fixture([descriptor("read"), descriptor("write", "write")]);
     const assigned = await createAssignedMcpTools(f);
