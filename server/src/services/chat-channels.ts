@@ -8667,7 +8667,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           return true;
         }
-        validateNativeQuestionResponseInput(interaction, { answers });
+        await validateNativeQuestionResponseInput(interaction, { answers });
         // Canonical service rechecks required fields, options, audience, and
         // pending -> answered atomically with the response-delivery receipt.
         const issue = await db
@@ -12006,7 +12006,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       run.nativeIssueId === issueId &&
       run.status === "failed" &&
       run.errorCode === "adapter_failed" &&
-      run.error === "runner_state_identity_mismatch" &&
+      // A diagnostic reason does not change this failure category. The exact
+      // checkpoint, cleanup receipt, and no-provider-work proofs below still
+      // decide whether the original request can be retried.
+      (run.error === "runner_state_identity_mismatch" ||
+        run.error?.startsWith("runner_state_identity_mismatch: ")) &&
       run.nativePhase === "observed" &&
       coordinator.phase === "observed" &&
       coordinator.attempt === 0 &&

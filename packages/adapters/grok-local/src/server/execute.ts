@@ -36,8 +36,8 @@ import {
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -542,37 +542,9 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId), includeCommunicationGuidance: false })
-      : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-      conversationMode: context.conversationMode === true,
-      resumedSession: Boolean(sessionId),
-      suppressIssueDescription: taskContextNote.length > 0,
-    });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
-    const basePrompt = joinPromptSections([
-      wakePrompt,
-      taskContextNote,
-      sessionHandoffNote,
-      paperclipEnvNote,
-      apiAccessNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: basePrompt.length,
-      wakePromptChars: wakePrompt.length,
-      taskContextChars: taskContextNote.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
 
     const buildArgs = (resumeSessionId: string | null, prompt: string) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
@@ -595,11 +567,37 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       ctx.signal?.throwIfAborted();
+      const attemptSections = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
+      });
+      const attemptWakePrompt = attemptSections.wakePrompt;
+      const attemptRenderedPrompt = Boolean(resumeSessionId) && attemptWakePrompt.length > 0
+        || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const attemptBasePrompt = joinPromptSections([
+        attemptWakePrompt,
+        attemptSections.taskContextNote,
+        sessionHandoffNote,
+        paperclipEnvNote,
+        apiAccessNote,
+        attemptRenderedPrompt,
+      ]);
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-        basePrompt,
+        attemptBasePrompt,
       ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        wakePromptChars: attemptWakePrompt.length,
+        taskContextChars: attemptSections.taskContextNote.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+        heartbeatPromptChars: attemptRenderedPrompt.length,
+      };
       const args = buildArgs(resumeSessionId, prompt);
       if (onMeta) {
         await onMeta({

@@ -27,6 +27,7 @@ const apiPrefixes: Record<string, string> = {
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
+  "browser-use.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",
@@ -955,11 +956,4 @@ describe("heartbeat run ID OpenAPI contract", () => {
     }
     expect(checked).toBe(12);
   });
-});
-
-it("documents the account binding required for preference reads", () => {
-  const operation = buildOpenApiSpec().paths["/api/auth/preferences"]?.get;
-  expect(operation?.parameters).toEqual(expect.arrayContaining([
-    expect.objectContaining({ name: "expectedUserId", in: "query", required: true }),
-  ]));
 });

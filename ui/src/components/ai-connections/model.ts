@@ -40,6 +40,15 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
   revoked: "Revoked",
 };
 
+export function defaultAiConnectionName(ownerName: string | undefined, provider: AiProvider, method: AiAuthMethod) {
+  const owner = ownerName?.trim();
+  const prefix = owner && owner !== "You" ? `${owner}'s` : "My";
+  const providerName = method === "subscription"
+    ? AI_PROVIDERS[provider].subscriptionName ?? AI_PROVIDERS[provider].name
+    : `${AI_PROVIDERS[provider].name} API`;
+  return `${prefix} ${providerName} account`;
+}
+
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")

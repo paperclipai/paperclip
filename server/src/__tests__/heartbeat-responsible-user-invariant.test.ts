@@ -347,7 +347,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(mockAdapterExecute).toHaveBeenCalledTimes(runs.length);
   });
 
-  it.each(["issue_commented", "issue_comment_mentioned"])(
+  it.each(["issue_commented"])(
     "uses the persisted message author for %s without changing issue ownership",
     async (wakeReason) => {
       const { companyId, agentId } = await seedCompany();

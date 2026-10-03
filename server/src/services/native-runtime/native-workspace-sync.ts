@@ -87,7 +87,7 @@ export interface NativeWorkspaceSyncReference {
 export interface PreparedNativeWorkspaceSync {
   mode: WorkspaceInboundMode;
   reference: NativeWorkspaceSyncReference;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(assertOwnership?: () => Promise<void>): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -772,8 +772,10 @@ async function finalizePreparedRuntime(input: {
   target: Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
   runtime: PreparedAdapterExecutionTargetRuntime;
   descriptor: NativeWorkspaceSyncDescriptor;
+  assertOwnership?: () => Promise<void>;
 }): Promise<NativeWorkspaceSyncReference> {
   await input.runtime.restoreWorkspace();
+  await input.assertOwnership?.();
   const finalSnapshot =
     await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
       ({ captureDirectorySnapshot }) =>
@@ -796,6 +798,7 @@ async function finalizePreparedRuntime(input: {
     finalizedAt: new Date().toISOString(),
     finalHostSha256,
   };
+  await input.assertOwnership?.();
   const reference = await writeDescriptor(finalizedDescriptor);
   await persistRunReference(input.db, input.runId, reference);
   await persistLeaseStamp({
@@ -993,7 +996,7 @@ export async function prepareNativeWorkspaceSync(input: {
     get reference() {
       return reference;
     },
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (assertOwnership) => {
       if (!restorePromise) {
         restorePromise = finalizePreparedRuntime({
           db: input.db,
@@ -1001,6 +1004,7 @@ export async function prepareNativeWorkspaceSync(input: {
           target,
           runtime: preparedRuntime,
           descriptor,
+          assertOwnership,
         })
           .then((finalizedReference) => {
             reference = finalizedReference;
@@ -1025,6 +1029,7 @@ export async function resumeNativeWorkspaceSync(input: {
   db: Db;
   runId: string;
   target: AdapterExecutionTarget;
+  assertOwnership?: () => Promise<void>;
 }): Promise<boolean> {
   if (input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     throw new Error("workspace_sync_out_unrecoverable");
@@ -1049,6 +1054,7 @@ export async function resumeNativeWorkspaceSync(input: {
   ) {
     throw new Error("workspace_sync_out_unrecoverable");
   }
+  await input.assertOwnership?.();
   if (
     existing.descriptor.state === "finalized" &&
     existing.descriptor.finalHostSha256
@@ -1083,6 +1089,7 @@ export async function resumeNativeWorkspaceSync(input: {
     target: input.target,
     runtime,
     descriptor: existing.descriptor,
+    assertOwnership: input.assertOwnership,
   });
   return true;
 }

@@ -21,7 +21,7 @@ describe("runtime connection MCP contract", () => {
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string" },
+            query: { type: "string", maxLength: 4000 },
             retryProviderChoice: {
               type: "boolean",
               description: "Only when the user explicitly asks to reconsider a previous provider choice or decline",
@@ -95,10 +95,11 @@ describe("connection intent continuation wake contract", () => {
             issueId: "issue-123",
             interactionId: "interaction-123",
             interactionStatus: status,
-            forceFreshSession: true,
+            refreshTools: true,
           }),
         }),
       );
+      expect(wakeup.mock.calls[0][1].contextSnapshot.forceFreshSession).toBeUndefined();
     },
   );
 

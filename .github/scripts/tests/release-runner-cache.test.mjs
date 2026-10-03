@@ -15,8 +15,13 @@ test("Runner dependency caching selects the package's pinned compiler before com
   assert.match(setup, /rustup show active-toolchain/);
   assert.match(setup, /echo "RUSTUP_TOOLCHAIN=\$toolchain" >> "\$GITHUB_ENV"/);
   assert.match(runner, /uses: Swatinem\/rust-cache@[0-9a-f]{40} # v[0-9.]+/);
-  assert.match(runner, /workspaces: packages\/paperclip-runner\/runner -> target/);
-  assert.match(runner, /shared-key: release-runner-v1/);
+  // The target path feeds the entry's version hash, so it must not resolve
+  // under the checkout, whose root differs between the fleet and GitHub-hosted
+  // runners. The pin step publishes a $HOME-anchored path to the same directory.
+  const pin = runner.indexOf("      - name: Pin the Runner Rust workspace path");
+  assert.ok(pin >= 0 && cache > pin, "the workspace path must be pinned before the cache step");
+  assert.match(runner, /workspaces: \$\{\{ steps\.runner_rust_workspace\.outputs\.path \}\} -> target/);
+  assert.match(runner, /shared-key: release-runner-v2/);
 });
 
 test("the shared cache excludes workspace artifacts and only restores or saves the exact master-push source", () => {

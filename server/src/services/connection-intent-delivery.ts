@@ -12,7 +12,7 @@ export async function wakeConnectionIntentAfterResolution(
   input: {
     loaded: {
       issue: { id: string; assigneeAgentId: string | null; status: string };
-      interaction: { id: string; resolvedAt?: string | Date | null };
+      interaction: { id: string; resolvedAt?: string | Date | null; payload?: unknown };
     };
     status: string;
     actorId: string;
@@ -22,6 +22,8 @@ export async function wakeConnectionIntentAfterResolution(
   if (!agentId || !["in_progress", "in_review"].includes(input.loaded.issue.status)) return;
   const resolvedAt = input.loaded.interaction.resolvedAt;
   const interactionResolvedAt = resolvedAt instanceof Date ? resolvedAt.toISOString() : resolvedAt;
+  const payload = input.loaded.interaction.payload;
+  const repairsProviderAuthentication = payload !== null && typeof payload === "object" && "purpose" in payload && payload.purpose === "ai";
   await heartbeat.wakeup(agentId, {
     source: "automation",
     triggerDetail: "system",
@@ -48,7 +50,9 @@ export async function wakeConnectionIntentAfterResolution(
       ...(interactionResolvedAt
         ? { interactionResolvedAt }
         : {}),
-      forceFreshSession: true,
+      // Provider authentication repair retains its existing restart fence.
+      // Tool access alone asks the harness to refresh tools on recovery.
+      ...(repairsProviderAuthentication ? { forceFreshSession: true } : { refreshTools: true }),
     },
     issueStateGuard: {
       statuses: ["in_progress", "in_review"],

@@ -11,7 +11,7 @@ index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b07
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d686b781129 100644
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d2e777e9e 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -22,7 +22,17 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		title: canonical.title,
  		messages: canonical.messages,
  		updated_at: canonical.updated_at,
-@@ -1541,6 +1542,7 @@ function parseSessionRecord(raw) {
+@@ -1239,7 +1240,8 @@ function parseRequestTokenUsage(raw) {
+ 	for (const [key, value] of Object.entries(record)) {
+ 		const parsed = parseTokenUsage(value);
+ 		if (parsed == null) return null;
+-		usage[key] = parsed;
++		const receipt = parsePaperclipPiReceipt(asRecord$4(value)?.paperclip_pi);
++		usage[key] = receipt ? { ...parsed, paperclip_pi: receipt } : parsed;
+ 	}
+ 	return usage;
+ }
+@@ -1541,6 +1543,7 @@ function parseSessionRecord(raw) {
  		lastAgentDisconnectReason: optionals.lastAgentDisconnectReason,
  		protocolVersion: typeof record.protocol_version === "number" ? record.protocol_version : void 0,
  		agentCapabilities: asRecord$4(record.agent_capabilities),
@@ -30,7 +40,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		title: conversation.title,
  		messages: conversation.messages,
  		updated_at: conversation.updated_at,
-@@ -1661,7 +1663,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+@@ -1661,7 +1664,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -39,7 +49,20 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -3135,8 +3137,18 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3104,10 +3107,10 @@ function authEnvKey(methodId) {
+ 	authEnvKeyCache.set(methodId, key);
+ 	return key;
+ }
+-function readEnvCredential(methodId) {
++function readEnvCredential(methodId, environment = process.env) {
+ 	const key = authEnvKey(methodId);
+ 	if (!key) return;
+-	const value = process.env[key];
++	const value = environment[key];
+ 	if (typeof value === "string" && value.trim().length > 0) return value;
+ }
+ function protectedEnvKey(key) {
+@@ -3135,8 +3138,21 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -50,17 +73,20 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
 +	const prototype = Object.getPrototypeOf(value);
 +	return (prototype === Object.prototype || prototype === null) && Object.values(value).every((entry) => typeof entry === "string");
 +}
-+function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++function resolveAgentEnvironment(spawnEnvironment) {
 +	let sourceEnvironment = process.env;
 +	if (spawnEnvironment !== void 0) {
 +		sourceEnvironment = spawnEnvironment();
 +		if (!isPlainStringEnvironment(sourceEnvironment)) throw new TypeError("ACPX spawn environment must be a plain record of string values");
 +	}
-+	const env = { ...sourceEnvironment };
++	return sourceEnvironment;
++}
++function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++	const env = { ...resolveAgentEnvironment(spawnEnvironment) };
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -3178,10 +3190,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -3178,10 +3194,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -73,7 +99,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3961,10 +3973,13 @@ function resolveClientCapabilities(params) {
+@@ -3961,10 +3977,13 @@ function resolveClientCapabilities(params) {
  			...params.elicitationModes.includes("url") ? { url: {} } : {}
  		} } : {}
  	};
@@ -89,7 +115,46 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  	};
  }
  function hasResponseField(response, field) {
-@@ -4216,9 +4231,21 @@ var AcpClient = class {
+@@ -4067,6 +4086,27 @@ function createNdJsonMessageStream(agentCommand, output, input) {
+ 		} })
+ 	};
+ }
++function boundedExtensionRecord(value) {
++	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("ACP extension payload must be an object");
++	const prototype = Object.getPrototypeOf(value);
++	if (prototype !== Object.prototype && prototype !== null) throw new TypeError("ACP extension payload must be a plain object");
++	const serialized = JSON.stringify(value);
++	if (Buffer.byteLength(serialized) > 256 * 1024) throw new TypeError("ACP extension payload exceeds its bounded size");
++	return JSON.parse(serialized);
++}
++function closedExtensionMethods(value) {
++	if (value === void 0) return Object.freeze([]);
++	if (!Array.isArray(value) || value.length > 64) throw new TypeError("ACP extension methods must be a bounded allowlist");
++	for (const method of value) {
++		if (typeof method !== "string" || !/^[A-Za-z_][A-Za-z0-9._/-]{1,255}$/.test(method) || !method.includes("/") || /^(?:session|fs|terminal|elicitation|notifications)\//.test(method)) throw new TypeError("ACP extension method cannot override a standard method");
++	}
++	return Object.freeze([...new Set(value)]);
++}
++function mergeRuntimeClientCapabilities(base, extra) {
++	if (extra === void 0) return base;
++	const additional = boundedExtensionRecord(extra);
++	return { ...additional, ...base, _meta: { ...additional._meta, ...base._meta } };
++}
+ var AcpClient = class {
+ 	options;
+ 	connection;
+@@ -4105,7 +4145,9 @@ var AcpClient = class {
+ 			cwd: asAbsoluteCwd(options.cwd),
+ 			authPolicy: options.authPolicy ?? "skip",
+ 			permissionPolicy: snapshotPermissionPolicy(options.permissionPolicy),
+-			elicitationModes: normalizeElicitationModes(options.elicitationModes)
++			elicitationModes: normalizeElicitationModes(options.elicitationModes),
++			extensionMethods: closedExtensionMethods(options.extensionMethods),
++			clientCapabilities: options.clientCapabilities === void 0 ? void 0 : boundedExtensionRecord(options.clientCapabilities)
+ 		};
+ 		this.eventHandlers = {
+ 			onAcpMessage: this.options.onAcpMessage,
+@@ -4216,9 +4258,21 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -111,7 +176,15 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -4253,7 +4280,12 @@ var AcpClient = class {
+@@ -4226,6 +4280,7 @@ var AcpClient = class {
+ 		const output = Readable.toWeb(child.stdout);
+ 		const stream = this.createTappedStream(createNdJsonMessageStream(this.options.agentCommand, input, output));
+ 		const connection = this.createConnection(stream, launch);
++		connection.signal.addEventListener("abort", () => stream.abortResponseDeliveries(), { once: true });
+ 		connection.signal.addEventListener("abort", () => {
+ 			this.recordAgentExit("connection_close", child.exitCode ?? null, child.signalCode ?? null);
+ 		}, { once: true });
+@@ -4253,7 +4308,12 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -125,7 +198,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4279,10 +4311,17 @@ var AcpClient = class {
+@@ -4279,10 +4339,17 @@ var AcpClient = class {
  	}
  	async spawnAgentProcess(plan) {
  		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
@@ -145,7 +218,255 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		try {
  			await waitForSpawn$1(spawnedChild);
  		} catch (error) {
-@@ -5028,6 +5067,12 @@ var AcpClient = class {
+@@ -4293,10 +4360,10 @@ var AcpClient = class {
+ 	createConnection(stream, launch) {
+ 		const app = client({ name: "acpx" }).onNotification(methods.client.session.update, async ({ params }) => {
+ 			await this.handleSessionUpdate(params);
+-		}).onNotification(methods.client.elicitation.complete, async () => {}).onRequest(methods.client.session.requestPermission, async ({ params }) => {
+-			return await this.handlePermissionRequest(params);
++		}).onNotification(methods.client.elicitation.complete, async () => {}).onRequest(methods.client.session.requestPermission, async ({ params, requestId, signal }) => {
++			return await stream.withResponseDelivery(requestId, signal, (responseDelivery) => this.handlePermissionRequest(params, responseDelivery));
+ 		}).onRequest(methods.client.elicitation.create, async ({ params, requestId, signal }) => {
+-			return await this.handleElicitationRequest(params, requestId, signal);
++			return await stream.withResponseDelivery(requestId, signal, (responseDelivery) => this.handleElicitationRequest(params, requestId, signal, responseDelivery));
+ 		}).onRequest(methods.client.fs.readTextFile, async ({ params }) => {
+ 			return await this.handleReadTextFile(params);
+ 		}).onRequest(methods.client.fs.writeTextFile, async ({ params }) => {
+@@ -4312,6 +4379,11 @@ var AcpClient = class {
+ 		}).onRequest(methods.client.terminal.release, async ({ params }) => {
+ 			return await this.handleReleaseTerminal(params);
+ 		});
++		for (const method of this.options.extensionMethods) {
++			if (this.options.onExtensionRequest) app.onRequest(method, boundedExtensionRecord, async ({ params, requestId, signal }) => {
++				return await stream.withResponseDelivery(requestId, signal, (responseDelivery) => this.handleExtensionRequest(method, params, requestId, signal, responseDelivery));
++			});
++		}
+ 		if (launch.devinAcp) app.onRequest("_cognition.ai/request_diagnostics", (params) => {
+ 			return params && typeof params === "object" && !Array.isArray(params) ? params : {};
+ 		}, async () => ({}));
+@@ -4333,12 +4405,12 @@ var AcpClient = class {
+ 	async initializeProtocolConnection(connection, launch) {
+ 		const initializePromise = connection.initialize({
+ 			protocolVersion: PROTOCOL_VERSION,
+-			clientCapabilities: resolveClientCapabilities({
++			clientCapabilities: mergeRuntimeClientCapabilities(resolveClientCapabilities({
+ 				devinAcp: launch.devinAcp,
+ 				fs: this.options.fs !== false,
+ 				terminal: this.options.terminal !== false,
+ 				elicitationModes: this.options.elicitationModes ?? []
+-			}),
++			}), this.options.clientCapabilities),
+ 			clientInfo: resolveClientInfo(launch.devinAcp)
+ 		});
+ 		const initialized = launch.geminiAcp ? await withTimeout(initializePromise, resolveGeminiAcpStartupTimeoutMs()) : await initializePromise;
+@@ -4358,6 +4430,36 @@ var AcpClient = class {
+ 		throw normalizedError;
+ 	}
+ 	createTappedStream(base) {
++		const deliveries = new Map();
++		const scope = new AbortController();
++		const abortResponseDeliveries = () => scope.abort(new Error("ACP response connection closed before delivery"));
++		const withResponseDelivery = async (id, requestSignal, handler) => {
++			if (!(id === null || typeof id === "string" || typeof id === "number" && Number.isFinite(id))) throw new Error("ACP response request id is invalid");
++			if (deliveries.has(id) || deliveries.size >= 128) {
++				abortResponseDeliveries();
++				throw new Error("ACP response request id is duplicated or pending deliveries exceeded their bound");
++			}
++			const active = this.activePrompt;
++			const signal = AbortSignal.any([scope.signal, requestSignal, ...(active ? [active.elicitationController.signal] : [])]);
++			let settle, reject;
++			const responseDelivery = new Promise((resolve, fail) => { settle = resolve; reject = fail; });
++			// The host may decline the request without awaiting its receipt.
++			void responseDelivery.catch(() => {});
++			const abort = () => reject(new Error("ACP response delivery was cancelled or disconnected"));
++			const receipt = { settle, reject, expected: void 0, cleanup: () => signal.removeEventListener("abort", abort) };
++			deliveries.set(id, receipt);
++			signal.addEventListener("abort", abort, { once: true });
++			if (signal.aborted) abort();
++			try {
++				const result = await handler(responseDelivery);
++				if (signal.aborted || this.activePrompt !== active) throw new Error("ACP response outlived its admitted prompt");
++				receipt.expected = JSON.stringify(result);
++				return result;
++			} catch (error) {
++				reject(new Error("ACP request failed before response delivery"));
++				throw error;
++			}
++		};
+ 		const onAcpMessage = () => this.eventHandlers.onAcpMessage;
+ 		const onAcpOutputMessage = () => this.eventHandlers.onAcpOutputMessage;
+ 		const elicitationRequestIds = /* @__PURE__ */ new Set();
+@@ -4367,8 +4469,9 @@ var AcpClient = class {
+ 		const shouldSuppressInboundReplaySessionUpdate = (message) => {
+ 			return this.suppressReplaySessionUpdateMessages && isSessionUpdateNotification(message);
+ 		};
++		const onExtensionNotification = (message) => this.handleExtensionNotification(message);
+ 		const observeInbound = (message) => {
+-			const requestId = elicitationRequestId(message);
++			const requestId = elicitationRequestId(message) ?? ("id" in message && this.options.extensionMethods.includes(message.method) ? message.id : void 0);
+ 			if (requestId !== void 0) {
+ 				elicitationRequestIds.add(requestId);
+ 				return;
+@@ -4379,6 +4482,7 @@ var AcpClient = class {
+ 			}
+ 		};
+ 		return {
++			withResponseDelivery, abortResponseDeliveries,
+ 			readable: new ReadableStream({ async start(controller) {
+ 				const reader = base.readable.getReader();
+ 				try {
+@@ -4387,10 +4491,16 @@ var AcpClient = class {
+ 						if (done) break;
+ 						if (!value) continue;
+ 						observeInbound(value);
+-						if (isExtensionNotification(value)) continue;
++						if (isExtensionNotification(value)) {
++							onExtensionNotification(value);
++							continue;
++						}
+ 						controller.enqueue(value);
+ 					}
+ 				} finally {
++					abortResponseDeliveries();
++					for (const receipt of deliveries.values()) receipt.cleanup();
++					deliveries.clear();
+ 					reader.releaseLock();
+ 					controller.close();
+ 				}
+@@ -4403,10 +4513,20 @@ var AcpClient = class {
+ 					onAcpOutputMessage()?.("outbound", message);
+ 					onAcpMessage()?.("outbound", message);
+ 				}
++				const receipt = id === void 0 ? void 0 : deliveries.get(id);
+ 				const writer = base.writable.getWriter();
+ 				try {
+ 					await writer.write(message);
++					if (receipt) {
++						if (!("result" in message) || receipt.expected === void 0 || JSON.stringify(message.result) !== receipt.expected) receipt.reject(new Error("ACP wrote an error or changed response instead of the selected resolution"));
++						else receipt.settle();
++					}
++				} catch (error) {
++					receipt?.reject(new Error("ACP response write failed"));
++					abortResponseDeliveries();
++					throw error;
+ 				} finally {
++					if (receipt) { receipt.cleanup(); deliveries.delete(id); }
+ 					writer.releaseLock();
+ 				}
+ 			} })
+@@ -4422,7 +4542,10 @@ var AcpClient = class {
+ 			const createPromise = this.runConnectionRequest(() => connection.newSession({
+ 				cwd: sessionCwd,
+ 				mcpServers: this.options.mcpServers ?? [],
+-				_meta: buildClaudeCodeOptionsMeta(this.options.sessionOptions, claudeAcp)
++				_meta: this.isGrokBuildAcpCommand()
++					? { rules: typeof this.options.sessionOptions?.systemPrompt === "string"
++						? this.options.sessionOptions.systemPrompt : this.options.sessionOptions?.systemPrompt?.append ?? "" }
++					: buildClaudeCodeOptionsMeta(this.options.sessionOptions, claudeAcp)
+ 			}));
+ 			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
+ 		} catch (error) {
+@@ -4864,7 +4987,7 @@ var AcpClient = class {
+ 	}
+ 	selectAuthMethod(methods) {
+ 		for (const method of methods) {
+-			const envCredential = readEnvCredential(method.id);
++			const envCredential = readEnvCredential(method.id, resolveAgentEnvironment(this.options.spawnEnvironment));
+ 			if (envCredential) return {
+ 				methodId: method.id,
+ 				credential: envCredential,
+@@ -4890,7 +5013,7 @@ var AcpClient = class {
+ 	}
+ 	readAgentSpecificEnvCredential(methodId) {
+ 		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
+-		const value = process.env.XAI_API_KEY;
++		const value = (resolveAgentEnvironment(this.options.spawnEnvironment)).XAI_API_KEY;
+ 		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
+ 	}
+ 	selectAgentManagedAuthMethod(methodId) {
+@@ -4915,9 +5038,9 @@ var AcpClient = class {
+ 		await connection.authenticate({ methodId: selected.methodId });
+ 		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
+ 	}
+-	async handlePermissionRequest(params) {
++	async handlePermissionRequest(params, responseDelivery) {
+ 		if (this.cancellingSessionIds.has(params.sessionId)) return cancelledPermissionResponse();
+-		const hostResponse = await this.tryHandlePermissionRequestWithHost(params);
++		const hostResponse = await this.tryHandlePermissionRequestWithHost(params, responseDelivery);
+ 		if (hostResponse) return hostResponse;
+ 		const { response, recorded } = await this.resolvePermissionRequestFromMode(params);
+ 		if (!recorded) {
+@@ -4926,14 +5049,49 @@ var AcpClient = class {
+ 		}
+ 		return response;
+ 	}
+-	async handleElicitationRequest(request, requestId, requestSignal) {
++	async handleExtensionRequest(method, params, requestId, requestSignal, responseDelivery) {
++		const active = this.activePrompt;
++		const connection = this.connection;
++		if (!this.options.extensionMethods.includes(method) || !this.options.onExtensionRequest) throw new Error("ACP extension method is not enabled");
++		if (!active || !connection || this.closing || (params.sessionId !== void 0 && params.sessionId !== active.sessionId)) throw new Error("ACP extension request has no matching active prompt");
++		if (!(typeof requestId === "string" || typeof requestId === "number" && Number.isFinite(requestId))) throw new Error("ACP extension request id is invalid");
++		const signal = AbortSignal.any([requestSignal, connection.signal, active.elicitationController.signal]);
++		signal.throwIfAborted();
++		let onAbort;
++		const aborted = new Promise((_, reject) => {
++			onAbort = () => reject(new Error("ACP extension request was cancelled"));
++			signal.addEventListener("abort", onAbort, { once: true });
++		});
++		try {
++			const result = await Promise.race([Promise.resolve().then(() => this.options.onExtensionRequest(method, boundedExtensionRecord(params), { requestId, signal, responseDelivery })), aborted]);
++			signal.throwIfAborted();
++			if (this.activePrompt !== active || this.connection !== connection) throw new Error("ACP extension request outlived its prompt");
++			return boundedExtensionRecord(result);
++		} finally {
++			signal.removeEventListener("abort", onAbort);
++		}
++	}
++	handleExtensionNotification(message) {
++		if (!this.options.extensionMethods.includes(message.method) || !this.options.onExtensionNotification || this.closing) return;
++		const active = this.activePrompt;
++		if (!active || active.elicitationController.signal.aborted) return;
++		try {
++			const params = boundedExtensionRecord(message.params);
++			if (params.sessionId !== void 0 && params.sessionId !== active.sessionId) return;
++			this.options.onExtensionNotification(message.method, params);
++		} catch {
++			this.log("ACP extension notification was rejected");
++		}
++	}
++	async handleElicitationRequest(request, requestId, requestSignal, responseDelivery) {
+ 		const resolved = this.resolveElicitationOwner(request);
+ 		if ("response" in resolved) return resolved.response;
+ 		const { active, handler } = resolved.owner;
+ 		const signal = AbortSignal.any([requestSignal, active.elicitationController.signal]);
+ 		const handlerAttempt = Promise.resolve().then(async () => await handler(request, {
+ 			requestId,
+-			signal
++			signal,
++			responseDelivery
+ 		})).then((response) => ({
+ 			kind: "response",
+ 			response
+@@ -4970,7 +5128,7 @@ var AcpClient = class {
+ 	isElicitationSessionCancelling(sessionId) {
+ 		return this.closing || this.cancellingSessionIds.has(sessionId);
+ 	}
+-	async tryHandlePermissionRequestWithHost(params) {
++	async tryHandlePermissionRequestWithHost(params, responseDelivery) {
+ 		if (!this.options.onPermissionRequest) return;
+ 		const signal = this.cancellationSignalForSession(params.sessionId);
+ 		try {
+@@ -4978,7 +5136,7 @@ var AcpClient = class {
+ 				sessionId: params.sessionId,
+ 				raw: params,
+ 				inferredKind: inferToolKind(params)
+-			}, { signal });
++			}, { signal, responseDelivery });
+ 			return this.hostPermissionDecisionResponse(params, signal, decision);
+ 		} catch (error) {
+ 			return this.hostPermissionErrorResponse(params, signal, error);
+@@ -5028,6 +5186,12 @@ var AcpClient = class {
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -158,7 +479,30 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -6435,6 +6480,27 @@ async function withConnectedSession(options) {
+@@ -5771,10 +5935,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
+ 	trimConversationForRuntime(conversation);
+ 	return acpx;
+ }
++function parsePaperclipPiReceipt(raw, costField = "cost_usd") {
++	const receipt = asRecord$4(raw);
++	if (receipt?.provenance !== "assistant_message_receipts" && receipt?.provenance !== "assistant_message_and_compaction_receipts") return;
++	const cost = receipt[costField];
++	if (cost !== void 0 && !isNonNegativeFiniteNumber(cost)) return;
++	return { provenance: receipt.provenance, ...cost !== void 0 ? { cost_usd: cost } : {} };
++}
+ function recordPromptResponseUsage(conversation, usage, promptMessageId, timestamp = isoNow()) {
+ 	const tokenUsage = sourceToTokenUsage(usage);
+-	if (!tokenUsage) return false;
+-	applyTokenUsage(conversation, tokenUsage, promptMessageId);
++	const receipt = parsePaperclipPiReceipt(asRecord$4(asRecord$4(usage)?._meta)?.paperclipPi, "costUsd");
++	if (!tokenUsage && !receipt) return false;
++	if (tokenUsage) applyTokenUsage(conversation, tokenUsage, promptMessageId);
++	const userId = promptMessageId ?? lastUserMessageId(conversation);
++	if (receipt && userId) conversation.request_token_usage[userId] = { ...conversation.request_token_usage[userId], paperclip_pi: receipt };
+ 	updateConversationTimestamp(conversation, timestamp);
+ 	trimConversationForRuntime(conversation);
+ 	return true;
+@@ -6435,6 +6609,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -186,35 +530,31 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e930a933d259e79a6b03b1148aa58d68
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,6 +6510,19 @@ async function runPromptTurn(params) {
+@@ -6444,7 +6639,22 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
++		// A failed terminal result may still include authoritative billable usage.
+ 		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
 +		if (terminalFailureCategory !== null) {
-+			// Inspect provider text only in memory, before emitting the safe category.
++			// Pass complete provider text to the diagnostic callback. Consumers redact
++			// before bounding it; truncating here can split and expose a credential.
 +			const failure = response._meta.jetbrains.air.sessionFailure;
 +			try {
 +				params.onTerminalSessionFailure?.({
 +					category: terminalFailureCategory,
-+					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
-+					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++					...(typeof failure.title === "string" ? { title: failure.title } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details } : {})
 +				});
 +			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
 +		}
- 		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
-@@ -6518,4 +6597,4 @@ var LiveSessionCheckpoint = class {
- //#endregion
- export { writeSessionRecord as $, PERMISSION_POLICY_ACTIONS as $t, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, TimeoutError as At, getAcpxVersion as B, formatErrorMessage as Bt, mergeSessionOptions as C, PromptInputValidationError as Ct, applyLifecycleSnapshotToRecord as D, promptToDisplayText as Dt, applyConversation as E, parsePromptSource as Et, modelStateFromConfigOptions as F, normalizeAgentName$1 as Ft, findSession as G, toAcpErrorPayload as Gt, DEFAULT_HISTORY_LIMIT as H, normalizeOutputError as Ht, normalizeAgentCommandInput as I, resolveAgentArgv as It, listSessions as J, NON_INTERACTIVE_PERMISSION_POLICIES as Jt, findSessionByDirectoryWalk as K, AUTH_POLICIES as Kt, renderArgvIdentity as L, resolveAgentCommand as Lt, RequestedModelUnsupportedError as M, withTimeout as Mt, assertRequestedModelSupported as N, DEFAULT_AGENT_NAME as Nt, reconcileAgentSessionId as O, textPrompt as Ot, isRequestedModelUnsupportedError as P, listBuiltInAgents as Pt, resolveSessionRecord as Q, PERMISSION_MODES as Qt, runTimedExecFile as R, resolveCanonicalAgentName as Rt, advertisedModelState as S, parsePromptStopReason as St, sessionOptionsFromRecord as T, mergePromptSourceWithText as Tt, absolutePath as U, extractAcpError as Ut, permissionModeSatisfies as V, isRetryablePromptError as Vt, findGitRepositoryRoot as W, isAcpResourceNotFoundError as Wt, normalizeName as X, OUTPUT_ERROR_ORIGINS as Xt, listSessionsForAgent as Y, OUTPUT_ERROR_CODES as Yt, pruneSessions as Z, OUTPUT_FORMATS as Zt, createSessionConversation as _, sessionEventLockPath as _t, applyRequestedModelIfAdvertised as a, measurePerf as at, recordSessionUpdate as b, isAcpJsonRpcMessage as bt, setCurrentModelId as c, setPerfGauge as ct, setDesiredModelId as d, serializeSessionRecordForDisk as dt, SESSION_RECORD_SCHEMA as en, createAtomicWriteTempPath as et, syncAdvertisedModelState as f, normalizeRuntimeSessionId as ft, cloneSessionConversation as g, sessionEventActivePath as gt, cloneSessionAcpxState as h, sessionBaseDir$1 as ht, connectAndLoadSession as i, QueueProtocolError as in, incrementPerfCounter as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, withInterrupt as jt, AcpClient as k, InterruptedError as kt, setDesiredConfigOption as l, startPerfTimer as lt, applyConfigOptionsToState as m, defaultSessionEventLog as mt, runPromptTurn as n, AgentSpawnError as nn, formatPerfMetric as nt, currentModelIdFromSetModelResponse as o, recordPerfDuration as ot, applyConfigOptionsToRecord as p, DEFAULT_EVENT_SEGMENT_MAX_BYTES as pt, isoNow$2 as q, EXIT_CODES as qt, withConnectedSession as r, QueueConnectionError as rn, getPerfMetricsSnapshot as rt, clearDesiredConfigOption as s, resetPerfMetrics as st, LiveSessionCheckpoint as t, AcpxOperationalError as tn, assertPersistedKeyPolicy as tt, setDesiredModeId as u, parseSessionRecord as ut, recordClientOperation as v, sessionEventSegmentPath as vt, persistSessionOptions as w, isPromptInput as wt, trimConversationForRuntime as x, parseJsonRpcErrorMessage as xt, recordPromptSubmission as y, extractSessionUpdateNotification as yt, splitCommandLine as z, exitCodeForOutputErrorCode as zt };
-
--//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
-\ No newline at end of file
-+//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
+ 			source: "rpc"
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..2277321c58c1265ca930c69eb3f8869bc30cfa8a 100644
+index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415d1fba4bf 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -258,10 +598,24 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..2277321c58c1265ca930c69eb3f8869b
  } | {
    type: "tool_call";
    text: string;
-@@ -313,6 +324,35 @@ type AcpRuntimeOptions = {
+@@ -312,7 +323,49 @@ type AcpRuntimeOptions = {
+   elicitationModes?: readonly AcpElicitationMode[];
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
++    /** Resolves after this exact response is written to the current provider pipe. */
++    responseDelivery?: Promise<void>;
    }) => Promise<AcpPermissionDecision | undefined>;
++  /** Ephemeral initialize capabilities; mandatory base capabilities take precedence. */
++  clientCapabilities?: Record<string, unknown>;
++  /** Closed list of inbound extension request and notification method names. */
++  extensionMethods?: readonly string[];
++  /** Bound to the current connection and active prompt; never persisted. */
++  onExtensionRequest?: (method: string, params: Record<string, unknown>, context: {
++    requestId: string | number;
++    signal: AbortSignal;
++    responseDelivery?: Promise<void>;
++  }) => Promise<Record<string, unknown>>;
++  onExtensionNotification?: (method: string, params: Record<string, unknown>) => void;
 +  /** Ephemeral allowlisted environment evaluated immediately before child spawn. */
 +  spawnEnvironment?: () => Record<string, string>;
 +  /** Host-only spawn cwd; does not change the cwd advertised in session/new. */
@@ -294,7 +648,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..2277321c58c1265ca930c69eb3f8869b
  };
  type AcpFileSessionStoreOptions = {
    stateDir: string;
-@@ -369,6 +409,7 @@ declare class AcpRuntimeManager {
+@@ -369,6 +422,7 @@ declare class AcpRuntimeManager {
    private createAndSaveRuntimeRecord;
    private retainInitializedSessionOwner;
    startTurn(input: {
@@ -302,7 +656,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..2277321c58c1265ca930c69eb3f8869b
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -414,6 +455,7 @@ declare class AcpRuntimeManager {
+@@ -414,6 +468,7 @@ declare class AcpRuntimeManager {
    private cleanupRuntimeTurn;
    private finalizeRuntimeTurnRecord;
    runTurn(input: {
@@ -311,7 +665,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..2277321c58c1265ca930c69eb3f8869b
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b3383f379 100644
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd43b1a0f77 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -358,7 +712,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +840,17 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,21 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -371,13 +725,17 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
 +			onAgentSpawn: this.options.onAgentSpawn,
 +			onAgentStderr: this.options.onAgentStderr,
 +			onAgentExit: this.options.onAgentExit,
-+			onAcpMessage: this.options.onAcpMessage
++			onAcpMessage: this.options.onAcpMessage,
++			clientCapabilities: this.options.clientCapabilities,
++			extensionMethods: this.options.extensionMethods,
++			onExtensionRequest: this.options.onExtensionRequest,
++			onExtensionNotification: this.options.onExtensionNotification
 +		};
 +		return this.deps.clientFactory?.(patchedOptions) ?? new AcpClient(patchedOptions);
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +859,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +863,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -394,7 +752,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +905,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +909,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -404,7 +762,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1053,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1057,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -413,7 +771,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1133,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1137,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -425,7 +783,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1201,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1205,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -434,7 +792,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1301,6 +1355,7 @@ var AcpRuntimeManager = class {
+@@ -1301,6 +1359,7 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -442,7 +800,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId,
-@@ -1469,6 +1524,10 @@ var AcpRuntimeManager = class {
+@@ -1469,6 +1528,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -453,7 +811,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1634,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1638,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -462,7 +820,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1768,17 @@ var AcpRuntimeManager = class {
+@@ -1707,6 +1772,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -480,7 +838,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2055,6 +2127,7 @@ var AcpxRuntime = class {
+@@ -2055,6 +2131,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -488,7 +846,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2087,6 +2160,7 @@ var AcpxRuntime = class {
+@@ -2087,6 +2164,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -496,7 +854,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2119,6 +2193,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2197,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -511,15 +869,8 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..57117c9f6f2e9c737b138bc86977a43b
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -2178,4 +2260,4 @@ function createRuntimeStore(options) {
- //#endregion
- export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
-
--//# sourceMappingURL=runtime.js.map
-\ No newline at end of file
-+//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..ab6c1bf8aaf879800552d22f357e88b57b36faa2 100644
+index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd2731855ce2e51 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -528,10 +879,30 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ab6c1bf8aaf879800552d22f357e88b5
  //#region src/prompt-content.d.ts
  type PromptInput = ContentBlock[];
  //#endregion
-@@ -116,6 +117,24 @@ type AcpClientOptions = {
+@@ -27,6 +28,8 @@ type AcpElicitationContext = {
+   requestId: JsonRpcId;
+   /** Aborts with the request itself or its owning prompt turn/session. */
+   signal: AbortSignal;
++  /** Await only after returning the selected response from this callback. */
++  responseDelivery?: Promise<void>;
+ };
+ type AcpElicitationResponseMeta = {
+   _meta?: Record<string, unknown> | null;
+@@ -116,6 +119,35 @@ type AcpClientOptions = {
      };
      env?: Record<string, string>;
    };
++  /** Ephemeral initialize capabilities; mandatory base capabilities take precedence. */
++  clientCapabilities?: Record<string, unknown>;
++  /** Closed list of inbound extension request and notification method names. */
++  extensionMethods?: readonly string[];
++  /** Bound to the current connection and active prompt; never persisted. */
++  onExtensionRequest?: (method: string, params: Record<string, unknown>, context: {
++    requestId: string | number;
++    signal: AbortSignal;
++    responseDelivery?: Promise<void>;
++  }) => Promise<Record<string, unknown>>;
++  onExtensionNotification?: (method: string, params: Record<string, unknown>) => void;
 +  /** Ephemeral child environment factory; its return value is never persisted. */
 +  spawnEnvironment?: () => Record<string, string>;
 +  /** Host-only child cwd, separate from the cwd advertised to ACP. */
@@ -553,7 +924,16 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ab6c1bf8aaf879800552d22f357e88b5
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
-@@ -263,6 +282,7 @@ type SessionRecord = {
+@@ -123,6 +155,8 @@ type AcpClientOptions = {
+   onPermissionEscalation?: (event: PermissionEscalationEvent) => void;
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
++    /** Resolves after this exact response is written to the current provider pipe. */
++    responseDelivery?: Promise<void>;
+   }) => Promise<AcpPermissionDecision | undefined>;
+ };
+ declare const SESSION_RECORD_SCHEMA: "acpx.session.v1";
+@@ -263,12 +297,15 @@ type SessionRecord = {
    lastAgentDisconnectReason?: string;
    protocolVersion?: number;
    agentCapabilities?: AgentCapabilities;
@@ -561,10 +941,12 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ab6c1bf8aaf879800552d22f357e88b5
    title?: string | null;
    messages: SessionMessage[];
    updated_at: string;
-@@ -295,4 +315,4 @@ type SessionAgentOptions = {
+   cumulative_token_usage: SessionTokenUsage;
+   cumulative_cost?: SessionUsageCost;
+-  request_token_usage: Record<string, SessionTokenUsage>;
++  request_token_usage: Record<string, SessionTokenUsage & {
++    paperclip_pi?: { provenance: "assistant_message_receipts" | "assistant_message_and_compaction_receipts"; cost_usd?: number };
++  }>;
+   acpx?: SessionAcpxState;
+   importedFrom?: SessionImportedFrom;
  };
- //#endregion
- export { SessionRecord as _, AcpElicitationHandler as a, AcpElicitationResponse as c, AuthPolicy as d, McpServer$1 as f, PermissionStats as g, PermissionPolicy as h, AcpElicitationContext as i, AcpPermissionDecision as l, PermissionMode as m, SystemPromptOption as n, AcpElicitationMode as o, NonInteractivePermissionPolicy as p, AcpClientOptions as r, AcpElicitationRequest as s, SessionAgentOptions as t, AcpPermissionRequest as u, PromptInput as v };
--//# sourceMappingURL=session-options-DwRDODlr.d.ts.map
-\ No newline at end of file
-+//# sourceMappingURL=session-options-DwRDODlr.d.ts.map

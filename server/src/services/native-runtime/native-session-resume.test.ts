@@ -410,6 +410,41 @@ function previousRun(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("capability-gated connection tool refresh", () => {
+  it("retains the exact provider session for an MCP-only change when the harness supports it", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.mcp.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const rebound = rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true });
+    expect(rebound).toMatchObject({ sessionId: "provider-thread-123", providerSessionId: "provider-thread-123", identity: { runId: currentRunId }, providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, refreshTools: true, toolRefreshOnResume: false })).toBeNull();
+  });
+
+  it("preserves instruction and identity fences even during a supported refresh", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.instructions.bundle.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.binding.agentId = randomUUID();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+  });
+
+  it("rebuilds the bootstrap when refresh requires a fresh session", () => {
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = execution(currentRunId);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: previousRun(), normalizedSessionId, refreshTools: true, toolRefreshOnResume: false, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
 it("wires exact-session recovery and guarded selected identity into heartbeat persistence", () => {
   const source = readFileSync(
     new URL("../heartbeat.ts", import.meta.url),
@@ -1755,6 +1790,35 @@ describe("rebindNativeSessionCheckpoint", () => {
     },
   );
 
+  it.each([
+    ["paperclip.native-execution-input.v4", "paperclip.native-execution-input.v5"],
+    ["paperclip.native-execution-input.v5", "paperclip.native-execution-input.v4"],
+  ] as const)("retains a recoverable %s session when the constructor defaults to %s", (priorSchema, currentSchema) => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    profile.nativeExecutionInput = { ...execution(previousRunId), schema: priorSchema };
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.goal = { status: "paused", objective: "Preserve the existing durable work" };
+    const before = structuredClone(prior);
+    const result = buildNativeExecutionWithCheckpoint({
+      previousRun: prior,
+      normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => parseNativeExecutionInput({
+        ...execution(currentRunId), schema: currentSchema,
+        session: { ...execution(currentRunId).session, normalizedSessionId: sessionId },
+        continuationPrompt: resumedSession ? "New direction only; do not replay completed actions" : null,
+      }),
+    });
+    expect(result.execution.schema).toBe(priorSchema);
+    expect(result.normalizedSessionId).toBe(normalizedSessionId);
+    expect(result.checkpoint).toMatchObject({
+      providerSessionId: "provider-thread-123",
+      providerRecoveryPolicy: "same_session_only",
+      goal: { status: "paused", objective: "Preserve the existing durable work" },
+    });
+    expect(prior).toEqual(before);
+  });
+
   it("keeps a valid checkpoint and does not rebuild the resumed task", () => {
     const calls: boolean[] = [];
     const result = buildNativeExecutionWithCheckpoint({
@@ -2514,15 +2578,15 @@ describe("buildNativeExecutionInput wake projection", () => {
     });
 
     expect(codex).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
     expect(opencode).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "opencode", permissionMode: "ask" },
     });
     expect(acpx).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "acpx", permissionMode: "deny-all" },
     });
     expect(claudeManaged).toMatchObject({

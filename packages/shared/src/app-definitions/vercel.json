@@ -25,7 +25,10 @@
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
-        "serverUrl": "https://mcp.vercel.com/mcp"
+        "serverUrl": "https://mcp.vercel.com/mcp",
+        "scopesHint": [
+          "openid"
+        ]
       },
       "guidanceMd": "Connect the Vercel team and projects agents should operate.",
       "riskTier": "S3",

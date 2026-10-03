@@ -74,6 +74,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Explore product usage, errors, flags, and experiments.",
     short: "Sign in with PostHog. Project pinning and access controls are optional.",
   },
+  neon: {
+    tagline: "Manage Postgres projects, branches, and queries.",
+    short: "Sign in with Neon. Project pinning and read-only mode are optional.",
+  },
   linear: {
     tagline: "Create, update and read tickets.",
     short: "Create, update and read tickets.",

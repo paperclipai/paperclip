@@ -6,7 +6,7 @@ import type {
   NativeExecutionInput,
   PersistedNativeSession,
 } from "../../vendor/paperclip-runner/index.js";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
 
@@ -386,6 +386,8 @@ export function buildNativeExecutionWithCheckpoint(input: {
     Parameters<typeof rebindNativeSessionCheckpoint>[0]["previousRun"] | null;
   normalizedSessionId: string;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  toolRefreshOnResume?: boolean;
+  refreshTools?: boolean;
   buildExecution: (options: {
     normalizedSessionId: string;
     resumedSession: boolean;
@@ -399,11 +401,31 @@ export function buildNativeExecutionWithCheckpoint(input: {
     normalizedSessionId: input.normalizedSessionId,
     resumedSession: input.previousRun !== null,
   });
+  // A presentation-only upgrade must not rotate a healthy provider session or
+  // lose a durable goal. Keep its v4/v5 format until that session naturally ends.
+  // All ordinary identity, workspace, provider, tool and recovery checks still apply.
+  if (input.previousRun && (execution.schema === "paperclip.native-execution-input.v4" || execution.schema === "paperclip.native-execution-input.v5")) {
+    const previousSchema = record(record(input.previousRun.runnerProfileJson).nativeExecutionInput).schema;
+    if ((previousSchema === "paperclip.native-execution-input.v4" || previousSchema === "paperclip.native-execution-input.v5") && previousSchema !== execution.schema) {
+      const { completionSources: _sources, ...common } = execution as typeof execution & { completionSources?: unknown };
+      const retainedFormat = parseNativeExecutionInput({ ...common, schema: previousSchema });
+      const retainedCheckpoint = rebindNativeSessionCheckpoint({
+        previousRun: input.previousRun,
+        currentExecution: retainedFormat,
+        executionTargetKind: input.executionTargetKind,
+        toolRefreshOnResume: input.toolRefreshOnResume,
+        refreshTools: input.refreshTools,
+      });
+      if (retainedCheckpoint) return { execution: retainedFormat, checkpoint: retainedCheckpoint, normalizedSessionId: input.normalizedSessionId };
+    }
+  }
   const checkpoint = input.previousRun
     ? rebindNativeSessionCheckpoint({
         previousRun: input.previousRun,
         currentExecution: execution,
         executionTargetKind: input.executionTargetKind,
+        toolRefreshOnResume: input.toolRefreshOnResume,
+        refreshTools: input.refreshTools,
       })
     : null;
   if (checkpoint)
@@ -440,7 +462,10 @@ export function rebindNativeSessionCheckpoint(input: {
   };
   currentExecution: NativeExecutionInput;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  toolRefreshOnResume?: boolean;
+  refreshTools?: boolean;
 }): PersistedNativeSession | null {
+  if (input.refreshTools && input.toolRefreshOnResume !== true) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
     previousProfile.nativeToolContractFingerprint !==
@@ -495,8 +520,12 @@ export function rebindNativeSessionCheckpoint(input: {
     previousExecution.schema !== current.schema ||
     ("runtimeContext" in previousExecution &&
       "runtimeContext" in current &&
-      previousExecution.runtimeContext.aggregateDigest !==
-        current.runtimeContext.aggregateDigest)
+      previousExecution.runtimeContext.aggregateDigest !== current.runtimeContext.aggregateDigest &&
+      !(input.toolRefreshOnResume === true &&
+        canonicalNativeRuntimeContextDigest({
+          ...previousExecution.runtimeContext,
+          mcp: current.runtimeContext.mcp,
+        }) === current.runtimeContext.aggregateDigest))
   )
     return null;
 
@@ -509,7 +538,7 @@ export function rebindNativeSessionCheckpoint(input: {
     record(rawGoal).status !== "complete";
   const providerRecoveryPolicy = hasUnfinishedGoal
     ? ("same_session_only" as const)
-    : priorSemanticResult.reportedWorkDisposition === "yielded" &&
+    : !input.refreshTools && priorSemanticResult.reportedWorkDisposition === "yielded" &&
         priorContinuation.kind === "response_wake"
       ? ("allow_replacement_after_governed_wait" as const)
       : ("allow_replacement_after_resume_failure" as const);

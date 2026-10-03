@@ -844,6 +844,17 @@ describe("IssueBlockedNotice", () => {
       ).querySelector('[data-testid="issue-blocked-notice-recovery-indicator"]');
     }
 
+    it("uses native export activity on a blocker without a scheduled retry", () => {
+      const action = buildDispositionRepairAction({
+        kind: "resume_native_run", runId: "native-run", notBefore: "2020-01-01T00:00:00Z",
+      }, {
+        kind: "active_run_watchdog", cause: "native_finalization_invalid",
+        nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+      });
+      expect(renderBlockerChip(action)?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(deriveRecoveryCardState(action)).toBe("in_progress");
+    });
+
     it("reports the same liveness state as the source task's recovery card", () => {
       const liveAction = buildDispositionRepairAction({
         type: "bounded_owner_disposition_repair",

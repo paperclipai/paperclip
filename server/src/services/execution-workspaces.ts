@@ -415,6 +415,9 @@ async function runExpensiveGitStatus(input: {
     operation: input.operation,
     fairnessKeys: input.fairnessKeys,
     cacheTtlMs: 0,
+    // Nested task worktrees can exceed the scheduler's 1 MiB default.
+    // Keep exact file counts for readiness and reconciliation checks.
+    maxStdoutBytes: 32 * 1024 * 1024,
   });
 }
 

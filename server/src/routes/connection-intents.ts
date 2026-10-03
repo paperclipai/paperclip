@@ -59,7 +59,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.get("/mcp/runtime-tools", async (req, res) => {
     await service.validate(runtimeClaims(req));
-    res.json({ name: "paperclip-runtime-tools", protocolVersion: "2025-03-26" });
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/mcp/runtime-tools", async (req, res) => {

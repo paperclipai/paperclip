@@ -50,7 +50,7 @@ for (const mobile of [false, true]) {
     await expect(artifacts).toBeVisible();
     await expect(artifacts).toHaveAttribute("aria-selected", "false");
     await artifacts.click();
-    await expect(panel.getByText("Arriving report", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Arriving report", level: 2, exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("artifact-opened-by-user.png"), fullPage: true });
   });
 }

@@ -134,6 +134,34 @@ describe("deriveRecoveryCardState", () => {
 });
 
 describe("IssueRecoveryActionCard", () => {
+  it.each(["running", "scheduled", "missed"] as const)("describes native %s finalization without claiming another agent turn", (state) => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid",
+      nextAction: "Finish the existing run.",
+      wakePolicy: { kind: "resume_native_run", runId: "native-run", notBefore: state === "scheduled" ? "2099-01-01T00:00:00Z" : "2020-01-01T00:00:00Z" },
+      nativeRunActivity: state === "running" ? { runId: "native-run", status: "running", workspaceOperationId: "export-operation" } : null,
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe(state === "missed" ? "needed" : "in_progress");
+    expect(node.textContent).toContain("existing run");
+    expect(node.textContent).not.toContain("retrying the original owner");
+    expect(node.textContent).not.toContain("retrying itself");
+    expect(node.textContent).not.toContain("repairs the next step only");
+    expect(node.textContent).not.toContain("stopped to wait");
+    expect(node.querySelector('[data-testid="recovery-retry-progress"]')?.getAttribute("data-recovery-lane")).toBe("native_run");
+  });
+
+  it("describes actual export progress after the board retries an exhausted repair", () => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid", ownerType: "board", status: "escalated", attemptCount: 3,
+      wakePolicy: { kind: "resume_native_run", runId: "native-run" },
+      nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(node.textContent).toContain("Paperclip is recovering the existing run");
+    expect(node.querySelector('[data-testid="recovery-recovery-owner"]')?.textContent).toContain("Paperclip");
+    expect(node.textContent).not.toContain("Automatic retries are finished");
+  });
+
   it("renders state and kind attributes with owner names and the recorded next action", () => {
     const node = render(
       <IssueRecoveryActionCard
@@ -1116,4 +1144,20 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.querySelector("[data-testid='recovery-source-owner']")).toBeNull();
     expect(node.textContent).toContain("→ Returns to:");
   });
+});
+
+it.each(["active", "escalated", "resolved"] as const)("does not show a historical unsafe-export repair card: %s", status => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ status, kind: "active_run_watchdog",
+    cause: "native_workspace_sync_out_unsafe_archive", ownerType: "board", nextAction: "Repair the unsafe link manually" })} onResolve={() => {}} />);
+  expect(node.textContent).toBe("");
+});
+
+it("requires export retry for ordinary restoration while keeping explicit board overrides", () => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog", ownerType: "board",
+    cause: "native_workspace_sync_out_retry_exhausted" })} onResolve={() => {}} canFalsePositive />);
+  click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+  expect(document.body.textContent).not.toContain("Try again");
+  expect(document.body.textContent).not.toContain("Mark task done");
+  expect(document.body.textContent).not.toContain("Send for review");
+  expect(document.body.textContent).toContain("False positive, done");
 });

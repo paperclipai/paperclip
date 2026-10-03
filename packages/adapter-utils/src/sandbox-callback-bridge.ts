@@ -26,6 +26,7 @@ import type { RunProcessResult } from "./server-utils.js";
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
+const MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // A `BridgeBodyReservation` owner (`http2-bridge-server.ts`) now bounds the
@@ -350,6 +351,22 @@ function buildRunnerFailureMessage(action: string, result: RunProcessResult): st
   return `${action} failed with exit code ${result.exitCode ?? "null"}${detail ? `: ${detail}` : ""}`;
 }
 
+export function runSandboxBridgeControlCommand(
+  runner: CommandManagedRuntimeRunner,
+  input: Parameters<CommandManagedRuntimeRunner["execute"]>[0],
+): Promise<RunProcessResult> {
+  // These short file/control operations must not inherit an hours-long agent
+  // lifetime. Enforce the deadline on the host too: a provider may never settle
+  // its promise even when it receives timeoutMs. This does not prove the remote
+  // operation stopped; callers must not replay an uncertain write on timeout.
+  const controlTimeoutMs = Math.min(
+    normalizeTimeoutMs(input.timeoutMs, MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS),
+    MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS,
+  );
+  return withTimeout(runner.execute({ ...input, timeoutMs: controlTimeoutMs }),
+    controlTimeoutMs, "Sandbox bridge control command");
+}
+
 async function runShell(
   runner: CommandManagedRuntimeRunner,
   cwd: string,
@@ -358,7 +375,7 @@ async function runShell(
   shellCommand: "bash" | "sh" = "sh",
   stdin?: string,
 ): Promise<RunProcessResult> {
-  return await runner.execute({
+  return await runSandboxBridgeControlCommand(runner, {
     command: shellCommand,
     args: shellCommandArgs(script),
     cwd,
@@ -701,23 +718,40 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       // then moves the complete decoded content onto the final `.json` path.
       // A direct `> remotePath` redirect truncates the final path before the
       // decode writes it, so a reader can see an empty or partial file.
-      const tempPath = `${remotePath}.paperclip-upload.b64`;
-      const decodedPath = `${remotePath}.paperclip-upload.decoded`;
-      await runChecked(
-        `prepare upload ${remotePath}`,
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} ${shellQuote(decodedPath)} && : > ${shellQuote(tempPath)}`,
-      );
-      const base64Body = toBuffer(Buffer.from(body, "utf8")).toString("base64");
-      for (const chunk of base64Chunks(base64Body)) {
+      // A failed provider response does not prove the remote command stopped.
+      // Keep concurrent or retried uploads from truncating each other's bytes.
+      const uploadPath = `${remotePath}.${randomUUID()}.paperclip-upload`;
+      const tempPath = `${uploadPath}.b64`;
+      const decodedPath = `${uploadPath}.decoded`;
+      try {
         await runChecked(
-          `append upload chunk ${remotePath}`,
-          `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(tempPath)}`,
+          `prepare upload ${remotePath}`,
+          `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} ${shellQuote(decodedPath)} && : > ${shellQuote(tempPath)}`,
         );
+        const base64Body = toBuffer(Buffer.from(body, "utf8")).toString("base64");
+        for (const chunk of base64Chunks(base64Body)) {
+          await runChecked(
+            `append upload chunk ${remotePath}`,
+            `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(tempPath)}`,
+          );
+        }
+        await runChecked(
+          `finalize upload ${remotePath}`,
+          `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(decodedPath)} && mv ${shellQuote(decodedPath)} ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
+        );
+      } catch (error) {
+        // Abandon only this attempt's intermediates, never the published file
+        // or another attempt. A late finalize may fail or finish publishing;
+        // either is safe for a sequence-aware caller. Preserve the original
+        // failure even when the provider is still unavailable for cleanup.
+        // Cleanup must not put another provider timeout on the retry/shutdown
+        // path. Its unique paths stay safe to remove after this call returns.
+        void runChecked(
+          `clean failed upload ${remotePath}`,
+          `rm -f ${shellQuote(tempPath)} ${shellQuote(decodedPath)}`,
+        ).catch(() => undefined);
+        throw error;
       }
-      await runChecked(
-        `finalize upload ${remotePath}`,
-        `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(decodedPath)} && mv ${shellQuote(decodedPath)} ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
-      );
     },
     writeResponseFile: async (responsePath, body, options = {}) => {
       const responseDir = path.posix.dirname(responsePath);
@@ -1816,7 +1850,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxBodyBytes: input.maxBodyBytes,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
-  const startResult = await input.runner.execute({
+  const startResult = await runSandboxBridgeControlCommand(input.runner, {
     command: shellCommand,
     args: shellCommandArgs(
       [
@@ -1892,7 +1926,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
     directories,
     stop: async () => {
-      const stopResult = await input.runner.execute({
+      const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(
           [

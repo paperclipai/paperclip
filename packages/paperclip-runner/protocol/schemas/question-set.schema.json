@@ -7,7 +7,7 @@
   "properties": {
     "schema": { "const": "paperclip.question_set.v1" },
     "title": { "type": "string", "maxLength": 1000 },
-    "description": { "type": "string", "maxLength": 4000 },
+    "description": { "type": "string", "maxLength": 100000 },
     "submitLabel": { "type": "string", "maxLength": 200 },
     "questions": {
       "type": "array",

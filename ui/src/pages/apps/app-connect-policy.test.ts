@@ -15,8 +15,11 @@ describe("app connect policy", () => {
     expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(expect.arrayContaining(["jira", "notion", "sentry"]));
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);
     expect(isMcpDirectOAuthConnectSlug("jira")).toBe(true);
+    // Asana and GitHub need an available Paperclip-managed profile for
+    // one-click sign-in. The static catalog defaults to their custom-app path.
     expect(isMcpDirectOAuthConnectSlug("asana")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug("github")).toBe(false);
+    // Slack requires a customer-registered OAuth client.
     expect(isMcpDirectOAuthConnectSlug("slack")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug(null)).toBe(false);
   });
@@ -84,6 +87,7 @@ describe("app connect policy", () => {
 
   it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
     for (const source of ["discord", "telegram", "microsoft-teams"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
       expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);

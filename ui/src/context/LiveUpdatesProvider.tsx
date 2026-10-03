@@ -1289,6 +1289,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
+    const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
+    if (knownChat || action === "issue.conversation_opened" && ownActorActivity) {
+      queryClient.invalidateQueries({ queryKey: chatListKey });
+    }
     if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });

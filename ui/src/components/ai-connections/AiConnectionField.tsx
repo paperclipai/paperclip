@@ -1,17 +1,19 @@
 import { useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   aiConnectionBindingSchema,
   isAiConnectionCompatible,
   type AiConnectionBinding,
   type AiAuthMethod,
   type AiProvider,
+  type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionPicker } from "./AiConnectionPicker";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +64,9 @@ export function AiConnectionField({
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiConnectionBinding>();
   const [connecting, setConnecting] = useState(false);
+  const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
+  const [allAgents, setAllAgents] = useState(true);
+  const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
   const changeBinding = (next: AiConnectionBinding) => {
     if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
@@ -72,6 +77,28 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
+  const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const selectDefault = useMutation({
+    mutationFn: async (result: NonNullable<typeof savedAccount>) => {
+      // Reconnect retains the existing default and its access. A new account
+      // must be selected explicitly before a responsible-user binding uses it.
+      if (!reconnecting) await aiConnectionsApi.setDefault(companyId, result.grantId);
+      return result;
+    },
+    onSuccess: async (result) => {
+      await client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+      changeBinding({ provider: provider!, method: result.method, mode: "responsible_user" });
+      setConnecting(false);
+    },
+  });
+  const openConnection = (reconnect?: AiManagedConnectionSummary) => {
+    returnFocus.current = document.activeElement as HTMLElement;
+    setReconnecting(reconnect);
+    setAllAgents(accounts.data?.canManageConnections ?? false);
+    setSavedAccount(undefined);
+    selectDefault.reset();
+    setConnecting(true);
+  };
   const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" ? "api_key" : "subscription");
@@ -104,7 +131,8 @@ export function AiConnectionField({
         onChange={(binding) =>
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
-        onConnect={() => { returnFocus.current = document.activeElement as HTMLElement; setConnecting(true); }}
+        onConnect={() => openConnection()}
+        onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
         onRetry={() => void accounts.refetch()}
       />
       <Dialog
@@ -151,29 +179,41 @@ export function AiConnectionField({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={connecting} onOpenChange={setConnecting}>
+      <Dialog open={connecting} onOpenChange={(open) => { if (!selectDefault.isPending) setConnecting(open); }}>
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
-            <DialogTitle>Connect account</DialogTitle>
+            <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
+            <DialogDescription>
+              {reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
+            </DialogDescription>
           </DialogHeader>
+          {!reconnecting && !savedAccount && <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={allAgents} onCheckedChange={(checked) => setAllAgents(checked === true)} />
+            Allow all agents in this company to use this account for my tasks
+          </label>}
+          {savedAccount ? <div className="space-y-4">
+            {selectDefault.error ? <>
+              <p role="alert" className="text-sm text-destructive">{selectDefault.error.message}</p>
+              <Button onClick={() => selectDefault.mutate(savedAccount)}>Retry default selection</Button>
+            </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
+          </div> :
           <AiConnectionCredentialStep
             companyId={companyId}
             provider={provider}
-            initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            initialMethod={reconnecting?.method ?? method}
+            fixedMethod={Boolean(reconnecting)}
+            connectionId={reconnecting?.id}
+            name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
-            allAgents={false}
+            allAgents={allAgents}
             environmentId={environmentId}
             onCancel={() => setConnecting(false)}
-            onComplete={() => {
-              void client.invalidateQueries({
-                queryKey: ["ai-connections", companyId],
-              });
-              setConnecting(false);
-              changeBinding({ provider, method, mode: "responsible_user" });
+            onComplete={(result) => {
+              setSavedAccount(result);
+              selectDefault.mutate(result);
             }}
-          />
+          />}
         </DialogContent>
       </Dialog>
     </div>

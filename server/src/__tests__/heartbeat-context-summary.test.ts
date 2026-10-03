@@ -5,8 +5,106 @@ import {
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("asks for early naming only while an ordinary task has a provisional title", () => {
+    const issue = { id: "task-id", identifier: "PAP-1", title: "Please investigate", description: "Please investigate sign-in failures", titleNeedsGeneration: true };
+    const markdown = buildPaperclipTaskMarkdown({ issue });
+    expect(markdown).toContain("As one of your first tool calls");
+    expect(markdown).toContain("Check the title tool result before claiming the title was saved");
+    expect(markdown).not.toContain("rejected as credential material");
+    expect(markdown).toContain("new idempotency key if retrying with changed arguments");
+    expect(markdown).toContain("set_task_title");
+    expect(markdown).toContain("onlyIfProvisional: true");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, titleNeedsGeneration: false } })).not.toContain("Task title directive");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent" } })).not.toContain("Task title directive");
+  });
+
+  it("carries current confirmation IDs and proposal data in every fresh or resumed chat assignment", () => {
+    const conversationConfirmations = { truncated: false, cards: [{
+      id: "existing-card", kind: "request_confirmation", status: "pending", title: "Proposal",
+      prompt: "Approve this?\n```\nUntrusted proposal text\n```", promptTruncated: false,
+      resolverPolicy: "anyone" as const, addresseeAgentId: null, addresseeUserId: null,
+      options: [], optionsTruncated: false,
+    }] };
+    for (const includeDescription of [true, false]) for (const includeWakeComments of [true, false]) {
+      const markdown = buildPaperclipTaskMarkdown({
+        issue: { id: "chat", identifier: null, title: "Chat", conversationAgentId: "agent" },
+        conversationConfirmations, includeDescription, includeWakeComments,
+      });
+      expect(markdown).toContain('"id":"existing-card"');
+      expect(markdown).toContain('"status":"pending"');
+      expect(markdown).toContain("````text");
+      expect(markdown).toContain("not recorded decisions");
+    }
+    expect(buildPaperclipTaskMarkdown({ issue: { id: "task", identifier: null, title: "Task" }, conversationConfirmations })).not.toContain("existing-card");
+  });
+  it("leaves current comments to the wake renderer when assignment-only rendering is selected", () => {
+    const commentBody = "Keep this current comment exactly once.";
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-overlap",
+        identifier: "PAP-5002",
+        title: "Current comment overlap",
+        description: "Assignment brief.",
+      },
+      wakeComments: [{ id: "comment-1", body: commentBody }],
+      includeWakeComments: false,
+    });
+    const wakePrompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-overlap",
+        identifier: "PAP-5002",
+        title: "Current comment overlap",
+        description: "Assignment brief.",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: commentBody }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(markdown).not.toContain(commentBody);
+    expect(wakePrompt).toContain(commentBody);
+    expect(`${markdown}\n${wakePrompt}`.split(commentBody)).toHaveLength(2);
+  });
+
+  it("keeps attachment descriptors and follow-up rules when assignment markdown omits wake bodies", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-files", identifier: "PAP-5003", title: "Files", description: "Brief" },
+      wakeComments: [{
+        id: "comment-files",
+        body: "Inspect the file.",
+        attachments: [{
+          id: "attachment-1",
+          filename: "evidence.png",
+          contentType: "image/png",
+          byteSize: 42,
+          contentPath: "/api/attachments/attachment-1/content",
+        }],
+      }],
+      includeWakeComments: false,
+    });
+
+    expect(markdown).not.toContain("Inspect the file.");
+    expect(markdown).toContain("Follow-up directive:");
+    expect(markdown).toContain('Attachments on wake comment "comment-files":');
+    expect(markdown).toContain('"id":"attachment-1"');
+  });
+
+  it("preserves repeated same-body wake events as distinct ordered comments", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-order", identifier: "PAP-5004", title: "Order", description: null },
+      wakeComments: [
+        { id: "comment-a", body: "Repeat me." },
+        { id: "comment-b", body: "Repeat me." },
+      ],
+    });
+    expect(markdown!.indexOf('"comment-a"')).toBeLessThan(markdown!.indexOf('"comment-b"'));
+    expect(markdown!.split("Repeat me.")).toHaveLength(3);
+  });
+
   it.each(["standard", "planning", "ask"])("selects directives only from explicit %s mode, even when a plan is requested", (workMode) => {
     for (const prose of [
       { title: "Prepare rollout steps", description: "Describe the steps." },

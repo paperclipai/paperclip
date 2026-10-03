@@ -114,6 +114,40 @@ describe("native status authority", () => {
       });
     }
   });
+  it("repairs unfinished response waits once using the server continuation budget", () => {
+    const unfinished = assessment({
+      reportedDisposition: "yielded", hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Answered status; await next message", idempotencyKey: "model-key" },
+    });
+    for (const boardResponseWaitAuthorized of [true, false]) {
+      expect(arbitrate({ assessment: unfinished, boardResponseWaitAuthorized })).toMatchObject({
+        reasonCode: "completion_evidence_incomplete",
+        toStatus: "in_progress",
+        effects: [{ kind: "enqueue_continuation", continuationKind: "same_agent", idempotencyKey: "native-completion-incomplete" }],
+      });
+      expect(arbitrate({ assessment: unfinished, boardResponseWaitAuthorized, allowIncompleteContinuation: false })).toMatchObject({
+        reasonCode: "prior_status_preserved_no_live_path",
+        effects: [{ kind: "record_finalization_error", cause: "completion_evidence_incomplete" }],
+      });
+    }
+    expect(arbitrate({ assessment: unfinished, boardResponseWaitOrigin: true, boardResponseWaitAuthorized: true }))
+      .toMatchObject({ reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: unfinished, boardResponseWaitOrigin: true, boardResponseWaitAuthorized: false }))
+      .toMatchObject({ reasonCode: "board_response_wait_superseded", effects: [] });
+    expect(arbitrate({ assessment: unfinished, hasActivePauseHold: true }))
+      .toMatchObject({ reasonCode: "response_wait_pause_preserved", effects: [] });
+    expect(arbitrate({ assessment: unfinished, hasUnresolvedIssueBlockers: true }))
+      .toMatchObject({ toStatus: "blocked", reasonCode: "durable_dependency_blocker_bound", effects: [] });
+    expect(arbitrate({ assessment: unfinished, governanceGate: { kind: "interaction", id: "question" } }))
+      .toMatchObject({ reasonCode: "governed_response_waiting", effects: [{ kind: "create_interaction" }] });
+    expect(arbitrate({ assessment: unfinished, externalChatResponseWaitAuthorization: "authorized" }))
+      .toMatchObject({ reasonCode: "external_chat_response_waiting", effects: [] });
+    expect(arbitrate({ assessment: unfinished, externalChatResponseWaitAuthorization: "revoked" }))
+      .toMatchObject({ reasonCode: "external_chat_response_wait_authorization_lost", effects: [] });
+    expect(arbitrate({ assessment: unfinished, isConversation: true, boardResponseWaitAuthorized: true }))
+      .toMatchObject({ reasonCode: "board_response_waiting", effects: [] });
+  });
+
   it("marks done only from successful finalization and complete durable evidence", () => {
     expect(arbitrate()).toEqual(
       expect.objectContaining({
@@ -477,7 +511,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v6",
+        policyVersion: "phase6-v7",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

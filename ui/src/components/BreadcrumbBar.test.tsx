@@ -131,6 +131,8 @@ describe("BreadcrumbBar", () => {
     await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
     const label = container.querySelector('[data-slot="breadcrumb-page"]');
     expect(label?.textContent).toBe("CCCodexCoder");
+    expect(label?.classList.contains("items-center")).toBe(true);
+    expect(label?.classList.contains("items-baseline")).toBe(false);
     expect(container.querySelector("h1")).toBeNull();
     const settings = container.querySelector<HTMLButtonElement>('button[aria-label="Configure CodexCoder"]');
     expect(settings?.closest('[data-slot="breadcrumb-item"]')).toBe(label?.closest('[data-slot="breadcrumb-item"]'));

@@ -46,6 +46,14 @@ Agent `adapterConfig.env` values must be `{type:"secret_ref", secretId,
 version:"latest"}` objects supplied to the factory. A fixture source containing
 a raw secret-looking value is rejected by catalog validation.
 
+The manual Grok subscription profile uses `GROK_AUTH_JSON` as an explicit login
+fixture. It does not put this credential in agent configuration or substitute an
+API key. Setup seeds a new company-scoped Grok home inside the disposable instance
+with mode 0700 and an exclusive mode-0600 auth file. Setup rejects redirected,
+occupied, or nonisolated homes. Production runner discovery and refresh operate on
+that company login; teardown destroys it after the remote environment is removed.
+This fixture tests subscription execution, not the interactive browser login flow.
+
 ## Environments
 
 An `EnvironmentFixture` declares driver/provider, credential requirements,
@@ -100,7 +108,13 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines. Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
+ten-minute turn deadlines. The ordinary warm fixture uses managed instructions,
+updates AGENT_HOME each turn, and verifies memory, an unchanged 8 MiB binary and
+a deletion through public file APIs. Native turns 2 and 3 must copy/hash only the
+changed memory file, with a saved receipt and the same provider PID. Journal and
+Git stress fixtures retain fixed external bundles as controls. Keep the stable-PID
+oracle strict; `instruction-persistence` also covers cold restarts and quota handling.
+Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
@@ -120,6 +134,26 @@ visible previews. Add matcher behavior and credential-free tests together.
 Adding a task expands its suite's matrix. Update the suite's intentional size,
 the complete-catalog size, and credential-free unit tests in the same change.
 Paid tests never silently skip a missing credential or unsupported artifact.
+
+## Prompt-only task title fixtures
+
+`task-titles.ts` defines a bounded ordinary writing request and an independent
+title oracle. Its `single_turn` cases leave the title field empty or supply an
+explicit control title. The harness captures the exact browser creation response
+instead of searching by a title that the agent may already have changed. It
+never patches the title itself. Normal production instructions own the early
+naming behavior; fixture prompts and agent instruction bundles contain no naming
+hints. Existing company/secret/environment/agent registry dependencies are reused,
+with 500-cent company and agent budgets and normal instance teardown.
+
+Keep the call input, successful result, execution receipt, saved task, and
+agent/run-attributed audit correlated. Missing evidence must fail. The first-five
+tool-call bound counts calls in the initial provider run, including discovery.
+The title must describe API-key rotation without requiring one exact wording.
+The control must retain its title throughout, not merely restore it at the end.
+The source digest versions the grader and request in catalog metadata. See
+[Automatic task titles](README.md#automatic-task-titles) for live selectors,
+coverage limits, evidence, and calibration.
 
 ## New Paperclip object fixtures
 
@@ -225,3 +259,69 @@ first provider turn intentionally omits task disposition, and their second turn
 must be an automatic, causally bound repair that records completion. They use
 public task comments/status APIs and run-detail evidence; no private runtime
 hooks or database mutations are used by the fixture.
+
+The explicit-only `extended-harnesses` suite uses five bounded journeys for each
+pending ACP candidate on local and Daytona. Candidate profile metadata includes
+the exact authenticated discovery choice without promoting it to a product
+default. Its file case anchors the task to a public project workspace, validates
+the model's claimed result by reading the actual final bytes, and also exercises
+remote copy-back. Keep candidate admission scoped to the selected model and the
+isolated operator environment; ordinary agent configuration must not enable it.
+
+## Persistent agent files
+
+The `instruction_persistence` flow uses production managed storage and public file
+APIs. The browser creates a supporting file, then a real agent edits its registered
+AGENT_HOME with ordinary filesystem tools. Independent oracles verify instructions,
+nested text, binary download bytes, and a stopped-run save receipt without new
+revision history. The harness restarts the server and creates a fresh browser task
+without disclosing the saved nonces. Its readback oracle downloads and verifies an
+attachment's bytes and SHA-256, rather than accepting a filename or model claim.
+A third task uploads a ready attachment and waits in an ordinary bounded shell
+command while the board changes the current file through the public API. Stopped
+cleanup must preserve the original candidate as a conflict. The browser reviews
+current and incoming files and applies the run edits against the reviewed current
+directory hash. All three tasks' runs count toward billing and teardown. The suite
+is explicit-only. No private control-plane hooks or direct database writes are used.
+
+## Direct blocker fixtures
+
+`blocker-cases.ts`, `blocker-fixtures.ts`, `blocker-flow.ts`, and
+`blocker-scoring.ts` define the explicit local legacy `blocker-guidance` suite.
+Its fixture registry creates a manager through the public API and assigns the
+production operational skill to worker and manager. Company-wide evidence and
+cleanup include unexpected manager runs. The grader checks saved human input,
+requester identity for scope questions, ownership history, no additional work or
+hires, and the browser-answer continuation. See [Direct blocker guidance](README.md#direct-blocker-guidance)
+for coverage boundaries and run commands.
+
+
+## Source-derived hiring template fixture
+
+The explicit `hiring-templates` suite reuses the public company/agent, personal
+managed account and browser chat fixtures. `hiringTemplateProfile` removes the
+custom instruction bundle from the ordinary profile; the real agent creation
+route selects the evaluated revision's CEO bundle. Keep its two local native
+profiles, five expected runs and 15-minute deadline stable for paired runs.
+`isManagedHiringCase` requests the account fixture and `chatNeedsApiTools`
+enables only the existing API-tool path. It adds no private fixture endpoint,
+provider fake or database write.
+
+`hiring-template-flow.ts` reads the production instructions and company skill
+files through public APIs before dispatch and verifies their hashes against the
+checkout. The public run-events API supplies paginated read evidence after
+execution. `hiring-template-scoring.ts` grades deterministic child documents,
+actual worker identity/account, reuse and source coverage independently of the
+agents' claims. `hiring-template.test.ts` calibrates production Codex/ACPX event
+shapes, wrong/missing/late reads, incorrect/default bundles, source mismatch,
+wrong hire/output, missing durable state, and an admissible historical four-file
+CEO with a long coder role.
+
+Preserve both dimensions in a comparison: `outcomePassed` describes the work;
+`comparisonStatus` describes whether the expected sources and reads were proven.
+Unprovable provider event shapes are coverage gaps. They must not become a
+passing template comparison or a claimed behavior regression. The existing
+report matcher paths carry the dimension and private final evidence carries the
+explicit status. Provider runs are separately authorized; unit results establish
+oracle calibration only. See the [suite contract](README.md#production-hiring-templates)
+for evidence, budgets, cleanup and exact IDs.

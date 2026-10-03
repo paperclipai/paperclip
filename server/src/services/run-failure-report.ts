@@ -1,9 +1,16 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
-import { redactCurrentUserText } from "../log-redaction.js";
-import { redactSensitiveText } from "../redaction.js";
+import {
+  collectRunFailureDiagnostics,
+  collectRunFailureSecretValues,
+  redactRunFailureSecretValues,
+  sanitizeRunFailureDiagnostics,
+  sanitizeRunFailureText,
+  type RunFailureReportOptions,
+} from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
+import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -23,17 +30,8 @@ const pendingRunFailureReports = new Set<Promise<void>>();
 /** Bounds the shutdown wait, so one stuck report cannot hang the process exit. */
 const PENDING_REPORT_DRAIN_TIMEOUT_MS = 5_000;
 
-/**
- * Remove a credential and the current user's home path from adapter-supplied
- * text, then cut the result to `maxLength`. Run the length cut after the
- * redaction, so a credential cannot survive at a cut boundary.
- */
-function sanitizeAdapterText(input: string, maxLength: number): string {
-  return redactSensitiveText(redactCurrentUserText(input)).slice(0, maxLength);
-}
-
 function isRunFailureStatus(status: string): status is RunFailureStatus {
-  return status === "failed" || status === "timed_out";
+  return status === "failed" || status === "timed_out" || status === "cancelled";
 }
 
 function readTaskId(run: HeartbeatRun): string | null {
@@ -44,7 +42,7 @@ function readTaskId(run: HeartbeatRun): string | null {
 
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than `failed` and `timed_out`. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -53,10 +51,11 @@ function readTaskId(run: HeartbeatRun): string | null {
  * its own in-flight promise, so a caller that does not await it still lets
  * shutdown find and wait for the report — see `waitForPendingRunFailureReports`.
  */
-export function reportRunFailure(db: Db, run: HeartbeatRun): Promise<void> {
+export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
+  if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   const runStatus = run.status;
-  const report = captureTerminalRunFailure(db, run, runStatus);
+  const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);
   void report.finally(() => pendingRunFailureReports.delete(report));
   return report;
@@ -66,12 +65,21 @@ async function captureTerminalRunFailure(
   db: Db,
   run: HeartbeatRun,
   runStatus: RunFailureStatus,
+  options: RunFailureReportOptions,
 ): Promise<void> {
   try {
+    const snapshot = redactRunFailureSecretValues({
+      errorMessage: run.error ?? "",
+      errorCode: run.errorCode ?? null,
+      diagnostics: collectRunFailureDiagnostics(run, options),
+    }, [...new Set([
+      ...collectRunFailureSecretValues(process.env, [], true),
+      ...(options.secretValues ?? []),
+    ])].sort((a, b) => b.length - a.length));
     const agent = await db
       .select({ adapterType: agents.adapterType })
       .from(agents)
-      .where(eq(agents.id, run.agentId))
+      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
 
     const taskId = readTaskId(run);
@@ -80,16 +88,26 @@ async function captureTerminalRunFailure(
       return;
     }
 
+    // Resolve registered values before truncation. A failed resolution must
+    // not send an incompletely redacted report.
+    let redacted = snapshot;
+    if (Array.isArray(run.contextSnapshot?.paperclipSecretRedactions)) {
+      const { createRunSecretRedactionRegistry } = await import("./run-secret-redaction.js");
+      redacted = await createRunSecretRedactionRegistry(db).redactForRun(run.companyId, run.id, snapshot);
+    }
     captureRunFailure({
       taskId,
       runId: run.id,
-      errorMessage: sanitizeAdapterText(run.error ?? "", MAX_ERROR_MESSAGE_LENGTH),
+      errorMessage: sanitizeRunFailureText(redacted.errorMessage, MAX_ERROR_MESSAGE_LENGTH),
       errorCode:
-        run.errorCode === null
+        redacted.errorCode === null
           ? null
-          : sanitizeAdapterText(run.errorCode, MAX_ERROR_CODE_LENGTH),
+          : sanitizeRunFailureText(redacted.errorCode, MAX_ERROR_CODE_LENGTH),
       agentAdapter: agent?.adapterType ?? UNKNOWN_ADAPTER,
       runStatus,
+      exitCode: run.exitCode,
+      signal: run.signal,
+      diagnostics: sanitizeRunFailureDiagnostics(redacted.diagnostics),
     });
   } catch (err) {
     logger.warn({ err, runId: run.id }, "failed to report run failure to Sentry");

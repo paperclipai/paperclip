@@ -387,6 +387,13 @@ export interface PluginDefinition {
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
 
+  /** Stop this exact allocation and retain all files, regardless of release
+   * policy. Throw if stop cannot be confirmed; never destroy as a fallback.
+   * Separate worker discovery lets the host safely defer older providers. */
+  onEnvironmentStopLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<PluginEnvironmentTerminationReceipt>;
+
   /** Called when the host needs to force-destroy provider state. */
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,

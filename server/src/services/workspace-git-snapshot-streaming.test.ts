@@ -51,8 +51,10 @@ function localClient(commands: string[]): SandboxManagedRuntimeClient {
   };
 }
 
+// macOS adds per-file process and filesystem overhead to the real deletion lane.
+const realGitTimeoutMs = process.platform === "darwin" ? 300_000 : 180_000;
 it("streams and stages all four real Git filename lanes above 32 MiB through the shared scheduler", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-streaming-real-git-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-stream-git-")));
   directories.push(root);
   const repo = path.join(root, "repo");
   await fs.mkdir(repo);
@@ -60,7 +62,9 @@ it("streams and stages all four real Git filename lanes above 32 MiB through the
   const git = (args: string[]) => runLocalGit(repo, args, { env, timeout: 120_000, maxBuffer: 64 * 1024 });
   await git(["init"]);
   await git(["commit", "--allow-empty", "-qm", "fixture"]);
-  const parent = path.join(repo, ...Array.from({ length: 4 }, () => "nested-".repeat(30)), "storybook-output");
+  // Leave room for the fixture/staging root below macOS's 1,024-byte path
+  // limit while keeping each 40,000-name Git lane above the 32 MiB boundary.
+  const parent = path.join(repo, ...Array.from({ length: 3 }, () => "nested-".repeat(30)), "storybook-output");
   await fs.mkdir(parent, { recursive: true });
   const fileName = (index: number) => `${"asset-".repeat(36)}${index}.js`;
   const writeFiles = async (content: string) => {
@@ -92,7 +96,8 @@ it("streams and stages all four real Git filename lanes above 32 MiB through the
       bytes += Buffer.byteLength(relative) + 1;
     }
     expect(count).toBe(40_000);
-    expect(bytes).toBe(43_428_890);
+    expect(bytes).toBe(34_988_890);
+    expect(bytes).toBeGreaterThan(32 * 1024 * 1024);
   };
   // Standalone callers must use the same streaming semantics.
   setExpensiveWorkspaceGitExecutor(null);
@@ -147,4 +152,4 @@ it("streams and stages all four real Git filename lanes above 32 MiB through the
   expect(remaining).toBe(0);
   expect(commands.every((command) => command.length < 16 * 1024)).toBe(true);
   expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0, cacheBytes: 0 });
-}, 180_000);
+}, realGitTimeoutMs);

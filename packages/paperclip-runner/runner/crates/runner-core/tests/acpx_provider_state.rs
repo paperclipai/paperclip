@@ -465,7 +465,7 @@ fn accepts_global_process_and_diagnostic_events_without_an_active_turn() {
 }
 
 #[test]
-fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
+fn terminal_events_retain_dispatched_tools_and_reject_late_turn_events() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
     state
@@ -484,8 +484,10 @@ fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
             json!({"status":"cancelled","error":{"message":"token=secret"}}),
         ))
         .unwrap();
+    assert!(state.pending_tool("call-1").is_some());
+    assert!(state.begin_turn("turn-2").is_err());
+    state.complete_tool("call-1", "issues.read").unwrap();
     assert!(state.pending_tool("call-1").is_none());
-    assert!(state.complete_tool("call-1", "issues.read").is_err());
     assert!(state
         .accept_event(&event(
             3,
@@ -509,10 +511,8 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         "description": "The document must contain the token CHAT8322bda781b81.",
         "initialPlan": plan,
         "idempotencyKey": "CHAT8322bda781b81-task",
-        "apiToken": "actual-credential",
     });
-    let mut expected = input.clone();
-    expected["apiToken"] = json!("[REDACTED]");
+    let expected = input.clone();
     let emitted = state
         .accept_event(&event(
             1,
@@ -540,71 +540,119 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
     );
 
-    for (operation, field, prose, preserved) in [
+    for (operation, field, prose) in [
         (
             "write_document",
             "body",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "create_project",
             "description",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "get_task_context",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "mcp__untrusted__create_task",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "create_task",
             "description",
             "Authorization: Bearer actual-credential",
-            false,
         ),
         (
             "create_task",
             "initialPlan",
             "access token actual-credential",
-            false,
         ),
     ] {
-        state
-            .complete_tool(
-                "call-1",
-                state
-                    .pending_tool("call-1")
-                    .unwrap()
-                    .operation_id
-                    .clone()
-                    .as_str(),
-            )
-            .unwrap();
-        let emitted = state
-            .accept_event(&event(
-                2,
-                GeneratedAcpxSidecarEventType::RuntimeToolCalled,
-                Some("turn-1"),
-                json!({"callId": "call-1", "operationId": operation, "input": {field: prose}}),
-            ))
-            .unwrap();
-        let AcpxProviderStateEvent::ToolCall { input, .. } = &emitted[0] else {
+        let mut candidate = AcpxProviderState::new("run-1").unwrap();
+        candidate.begin_turn("turn-1").unwrap();
+        let emitted = candidate.accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            Some("turn-1"),
+            json!({"callId":"call-1", "operationId":operation, "input":{field:prose}}),
+        ));
+        let events = emitted.unwrap();
+        let AcpxProviderStateEvent::ToolCall { input, .. } = &events[0] else {
             panic!("expected tool call");
         };
+        assert_eq!(input[field], json!(prose));
+    }
+}
+
+#[test]
+fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_never_replay() {
+    for status in ["failed", "cancelled", "interrupted", "completed"] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        let long_id = format!("input-{}", "x".repeat(200));
+        let input = state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"),
+            json!({"requestId":long_id,"questionSet":question_set(),"origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}}))).unwrap();
+        state.accept_event(&event(2, GeneratedAcpxSidecarEventType::RuntimePermissionRequested, Some("turn-1"),
+            json!({"requestId":"permission-1","title":"Run validation","choices":[{"key":"cancel","label":"Cancel"}]}))).unwrap();
+        let context = AcpxEventProjectionContext {
+            run_id: "run-1".into(),
+            normalized_session_id: "session-1".into(),
+            turn_id: "turn-1".into(),
+            provider_turn_id: Some("turn-1".into()),
+            item_id: "item-1".into(),
+        };
+        let created = project_acpx_state_event(&context, &input[0]).unwrap();
+        let projected_id = created[0].payload["request"]["requestId"].clone();
+        let terminal = state
+            .accept_event(&event(
+                3,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":status}),
+            ))
+            .unwrap();
+        let projected: Vec<_> = terminal
+            .iter()
+            .flat_map(|event| project_acpx_state_event(&context, event).unwrap())
+            .collect();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].payload["requestId"], "permission-1");
+        assert_eq!(projected[1].payload["requestId"], projected_id);
+        assert_eq!(projected[1].payload["request"]["input"], question_set());
         assert_eq!(
-            input[field] == json!(prose),
-            preserved,
-            "{operation}: {prose}"
+            projected[1].payload["request"]["origin"]["method"],
+            "cursor/create_plan"
         );
-        assert!(!input.to_string().contains("actual-credential"));
+        for ended in &projected[..2] {
+            assert_eq!(ended.payload["replayAllowed"], false);
+            assert_eq!(
+                ended.event_type,
+                if matches!(status, "cancelled" | "interrupted") {
+                    "runtime_request.cancelled"
+                } else {
+                    "runtime_request.expired"
+                }
+            );
+        }
+        assert!(projected[2].event_type.starts_with("turn."));
+        assert!(state
+            .pending_question_set(projected_id.as_str().unwrap())
+            .is_none());
+        assert!(state.complete_permission("permission-1").is_err());
+        assert!(state
+            .complete_input(projected_id.as_str().unwrap())
+            .is_err());
+        assert!(state
+            .accept_event(&event(
+                4,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":status})
+            ))
+            .is_err());
     }
 }

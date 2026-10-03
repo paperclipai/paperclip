@@ -7,7 +7,7 @@ use paperclip_runner_core::acpx_provider_session::{
 use paperclip_runner_core::acpx_provider_state::AcpxProviderStateEvent;
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 use paperclip_runner_core::provider_bridge::{
-    authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
+    authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet, ToolResult,
 };
 use serde_json::json;
 
@@ -36,8 +36,18 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
-        agent: "codex".to_owned(),
-        model: "gpt-5.6-sol".to_owned(),
+        agent: if mode.starts_with("controls") {
+            "pi"
+        } else {
+            "codex"
+        }
+        .to_owned(),
+        model: if mode.starts_with("controls") {
+            "openrouter/deepseek/deepseek-v4-flash-0731"
+        } else {
+            "gpt-5.6-sol"
+        }
+        .to_owned(),
         run_id: "run-1".to_owned(),
         catalog_revision: 1,
         runtime_directory: std::env::temp_dir(),
@@ -45,6 +55,15 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: if mode.starts_with("controls") {
+            Some(
+                paperclip_runner_core::acpx_provider_session::AcpxProviderRuntimePolicy {
+                    read_only: false,
+                },
+            )
+        } else {
+            None
+        },
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
@@ -200,45 +219,51 @@ fn admits_only_catalog_authorized_tool_calls() {
     session.shutdown("test complete").unwrap();
 }
 
+fn late_result(call_id: &str) -> ToolResult {
+    ToolResult {
+        call_id: call_id.to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!({"id":"issue-1"}),
+        is_error: false,
+    }
+}
+
 #[test]
-fn returns_pending_tool_cancellations_before_the_terminal_event() {
+fn retains_pending_tools_until_authoritative_late_results_and_deduplicates_retries() {
     let mut session = AcpxProviderSession::start(&config("turns-tool-terminal")).unwrap();
-    session
-        .start_turn("turn-1", "Please help", &std::env::temp_dir())
-        .unwrap();
-    let tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(tool[0], AcpxProviderStateEvent::ToolCall { .. }));
-
-    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(
-        &terminal[0],
-        AcpxProviderStateEvent::ToolResult(result)
-            if result.call_id == "call-1"
-                && result.operation_id == "issues.read"
-                && result.is_error
-                && result.result["error"]["code"] == "acpx_turn_settled"
-    ));
-    assert!(matches!(
-        terminal.last().unwrap(),
-        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1"
-    ));
-
-    assert!(session.state().pending_tool("call-1").is_none());
-    session
-        .start_turn("turn-2", "Please continue", &std::env::temp_dir())
-        .expect("terminal settlement must leave the session reusable");
-    let next_tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(
-        &next_tool[0],
-        AcpxProviderStateEvent::ToolCall { call_id, operation_id, .. }
-            if call_id == "call-2" && operation_id == "issues.read"
-    ));
-    let next_terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(
-        next_terminal.last().unwrap(),
-        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-2"
-    ));
-    assert!(session.state().pending_tool("call-2").is_none());
+    for (turn_id, call_id) in [("turn-1", "call-1"), ("turn-2", "call-2")] {
+        session
+            .start_turn(turn_id, "Please help", &std::env::temp_dir())
+            .unwrap();
+        let tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(&tool[0], AcpxProviderStateEvent::ToolCall { call_id: actual, .. } if actual == call_id)
+        );
+        let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(terminal.len(), 1, "must not invent a cancellation result");
+        assert!(
+            matches!(&terminal[0], AcpxProviderStateEvent::TurnTerminal { turn_id: actual, .. } if actual == turn_id)
+        );
+        assert!(session.state().pending_tool(call_id).is_some());
+        assert!(session
+            .start_turn("blocked-turn", "Wait for settlement", &std::env::temp_dir())
+            .is_err());
+        session.deliver_tool_result(&late_result(call_id)).unwrap();
+        session
+            .deliver_tool_result(&late_result(call_id))
+            .expect("lost acknowledgement is harmless");
+        let mut conflict = late_result(call_id);
+        conflict.result = json!({"id":"different"});
+        let error = session
+            .deliver_tool_result(&conflict)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(call_id) && error.contains("issues.read"),
+            "{error}"
+        );
+        assert!(session.state().pending_tool(call_id).is_none());
+    }
     session.shutdown("test complete").unwrap();
 }
 
@@ -257,12 +282,10 @@ fn rotates_settled_tool_receipts_between_reusable_turns() {
                 if call_id == "call-reused" && operation_id == "issues.read"
         ));
         let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-        assert!(matches!(
-            &terminal[0],
-            AcpxProviderStateEvent::ToolResult(result)
-                if result.call_id == "call-reused"
-                    && result.result["error"]["code"] == "acpx_turn_settled"
-        ));
+        assert_eq!(terminal.len(), 1);
+        session
+            .deliver_tool_result(&late_result("call-reused"))
+            .unwrap();
         assert!(matches!(
             terminal.last().unwrap(),
             AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. }
@@ -313,6 +336,9 @@ fn reaps_the_old_provider_before_admitting_a_late_tool_callback() {
         .unwrap();
     session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
     session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session
+        .deliver_tool_result(&late_result("call-reused"))
+        .unwrap();
 
     session
         .start_turn("turn-2", "Use a fresh provider", &std::env::temp_dir())
@@ -341,6 +367,9 @@ fn fails_closed_before_reusing_a_settled_turn_identity() {
         .unwrap();
     session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
     session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session
+        .deliver_tool_result(&late_result("call-reused"))
+        .unwrap();
 
     let reused = session
         .start_turn("turn-1", "Do not alias old events", &std::env::temp_dir())
@@ -559,62 +588,35 @@ fn reserved_completion_waits_for_feedback_and_allows_correction_in_same_turn() {
 }
 
 #[test]
-fn correlates_reserved_results_by_raw_digest_without_exposing_sensitive_values() {
-    let mut session =
-        AcpxProviderSession::start(&config("turns-sensitive-reserved-result-terminal")).unwrap();
-    session
-        .start_turn("turn-1", "Please help", &std::env::temp_dir())
-        .unwrap();
-
-    assert!(matches!(
-        &session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
-        AcpxProviderStateEvent::ToolCall { operation_id, .. }
-            if operation_id == "paperclip_finish"
-    ));
-    let result_events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(
-        &result_events[0],
-        AcpxProviderStateEvent::SemanticResult(result)
-            if result.result["summary"]
-                .as_str()
-                .is_some_and(|summary| summary.contains("REDACTED")
-                    && !summary.contains("matching-sensitive-value"))
-    ));
-
-    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-    assert!(matches!(
-        terminal.last().unwrap(),
-        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1"
-    ));
-    session.shutdown("test complete").unwrap();
-}
-
-#[test]
-fn rejects_sensitive_reserved_results_that_only_match_after_redaction() {
-    let mut session = AcpxProviderSession::start(&config(
+fn preserves_sensitive_reserved_input_and_still_checks_result_correlation() {
+    for mode in [
+        "turns-sensitive-reserved-result-terminal",
         "turns-mismatched-sensitive-reserved-result-terminal",
-    ))
-    .unwrap();
-    session
-        .start_turn("turn-1", "Please help", &std::env::temp_dir())
-        .unwrap();
-    assert!(matches!(
-        &session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
-        AcpxProviderStateEvent::ToolCall { operation_id, .. }
-            if operation_id == "paperclip_finish"
-    ));
-
-    let error = session
-        .poll_event(Duration::from_secs(1))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("does not match its authorized invocation"),
-        "{error}"
-    );
-    assert!(!error.contains("matching-sensitive-value"), "{error}");
-    assert!(!error.contains("different-sensitive-value"), "{error}");
-    assert!(session.shutdown("already closed").is_ok());
+    ] {
+        let mut session = AcpxProviderSession::start(&config(mode)).unwrap();
+        session
+            .start_turn("turn-1", "Please help", &std::env::temp_dir())
+            .unwrap();
+        let calls = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(&calls[0], AcpxProviderStateEvent::ToolCall {input, ..}
+            if input["summary"].as_str().is_some_and(|summary| summary.contains("matching-sensitive-value")))
+        );
+        assert!(session.state().pending_tool("call-finish").is_some());
+        if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
+            let error = session
+                .poll_event(Duration::from_secs(1))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("does not match its authorized invocation"),
+                "{error}"
+            );
+            assert!(!error.contains("matching-sensitive-value"));
+            assert!(!error.contains("different-sensitive-value"));
+        }
+        session.shutdown("correlation checked").unwrap();
+    }
 }
 
 #[test]
@@ -692,4 +694,70 @@ fn fails_closed_before_returning_an_unauthorized_tool_call() {
     assert!(error.contains("unauthorized tool issues.delete"), "{error}");
     assert!(session.state().pending_tool("call-1").is_none());
     assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
+fn turn_controls_preserve_mode_and_reject_stale_duplicate_and_oversized_delivery() {
+    let mut session = AcpxProviderSession::start(&config("controls")).unwrap();
+    assert!(session
+        .steer_turn("turn-1", "control-1", "steer", "message")
+        .is_err());
+    session
+        .start_turn("turn-1", "Work", &std::env::temp_dir())
+        .unwrap();
+    let first = session
+        .steer_turn("turn-1", "control-1", "steer", "Change focus")
+        .unwrap();
+    assert_eq!(first["mode"], "steer");
+    assert!(session
+        .steer_turn("turn-1", "control-1", "follow_up", "Duplicate")
+        .unwrap_err()
+        .to_string()
+        .contains("already attempted"));
+    let queued = session
+        .steer_turn("turn-1", "control-2", "follow_up", "Then validate")
+        .unwrap();
+    assert_eq!(queued["mode"], "follow_up");
+    assert!(session
+        .steer_turn("turn-2", "control-3", "steer", "Stale")
+        .is_err());
+    assert!(session
+        .steer_turn("turn-1", "control-3", "cancel", "Wrong")
+        .is_err());
+    assert!(session
+        .steer_turn("turn-1", "control-3", "steer", &"a".repeat(65_537))
+        .is_err());
+    session.shutdown("verified controls").unwrap();
+}
+
+#[test]
+fn turn_controls_fail_closed_on_mismatched_acknowledgement() {
+    let mut session = AcpxProviderSession::start(&config("controls-wrong-ack")).unwrap();
+    session
+        .start_turn("turn-1", "Work", &std::env::temp_dir())
+        .unwrap();
+    assert!(session
+        .steer_turn("turn-1", "control-1", "steer", "Change focus")
+        .unwrap_err()
+        .to_string()
+        .contains("exact turn control"));
+    assert!(session
+        .steer_turn("turn-1", "control-2", "follow_up", "Do not replay")
+        .is_err());
+}
+
+#[test]
+fn lazy_warm_handshake_updates_live_turn_control_discovery() {
+    let mut session = AcpxProviderSession::start(&config("controls-lazy")).unwrap();
+    assert!(!session.turn_control_capabilities().steering);
+    assert!(!session.turn_control_capabilities().queued_follow_up);
+    session
+        .start_turn("turn-lazy", "Work", &std::env::temp_dir())
+        .unwrap();
+    assert!(session.turn_control_capabilities().steering);
+    assert!(session.turn_control_capabilities().queued_follow_up);
+    session
+        .steer_turn("turn-lazy", "control-1", "follow_up", "Then validate")
+        .unwrap();
+    session.shutdown("verified live handshake").unwrap();
 }

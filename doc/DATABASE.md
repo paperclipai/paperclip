@@ -144,7 +144,19 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
-## Connection loss during a transaction
+## Connection loss and retries
+
+The database client does not replay arbitrary statements after a disconnect.
+PostgreSQL may have committed a statement before the connection loses its
+response. The postgres.js message `write CONNECTION_CLOSED` does not prove
+that the statement was never sent: the driver also uses it when an in-flight
+query loses its connection. SQL text cannot establish replay safety either;
+a `SELECT` can call a function with side effects.
+
+The affected operation fails and a new operation can reconnect through the
+pool. Callers may retry only when the complete operation is idempotent or has
+a durable receipt that prevents duplicate effects. Some transient statement
+failures therefore reach the caller instead of being retried automatically.
 
 When a database connection closes, its transaction fails. Paperclip does not
 replay that transaction. New requests can use a fresh connection from the pool.
@@ -164,6 +176,22 @@ including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
 idempotent actor synchronization operations, not arbitrary transactions. A
 persistent outage still fails the request after the bounded retries; each
 connection attempt remains subject to the configured database connect timeout.
+
+The dashboard's company lookup, task counts, pending approval count, and
+monthly spend each retry these connection errors at most twice. Each callback
+is read-only and rebuilds its query for each attempt. A failed read
+does not replay completed reads or the budget workflow. Missing companies,
+authentication errors, and other database errors propagate without retry.
+This does not enable general SQL replay.
+
+## Execution identity row locks
+
+Identity initialization, credential acquisition, and steering reconciliation lock
+the task before its run. These operations use `FOR NO KEY UPDATE`: they change
+identity state, not parent keys. The lock still serializes identity writers and
+blocks concurrent task or run updates. It allows audit inserts to retain their
+foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
+foreign keys and their deletion behavior remain enforced.
 
 ## Switching between modes
 
@@ -432,3 +460,34 @@ cleanup authority; it does not prove that remote inference has stopped. Recovery
 revokes the previous boot identity with a conditional update. Its own claim also
 expires so another sweep can finish cleanup after a restart. Historical rows keep
 null ownership fields and follow the previous recovery path.
+
+## Agent file persistence and legacy revisions
+
+Managed agent files are current filesystem contents, using the same persistent
+instance storage as other workspaces. `agent_instruction_revisions` and
+`agent_instruction_heads` are retained as read-only upgrade input. Their heads
+are adopted once into the managed directory; new saves never append revisions.
+`agent_instruction_working_copies` holds per-run baseline hashes, state, and
+capture receipts. New receipts identify `paperclip.agent-files.v1`; historical
+rows retain the instruction-only format. Completed directory runs discard their
+baseline and private copies. See [Persistent agent files](agent-files.md).
+
+## Large API response snapshots
+
+`assets.byte_size` uses PostgreSQL `bigint` so saved responses and byte ranges can
+exceed 2 GiB. The API and Drizzle mapping continue to expose a JavaScript number;
+response readers validate safe integer offsets. The type-widening migration
+rewrites the asset metadata table and needs an exclusive table lock. File bytes
+remain in local or object storage.
+
+### Runner API response reservations
+
+`runner_api_response_reservations` holds company-scoped API snapshot reservations.
+Before a capture spills, the server locks company admission and counts stored
+`runner-api` assets plus unattached reservations against a 20 GiB default quota.
+A committed asset replaces its reservation in that total. The asset foreign key
+cascades on deletion, while deleting a run sets `run_id` to null so an orphan
+reservation cannot silently disappear. Failed cleanup or an ambiguous storage
+write requires operator reconciliation before an unattached reservation is
+removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
+limits and the operator override.

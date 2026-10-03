@@ -220,6 +220,7 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   get_workspace_runtime: { action: "read", running: "Reading workspace status", completed: "Read workspace status" },
   control_workspace_service: { action: "run", running: "Controlling a workspace service", completed: "Controlled a workspace service" },
   set_dependencies: { action: "update", running: "Updating task dependencies", completed: "Updated task dependencies" },
+  set_task_title: { action: "update", running: "Naming the task", completed: "Named the task" },
   create_task: { action: "create", running: "Creating a task", completed: "Created a task" },
   request_approval: { action: "request", running: "Requesting approval", completed: "Requested approval" },
   decide_approval: { action: "update", running: "Deciding an approval", completed: "Decided an approval" },

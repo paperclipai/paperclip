@@ -27,7 +27,10 @@
       "defaults": {
         "serverUrl": "https://huggingface.co/mcp?login&gradio=none",
         "scopesHint": [
-          "read-mcp"
+          "read-mcp",
+          "read-repos",
+          "contribute-repos",
+          "jobs"
         ]
       },
       "guidanceMd": "Connect Hugging Face in the browser. A Hugging Face account.",

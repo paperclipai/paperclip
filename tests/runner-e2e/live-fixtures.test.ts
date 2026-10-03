@@ -4,7 +4,27 @@ import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
+  it("anchors extended file validation to a public project workspace for local and remote copy-back", async () => {
+    const execution = runnerMatrix.find(e => e.id === "extended-harnesses.runner-acpx-pi.local.file-edit-validate")!;
+    let projectBody: any;
+    const api = {
+      async get() { return [{ id: "local", driver: "local" }]; },
+      async postSensitive() { return { id: "secret" }; },
+      async post(url: string, data: any) {
+        if (url === "/api/companies") return { id: "company", name: "Test" };
+        if (url.endsWith("/agents")) return { id: "agent", ...data };
+        if (url.endsWith("/projects")) { projectBody = data; return { id: "project", ...data }; }
+        throw new Error(`Unexpected POST ${url}`);
+      },
+    } as unknown as RunnerApi;
+    const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "nonce", workspacePath: "/tmp/fixture-workspace", credentials: { OPENROUTER_API_KEY: "fixture-key" } });
+    expect(fixtures.project?.id).toBe("project");
+    expect(projectBody).toMatchObject({ executionWorkspacePolicy: { environmentId: "local", workspaceStrategy: { type: "project_primary" } }, workspace: { cwd: "/tmp/fixture-workspace", sourceType: "local_path" } });
+  });
+
   it.each([
+    ["runner-codex", "hiring-templates", "hire-coder-template-reuse"],
+    ["runner-acpx-claude", "hiring-templates", "hire-coder-template-reuse"],
     ["runner-codex", "everyday-workflows", "hire-reuse"],
     ["runner-acpx-claude", "everyday-workflows", "hire-reuse"],
     ["runner-codex", "agent-chat-hardening", "hire-delegate-reuse"],
