@@ -766,6 +766,18 @@ Agent, project, environment, secret, skill, and workspace config edits are sampl
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
+## SSH Execution and Workspace Transfers
+
+SSH commands, tar transfers, and Git-bundle transfers load the target's
+`/etc/profile` and user login profiles before resolving remote tools. This lets
+hosts expose tools through a profile instead of the default non-login SSH PATH.
+Paperclip reads `.profile`, `.bash_profile` (or `.bashrc` when absent), and
+`.zprofile`. It does not source `nvm.sh` directly.
+
+Profile initialization receives EOF on stdin and discards profile output. The
+command or transfer retains its original stdin, stdout, and stderr. Explicit
+command environment values are applied after profiles, so those values win.
+
 ## Workspace Git Scan Protection
 
 Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans and a bounded queue of 32. Identical buffered scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Streaming snapshot scans have caller-owned sinks, so they use separate jobs in the same queue and are never cached or coalesced. Correctness-sensitive runtime guards bypass the result cache.
