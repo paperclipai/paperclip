@@ -544,6 +544,7 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  verifyAddresseeInteractionWake,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -17931,6 +17932,39 @@ export function heartbeatService(
           return tx.transaction(async (claimTx) => {
             const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
             if (issueClaim.blocked) return null;
+            // A named-addressee `interaction_pending` wake passed the staleness
+            // gate on stored interaction state. Re-read that state inside the
+            // claim transaction, holding a `FOR UPDATE` row lock on the
+            // interaction, so a concurrent resolution blocks instead of landing
+            // between this read and the run-status write below (review-flagged
+            // race on paperclipai/paperclip#13211). Lock order
+            // stays issues-before-interaction, matching the resolution path, so
+            // this adds serialization without a lock-order inversion. A wake
+            // that no longer verifies stays queued; the next claim attempt
+            // cancels it through the ordinary staleness gate.
+            if (
+              issueId &&
+              readNonEmptyString(context.wakeReason) === "interaction_pending" &&
+              !issueClaim.ownsIssue
+            ) {
+              const stillAddressed = await verifyAddresseeInteractionWake(
+                claimTx as unknown as Db,
+                {
+                  companyId: run.companyId,
+                  issueId,
+                  agentId: run.agentId,
+                  contextSnapshot: context,
+                  lockInteraction: true,
+                },
+              );
+              if (!stillAddressed) {
+                logger.info(
+                  { runId: run.id, issueId, agentId: run.agentId },
+                  "claimQueuedRun: addressee interaction is no longer actionable; leaving run queued for the staleness gate",
+                );
+                return null;
+              }
+            }
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
