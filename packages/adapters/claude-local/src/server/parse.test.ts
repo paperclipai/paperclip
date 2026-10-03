@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  hasClaudeTurnResult,
+  isClaudeTaskNotificationResult,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -565,5 +567,52 @@ describe("parseClaudeStreamJson usage extraction", () => {
       cachedInputTokens: 20,
     });
     expect(parsed.usageBasis).toBe("per_run");
+  });
+});
+
+describe("hasClaudeTurnResult", () => {
+  const notificationResult = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 0,
+    result: "",
+    origin: { kind: "task-notification" },
+  });
+  const turnResult = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 14,
+    result: "done",
+  });
+  const init = JSON.stringify({ type: "system", subtype: "init", session_id: "s1" });
+
+  it("does not treat a background-task notification drain as a finished turn", () => {
+    // A resumed session emits this before the requested turn even starts.
+    // Treating it as terminal makes terminalResultCleanup SIGTERM the process
+    // mid-turn, killing work the run had not yet reported.
+    expect(hasClaudeTurnResult([notificationResult, init].join("\n"))).toBe(false);
+  });
+
+  it("treats a real turn result as a finished turn", () => {
+    expect(hasClaudeTurnResult([init, turnResult].join("\n"))).toBe(true);
+  });
+
+  it("still sees the turn result when a notification lands after it", () => {
+    expect(hasClaudeTurnResult([init, turnResult, notificationResult].join("\n"))).toBe(true);
+  });
+
+  it("ignores non-result events and unparsable lines", () => {
+    expect(hasClaudeTurnResult([init, "not json", ""].join("\n"))).toBe(false);
+    expect(hasClaudeTurnResult("")).toBe(false);
+  });
+});
+
+describe("isClaudeTaskNotificationResult", () => {
+  it("recognizes the notification origin and nothing else", () => {
+    expect(isClaudeTaskNotificationResult({ origin: { kind: "task-notification" } })).toBe(true);
+    expect(isClaudeTaskNotificationResult({ origin: { kind: "cli" } })).toBe(false);
+    expect(isClaudeTaskNotificationResult({})).toBe(false);
   });
 });
