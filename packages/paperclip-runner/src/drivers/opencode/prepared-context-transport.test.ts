@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,7 +7,6 @@ import {
   OpenCodeServerDriver,
 } from "./opencode-server-driver.js";
 
-const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -18,12 +17,16 @@ afterEach(async () => {
 
 describe("prepared OpenCode context transport", () => {
   it("sends prepared initial prompts without the proxy task envelope", async () => {
-    await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-prepared-"));
+    roots.push(root);
+    // Executable modes belong to the test's copy, not the shared checkout.
+    const fixture = join(root, "fake-opencode-server.mjs");
+    await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+    await chmod(fixture, 0o755);
     const workspace = await mkdtemp(
       join(tmpdir(), "paperclip-opencode-prepared-workspace-"),
     );
-    roots.push(root, workspace);
+    roots.push(workspace);
     const submitted: Record<string, unknown>[] = [];
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
