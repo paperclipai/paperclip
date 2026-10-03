@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 160
+- Skill/reference headings: 161
 - Eval cases: 106 across 16 groups
-- Total normative rows: 266
+- Total normative rows: 267
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -67,11 +67,12 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/SKILL.md:critical-rules:586 | optional_agent_tool | skills/paperclip/SKILL.md:586 |
 | skill:skills/paperclip/SKILL.md:comment-style-required:607 | always_agent_tool | skills/paperclip/SKILL.md:607 |
 | skill:skills/paperclip/SKILL.md:update:639 | optional_agent_tool | skills/paperclip/SKILL.md:639 |
-| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:649 | optional_agent_tool | skills/paperclip/SKILL.md:649 |
-| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:682 | optional_agent_tool | skills/paperclip/SKILL.md:682 |
-| skill:skills/paperclip/SKILL.md:searching-issues:711 | optional_agent_tool | skills/paperclip/SKILL.md:711 |
-| skill:skills/paperclip/SKILL.md:full-reference:721 | optional_agent_tool | skills/paperclip/SKILL.md:721 |
-| skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:725 | always_agent_tool | skills/paperclip/SKILL.md:725 |
+| skill:skills/paperclip/SKILL.md:task-documents-and-deliverables:649 | always_agent_tool | skills/paperclip/SKILL.md:649 |
+| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:663 | optional_agent_tool | skills/paperclip/SKILL.md:663 |
+| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:696 | optional_agent_tool | skills/paperclip/SKILL.md:696 |
+| skill:skills/paperclip/SKILL.md:searching-issues:725 | optional_agent_tool | skills/paperclip/SKILL.md:725 |
+| skill:skills/paperclip/SKILL.md:full-reference:735 | optional_agent_tool | skills/paperclip/SKILL.md:735 |
+| skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:739 | always_agent_tool | skills/paperclip/SKILL.md:739 |
 | skill:skills/paperclip/references/api-reference.md:paperclip-api-reference:1 | optional_agent_tool | skills/paperclip/references/api-reference.md:1 |
 | skill:skills/paperclip/references/api-reference.md:response-schemas:9 | optional_agent_tool | skills/paperclip/references/api-reference.md:9 |
 | skill:skills/paperclip/references/api-reference.md:agent-record-get-api-agents-me-or-get-api-agents-agentid:11 | optional_agent_tool | skills/paperclip/references/api-reference.md:11 |

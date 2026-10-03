@@ -1899,3 +1899,15 @@ unavailable. Preserve current ownership and newer-work fences. See
   endpoints delegate to sources while retaining response shapes.
 - GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
   or pull-request creation in this milestone.
+
+## Public assistant connection (opt-in)
+
+The user-authorized MCP surface connects assistants to an explicitly selected
+company as the consenting person. It exposes first-party task reads, additive
+task creation and comments, durable documents and approval links. It reuses
+existing domain authorization and scheduling; OAuth does not grant agent
+identity, native run ownership, approval decisions or third-party credentials.
+See [Public MCP](public-mcp.md) for the implemented instance-side boundary,
+configuration, plugin packages and outstanding hosted release gates. The
+[delivery plan](plans/2026-09-30-paperclip-public-mcp-and-plugins.md) separates
+external agent participation and granted third-party tools into later releases.

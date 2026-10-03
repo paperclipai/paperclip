@@ -61,6 +61,7 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "public-mcp.ts": "/api",
   "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
@@ -92,6 +93,13 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // OAuth discovery and protocol endpoints have their own metadata contract;
+  // browser connection-management operations remain documented in the board API.
+  "GET /.well-known/oauth-authorization-server",
+  "POST /mcp/oauth/register",
+  "GET /mcp/oauth/authorize",
+  "POST /mcp/oauth/token",
+  "POST /mcp/oauth/revoke",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
@@ -132,6 +140,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")

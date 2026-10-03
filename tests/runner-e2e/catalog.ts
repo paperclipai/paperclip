@@ -11,6 +11,8 @@ import { continuationTasks } from "./continuation-cases.js";
 import { contextIntegrityTasks, paperclipDocumentTask } from "./context-integrity-cases.js";
 import { productionDefaultHireProfile, stockHarnessSourceDigest, stockHarnessSkillSources } from "./stock-harness.js";
 import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
+import { publicMcpTasks, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
+import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -77,6 +79,7 @@ function commonAgent(
   fixtureId: string,
   adapterType: string,
   adapterConfig: Record<string, unknown>,
+  additionalInstructions: readonly string[] = [],
 ) {
   return {
     name: `Runner E2E ${fixtureId} ${input.executionId}`,
@@ -106,6 +109,7 @@ function commonAgent(
                 'For a planning task, do not inspect the OpenAPI schema. PUT /api/issues/$PAPERCLIP_TASK_ID/documents/plan with {title:"Plan",format:"markdown",body,changeSummary}; read latestRevisionId and latestRevisionNumber from that response. Then POST /api/issues/$PAPERCLIP_TASK_ID/interactions with {kind:"request_confirmation",continuationPolicy:"wake_assignee",payload:{version:1,prompt,acceptLabel:"Approve",rejectLabel:"Reject",rejectRequiresReason:true,target:{type:"issue_document",key:"plan",revisionId,revisionNumber}}}, and PATCH the issue to {status:"in_review"}. Include Authorization and X-Paperclip-Run-Id on every write.',
               ]),
           "Never print, persist, or expose credential values, and never create unrelated work.",
+          ...additionalInstructions,
         ].join("\n"),
       },
     },
@@ -121,10 +125,12 @@ function legacyProfile(input: {
   model: string;
   credential: RunnerProfileFixture["credential"];
   extraConfig?: Record<string, unknown>;
+  instructions?: readonly string[];
+  modelQualification?: RunnerProfileFixture["modelQualification"];
 }): RunnerProfileFixture {
   return {
     ...input,
-    modelQualification: {
+    modelQualification: input.modelQualification ?? {
       source: "adapter_constant",
       qualificationId: `${input.adapterType}:default-model`,
     },
@@ -150,7 +156,7 @@ function legacyProfile(input: {
         env: {
           [input.credential]: requiredSecret(buildInput, input.credential),
         },
-      });
+      }, input.instructions);
     },
   };
 }
@@ -1081,6 +1087,28 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
 };
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "public-mcp", label: "Paperclip through an assistant", manualOnly: true,
+    description: "Paid assistant tool use plus actual team execution, browser OAuth consent, durable outcomes and authorization boundaries.",
+    groups: ["local"], environments: [localEnvironment], tasks: publicMcpTasks, expectedMatrixSize: 24,
+    profiles: [
+      ...["mini"].map(size => legacyProfile({
+        id: `assistant-codex-${size}`, label: `Assistant + Codex ${size}`, adapterType: "codex_local", provider: "codex",
+        model: `gpt-5.4-${size}`, credential: "OPENAI_API_KEY",
+        instructions: publicMcpWorkerInstructions,
+        modelQualification: { source: "qualified_runner_profile", qualificationId: `public-mcp-gpt-5.4-${size}-pilot` },
+        extraConfig: { engine: "cli", extraArgs: ["-c", "features.shell_snapshot=false", "-c", "features.apps=false", "-c", "features.plugins=false"] },
+      })),
+      ...[["haiku", "claude-haiku-4-5-20251001"], ["sonnet", "claude-sonnet-4-6"]].map(([name, model]) => legacyProfile({
+        id: `assistant-claude-${name}`, label: `Assistant + Claude ${name}`, adapterType: "claude_local", provider: "claude",
+        model: model!, credential: "ANTHROPIC_API_KEY",
+        instructions: publicMcpWorkerInstructions,
+        modelQualification: { source: "qualified_runner_profile", qualificationId: `public-mcp-${name}-pilot` },
+        extraConfig: { engine: "cli", maxTurnsPerRun: 16 },
+      })),
+    ],
+    definitionMetadata: { version: 6, grader: publicMcpGraderVersion, workflowDigest: publicMcpWorkflowDigest, workerSkillDigest: publicMcpWorkerSkillDigest, workerInstructions: publicMcpWorkerInstructions, assistantMaxRequests: 16, assistantMaxEstimatedUsd: 2, instructions: "shipped-plugin-skills", scheduling: "explicit-only" },
+  },
   {
     id: "blocker-guidance", label: "Direct blocker handling", manualOnly: true,
     description: "Human authority, hiring permissions, and requester scope under the production coordination skill.",

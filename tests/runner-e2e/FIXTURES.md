@@ -1,5 +1,13 @@
 # Runner E2E fixture authoring
 
+The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
+authenticated browser session. `RunnerApi.setBrowserSession` binds that session
+to API calls, including encrypted secret provisioning via Node fetch. OAuth
+setup stays outside model context. The external assistant receives the catalog
+from `tools/list` and the shipped workflow skills; its calls execute against the
+real SDK transport. Client-side loss of a successful response is the sole fault
+injection in the uncertain-retry case. Task/run/document REST reads own grading.
+
 The fixture catalog is executable production-contract data. Keep it small,
 typed, deterministic, and free of raw credentials.
 

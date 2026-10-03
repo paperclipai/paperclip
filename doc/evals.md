@@ -121,6 +121,13 @@ permission, and requester scope decisions through saved browser interactions.
 
 ## Validation ladder
 
+The explicit-only [public MCP suite](../tests/runner-e2e/PUBLIC-MCP.md) evaluates
+paid assistant delegation, later retrieval, feedback, review, uncertain retries
+and permission boundaries. It uses the Product E2E fixtures, launcher, evidence
+packaging and dashboard, with separate external-assistant and team-worker billing.
+The [2026-10-01 results](plans/2026-10-01-public-mcp-paid-eval-results.md) retain
+two complete model matrices, provenance, costs and the earlier failure history.
+
 Start with credential-free checks and a catalog listing. For Product E2E:
 
 ```sh

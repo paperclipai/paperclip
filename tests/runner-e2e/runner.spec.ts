@@ -32,6 +32,8 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
+import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
+import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
@@ -60,6 +62,7 @@ import {
   findSecretLeakInJsonValues,
   normalizedSecrets,
   sanitizeJson,
+  browserDiagnosticUrl,
 } from "./redaction.js";
 import {
   CREDENTIAL_NAMES,
@@ -565,7 +568,9 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "public_mcp"].includes(execution.task.flow);
+    const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
+    let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -788,7 +793,7 @@ for (const execution of executions) {
         consoleDiagnostics.push({
           type: message.type(),
           text: message.text(),
-          location: message.location(),
+          location: { ...message.location(), url: browserDiagnosticUrl(message.location().url) },
         });
       }
     });
@@ -797,21 +802,21 @@ for (const execution of executions) {
         type: "pageerror",
         message: error.message,
         stack: error.stack ?? null,
-        url: page.url(),
+        url: browserDiagnosticUrl(page.url()),
       });
     });
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame())
         pageLifecycleDiagnostics.push({
           type: "navigation",
-          url: frame.url(),
+          url: browserDiagnosticUrl(frame.url()),
           at: new Date().toISOString(),
         });
     });
     page.on("requestfailed", (requestEvent) => {
       networkDiagnostics.push({
         method: requestEvent.method(),
-        url: requestEvent.url(),
+        url: browserDiagnosticUrl(requestEvent.url()),
         failure: requestEvent.failure()?.errorText ?? null,
       });
     });
@@ -819,7 +824,7 @@ for (const execution of executions) {
       if (response.status() >= 400) {
         networkDiagnostics.push({
           method: response.request().method(),
-          url: response.url(),
+          url: browserDiagnosticUrl(response.url()),
           status: response.status(),
           statusText: response.statusText(),
         });
@@ -827,6 +832,7 @@ for (const execution of executions) {
     });
 
     try {
+      if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
         await writeSanitizedJson(snapshotsDir, "stock-harness-preflight.json", receipt, secrets);
@@ -927,7 +933,17 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "blocker_guidance") {
+      if (execution.task.flow === "public_mcp") {
+        const journey = await runPublicMcpFlow({
+          page, api, fixtures, execution, nonce, secrets, userId: publicMcpUserId,
+          credential: credentials[execution.profile.credential]!, usage: publicMcpUsage!, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, runs) => { issue = currentIssue; selectedRuns = runs; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = journey.issue; selectedRuns = journey.runs;
+        matcherResults = journey.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `publicMcp.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "blocker_guidance") {
         const blocker = await runBlockerFlow({ page, api, fixtures, execution, nonce, workspacePath,
           deadlineAt: startedAtMs + deadlineMs - 30_000,
           observe: (currentIssue, currentRuns, checks) => {
@@ -2879,6 +2895,7 @@ for (const execution of executions) {
         model: firstTaskEvidence ? firstTaskEvidence.observedModels[0] ?? firstTaskEvidence.configuredModel ?? "provider-default (unreported)" : execution.profile.model,
         ...(firstTaskEvidence ? { firstTask: firstTaskEvidence } : {}),
         ...(completionQuality.length ? { completionQuality } : {}),
+        ...(publicMcpUsage ? { publicMcp: publicMcpUsage } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,

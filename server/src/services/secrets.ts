@@ -634,7 +634,7 @@ type SecretConsumerContext = {
   responsibleUserId?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
-  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
@@ -1502,9 +1502,11 @@ export function secretService(db: Db | DbTransaction) {
               ? "local_implicit" as const
               : context.actorSource === "board_key"
                 ? "board_key" as const
-                : context.actorSource === "cloud_tenant"
-                  ? "cloud_tenant" as const
-                  : "session" as const,
+                : context.actorSource === "mcp_oauth"
+                  ? "mcp_oauth" as const
+                  : context.actorSource === "cloud_tenant"
+                    ? "cloud_tenant" as const
+                    : "session" as const,
           };
     const decision = await authorization.decide({
       actor,

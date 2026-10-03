@@ -62,6 +62,7 @@ export type AuthorizationActor =
       | "board_key"
       | "agent_key"
       | "agent_jwt"
+      | "mcp_oauth"
       | "cloud_tenant"
       | "cloud_control"
       | "none";
@@ -1691,6 +1692,8 @@ export function authorizationService(db: Db | DbTransaction) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
+      // MCP grants always use their explicitly consented company membership,
+      // even when the consenting person is an instance administrator.
       // A cloud_tenant actor's computed `isInstanceAdmin` flag is trusted: it
       // can only be set by the attested trusted-header resolver (stack owner +
       // `enableOwnerInstanceAdmin`). The `instance_user_roles` DB lookup stays
@@ -1698,7 +1701,7 @@ export function authorizationService(db: Db | DbTransaction) {
       // instance_admin row left behind by deployments that ran the
       // pre-hardening cloud_tenant path still elevates nothing.
       if (
-        !input.actor.ignoreInstanceAdmin &&
+        !input.actor.ignoreInstanceAdmin && input.actor.source !== "mcp_oauth" &&
         (input.actor.isInstanceAdmin ||
           (input.actor.source !== "cloud_tenant" && await isInstanceAdmin(input.actor.userId)))
       ) {

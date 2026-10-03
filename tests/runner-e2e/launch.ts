@@ -678,6 +678,7 @@ async function runAttempt(input: {
         executions.map((candidate) => candidate.id),
       ),
       PAPERCLIP_RUNNER_E2E_ATTEMPT: String(attempt),
+      PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp") ? "1" : "0",
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,

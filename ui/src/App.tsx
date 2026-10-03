@@ -97,6 +97,7 @@ import { PluginPage } from "./pages/PluginPage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
+import { McpConnectPage, AssistantConnectionsPage } from "./pages/McpConnect";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
@@ -752,6 +753,8 @@ export function App() {
         <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
+        <Route path="mcp-connect/:id" element={<McpConnectPage />} />
+        <Route path="assistant-connections" element={<AssistantConnectionsPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route element={streamlinedUiLoaded ? <CloudAccessGate allowMembershipRequest /> : <PaperclipLoading />}>
