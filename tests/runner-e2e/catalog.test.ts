@@ -136,10 +136,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      6, 30, 3, 16, 16, 2, 6, 8, 46, 23, 47, 20, 52, 28, 18, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1,
+      6, 30, 3, 16, 16, 2, 6, 8, 46, 23, 50, 20, 52, 28, 18, 2, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(433);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(433);
+    expect(validateRunnerCatalog()).toHaveLength(438);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(438);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

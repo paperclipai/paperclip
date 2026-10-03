@@ -45,6 +45,7 @@ import {
   type IssuePostCommitAction,
 } from "../issues.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import * as questionPatternValidation from "../question-pattern-validation.js";
 import { heartbeatService } from "../heartbeat.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -336,6 +337,33 @@ describeEmbeddedPostgres("native question bridge", () => {
     } finally { bridge.close(); }
   });
 
+  it("delivers saved answers without entering pattern validation again", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    (event.payload.request as any).input.questions = [{ id: "url", prompt: "URL?", required: true, answerMode: "text" }];
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    const answered = await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      { answers: [{ questionId: "url", optionIds: [], otherText: "https://example.test" }] }, { userId: "operator-1" },
+    );
+    if (answered.kind !== "ask_user_questions") throw new Error("expected questions");
+    const queueCommand = vi.fn(() => ({ commandId: "question", controllerSeq: 1 }));
+    const release = registerNativeQuestionCommandTarget({ binding: { companyId, issueId, runId, agentId }, queueCommand });
+    const busy = vi.spyOn(questionPatternValidation, "validateQuestionPatterns").mockRejectedValue(new Error("Question format validation is busy; try again"));
+    try {
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).toHaveBeenCalledWith("request.resolve", expect.objectContaining({
+        response: { schema: "paperclip.question_response.v1", answers: { url: { text: "https://example.test" } } },
+      }), `question_${interaction!.id}`);
+      expect(busy).not.toHaveBeenCalled();
+      const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+      expect(delivery).toMatchObject({ status: "delivered" });
+    } finally {
+      busy.mockRestore();
+      release();
+    }
+  });
+
   it.each(["codex", "claude"])("materializes, validates, and durably resumes a %s question response", async (provider) => {
     await seed();
     const interaction = await projectNativeRuntimeRequest({
@@ -370,10 +398,10 @@ describeEmbeddedPostgres("native question bridge", () => {
     expect(await db.select().from(activityLog)).toHaveLength(1);
 
     const answer = { answers: [{ questionId: "color", optionIds: ["blue"] }] };
-    validateNativeQuestionResponseInput(interaction!, answer);
-    expect(() => validateNativeQuestionResponseInput(interaction!, {
+    await validateNativeQuestionResponseInput(interaction!, answer);
+    await expect(validateNativeQuestionResponseInput(interaction!, {
       answers: [{ questionId: "color", optionIds: ["red"] }],
-    })).toThrow(/unknown option red/);
+    })).rejects.toThrow(/unknown option red/);
 
     const answered = await issueThreadInteractionService(db).answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
@@ -648,7 +676,7 @@ describeEmbeddedPostgres("native question bridge", () => {
         otherText: "purple",
       }],
     };
-    validateNativeQuestionResponseInput(interaction!, answer);
+    await validateNativeQuestionResponseInput(interaction!, answer);
     const answered = await issueThreadInteractionService(db).answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
       interaction!.id,

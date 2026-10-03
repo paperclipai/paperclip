@@ -172,4 +172,10 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toBeNull();
   });
+  it("holds invalid provider definitions for repair even with stale transient metadata", () => {
+    const run = { errorCode: "provider_tool_definition_invalid", error: "Tool name is too long.",
+      resultJson: { errorFamily: "transient_upstream" } };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
 });

@@ -95,10 +95,11 @@ describe("connection intent continuation wake contract", () => {
             issueId: "issue-123",
             interactionId: "interaction-123",
             interactionStatus: status,
-            forceFreshSession: true,
+            refreshTools: true,
           }),
         }),
       );
+      expect(wakeup.mock.calls[0][1].contextSnapshot.forceFreshSession).toBeUndefined();
     },
   );
 

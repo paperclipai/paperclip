@@ -477,7 +477,7 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it("places Paperclip runtime instructions in Codex's system channel and enables only selected skill instructions", async () => {
+  it("adds Paperclip developer instructions without replacing the Codex base and enables selected skills", async () => {
     const transport = new FakeCodexTransport();
     const baseInstructions = [
       "You are running as a Paperclip agent.",
@@ -499,15 +499,66 @@ describe("Codex app-server Codex driver", () => {
       (call) => call.method === "thread/start",
     );
     expect(threadStart?.params).toMatchObject({
-      baseInstructions,
+      developerInstructions: baseInstructions,
       config: {
         "skills.include_instructions": true,
         include_apps_instructions: false,
       },
     });
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
     expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(
       baseInstructions,
     );
+  });
+
+  it.each(["task", "prepared", "direct"] as const)("preserves stock Codex instructions on %s recovery", async (conversationMode) => {
+    const originalTransport = new FakeCodexTransport();
+    const recoveryTransport = new FakeCodexTransport();
+    const baseInstructions = "Paperclip coordination and assigned instruction paths.";
+    const driver = makeDriver([originalTransport, recoveryTransport], {
+      conversationMode,
+      baseInstructions,
+      includeSkillInstructions: true,
+    });
+    const original = await driver.openSession({
+      runId: "run-additive-recovery",
+      normalizedSessionId: "normalized-additive-recovery",
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    recoveryTransport.readResponse = {
+      thread: { id: snapshot.driverSessionId, sessionId: snapshot.providerSessionId, cwd: WORKSPACE, turns: [] },
+    };
+    await original.close({ reason: "verify additive recovery" });
+
+    const recovered = await driver.recoverSession(snapshot);
+    expect(recovered.recovered).toBe(true);
+    const started = originalTransport.calls.find((call) => call.method === "thread/start")!.params;
+    const resumed = recoveryTransport.calls.find((call) => call.method === "thread/resume")!.params;
+    expect(started).not.toHaveProperty("baseInstructions");
+    expect(resumed).not.toHaveProperty("baseInstructions");
+    expect(started.developerInstructions).toBe(conversationMode === "direct" ? undefined : baseInstructions);
+    expect(resumed.developerInstructions).toBe(conversationMode === "direct" ? "" : baseInstructions);
+    expect(resumed.dynamicTools).toEqual(started.dynamicTools);
+    expect(resumed.config).toEqual(started.config);
+    await recovered.session?.close({ reason: "verified additive recovery" });
+  });
+
+  it("retains the instruction field for non-Codex provider facades", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], {
+      baseInstructions: "Provider-specific runtime context.",
+      driverIdentity: { kind: "opencode_server", displayName: "OpenCode", version: "1" },
+    });
+    const session = await driver.openSession({
+      runId: "run-facade-instructions",
+      normalizedSessionId: "normalized-facade-instructions",
+      workingDirectory: WORKSPACE,
+    });
+    const started = transport.calls.find((call) => call.method === "thread/start")!.params;
+    expect(started.baseInstructions).toBe("Provider-specific runtime context.");
+    expect(started).not.toHaveProperty("developerInstructions");
+    await session.close({ reason: "verified facade instructions" });
   });
 
   it("passes the common typed-event contract and reports one provider turn terminal", async () => {

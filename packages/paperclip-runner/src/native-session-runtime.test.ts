@@ -6022,9 +6022,11 @@ describe("executeNativeSession recovery", () => {
         async completeRun() {},
       };
 
+      const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF_ONLY");
       await expect(
         executeNativeSession({
           input,
+          getFreshSessionHandoff,
           backend,
           controlPlane: port,
           runnerInstanceId: "runner-recovery",
@@ -6032,6 +6034,7 @@ describe("executeNativeSession recovery", () => {
         }),
       ).resolves.toMatchObject({ turnId: "turn-recovery" });
 
+      expect(getFreshSessionHandoff).not.toHaveBeenCalled();
       expect(recoverSession).toHaveBeenCalledOnce();
       expect(
         runnerEvents.some((event) => event.sourceSeq === terminalSequence),
@@ -6380,9 +6383,11 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
+    const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF: original goal, prior answers, and next step");
     await expect(
       executeNativeSession({
         input: executionInput,
+        getFreshSessionHandoff,
         backend,
         controlPlane: port,
         runnerInstanceId: "runner-replacement",
@@ -6391,6 +6396,7 @@ describe("executeNativeSession recovery", () => {
       }),
     ).resolves.toMatchObject({ providerSessionId: "provider-replacement" });
 
+    expect(getFreshSessionHandoff).toHaveBeenCalledOnce();
     expect(recoverSession).not.toHaveBeenCalled();
     expect(openReplacementSession).toHaveBeenCalledOnce();
     const replacementEnvelope = JSON.parse(
@@ -6402,7 +6408,7 @@ describe("executeNativeSession recovery", () => {
       completionContract: unknown;
     };
     expect(replacementEnvelope).toMatchObject({
-      task: { prompt: "FULL_ASSIGNMENT_CONTEXT\nCURRENT_EVENT_CONTEXT" },
+      task: { prompt: "FRESH_HANDOFF: original goal, prior answers, and next step\n\nFULL_ASSIGNMENT_CONTEXT\nCURRENT_EVENT_CONTEXT" },
       completionContract: executionInput.completionContract.contract,
     });
     expect(replacementEnvelope.schema).toBe(

@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
+import { send } from "./agent-chat.shared";
 
 type Json = Record<string, unknown>;
 type Seed = { companyId: string; prefix: string };
@@ -177,6 +178,76 @@ if (!completion.ok) throw new Error(await completion.text());
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+test("AgentMail request shows a durable inline key card in agent chat", async ({ page, request }, testInfo) => {
+  test.setTimeout(120_000);
+  const settings = await json(await request.get("/api/instance/settings/experimental"));
+  try {
+    await json(await request.patch("/api/instance/settings/experimental", { data: {
+      enableAgentChat: true, enableChatConnectors: true, enableClassicTaskInterface: false,
+    } }));
+    const seed = await newCompany(request);
+    const agent = await createAgent(request, seed.companyId, "Email requester");
+    // Script only the agent's choice of tool; persistence, routes, and UI are real.
+    const script = `
+const headers = { authorization: "Bearer " + process.env.PAPERCLIP_API_KEY, "content-type": "application/json", "x-paperclip-run-id": process.env.PAPERCLIP_RUN_ID };
+const runResponse = await fetch(process.env.PAPERCLIP_API_URL + "/api/heartbeat-runs/" + process.env.PAPERCLIP_RUN_ID, { headers });
+if (!runResponse.ok) throw new Error(await runResponse.text());
+const run = await runResponse.json();
+if (run.contextSnapshot?.interactionId) process.exit(0);
+const post = async (url, body) => {
+  const response = await fetch(url, { method: "POST", headers: { authorization: "Bearer " + process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN, "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+};
+const search = await post(process.env.PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL, { query: "Get yourself an email address with AgentMail" });
+if (!search.results.some(result => result.service === "agentmail") || !search.instruction.includes("connection_request")) throw new Error("AgentMail card was not advertised");
+const result = await post(process.env.PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL, { service: "agentmail" });
+if (result.state !== "needs_user_action") throw new Error("Expected an inline card");
+`;
+    await json(await request.patch(`/api/agents/${agent.id}`, { data: {
+      adapterConfig: { command: process.execPath, args: ["--input-type=module", "-e", script] }, replaceAdapterConfig: true,
+    } }));
+    await page.goto(`/${seed.prefix}/chats/${agent.id}`);
+    await send(page, "Get yourself an email address with AgentMail.");
+    await waitForAgentRun(request, seed.companyId, agent.id);
+    const chat = await json<{ id: string }>(await request.get(`/api/companies/${seed.companyId}/chats/${agent.id}`));
+    const interactions = await json<Array<{ id: string; kind: string; status: string; addresseeUserId: string; payload: Json }>>(
+      await request.get(`/api/issues/${chat.id}/interactions`),
+    );
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]).toMatchObject({ kind: "connection_intent", status: "pending", addresseeUserId: "local-board",
+      payload: { purpose: "channel", serviceSlug: "agentmail", requestingAgentId: agent.id } });
+    await page.reload();
+    const form = page.getByTestId("agentmail-inline-setup");
+    await expect(form).toBeVisible();
+    await expect(form.locator("input")).toHaveCount(1);
+    await expect(form.getByLabel("API key")).toHaveAttribute("type", "password");
+    await expect(form.getByRole("link", { name: "Get an AgentMail API key" })).toHaveAttribute("href", "https://console.agentmail.to/dashboard/api-keys");
+    await expect(form.locator('[role="radiogroup"], [role="combobox"], select')).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(form.getByRole("button", { name: "Connect AgentMail" })).toBeDisabled();
+    const card = page.getByTestId("connection-intent-focus-target");
+    await card.screenshot({ path: testInfo.outputPath("agentmail-inline-card.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(form).toBeVisible();
+    await card.screenshot({ path: testInfo.outputPath("agentmail-inline-card-mobile.png") });
+    await form.getByRole("button", { name: "Not now" }).click();
+    await expect(form).toHaveCount(0);
+    await expect.poll(async () => {
+      const rows = await json<Array<{ status: string }>>(await request.get(`/api/issues/${chat.id}/interactions`));
+      return rows.map(row => row.status);
+    }).toEqual(["rejected"]);
+    expect(await json(await request.get(`/api/companies/${seed.companyId}/email/inboxes`))).toEqual([]);
+    const connections = await json<{ connections: unknown[] }>(await request.get(`/api/companies/${seed.companyId}/tools/connections`));
+    expect(connections.connections).toEqual([]);
+  } finally {
+    await json(await request.patch("/api/instance/settings/experimental", { data: {
+      enableAgentChat: settings.enableAgentChat, enableChatConnectors: settings.enableChatConnectors,
+      enableClassicTaskInterface: settings.enableClassicTaskInterface,
+    } }));
+  }
+});
 
 async function waitForAgentRun(
   request: APIRequestContext,

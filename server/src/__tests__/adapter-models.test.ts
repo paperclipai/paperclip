@@ -63,8 +63,8 @@ describe("adapter model listing", () => {
 
     expect(models).toEqual(claudeFallbackModels);
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
-    // Newer flagship models are offered, but Opus 4.8 stays the default (first) option.
-    expect(models[0]?.id).toBe("claude-opus-4-8");
+    // Newest release of the most capable family leads the list (#14877).
+    expect(models[0]?.id).toBe("claude-fable-5-1");
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
@@ -95,6 +95,11 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
     expect(first.some((model) => model.id === "claude-opus-4-8")).toBe(true);
     expect(first.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+    // Discovered models take the curated order too: the API's order is not shown as-is.
+    const firstIds = first.map((model) => model.id);
+    expect(firstIds[0]).toBe("claude-fable-5-1");
+    expect(firstIds.indexOf("claude-opus-5-5")).toBeLessThan(firstIds.indexOf("claude-opus-4-8"));
+    expect(firstIds.indexOf("claude-opus-4-8")).toBeLessThan(firstIds.indexOf("claude-opus-4-8-20260529"));
   });
 
   it("refreshes cached claude models on demand", async () => {
@@ -159,8 +164,8 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("claude_local");
 
-    // Keep Opus 4.8 first, using its documented dateless Bedrock ID.
-    expect(models[0]?.id).toBe("us.anthropic.claude-opus-4-8");
+    // Fable 5.1 leads here too, using its documented dateless Bedrock ID.
+    expect(models[0]?.id).toBe("us.anthropic.claude-fable-5-1");
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
       "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5",
       "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7", "us.anthropic.claude-sonnet-4-6",

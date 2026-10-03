@@ -66,6 +66,10 @@ paused.” and “Resume this task to send a message.” with a “Resume task�
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
 
+Confirmations whose source work is still syncing show “Preparing approval…” and
+disable acceptance until the server reports readiness. Refresh that state automatically;
+rejection and revision remain available. Live tool reviews keep their own approval flow.
+
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
 messages while the card is open. Dismissing a card leaves a pending indicator that

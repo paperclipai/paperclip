@@ -419,7 +419,9 @@ export function AgentProviderConnection({
           (!managedAccount && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
-          !opened ||
+          // The saved-subscription chooser renders outside the opened section,
+          // so reusing the visible choice must not wait for a tile click.
+          (!opened && !(method === "subscription" && savedSubscription)) ||
           (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&

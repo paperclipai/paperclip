@@ -106,22 +106,25 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
   );
 }
 
+// Ordered the way the ChatGPT app orders Codex models (#14878): newest model version first,
+// then by decreasing capability inside each version, older models at the end. The server
+// returns this list as written and the model dropdown keeps its order.
 export const models = [
-  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, so it doubles as the first (default) 5.6 entry.
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },
   { id: "gpt-6-luna", label: "gpt-6-luna" },
+  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, the first 5.6 entry.
+  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
   { id: "gpt-5-mini", label: "gpt-5-mini" },
   { id: "gpt-5-nano", label: "gpt-5-nano" },
+  { id: "o3", label: "o3" },
+  { id: "o4-mini", label: "o4-mini" },
   { id: "o3-mini", label: "o3-mini" },
   { id: "codex-mini-latest", label: "Codex Mini" },
 ];

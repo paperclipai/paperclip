@@ -23,6 +23,8 @@ describe("live runner fixtures", () => {
   });
 
   it.each([
+    ["runner-codex", "hiring-templates", "hire-coder-template-reuse"],
+    ["runner-acpx-claude", "hiring-templates", "hire-coder-template-reuse"],
     ["runner-codex", "everyday-workflows", "hire-reuse"],
     ["runner-acpx-claude", "everyday-workflows", "hire-reuse"],
     ["runner-codex", "agent-chat-hardening", "hire-delegate-reuse"],

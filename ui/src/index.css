@@ -95,6 +95,10 @@
   --file-tree-indent-base: calc(var(--spacing) * 2);
   --file-tree-indent-step: calc(var(--spacing) * 6);
   --file-tree-indent-max: 40%;
+  --native-select-caret-half: calc(var(--spacing) * 1.5);
+  --native-select-caret-inset: calc(var(--spacing) * 3);
+  --native-select-caret-stroke: 1.5px;
+  --native-select-end-padding: calc(var(--spacing) * 9);
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -559,6 +563,31 @@
   .paperclip-mdxeditor [class*="_placeholder_"],
   .paperclip-mdxeditor-content {
     font-family: inherit;
+  }
+}
+
+/* Native single-value dropdowns share one inset caret. Padding alone does not
+   move the browser's arrow. Keep native menus/keyboard behavior and leave
+   listboxes and controls with their own appearance-none icon untouched.
+   This rule is outside layers so per-field px-* utilities cannot erase the
+   space reserved for the caret. currentColor follows every app theme. */
+select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]) {
+  appearance: none;
+  padding-inline-end: var(--native-select-end-padding);
+  background-image:
+    linear-gradient(45deg, transparent calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% + var(--native-select-caret-stroke) / 2), transparent calc(50% + var(--native-select-caret-stroke) / 2)),
+    linear-gradient(135deg, transparent calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% + var(--native-select-caret-stroke) / 2), transparent calc(50% + var(--native-select-caret-stroke) / 2));
+  background-position: right calc(var(--native-select-caret-inset) + var(--native-select-caret-half)) center, right var(--native-select-caret-inset) center;
+  background-size: var(--native-select-caret-half) var(--native-select-caret-half);
+  background-repeat: no-repeat;
+}
+select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]):dir(rtl) {
+  background-position: left var(--native-select-caret-inset) center, left calc(var(--native-select-caret-inset) + var(--native-select-caret-half)) center;
+}
+@media (forced-colors: active) {
+  select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]) {
+    appearance: auto;
+    background-image: none;
   }
 }
 

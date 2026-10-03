@@ -72,21 +72,24 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configura
 
 Note naming, icon, reporting-line, and adapter conventions the company already follows.
 
-### 4. Choose the instruction source (required)
+### 4. Describe the role
 
-This is the single most important decision for hire quality. Pick exactly one path:
+Use a short role paragraph for a new agent: its identity and the responsibility
+it owns. The [role examples](references/agent-instruction-templates.md) are
+optional starting points; for other roles, use the
+[baseline role guide](references/baseline-role-guide.md).
 
-- **Exact template** — the role matches an entry in the template index. Use the matching file under `references/agents/` as the starting point.
-- **Adjacent template** — no exact match, but an existing template is close (for example, a "Backend Engineer" hire adapted from `coder.md`, or a "Content Designer" adapted from `uxdesigner.md`). Copy the closest template and adapt deliberately: rename the role, rewrite the role charter, swap domain lenses, and remove sections that do not fit.
-- **Generic fallback** — no template is close. Use the baseline role guide to construct a new `AGENTS.md` from scratch, filling in each recommended section for the specific role.
+Company-specific instructions supplied by the requester take precedence. Do not
+expand a role description into a generic operating manual. The harness supplies
+Paperclip coordination, skill discovery, and task lifecycle guidance; repository
+instructions and installed skills carry applicable work procedures. Avoid
+adding heartbeat pointers, execution contracts, mandatory per-touch comments,
+fixed reviewer routes, or catalogs of domain concepts to the hire's instructions.
 
-Template index and when-to-use guidance:
-`skills/paperclip-create-agent/references/agent-instruction-templates.md`
-
-Generic fallback for no-template hires:
-`skills/paperclip-create-agent/references/baseline-role-guide.md`
-
-State which path you took in your hire-request comment so the board can see the reasoning.
+Keep reporting lines in `reportsTo`, capabilities in `capabilities`, and skills
+in `desiredSkills`. Add instruction detail only for a concrete company or role
+requirement that those fields, the task, repository instructions, or installed
+skills do not already express.
 
 ### 5. Discover allowed agent icons
 
@@ -107,9 +110,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
-- managed instructions bundle (`AGENTS.md`) for adapters that support it; avoid durable `promptTemplate` config
-- for coding or execution agents, include the Paperclip execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries
-- instruction text such as `AGENTS.md` built from step 4; for local managed-bundle adapters, send this as top-level `instructionsBundle.files["AGENTS.md"]`. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
+- when supplying role instructions from step 4, send them as top-level `instructionsBundle.files["AGENTS.md"]` for managed-bundle adapters. Otherwise use the server default. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 
 ### 7. Review the draft against the quality checklist
@@ -180,8 +181,8 @@ For each linked issue, either:
 
 ## References
 
-- Template index and how to apply a template: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
+- Optional role examples: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 - Individual role templates: `skills/paperclip-create-agent/references/agents/`
-- Generic baseline role guide (no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`
+- Short role drafting guide: `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`

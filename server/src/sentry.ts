@@ -126,7 +126,7 @@ export function captureException(error: unknown): void {
 }
 
 /** The run status values that mark a run as a genuine terminal failure. */
-export type RunFailureStatus = "failed" | "timed_out";
+export type RunFailureStatus = "failed" | "timed_out" | "cancelled";
 
 /**
  * The diagnostic values `captureRunFailure` sends with a terminal-failure

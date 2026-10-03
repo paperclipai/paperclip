@@ -77,5 +77,5 @@ export function canEnterAppsConnect(
   // setup. Admit only known providers here; the setup flow then proves the
   // exact reconnect target is visible to the selected company before rendering.
   if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
-  return chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
+  return source === "agentmail" || chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

@@ -5,6 +5,11 @@ export interface ExecutionBlocker {
   agentId: string | null;
   cause: string;
   nextAction: string;
+  runStatus?: string | null;
+  runError?: string | null;
+  /** Candidate only: admission must still verify termination and all gates. */
+  canContinue?: boolean;
+  savedMessageCount?: number;
 }
 
 /** Presentation of existing execution records, not a second task status machine. */

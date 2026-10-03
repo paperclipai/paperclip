@@ -1486,3 +1486,81 @@ the evaluated checkout byte for byte. The skill snapshot and provider run eviden
 are retained privately alongside the grading checkpoints for failure diagnosis.
 Claude receives a fresh provider home and config directory inside the disposable
 workspace so a user's installed skill cannot shadow the managed skill under test.
+
+
+## Production hiring templates
+
+`hiring-templates` adds two explicit-only local cells:
+
+- `hiring-templates.runner-codex.local.hire-coder-template-reuse`
+- `hiring-templates.runner-acpx-claude.local.hire-coder-template-reuse`
+
+The fixture creates a CEO through the public API without an instructions bundle
+override, using production permission defaults and a personal managed AI
+connection. Chromium sends the same user request on candidate and baseline:
+use `paperclip-create-agent`, read its skill, drafting guide, review checklist
+and coder example, fill its name/company/manager/issue-prefix placeholders,
+hire one permanent coder with that example, and delegate a
+saved JSON label-normalization fixture. Reading the optional references is an
+explicit fixture user request. It is not an additional production requirement.
+A follow-up delegates a second fixture to the same coder with underscore
+separators while preserving the original. A final read-only chat turn requests
+recorded task status. Three CEO turns and two actual worker executions make
+**five expected turns per cell**, with a **15-minute deadline** and 1,000-cent
+company/CEO budget hard stops. Normal managed-account fixture cleanup and
+company-wide cancellation apply. Both cells opt into the existing native API
+tools. No model-authored code is executed by the grading host.
+
+The independent oracle checks every JSON input and computed value, authorship,
+two distinct completed tasks, project/reporting identity, exact five-run count,
+managed execution-account attribution, original document preservation, and
+worker reuse. It separately checks the production CEO bundle, assigned hiring
+skill, source hashes, completed pre-hire read receipts, the saved source-derived
+coder example, and durable instruction/skill selections.
+
+`loadDefaultAgentInstructionsBundle("ceo")` determines the expected files and
+bytes on each evaluated revision. A historical four-file CEO bundle and long
+coder example are admissible; the candidate is not imposed on the baseline.
+Instruction bytes and word counts are measurements, without a size pass/fail
+threshold. The definition digest fingerprints the cases, flow and grader;
+source evidence also fingerprints the loader, generic execution contract,
+selected CEO files and production hiring references. Use the same fixture
+revision, scenario nonce, profile/model, managed account method and local
+environment when comparing candidate and baseline, and record each evaluated
+source SHA. Porting the fixture to a baseline is harness preparation, not a
+baseline runtime qualification.
+
+`hiring-template-source.json`, `hiring-template-initial.json`, and
+`hiring-template.json` retain source/bundle bytes, hashes, saved child documents,
+assigned skills, completed public run events, read receipts, budgets and grades
+inside the access-controlled evidence package. The final grade separates
+`outcomePassed` from `comparisonStatus` (`comparable` or `uncomparable`), with
+`outcome` and `coverage` matcher paths in the normal report. Missing, wrong,
+failed, post-hire or unidentifiable reads make source coverage uncomparable even
+when task outcomes pass. The existing machine failure classifier remains
+unchanged: a coverage-only failed attempt must be counted as an uncomparable
+pair, not presented as a workflow behavior regression or template equivalence.
+The new marked screenshot shows only the synthetic chat/task state; private
+snapshots follow the existing publication boundary.
+
+Read receipt support deliberately recognizes direct `cat`, positive-count
+`head`/`tail`, and printing-only `sed -n` argument forms. Help, version, zero-count,
+editing and unknown arguments do not count. It also recognizes
+canonical file-read events with a preserved relative skill path and completed
+output. ACPX redacts absolute file locations from canonical events; a read whose
+path no longer survives is unprovable and remains uncomparable. Echoing or
+listing a filename and successful task output do not prove a source read. No
+adapter event changes are part of this suite. Unit calibration and discovery do
+not qualify either live provider cell.
+
+```sh
+pnpm test:e2e:runner -- --list --suite hiring-templates
+# Only after separate approval for the bounded live run:
+pnpm test:e2e:runner -- --id hiring-templates.runner-codex.local.hire-coder-template-reuse --max-automatic-retries 0
+pnpm test:e2e:runner -- --id hiring-templates.runner-acpx-claude.local.hire-coder-template-reuse --max-automatic-retries 0
+```
+
+The existing `first-task` suite uses the actual onboarding wizard and captures
+the changed chief-of-staff persona and skill selections; it needs no fixture
+change for that default selection. Hiring from that wizard-created chief of
+staff remains a separate follow-up qualification.

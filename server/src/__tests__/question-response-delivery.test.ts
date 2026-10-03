@@ -214,6 +214,7 @@ describeEmbeddedPostgres("question response delivery", () => {
               id: "features",
               prompt: "Which features?",
               selectionMode: "multi",
+              allowOther: true,
               options: [
                 { id: "health", label: "Health check" },
                 { id: "logs", label: "Request logs" },

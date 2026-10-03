@@ -1,26 +1,31 @@
 import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
+import { sortClaudeModels } from "./model-order.js";
 
 const ANTHROPIC_MODELS_ENDPOINT = "/v1/models";
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
 const ANTHROPIC_MODELS_CACHE_TTL_MS = 60_000;
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
+/**
+ * AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. Listed in
+ * the order the picker shows them (see model-order.ts): newest release of each family first,
+ * then older releases grouped by family.
+ */
 const BEDROCK_MODELS: AdapterModel[] = [
-  { id: "us.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
-  { id: "us.anthropic.claude-opus-5-5", label: "Bedrock Opus 5.5" },
-  { id: "us.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
-  { id: "us.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
   // Fable 5.1's documented geo inference ID carries no -v1 suffix, unlike earlier entries.
   { id: "us.anthropic.claude-fable-5-1", label: "Bedrock Fable 5.1" },
-  { id: "us.anthropic.claude-fable-5", label: "Bedrock Fable 5" },
-  { id: "us.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
-  { id: "us.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
-  { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
-  { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
+  { id: "us.anthropic.claude-opus-5-5", label: "Bedrock Opus 5.5" },
+  { id: "us.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
   { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  { id: "us.anthropic.claude-fable-5", label: "Bedrock Fable 5" },
+  { id: "us.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
+  { id: "us.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
+  { id: "us.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
+  { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
+  { id: "us.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
+  { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
 ];
 
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
@@ -52,10 +57,11 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
 }
 
 function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
-  return dedupeModels([
+  // The Anthropic API returns models in its own order; the picker shows the curated one.
+  return sortClaudeModels(dedupeModels([
     ...models,
     ...DIRECT_MODELS,
-  ]);
+  ]));
 }
 
 function resolveAnthropicApiKey(): string | null {
@@ -109,9 +115,9 @@ async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<Ad
 }
 
 async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
-  if (isBedrockEnv()) return dedupeModels(BEDROCK_MODELS);
+  if (isBedrockEnv()) return sortClaudeModels(dedupeModels(BEDROCK_MODELS));
 
-  const fallback = dedupeModels(DIRECT_MODELS);
+  const fallback = sortClaudeModels(dedupeModels(DIRECT_MODELS));
   const apiKey = resolveAnthropicApiKey();
   if (!apiKey) return fallback;
 

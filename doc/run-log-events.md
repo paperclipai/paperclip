@@ -239,7 +239,29 @@ section in the Observability contract.
 
 ## Execution recovery
 
+Cancelled runs retain `resultJson.cancellation`: a closed `source` label
+(`operator`, `queued_message`, `shutdown`, `provider`, `transport`,
+`control_plane`, or `unknown`), whether the stop was expected, the initiator,
+reason, and recording time. Recorded stop intent survives adapter completion.
+The local lifecycle event includes this evidence. Started cancellations without
+an expected stop are also reported to Sentry; its cancellation diagnostics contain
+only source, expectedness, and initiator type, never initiator IDs or reason text.
+Historical ambiguous cancellations stay `unknown` and do not authorize replay.
+
+Provider tool-definition validation failures use
+`provider_tool_definition_invalid` / `configuration`. Automatic retry and
+continuation recovery stop until the configuration is repaired. Classification
+uses raw provider diagnostics in memory before redaction; stored diagnostics
+remain redacted and bounded.
+
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
+
+Ignored unrelated Codex notifications use `harness.diagnostic` with code
+`codex_unrelated_information`. The payload retains only the bounded provider
+method and expected/received thread and turn identifiers. Account updates, skill
+changes, and unrelated thread information do not create a provider notice in
+chat. Chat also omits the matching notice stored by older runners. Real provider
+warnings and errors remain visible.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
@@ -335,3 +357,10 @@ Successful checkpoints can include `checkpointStats`: `scannedEntries`,
 capture, not cumulative traffic or an atomic snapshot of background writers.
 They contain no file contents. The receipt remains in the instance run log;
 it adds no Paperclip Telemetry or OpenTelemetry export.
+
+If instruction-copy release throws, `instruction_cleanup` records a warning
+with payload `{ "state": "deferred" }`. The existing working-copy recovery sweep
+retries cleanup. This event preserves the run outcome and does not claim a file
+save; `instruction_save` remains authoritative for collection. The event contains
+no raw exception, host path, file contents, or lock-owner metadata. Failure to
+write the warning must not replace the provider outcome or stop lease release.

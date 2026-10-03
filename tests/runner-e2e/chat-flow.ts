@@ -1,3 +1,4 @@
+import { runHiringTemplateFlow } from "./hiring-template-flow.js";
 import { runAmbiguousConfirmationReply, runUnansweredQuestionReturn } from "./confirmation-replies.js";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -439,6 +440,8 @@ export async function runChatFlow(input: ChatFlowInput) {
     } else if (caseId.startsWith("handoff-completion-")) {
       await runChatCompletionUpdate({ input, marker, allRuns, issue: () => issue!,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (execution.suite.id === "hiring-templates") {
+      await runHiringTemplateFlow({ input, issue: () => issue!, turn, tasks, allRuns });
     } else if (execution.suite.id === "agent-chat-qualification") {
       const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };

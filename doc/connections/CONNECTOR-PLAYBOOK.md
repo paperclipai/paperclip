@@ -569,10 +569,10 @@ they do not need a duplicate native wrapper just to supply a skill.
 **Resolve eligibility from current assignments and access.** An AgentMail account
 credential alone does not give an agent email capabilities. An active inbox
 assigned to that agent does, provided both the inbox connection and saved
-credential access remain authorized and the experimental chat-connector flag is
-on. Other connectors must define an equally concrete assignment rule. Keep every
+credential access remain authorized. AgentMail is available by default and does
+not depend on the experimental chat-connector flag. Other connectors must define an equally concrete assignment rule. Keep every
 lookup company-scoped. Revoked grants, disabled connections, removed assignments,
-and experimental gates must remove the contribution. Fail closed on lookup errors.
+and any applicable experimental gates must remove the contribution. Fail closed on lookup errors.
 
 **Install skills transparently through the existing runtime skill path.** Merge
 system-managed contributions with the agent's chosen skills for each run, without

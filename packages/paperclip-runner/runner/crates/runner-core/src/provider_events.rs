@@ -812,6 +812,25 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "warning"
+            if params.get("classification").and_then(Value::as_str)
+                == Some("unrelated_information") =>
+        {
+            push(
+                &mut events,
+                "harness.diagnostic",
+                EventPriority::P1,
+                json!({
+                    "code": "codex_unrelated_information",
+                    "classification": "unrelated_information",
+                    "providerMethod": params.get("providerMethod").and_then(Value::as_str).map(|value| bounded_text(value, 160)),
+                    "expectedThreadId": params.get("expectedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedThreadId": params.get("receivedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "expectedTurnId": params.get("expectedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedTurnId": params.get("receivedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                }),
+            )
+        }
         "error" | "warning" | "deprecationNotice" | "configWarning" => push(
             &mut events,
             "provider.notice.recorded",
@@ -1420,6 +1439,68 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrelated_information_retains_only_bounded_run_log_diagnostics() {
+        let events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "message": "ignored unrelated provider information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": "x".repeat(300),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+                "accessToken": "not-for-the-log",
+                "planType": "private-account-data",
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "harness.diagnostic");
+        assert_eq!(events[0].priority, EventPriority::P1);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "code": "codex_unrelated_information",
+                "classification": "unrelated_information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": format!("{}…[truncated]", "x".repeat(244)),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+            })
+        );
+        let unicode_events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "expectedThreadId": "token=not-for-the-log",
+                "receivedThreadId": "😀".repeat(300),
+            }),
+        );
+        assert_eq!(
+            unicode_events[0].payload["expectedThreadId"],
+            "token=[REDACTED]"
+        );
+        assert_eq!(
+            unicode_events[0].payload["receivedThreadId"],
+            format!("{}…[truncated]", "😀".repeat(244))
+        );
+        assert_eq!(unicode_events[0].payload["receivedTurnId"], Value::Null);
+        // Authoritative errors must retain their failure meaning.
+        assert_eq!(
+            normalize_codex_notification(
+                "error",
+                &json!({
+                    "classification": "unrelated_information",
+                    "message": "Provider connection failed",
+                })
+            )[0]
+            .event_type,
+            "provider.notice.recorded"
+        );
+    }
 
     #[test]
     fn preserves_codex_notice_text_from_current_and_legacy_payloads() {

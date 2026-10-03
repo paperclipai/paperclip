@@ -294,3 +294,34 @@ cleanup include unexpected manager runs. The grader checks saved human input,
 requester identity for scope questions, ownership history, no additional work or
 hires, and the browser-answer continuation. See [Direct blocker guidance](README.md#direct-blocker-guidance)
 for coverage boundaries and run commands.
+
+
+## Source-derived hiring template fixture
+
+The explicit `hiring-templates` suite reuses the public company/agent, personal
+managed account and browser chat fixtures. `hiringTemplateProfile` removes the
+custom instruction bundle from the ordinary profile; the real agent creation
+route selects the evaluated revision's CEO bundle. Keep its two local native
+profiles, five expected runs and 15-minute deadline stable for paired runs.
+`isManagedHiringCase` requests the account fixture and `chatNeedsApiTools`
+enables only the existing API-tool path. It adds no private fixture endpoint,
+provider fake or database write.
+
+`hiring-template-flow.ts` reads the production instructions and company skill
+files through public APIs before dispatch and verifies their hashes against the
+checkout. The public run-events API supplies paginated read evidence after
+execution. `hiring-template-scoring.ts` grades deterministic child documents,
+actual worker identity/account, reuse and source coverage independently of the
+agents' claims. `hiring-template.test.ts` calibrates production Codex/ACPX event
+shapes, wrong/missing/late reads, incorrect/default bundles, source mismatch,
+wrong hire/output, missing durable state, and an admissible historical four-file
+CEO with a long coder role.
+
+Preserve both dimensions in a comparison: `outcomePassed` describes the work;
+`comparisonStatus` describes whether the expected sources and reads were proven.
+Unprovable provider event shapes are coverage gaps. They must not become a
+passing template comparison or a claimed behavior regression. The existing
+report matcher paths carry the dimension and private final evidence carries the
+explicit status. Provider runs are separately authorized; unit results establish
+oracle calibration only. See the [suite contract](README.md#production-hiring-templates)
+for evidence, budgets, cleanup and exact IDs.

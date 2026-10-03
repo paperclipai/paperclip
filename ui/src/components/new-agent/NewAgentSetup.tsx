@@ -64,6 +64,7 @@ import {
   AgentProviderConnection,
   type ProviderConnection,
 } from "./AgentProviderConnection";
+import { adapterCuratesModelOrder } from "../../lib/model-utils";
 
 const controlClass =
   "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -883,6 +884,7 @@ function Setup({
                                 required={multiProvider}
                                 creatable
                                 groupByProvider={multiProvider}
+                                preserveOrder={adapterCuratesModelOrder(brandType)}
                               />
                             )}
                             {efforts.length > 0 && (

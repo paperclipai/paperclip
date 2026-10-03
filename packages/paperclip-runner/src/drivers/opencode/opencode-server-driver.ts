@@ -134,6 +134,7 @@ interface OpenCodeRuntime {
 
 const CAPABILITIES: NativeSessionCapabilities = {
   resume: true,
+  toolRefreshOnResume: true,
   typedEvents: true,
   typedEventFamilies: providerFamilyCapabilities({
     tool_execution: "available",

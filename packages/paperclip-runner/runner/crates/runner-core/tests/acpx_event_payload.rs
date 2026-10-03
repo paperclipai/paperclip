@@ -176,7 +176,7 @@ fn rejects_unclassified_and_malformed_runtime_payloads() {
 #[test]
 fn decodes_tool_and_permission_requests_after_scope_validation() {
     let scope = active_scope();
-    let rejected = decode_acpx_event(
+    let decoded = decode_acpx_event(
         &scope,
         &event(
             GeneratedAcpxSidecarEventType::RuntimeToolCalled,
@@ -187,10 +187,9 @@ fn decodes_tool_and_permission_requests_after_scope_validation() {
             }),
         ),
     )
-    .unwrap_err();
-    assert!(rejected
-        .to_string()
-        .contains("refusing to execute altered arguments"));
+    .unwrap();
+    assert!(matches!(decoded, AcpxEventPayload::ToolCalled {input, ..}
+        if input == json!({"issueId":"issue-1", "apiToken":"secret-value"})));
 
     let permission = decode_acpx_event(
         &scope,
