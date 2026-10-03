@@ -1932,8 +1932,9 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
-    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+    environmentLeaseCleanupHeartbeat.closeRunAdmissionForShutdown();
     heartbeatSchedulerStopped = true;
+    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     unsubscribeChatCompletions();
     clearInterval(executionControlInterval);
     if (heartbeatSchedulerInterval) {

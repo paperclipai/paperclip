@@ -1320,6 +1320,11 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// The scheduler and HTTP routes construct separate services over the same Db.
+// Closing admission belongs to that server lifetime, not to one service. A new
+// server creates a new Db; no operator action can reopen a closing lifetime.
+const shutdownDatabases = new WeakSet<Db>();
+class ShutdownAdmissionClosedError extends Error {}
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -9554,7 +9559,9 @@ export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
 ) {
-  let shutdownInProgress = false;
+  const closeRunAdmissionForShutdown = () => {
+    shutdownDatabases.add(db);
+  };
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -9609,9 +9616,18 @@ export function heartbeatService(
   };
   const getSchedulingSuppression = async () => {
     const override = await resolveWorktreeRunExecutionOverride();
-    return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
+    const suppression = resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
     });
+    // Preserve quarantine policies that skip requests instead of queueing them.
+    if (suppression.suppressed && suppression.reason !== "task_drain") {
+      return suppression;
+    }
+    // Read the shared hold after the asynchronous settings lookup as well.
+    if (shutdownDatabases.has(db)) {
+      return { suppressed: true, reason: "server_shutdown" as const };
+    }
+    return suppression;
   };
   const getWorktreeExecutionCutoff = async () => {
     const override = await resolveWorktreeRunExecutionOverride();
@@ -14600,7 +14616,7 @@ export function heartbeatService(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
   ) {
-    shutdownInProgress = true;
+    closeRunAdmissionForShutdown();
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
       logger.warn({ idleSessions }, "idle native sessions could not checkpoint before controller shutdown");
@@ -15198,6 +15214,7 @@ export function heartbeatService(
     now = new Date(),
     runIds: readonly string[] | null = null,
   ) {
+    closeRunAdmissionForShutdown();
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return {
@@ -20325,6 +20342,8 @@ export function heartbeatService(
     }
 
     let legacyAdapterEntered = false;
+    let shutdownClaimReleasePending = false;
+    let nativeShutdownRequiresRestartRecovery = false;
     let run = await getRun(runId);
     if (!run) return;
     if (run.status !== "queued" && run.status !== "running") return;
@@ -22749,11 +22768,29 @@ export function heartbeatService(
           },
         );
       }
+      const assertShutdownAdmissionOpen = (runtimeMode: "legacy" | "native") => {
+        if (!shutdownDatabases.has(db)) return;
+        // Selected native state can retain a runner from an earlier turn.
+        // Preserve its existing restart ownership path instead of requeueing it
+        // on the assumption that no managed process exists.
+        if (runtimeMode === "native" && nativeShutdownRequiresRestartRecovery) {
+          throw new NativeControllerDetachedForRestartError();
+        }
+        throw new ShutdownAdmissionClosedError();
+      };
       const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
+        runtimeMode: "legacy" | "native",
         dispatch: (markDispatchStarted: () => void) => Promise<T>,
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
+        assertShutdownAdmissionOpen(runtimeMode);
+        const dispatchIfOpen = (markDispatchStarted: () => void) => {
+          // This check and handoff are synchronous, including when the
+          // continuation gate has just awaited its database ownership lock.
+          assertShutdownAdmissionOpen(runtimeMode);
+          return dispatch(markDispatchStarted);
+        };
         await controllerLease.assertOwned("dispatching");
         // Recheck after workspace/credential preparation, immediately before the
         // provider handoff. Never hold validation locks while adapter code runs.
@@ -22787,7 +22824,7 @@ export function heartbeatService(
           (!isResolvedInteractionContinuationWakeContext(context) &&
             run.scheduledRetryReason !== "native_safe_replacement")
         ) {
-          return { dispatched: true, resultPromise: dispatch(() => {}) };
+          return { dispatched: true, resultPromise: dispatchIfOpen(() => {}) };
         }
         await options.beforeResolvedInteractionContinuationDispatchCheck?.({
           runId: run.id,
@@ -22804,7 +22841,7 @@ export function heartbeatService(
           expectedStatus: "running",
           // Synchronous handoff under the ownership lock; the gate commits
           // without awaiting the adapter's asynchronous bootstrap or finalizer.
-          dispatch,
+          dispatch: dispatchIfOpen,
         });
 
         if (gate.dispatched) return gate;
@@ -24170,6 +24207,19 @@ export function heartbeatService(
             }
             nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
           }
+          const priorProcess = previousNativeRun?.nativeSessionId === nativeSessionId
+            ? previousNativeRun : null;
+          nativeShutdownRequiresRestartRecovery = Boolean(
+            runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery ||
+            nativeInstructionReservation ||
+            !isUnusedNativeSessionBootstrap({
+              processPid: run.processPid ?? priorProcess?.processPid ?? null,
+              processGroupId: run.processGroupId ?? priorProcess?.processGroupId ?? null,
+              processStartedAt: run.processStartedAt ?? priorProcess?.processStartedAt ?? null,
+              runnerProfileJson: { ...persistedProfile,
+                sessionCheckpoint: nativeResumeCheckpoint ?? persistedProfile.sessionCheckpoint ?? null },
+            }, nativeBootstrapHasProviderEvidence),
+          );
           const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
             adapterType: agent.adapterType,
             lifecyclePolicy: nativeExecution.session.lifecyclePolicy,
@@ -24716,6 +24766,7 @@ export function heartbeatService(
             );
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
+                "native",
                 (markDispatchStarted) =>
                   executePaperclipNativeSession({
                     db,
@@ -24939,9 +24990,12 @@ export function heartbeatService(
             }
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
+                "legacy",
                 (markDispatchStarted) => {
-                  legacyAdapterEntered = true;
-                  return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
+                  return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => {
+                    assertShutdownAdmissionOpen("legacy");
+                    legacyAdapterEntered = true;
+                    return adapter.execute({
                     getFreshSessionHandoff,
                     runId: run.id,
                     agent,
@@ -25017,7 +25071,8 @@ export function heartbeatService(
                       });
                     },
                     authToken: authToken ?? undefined,
-                  }));
+                  });
+                  });
                 },
               );
             if (!guardedDispatch.dispatched) return;
@@ -25979,6 +26034,11 @@ export function heartbeatService(
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
       } catch (err) {
+        if (err instanceof ShutdownAdmissionClosedError) {
+          // Retain the claim until preparation resources finish cleanup below.
+          shutdownClaimReleasePending = true;
+          return;
+        }
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
           return;
@@ -26609,12 +26669,15 @@ export function heartbeatService(
         // Close the invariant "environment lease released implies the run is
         // terminal". When the teardown reaches this point with the run still
         // running or queued, force a terminal status before the lease is
-        // released, so the UI never shows a finished task as "Live".
+        // released, so the UI never shows a finished task as "Live". A shutdown
+        // deferral has not entered the provider; it keeps its claim through
+        // cleanup and returns to the durable queue afterward.
         if (
           latestRun &&
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld
+          !nativeOwnershipHeld &&
+          !shutdownClaimReleasePending
         ) {
           latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
             (terminalizeErr) => {
@@ -26647,7 +26710,7 @@ export function heartbeatService(
           if (
             githubLauncherLocation &&
             latestRun &&
-            isHeartbeatRunTerminalStatus(latestRun.status)
+            (isHeartbeatRunTerminalStatus(latestRun.status) || shutdownClaimReleasePending)
           ) {
             await cleanupGitHubOperationLaunchers(githubLauncherLocation).catch(
               (err) => {
@@ -26681,7 +26744,7 @@ export function heartbeatService(
         if (
           runScratch &&
           latestRun &&
-          isHeartbeatRunTerminalStatus(latestRun.status)
+          (isHeartbeatRunTerminalStatus(latestRun.status) || (shutdownClaimReleasePending && !nativeOwnershipHeld))
         ) {
           const scratchForCleanup = runScratch;
           let scratchCleanup: Awaited<
@@ -26767,6 +26830,13 @@ export function heartbeatService(
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
+      if (shutdownClaimReleasePending && !nativeOwnershipHeld) {
+        await releaseRunClaimedJustBeforeSuppression(run.id);
+        await db.update(agents).set({ status: "idle", updatedAt: new Date() }).where(and(
+          eq(agents.id, run.agentId), eq(agents.companyId, run.companyId), eq(agents.status, "running"),
+          sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${run.agentId} and ${heartbeatRuns.status} = 'running')`,
+        ));
+      }
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
@@ -26782,7 +26852,7 @@ export function heartbeatService(
       if (
         !nativeSessionResumeScheduled &&
         !nativeWorkspaceFinalizeScheduled &&
-        !shutdownInProgress
+        !shutdownDatabases.has(db)
       ) {
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
@@ -27069,7 +27139,7 @@ export function heartbeatService(
     };
 
     const schedulingSuppression = await getSchedulingSuppression();
-    // A task drain holds ADMISSION, not the request. The drain is a
+    // Task-drain and shutdown holds block ADMISSION, not the request. A hold is a
     // process-local pre-restart hold, so a wake that arrives while it is
     // active still names real work that must run once the process comes
     // back: leave it in the durable queue and let the dispatch-side checks
@@ -27080,7 +27150,8 @@ export function heartbeatService(
     // run and no path until a person noticed.
     if (
       schedulingSuppression.suppressed &&
-      schedulingSuppression.reason !== "task_drain"
+      schedulingSuppression.reason !== "task_drain" &&
+      schedulingSuppression.reason !== "server_shutdown"
     ) {
       await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
         reason: schedulingSuppression.reason,
@@ -30254,6 +30325,7 @@ export function heartbeatService(
     reportRunActivity: clearDetachedRunWarning,
 
     prepareHotRestartShutdown,
+    closeRunAdmissionForShutdown,
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
