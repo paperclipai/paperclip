@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { mirrorCostEventToWorkspace } from "./cost-event-mirror.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface CostDateRange {
@@ -99,6 +100,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      void mirrorCostEventToWorkspace(db, event).catch((err) => {
+        console.warn(
+          { err, eventId: event.id },
+          "cost_event_mirror: unexpected error from fire-and-forget mirror call",
+        );
+      });
 
       return event;
     },

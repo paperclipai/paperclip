@@ -22,6 +22,7 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { readCostEventsMirror } from "../services/cost-event-mirror.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -383,6 +384,45 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
+  });
+
+  router.get("/projects/:id/cost-events", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+
+    const primaryWorkspace = project.primaryWorkspace ?? project.workspaces.find((w) => w.isPrimary) ?? project.workspaces[0] ?? null;
+    const cwd = primaryWorkspace?.cwd ?? null;
+
+    if (!cwd) {
+      res.json({ projectId: project.id, cwd: null, events: [] });
+      return;
+    }
+
+    const sinceRaw = typeof req.query.since === "string" ? req.query.since : undefined;
+    const untilRaw = typeof req.query.until === "string" ? req.query.until : undefined;
+    const limitRaw = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : NaN;
+
+    let events: Awaited<ReturnType<typeof readCostEventsMirror>>;
+    try {
+      events = await readCostEventsMirror(cwd, {
+        since: sinceRaw,
+        until: untilRaw,
+        limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : "Failed to read cost event mirror",
+      });
+      return;
+    }
+
+    res.json({
+      projectId: project.id,
+      cwd,
+      events: events.map((e) => e.raw),
+    });
   });
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
