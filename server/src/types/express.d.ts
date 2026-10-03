@@ -1,6 +1,6 @@
 export {};
 
-import type { AgentApiKeyScope } from "@paperclipai/shared";
+import type { AgentApiKeyScope, DeploymentMode } from "@paperclipai/shared";
 
 declare global {
   namespace Express {
@@ -31,6 +31,14 @@ declare global {
         onBehalfOfUserId?: string | null;
         identityContextId?: string | null;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "cloud_control" | "none";
+        /**
+         * The deployment this request arrived on, stamped by `actorMiddleware`
+         * from its own configuration. It survives the actor replacement that
+         * bearer credentials cause, so a route can read a deployment fact
+         * without inferring it from `source`, which describes the credential
+         * rather than the deployment.
+         */
+        deploymentMode?: DeploymentMode;
       };
     }
   }

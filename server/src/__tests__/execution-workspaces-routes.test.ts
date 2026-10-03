@@ -242,6 +242,9 @@ describe.sequential("execution workspace routes", () => {
         agentId: null,
         runId: null,
       },
+      // The harness actor carries no deployment stamp, which reads as
+      // `authenticated`: the strict direction.
+      deploymentMode: "authenticated",
     });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "execution_workspace.branch_reconciled",
@@ -260,6 +263,63 @@ describe.sequential("execution workspace routes", () => {
         recoveryActionId: "recovery-1",
       }),
     }));
+  });
+
+  it("passes the deployment stamp to the reconcile so a local_trusted hold survives it", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        branchName: "feature/recorded",
+      },
+      inspection: {
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        worktreePath: "/tmp/worktree",
+        repoRoot: "/tmp/repo",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/live",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "diverged",
+        cleanliness: "dirty",
+        statusEntryCount: 2,
+        plainLanguageReason: "dirty live branch",
+      },
+      recoveryAction: {
+        id: "recovery-1",
+      },
+      auditCommentId: "comment-1",
+    });
+
+    const res = await request(
+      // The route is board-only, so the deployment stamp has to reach the
+      // service on the board path it actually serves.
+      createApp({
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        deploymentMode: "local_trusted",
+      }),
+    )
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send({ mode: "quarantine_restore" });
+
+    expect(res.status).toBe(200);
+    // The reconcile must judge the board sentinel the way the deployment does.
+    // Reading it from `source` would answer `authenticated` here, and the
+    // restore would dissolve a hold that this deployment can satisfy.
+    expect(mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch).toHaveBeenCalledWith(
+      "workspace-1",
+      expect.objectContaining({ deploymentMode: "local_trusted" }),
+    );
   });
 
   it("accepts quarantine_restore, logs the rescue ref, and wakes the restored source issue", async () => {
@@ -322,6 +382,9 @@ describe.sequential("execution workspace routes", () => {
         agentId: null,
         runId: null,
       },
+      // The harness actor carries no deployment stamp, which reads as
+      // `authenticated`: the strict direction.
+      deploymentMode: "authenticated",
     });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "execution_workspace.branch_reconciled",

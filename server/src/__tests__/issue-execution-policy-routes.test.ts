@@ -30,6 +30,10 @@ const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => false),
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
+  // The stage transition reads the company's assignable users while the
+  // execution state is pending. This fixture has no membership rows, so no user
+  // can be assigned and the round keeps its return-assignee fallback.
+  listAssignableUserIds: vi.fn(async () => new Set<string>()),
 }));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   for: () => ({

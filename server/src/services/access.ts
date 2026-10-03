@@ -21,6 +21,7 @@ import { authorizationService, type AuthorizationActor, type AuthorizationResour
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
+type DbReader = Pick<Db, "select">;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
@@ -428,8 +429,8 @@ export function accessService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function listActiveUserMemberships(companyId: string) {
-    return db
+  async function listActiveUserMemberships(companyId: string, reader: DbReader = db) {
+    return reader
       .select()
       .from(companyMemberships)
       .where(
@@ -440,6 +441,22 @@ export function accessService(db: Db) {
         ),
       )
       .orderBy(sql`${companyMemberships.createdAt} asc`);
+  }
+
+  /**
+   * The user ids this company can put on an issue — exactly the rule
+   * `assertAssignableUser` enforces on the write path, where the refusal fails
+   * the whole PATCH rather than falling through to another candidate.
+   *
+   * Returned as a set rather than answered per id because the caller cannot
+   * know which ids a stage transition will ask about: escalation reads the
+   * issue's `responsibleUserId` then its `createdByUserId`, and the escalated
+   * hold reads the recorded participant. A company's active members are few
+   * and `(company_id, status)` is indexed, so one read covers all of them.
+   */
+  async function listAssignableUserIds(companyId: string, reader: DbReader = db): Promise<Set<string>> {
+    const memberships = await listActiveUserMemberships(companyId, reader);
+    return new Set(memberships.map((membership) => membership.principalId));
   }
 
   async function setMemberPermissions(
@@ -1135,6 +1152,7 @@ export function accessService(db: Db) {
     ensureMembership,
     listMembers,
     listActiveUserMemberships,
+    listAssignableUserIds,
     copyActiveUserMemberships,
     ensureRoleDefaultGrants,
     archiveMember,
