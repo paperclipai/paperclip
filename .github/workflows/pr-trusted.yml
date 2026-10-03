@@ -637,6 +637,19 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+      - name: Verify accounting coverage and crash recovery
+        if: ${{ !cancelled() && matrix.group == 'general-server-without-chat' && matrix.shard_index == 0 }}
+        run: pnpm test:accounting
+
+      - name: Upload accounting coverage
+        if: ${{ !cancelled() && matrix.group == 'general-server-without-chat' && matrix.shard_index == 0 }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accounting-coverage
+          path: coverage/accounting/
+          if-no-files-found: error
+          retention-days: 14
+
   docker_context_integrity:
     name: Docker context integrity
     needs: gate
