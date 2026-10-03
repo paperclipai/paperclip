@@ -2785,6 +2785,7 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 
 export * from "./agent-appearance.js";
 export * from "./ai-connections.js";
+export * from "./ai-connection-router.js";
 export * from "./ai-connection-usage.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";

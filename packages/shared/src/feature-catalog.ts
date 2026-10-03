@@ -50,6 +50,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAiConnectionRouters: {
+    title: "AI connection routers",
+    description: "Allow experimental plugin connections to choose task-pinned accounts and harnesses.",
+    tier: "managed", cloudDefault: false, selfHostedDefault: false,
+  },
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:

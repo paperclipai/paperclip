@@ -1,3 +1,4 @@
+import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { completeConnectionIntentSchema } from "@paperclipai/shared";
 import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
@@ -5,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding, aiRuntimeConnectionBindingSchema, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
@@ -3241,6 +3242,21 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
+    const poolId = asNonEmptyString(req.query.poolId);
+    if (poolId) {
+      const pool = (await aiConnectionRouterService(db).selectable(companyId, getActorInfo(req).actorId)).find(pool => pool.id === poolId);
+      if (!pool) throw unprocessable("Enable an accessible AI connection pool");
+      const catalog = new Map<string, { id: string; label: string }>();
+      for (const member of pool.members) {
+        const memberAdapter = member.binding.provider === "openai" ? "codex_local" : member.binding.provider === "anthropic" ? "claude_local" : member.binding.provider === "xai" ? "grok_local" : "opencode_local";
+        const models = [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
+        for (const model of models) {
+          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
+        }
+      }
+      res.json([...catalog.values()]);
+      return;
+    }
     const refresh = typeof req.query.refresh === "string"
       ? ["1", "true", "yes"].includes(req.query.refresh.toLowerCase())
       : false;
@@ -3379,7 +3395,16 @@ export function agentRoutes(
     return result;
   }
 
-  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
+  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
+    if (binding.mode === "router") {
+
+      const settings = await import("../services/instance-settings.js");
+      if (!(await settings.instanceSettingsService(db).getExperimental()).enableAiConnectionRouters) throw unprocessable("Enable AI connection routers in Experimental settings");
+      const pool = (await aiConnectionRouterService(db).selectable(companyId, responsibleUserForAiRequest(req) ?? "")).find((p) => p.id === binding.connectionId && p.enabled);
+      if (!pool) throw unprocessable("Enable the selected connection pool");
+      if (!pool.members.some((m) => { try { poolMemberRuntimeConfig(m, adapterType); return true; } catch { return false; } })) throw unprocessable("This pool has no compatible harness");
+      return pool.id;
+    }
     const userId = responsibleUserForAiRequest(req);
     const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
     const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch((error: unknown) => {
@@ -3422,7 +3447,8 @@ export function agentRoutes(
 
       const adapter = requireServerAdapter(type);
 
-      const aiBinding = req.body.aiConnection ? aiConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
+      const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
+      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
@@ -3433,6 +3459,12 @@ export function agentRoutes(
         if (!savedAgent) return;
         if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
         await assertCanUpdateAgent(req, savedAgent);
+      }
+      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      if (poolBinding?.mode === "router") {
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, req.body.adapterConfig ?? {}, poolBinding, req.body.environmentId, false);
+        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
+        return;
       }
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
@@ -4632,7 +4664,7 @@ export function agentRoutes(
 
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
-      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
       const managedHireConnectionId = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
       const createdAgent = await svc.create(
         companyId,
@@ -4881,7 +4913,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
-    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
+    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
     const managedConnectionId = managedBinding ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
     const createdAgent = await svc.create(
       companyId,
@@ -5560,12 +5592,12 @@ export function agentRoutes(
       });
     }
     if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      if (!isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
+      if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
       if (changed) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;

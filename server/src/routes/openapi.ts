@@ -7,6 +7,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   createAiConnectionSchema,
+  aiConnectionPoolConfigSchema,
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
@@ -10372,6 +10373,31 @@ registerCurrentRoute({
 });
 
 // --- AI runtime connections -------------------------------------------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connection-pools",
+  tags: ["ai-connections"],
+  summary: "List company AI connection pools for connection managers",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connection-pools",
+  tags: ["ai-connections"],
+  summary: "Create or revise an experimental plugin-owned connection pool",
+  body: z.object({ pluginKey: z.string().min(1), id: z.string().uuid().optional(), expectedRevision: z.number().int().positive().optional(), config: aiConnectionPoolConfigSchema }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connection-pools/{poolId}/inspection",
+  tags: ["ai-connections"],
+  summary: "Inspect authorized pool members and fresh cached usage without probing",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
 
 registerCurrentRoute({
   method: "get",

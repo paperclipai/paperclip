@@ -1899,3 +1899,11 @@ unavailable. Preserve current ownership and newer-work fences. See
   endpoints delegate to sources while retaining response shapes.
 - GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
   or pull-request creation in this milestone.
+
+### Experimental AI connection routing
+
+Opt-in plugin routers may represent a pool as an AI runtime binding. Core keeps
+company and credential authorization, atomically records task/agent affinity and
+a pool cursor, and persists concrete native recovery evidence. The full contract
+is in [AI-CONNECTION-ROUTERS.md](connections/AI-CONNECTION-ROUTERS.md). Disabled
+routing cannot allocate new tasks; already admitted native runs remain recoverable.

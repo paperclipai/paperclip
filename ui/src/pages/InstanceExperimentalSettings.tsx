@@ -118,6 +118,22 @@ function ExperimentalToggleCard({
   );
 }
 
+/** The actual router opt-in card, also mounted directly in Storybook. */
+export function AiConnectionRoutersSetting({ checked, onCheckedChange, disabled = false, managed }: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  managed?: ManagedSettingMetadata;
+}) {
+  return <ExperimentalToggleCard
+    title="AI connection routers"
+    description="Allow experimental plugins to rotate new tasks through authorized AI accounts. Each task keeps its account and harness; exhausted tasks wait for usage to recover. Install a compatible router plugin and enable a pool separately."
+    checked={checked} onCheckedChange={onCheckedChange} disabled={disabled}
+    settingKey="enableAiConnectionRouters" managed={managed}
+    ariaLabel="Toggle AI connection routers experimental setting"
+  />;
+}
+
 export function InstanceExperimentalSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -303,6 +319,13 @@ export function InstanceExperimentalSettings() {
           settingKey="enableAgentChat"
           managed={managedKeys.enableAgentChat}
           ariaLabel="Toggle agent chat experimental setting"
+        />
+
+        <AiConnectionRoutersSetting
+          checked={experimentalQuery.data?.enableAiConnectionRouters === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAiConnectionRouters: checked })}
+          disabled={toggleMutation.isPending}
+          managed={managedKeys.enableAiConnectionRouters}
         />
 
         <ExperimentalToggleCard

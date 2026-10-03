@@ -176,6 +176,7 @@ export interface AiManagedConnectionSummary {
 }
 export interface AiConnectionList {
   currentUserId: string;
+  pools?: import("./ai-connection-router.js").AiConnectionPool[];
   canManageConnections: boolean;
   connections: AiManagedConnectionSummary[];
 }

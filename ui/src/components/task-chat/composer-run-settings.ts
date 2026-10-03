@@ -2,7 +2,7 @@ import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCo
 import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { DEFAULT_KIMI_LOCAL_MODEL, modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
-import { aiConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 export interface ComposerRunSettings {
   model: string | null;
@@ -40,6 +40,8 @@ export function composerEfforts(agent: Agent | undefined, model: string, catalog
   const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
     : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
   if (!effectiveModel) return [];
+  const pool = aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection).data?.mode === "router";
+  if (pool && agent.adapterType === "paperclip_runner") return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
   if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
     return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
   }

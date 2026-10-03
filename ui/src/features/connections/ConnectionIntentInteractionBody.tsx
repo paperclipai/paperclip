@@ -198,7 +198,7 @@ export function ConnectionIntentInteractionBody({
         } else {
           const agent = await agentsApi.get(interaction.payload.requestingAgentId, interaction.companyId);
           const current = agent.runtimeConfig.aiConnection;
-          if (!current || current.mode === "responsible_user" || current.connectionId !== previous.id || current.grantId !== previous.grantId) {
+          if (!current || current.mode === "responsible_user" || current.mode === "router" || current.connectionId !== previous.id || current.grantId !== previous.grantId) {
             throw new Error("The agent’s AI connection changed. Reload the task and try again.");
           }
           if (result.generation !== setupGeneration.current) return;

@@ -3,12 +3,13 @@ import { emailConnectionService } from "./email-connections.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  aiConnectionTaskPins,
   companies,
   toolConnections,
   toolCatalogEntries,
@@ -227,11 +228,26 @@ export function connectionIntentService(db: Db) {
     };
   }
 
-  async function managedAgent(companyId: string, agentId: string, serviceSlug: string, fallback?: AiConnectionBinding) {
-    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
-    const saved = aiConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
-    const binding = saved ?? fallback;
-    return agent && binding?.provider === serviceSlug ? { agent, binding, requiresAdoption: !saved } : null;
+  async function managedAgent(companyId: string, agentId: string, serviceSlug: string, options: { fallback?: AiConnectionBinding; sourceRunId?: string | null } = {}, client = db) {
+    const [agent] = await client.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (!agent) return null;
+    const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    if (router) {
+      // Repair the durable task allocation, without adopting a personal default
+      // or replacing the agent's pool. A changed pool invalidates the old card.
+      if (!options.sourceRunId) return null;
+      const [source] = await client.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.id, options.sourceRunId)));
+      const taskKey = text(source?.contextSnapshot?.aiRouterTaskKey);
+      const evidence = record(source?.contextSnapshot?.aiRouterSelection);
+      if (!source || !isAiAuthenticationFailure(source.errorCode) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
+      const [pin] = await client.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.poolId, router.connectionId), eq(aiConnectionTaskPins.agentId, agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
+      const binding = pin?.selection.binding;
+      if (!pin || binding?.provider !== serviceSlug || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
+      return { agent, binding, adapterConfig: { ...agent.adapterConfig, ...pin.selection.runtimeConfig }, requiresAdoption: false };
+    }
+    const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    const binding = saved ?? options.fallback;
+    return binding?.provider === serviceSlug ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
   }
 
   async function usableConnectionForAgent(input: {
@@ -240,12 +256,13 @@ export function connectionIntentService(db: Db) {
     responsibleUserId: string;
     serviceSlug: string;
     purpose?: "ai" | "channel";
+    sourceRunId?: string | null;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
   }) {
-    const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug) : null;
+    const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug, { sourceRunId: input.sourceRunId }) : null;
     if (managed) {
       try {
-        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.responsibleUserId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding });
+        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.responsibleUserId, adapterType: managed.agent.adapterType, model: managed.adapterConfig.model, runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent, binding: managed.binding });
         return access.getConnection(selected.connection.id, input.companyId);
       } catch (error) { if ([403, 404, 422].includes((error as { status?: number }).status ?? 0)) return null; throw error; }
     }
@@ -690,6 +707,7 @@ export function connectionIntentService(db: Db) {
       responsibleUserId: context.run.responsibleUserId!,
       serviceSlug: app.slug,
       purpose: options.purpose,
+      sourceRunId: context.run.id,
     });
     if (ready) {
       return {
@@ -784,7 +802,7 @@ export function connectionIntentService(db: Db) {
           readyConnectionId: inboxes.find(inbox => inbox.id === interactionId)?.connectionId ?? null },
       };
     }
-    let managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug) : null;
+    let managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug, { sourceRunId: loaded.interaction.sourceRunId }) : null;
     if (payload.purpose === "ai" && !managed) {
       const [source] = await db.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, loaded.interaction.sourceRunId!), eq(heartbeatRuns.companyId, loaded.issue.companyId),
@@ -792,21 +810,21 @@ export function connectionIntentService(db: Db) {
       ));
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId), eq(agents.companyId, loaded.issue.companyId)));
       if (source?.status === "failed" && isAiAuthenticationFailure(source.errorCode) && !source.contextSnapshot?.aiConnection && agent && !agent.runtimeConfig.aiConnection) {
-        managed = await managedAgent(loaded.issue.companyId, agent.id, app.slug, aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig));
+        managed = await managedAgent(loaded.issue.companyId, agent.id, app.slug, { fallback: aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig) });
       }
     }
     if (payload.purpose === "ai" && !managed) throw conflict("The agent’s AI configuration changed. Start a new execution.");
     const inventory = await connectionInventory(loaded.issue.companyId);
     let usableAiConnection = managed ? await usableConnectionForAgent({
       companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,
-      responsibleUserId: loaded.interaction.addresseeUserId!, serviceSlug: app.slug, purpose: "ai",
+      responsibleUserId: loaded.interaction.addresseeUserId!, serviceSlug: app.slug, purpose: "ai", sourceRunId: loaded.interaction.sourceRunId,
     }) : null;
     if (managed?.requiresAdoption) {
       try {
         const selected = await aiConnectionService(db).select({
           companyId: loaded.issue.companyId, agentId: managed.agent.id, userId: loaded.interaction.addresseeUserId!,
-          adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model,
-          runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent,
+          adapterType: managed.agent.adapterType, model: managed.adapterConfig.model,
+          runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent,
           binding: managed.binding, allowUninstalledPersonal: true,
         });
         usableAiConnection = await access.getConnection(selected.connection.id, loaded.issue.companyId);
@@ -955,19 +973,19 @@ export function connectionIntentService(db: Db) {
             action: "agent.updated", entityType: "agent", entityId: agent.id,
             details: { connectionIntentId: interactionId, aiConnectionAdopted: true },
           });
-          managed = { agent: updated, binding, requiresAdoption: false };
+          managed = { agent: updated, binding, adapterConfig: updated.adapterConfig, requiresAdoption: false };
         } else {
-          managed = await managedAgent(loaded.issue.companyId, payload.requestingAgentId, payload.serviceSlug);
+          managed = await managedAgent(loaded.issue.companyId, payload.requestingAgentId, payload.serviceSlug, { sourceRunId: loaded.interaction.sourceRunId }, txDb);
         }
         if (!managed) throw conflict("Configure the agent’s AI connection before using this account");
         const service = aiConnectionService(txDb);
         if (managed.binding.mode === "responsible_user") {
-          const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding, allowUninstalledPersonal: true });
+          const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.adapterConfig.model, runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent, binding: managed.binding, allowUninstalledPersonal: true });
           if (selected.connection.id !== selectedConnection.id) throw conflict("Choose this account as your personal default in Connections first");
           const installs = await txAccess.listConnectionInstalls(selectedConnection.id, loaded.issue.companyId);
           await txAccess.putConnectionInstalls(selectedConnection.id, { installs: [...installs, { targetType: "agent", targetId: payload.requestingAgentId }] }, { actorType: "user", actorId: userId });
         }
-        const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding });
+        const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.adapterConfig.model, runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent, binding: managed.binding });
         if (selected.connection.id !== selectedConnection.id) throw conflict("This is not the account selected for the agent");
         return txInteractions.resolveConnectionIntent(loaded.issue, interactionId, { version: 1, outcome: "connected", connectionId: selected.connection.id }, { userId });
       }
@@ -1094,11 +1112,14 @@ export function connectionIntentService(db: Db) {
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
       if (!agent) return null;
       const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
-      const binding = saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig);
+      const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+      const selected = router ? record(run.contextSnapshot?.aiRouterSelection) : null;
+      const managed = router && selected ? await managedAgent(run.companyId, run.agentId, String(record(selected.binding)?.provider), { sourceRunId: run.id }) : null;
+      const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig);
       if (!binding) return null;
       const attribution = record(run.contextSnapshot?.aiConnection);
       if (attribution && attribution.provider !== binding.provider) return null;
-      if (saved && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
+      if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
           runStartedAt: run.startedAt ?? run.createdAt,
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });

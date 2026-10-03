@@ -897,7 +897,7 @@ export async function createApp(
       lifecycleManager: lifecycle,
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
-        hostVersion: opts.hostVersion ?? "0.0.0",
+        hostVersion: opts.hostVersion ?? serverVersion,
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
       },

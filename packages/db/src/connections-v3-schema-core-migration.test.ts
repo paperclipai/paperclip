@@ -38,6 +38,11 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     // AI defaults arrive in 0273/0277 and depend on the composite grant key
     // from 0232. Rewind those tables before recreating the 0182 grant schema.
+    // Router pins/cursors depend on pools, whose composite connection FK also
+    // arrives after 0182. Rewind these empty fixture tables in dependency order.
+    await sql`DROP TABLE IF EXISTS "ai_connection_task_pins"`;
+    await sql`DROP TABLE IF EXISTS "ai_connection_router_cursors"`;
+    await sql`DROP TABLE IF EXISTS "ai_connection_pools"`;
     await sql`DROP TABLE IF EXISTS "ai_provider_defaults"`;
     await sql`DROP TABLE IF EXISTS "ai_connection_defaults"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;

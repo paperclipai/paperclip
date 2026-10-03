@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
-import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -51,6 +51,8 @@ function harnessLabel(agent: Agent | undefined): string {
   if (!agent) return "Choose an agent";
   const harness = HARNESS_LABELS[agent.adapterType] ?? agent.adapterType;
   const provider = composerCatalogProvider(agent);
+  const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
+  const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   return provider === "openrouter" ? `${harness} · OpenRouter` : harness;
 }
 
@@ -99,12 +101,14 @@ export function ComposerRunSettingsPicker({
   const agent = agents.get(agentId);
   const modelSupported = supportsComposerModel(agent);
   const provider = composerCatalogProvider(agent);
+  const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
+  const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   const { data: fetchedModels = [], isPending: modelsPending } = useQuery({
     queryKey: agent && modelSupported
-      ? queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider)
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId,
     }),
     enabled: Boolean(agent && modelSupported && !modelOptionsOverride),
   });
