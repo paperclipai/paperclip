@@ -7,7 +7,7 @@ import { localEncryptedProvider } from "../../secrets/local-encrypted-provider.j
 import { logActivity } from "../activity-log.js";
 import { logger } from "../../middleware/logger.js";
 import { type ApiDispatch } from "./capabilities.js";
-import { type McpPrincipal, type PublicMcpOAuth } from "./oauth.js";
+import { PublicMcpDisabledError, type McpPrincipal, type PublicMcpOAuth } from "./oauth.js";
 import { boundedJson, callbackUrl, eventFetch, McpEventError, postEvent, signingKey, verifyCallback, type EventFetch } from "./event-webhooks.js";
 
 const names = ["paperclip.task.status_changed", "paperclip.task.comment_created", "paperclip.task.document_updated"] as const;
@@ -75,6 +75,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   }
 
   async function subscribe(principal: McpPrincipal, raw: unknown, cloud?: CloudEventAuthority) {
+    await oauth.assertEnabled();
     const requestedAt = new Date(now());
     const input = subscribeSchema.parse(raw);
     validate(input);
@@ -227,7 +228,12 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
       await authorize(principal, filters.parse(s.arguments));
       destination = await decrypt(s);
       await authorizeCloud(principal, destination.cloud);
-    } catch {
+    } catch (error) {
+      if (error instanceof PublicMcpDisabledError) {
+        // A live disable pauses the claimed delivery without spending a retry.
+        await db.update(deliveries).set({ attempts: claim.attempts - 1, nextAttemptAt: new Date(now()), outcome: "paused" }).where(eq(deliveries.id, claim.id));
+        return false;
+      }
       // Fail closed for this delivery, but transient authority failures must be
       // recoverable. Retry without emitting application data, within the same bound.
       if (claim.attempts >= 6) await finish("authority_unavailable");
@@ -251,6 +257,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   }
   let running: Promise<void> | null = null;
   const tick = () => running ?? (running = (async () => {
+    if (!await oauth.isEnabled()) return;
     await db.delete(admissions).where(lte(admissions.expiresAt, new Date(now())));
     await db.delete(subscriptions).where(lt(subscriptions.expiresAt, new Date(now() - 7 * 24 * hour)));
     const active = await db.select().from(subscriptions).where(and(isNull(subscriptions.stoppedAt), gt(subscriptions.expiresAt, new Date(now())))).orderBy(asc(subscriptions.scannedAt)).limit(20);

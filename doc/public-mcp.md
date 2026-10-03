@@ -9,12 +9,22 @@ separate. The accepted roadmap is in
 
 ## Enable an instance
 
-Apply database migrations with the normal instance upgrade workflow. Set:
+Apply database migrations with the normal instance upgrade workflow. In Paperclip,
+open **Settings → Experimental → Assistant connections (MCP)** and turn it on.
+Instance administrators can change this setting. It is off by default and takes
+effect immediately without restarting the server.
+
+Use the instance's configured authentication public URL, or explicitly set:
 
 ```sh
-PAPERCLIP_PUBLIC_MCP_ENABLED=true
 PAPERCLIP_PUBLIC_URL=https://YOUR-PAPERCLIP-HOST
 ```
+
+The retired `PAPERCLIP_PUBLIC_MCP_ENABLED` variable has no effect. The persisted
+`enablePublicMcp` setting controls discovery, sign-in, tools and event delivery.
+Turning it off blocks new calls and deliveries; already delegated work continues.
+Connection management and revocation remain available. Turning it back on allows
+unexpired connections and subscriptions to resume.
 
 The URL must be an origin without a path, credentials, query or fragment. HTTP
 is allowed only for localhost/loopback development. The feature is disabled by
@@ -45,10 +55,10 @@ claude mcp add --transport http paperclip https://YOUR-PAPERCLIP-HOST/mcp/paperc
 ```
 
 Open Claude Code's `/mcp` menu and authenticate the Paperclip server. Both flows
-open browser sign-in and consent: select a team and explicitly enable task and
-comment writes when wanted. Read-only consent cannot delegate work.
+open browser sign-in and consent: review the selected organization (or choose one for a direct instance connection) and review the write-access checkbox. It starts checked when the assistant requests
+writes and your organization role allows them; uncheck it for read-only access. Read-only consent cannot delegate work.
 
-Ask the assistant to identify the connected team and list its agents, then ask
+Ask the assistant to identify the connected organization and list its agents, then ask
 it to delegate a small task to an available agent. The returned task link is the
 durable reference. In a later conversation, ask for that task's progress and
 report. Configure the agent's provider credentials, execution environment and
@@ -69,6 +79,11 @@ installation requires the separate deployment and submission work below.
   `/mcp/oauth/token`, `/mcp/oauth/revoke`.
 - Browser consent: `/mcp-connect/:requestId`.
 - User connection management: `/assistant-connections`.
+
+Consent identifies the registered client and callback origin. Client names are
+self-reported; verify the receiving domain before approving an unexpected request.
+The hosted organization chooser also identifies the original client and callback
+origin before its tenant handoff.
 
 Dynamic registration uses public clients, exact registered HTTPS redirect URIs
 (or HTTP loopback), authorization code flow, S256 PKCE and exact resource
@@ -243,3 +258,68 @@ See [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-
 for currently supported client surfaces. Actual staging ChatGPT subscription,
 plugin rescan and event-triggered response are still deployment acceptance gates;
 local protocol and paid model tests do not establish store/UI readiness.
+
+## Storybook previews
+
+Run `pnpm storybook` and open the **Assistant connections** group. The stories
+render the production consent, connection-management, and Experimental pages,
+including read-only roles, loading, empty, unavailable, pending, revoked, and
+failed-save states. Interactive stories verify organization-switch consent reset,
+revocation, and settings rollback. All MCP actions use per-story in-memory
+fixtures; no credentials are issued and no work is delegated.
+
+The Cloud repository's `web` Storybook has **Assistant connections / Hosted
+connection** for sign-in, organization selection, and the create-and-return
+flow. OAuth redirects between the two services remain mocked in these previews.
+
+### Guided assistant walkthrough
+
+Open **Assistant connections → Start here → Guided walkthrough** for a
+presenter-led story about Alex connecting Acme Research. Each step explains
+where Alex is, what to try, what happens next, and a question to discuss.
+Next/Back and numbered chapters control the explanation independently of the
+interactive product preview; Reset this screen restores that step’s fixture.
+Each screen starts fresh, so sample state does not persist between chapters.
+
+The Cloud walkthrough covers sign-in, choosing or creating an organization,
+readiness, and the handoff. The Paperclip walkthrough covers the experimental
+setting, organization consent, example delegation and retrieval conversations, and
+revocation. Assistant conversations are explicitly illustrative; product
+screens use isolated service fixtures. No paid work or real OAuth runs here.
+
+Local cross-links expect Paperclip Storybook on port 6106 and Cloud on 6107.
+The default scripts use port 6006; launch these in separate terminals with
+explicit overrides:
+
+```sh
+# From the Paperclip repository's ui/ directory:
+pnpm exec storybook dev --port 6106 --config-dir storybook/.storybook --no-open
+
+# From the paperclip-cloud repository's web/ directory:
+npm run storybook -- --port 6107
+```
+
+When published elsewhere, open the companion Storybook separately. Each
+walkthrough works independently. **Navigation check** is a separate interaction
+story so the presentation itself never advances automatically.
+
+### One organization from Cloud through consent
+
+Cloud selects an organization once and sends its registry company ID as the
+optional OAuth `company_id` parameter. Paperclip persists it as
+`mcp_oauth_requests.requested_company_id`, filters the consent response to that
+company, and rejects approval for any other company even if the user belongs to
+both. It is a scope restriction, never a substitute for active membership or
+explicit read/write consent. A deleted, archived, or inaccessible company cannot
+fall back to another one. The UI shows the fixed organization and permissions,
+with cancel/reconnect guidance if it is unavailable.
+
+Direct instance requests without `company_id` retain their organization picker.
+There is no separate “team” entity in this flow. Cloud’s organization maps to its
+stack’s primary Paperclip company; the stack is hosting infrastructure. The hosted
+walkthrough uses **Consent → Hosted organization**; direct selection, read-only,
+and unavailable-organization variants remain separately inspectable.
+
+Apply the additive nullable request-column migration before running this tenant
+version, and deploy tenant support before the Cloud broker that sends the binding.
+Existing direct requests and grants are unchanged.

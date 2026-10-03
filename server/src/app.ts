@@ -561,7 +561,9 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
-  const mcpConfig = publicMcpConfig();
+  let mcpConfig: ReturnType<typeof publicMcpConfig> = null;
+  try { mcpConfig = publicMcpConfig(process.env, opts.authPublicBaseUrl); }
+  catch { logger.warn("Assistant connections require an HTTPS public URL (HTTP loopback is allowed for development)."); }
   const publicMcpOAuth = mcpConfig ? createPublicMcpOAuth(db, mcpConfig) : null;
   const publicMcpIngress = Router();
   app.use(publicMcpIngress);

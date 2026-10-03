@@ -45,6 +45,10 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     res.setHeader("Referrer-Policy", "no-referrer");
     next();
   });
+  router.use(["/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server", PUBLIC_MCP_PATH, "/mcp/oauth/register", "/mcp/oauth/authorize", "/mcp/oauth/token"], async (_req, _res, next) => {
+    await oauth.assertEnabled();
+    next();
+  });
   router.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource" + PUBLIC_MCP_PATH], (_req, res) => res.json({
     resource, authorization_servers: [origin], scopes_supported: PUBLIC_MCP_SCOPES, bearer_methods_supported: ["header"],
     resource_name: "Paperclip team",

@@ -220,3 +220,52 @@ ignored eval credentials, then run:
 ```sh
 pnpm test:e2e:runner -- --id public-mcp.assistant-codex-mini.local.event-follow-up
 ```
+
+## Experimental-settings regression (2026-10-02)
+
+The follow-up [#14933](https://github.com/paperclipai/paperclip/pull/14933)
+replaces the tenant environment enable flag with Settings → Experimental →
+Assistant connections (MCP), default off. Paid setup enables it through the
+real authenticated administrator API before browser consent. It uses the
+existing Product E2E fixtures, workers, grader and report generator.
+
+| Campaign | Source SHA | Case / model | Result |
+| --- | --- | --- | --- |
+| `mcp-settings-mini-pilot-recovered-20261002` | `ae37308eab8724cb73fee8f4d2d572283011b87f` | Event follow-up / GPT-5.4 Mini | 1/1, first attempt; evidence valid |
+| `mcp-settings-haiku-delegate-20261002` | `12b3f10e9a0f8874353af2522f15bc70325d1706` | Delegate and retrieve / Claude Haiku 4.5 | 1/1, first attempt; evidence valid |
+
+Both source trees were clean when measured. Each retained campaign includes
+`source-files.json` and `report/normalized-results.json` under the existing
+ignored `tests/runner-e2e/results/` directory. The helper's source-ref label
+still names the foundation branch; the exact SHA above identifies the settings
+branch content. Mini observed `gpt-5.4-mini-2026-03-17`; Haiku observed
+`claude-haiku-4-5-20251001`.
+
+Mini proved one durable delegated task, worker report, verified public HTTPS
+completion event and report retrieval in a fresh model conversation. Haiku
+proved one durable delegated task/run and later report retrieval. Mini ran
+before the subsequent delivery-pause race fix. Haiku ran with that fix. The
+race itself has a deterministic regression: disable access immediately before
+a sixth delivery attempt, retain the fifth-attempt receipt, re-enable access
+and complete delivery. The focused MCP and settings UI suites pass 83 tests.
+Workspace typecheck, build and evaluation typecheck also pass; server typecheck
+was repeated after the race fix.
+
+Retained setup failures are not model passes:
+
+- `mcp-settings-mini-pilot-20261002`: two startup attempts failed because macOS
+  had exhausted PostgreSQL shared-memory IDs. No model requests occurred.
+  Three unattached 56-byte slots from exited processes were released; no live
+  database was stopped. The successful campaign above is a separate run.
+- `mcp-settings-haiku-20261002`: three bounded HTTPS tunnel setup attempts
+  failed with `dns_not_found`, before any model call. The original result
+  retains its harness `candidate_failure` classification; the observed cause
+  is callback infrastructure. The replacement Haiku case checks delegation
+  and retrieval without a callback and does not count as an event-case pass.
+
+Across the two successful paid cells, external-assistant estimates total
+**$0.0884547** (Mini $0.0142347; Haiku $0.07422). Haiku's worker reported
+**$0.0451984**. Mini worker cost remains unpriced, so **$0.1336531 is a partial
+observed/estimated subtotal, not the total invoice**. The failed setup attempts
+made no model calls. No paid result is claimed for actual Codex/Claude desktop
+UI, store installation, or hosted deployment in this regression.

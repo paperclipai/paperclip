@@ -108,6 +108,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
+  enablePublicMcp: {
+    title: "Assistant connections (MCP)",
+    description: "Let external assistants connect as a person to review work, delegate tasks, add feedback, and follow results.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableChatConnectors: {
     title: "Chat connectors",
     description:

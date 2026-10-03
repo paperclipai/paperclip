@@ -33,6 +33,8 @@ export const mcpOauthRequests = pgTable("mcp_oauth_requests", {
   scopes: jsonb("scopes").$type<string[]>().notNull(),
   state: text("state"),
   challenge: text("challenge").notNull(),
+  // A scope restriction, never authority. Retain it if the company is deleted.
+  requestedCompanyId: uuid("requested_company_id"),
   grantId: uuid("grant_id").references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
   codeHash: text("code_hash"),
   decidedAt: timestamp("decided_at", { withTimezone: true }),

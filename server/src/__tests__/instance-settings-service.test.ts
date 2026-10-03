@@ -43,6 +43,7 @@ describe("instance settings service", () => {
       enableApps: true,
     enableMcpAggregators: true,
       enableAgentChat: false,
+      enablePublicMcp: false,
       enableChatConnectors: false,
       enableMemoryConnectors: false,
       enableConferenceRoomChat: false,

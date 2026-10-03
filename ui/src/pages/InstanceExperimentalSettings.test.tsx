@@ -79,6 +79,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStreamlinedUi: true,
     enableApps: true,
     enableMcpAggregators: true,
+    enablePublicMcp: false,
     enableChatConnectors: false,
     enableMemoryConnectors: false,
     enablePipelines: false,
@@ -229,6 +230,19 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
     expect(container.querySelector('button[aria-label="Toggle MCP aggregators experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("MCP aggregators");
+  });
+
+  it("defaults assistant connections off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle assistant connections experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("work already delegated continues");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enablePublicMcp: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
   });
 
   it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {

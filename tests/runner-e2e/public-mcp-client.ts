@@ -56,10 +56,10 @@ export async function connect(context: BrowserContext, team: Team, write = true,
   if (page) {
     await page.goto(request.consentUrl);
     await expect(page.getByRole("heading", { name: "Connect your assistant to Paperclip" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Connect team", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Connect organization", exact: true })).toBeDisabled();
     await page.getByRole("radio", { name: team.name, exact: true }).check();
     if (write) await page.getByRole("checkbox").check();
-    await page.getByRole("button", { name: "Connect team", exact: true }).click();
+    await page.getByRole("button", { name: "Connect organization", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Assistant connected" })).toBeVisible();
     redirectUrl = page.url();
     // Leave the secret-bearing callback before any later assertions/evidence.

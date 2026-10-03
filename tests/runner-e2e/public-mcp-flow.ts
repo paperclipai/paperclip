@@ -23,6 +23,7 @@ export async function establishPublicMcpSession(api: RunnerApi, page: Page, secr
   api.setBrowserSession(cookies.join("; "));
   await page.context().addCookies(cookies.map(cookie => ({ name: cookie.slice(0, cookie.indexOf("=")), value: cookie.slice(cookie.indexOf("=") + 1), url: api.baseURL, httpOnly: true, sameSite: "Lax" })));
   await api.post("/api/bootstrap/claim");
+  await api.patch("/api/instance/settings/experimental", { enablePublicMcp: true });
   return user.user.id;
 }
 

@@ -2066,6 +2066,13 @@
       "when": 1791055277082,
       "tag": "0296_slippery_dracula",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1791055976108,
+      "tag": "0297_quiet_vertigo",
+      "breakpoints": true
     }
   ]
 }

@@ -70,6 +70,8 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
+  /** Allow person-authorized assistant tools and task event delivery. */
+  enablePublicMcp: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
