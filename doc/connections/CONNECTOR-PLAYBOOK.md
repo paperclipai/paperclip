@@ -513,6 +513,9 @@ connection work or enforce a real tenant boundary. Follow these rules:
   controls and per-action Test dialog. Do not build a parallel permissions list or
   provider-specific testing page. Discovery errors stay inline on Connect; an empty
   returned catalog belongs to the ordinary saved-connection state.
+- The per-action Test dialog shows structured MCP results as readable fields,
+  tables, or cards when possible. It keeps the full raw response available for
+  diagnosis and opens it by default when the result cannot be rendered safely.
 - Enable every discovered tool automatically. Put later Allowed / Ask first / Off
   controls in management, separate from connection access. Reconnect and refresh
   retain existing restrictions; new tools are Allowed under the existing access rules.
@@ -566,10 +569,10 @@ they do not need a duplicate native wrapper just to supply a skill.
 **Resolve eligibility from current assignments and access.** An AgentMail account
 credential alone does not give an agent email capabilities. An active inbox
 assigned to that agent does, provided both the inbox connection and saved
-credential access remain authorized and the experimental chat-connector flag is
-on. Other connectors must define an equally concrete assignment rule. Keep every
+credential access remain authorized. AgentMail is available by default and does
+not depend on the experimental chat-connector flag. Other connectors must define an equally concrete assignment rule. Keep every
 lookup company-scoped. Revoked grants, disabled connections, removed assignments,
-and experimental gates must remove the contribution. Fail closed on lookup errors.
+and any applicable experimental gates must remove the contribution. Fail closed on lookup errors.
 
 **Install skills transparently through the existing runtime skill path.** Merge
 system-managed contributions with the agent's chosen skills for each run, without

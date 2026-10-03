@@ -48,9 +48,9 @@ export function AgentChat() {
     creating.current = null;
   }, [selectedCompanyId, userId, agent?.id]);
   useEffect(() => {
-    if (enabled && agent && session.isFetched)
-      recordAgentChatVisit(agent.companyId, userId, agent.id);
-  }, [enabled, agent?.id, agent?.companyId, userId, session.isFetched]);
+    if (enabled && agent && session.isSuccess && chat.isSuccess)
+      recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
+  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id]);
   const ensureIssue = useCallback(async () => {
     if (!agent || !selectedCompanyId) throw new Error("Agent not found");
     if (chat.data) return chat.data;

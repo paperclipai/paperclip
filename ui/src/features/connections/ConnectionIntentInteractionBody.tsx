@@ -9,6 +9,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { AiAuthMethod, ConnectionIntentInteraction } from "@paperclipai/shared";
+import { AgentMailIntentSetup } from "./AgentMailIntentSetup";
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
@@ -61,6 +62,7 @@ export function ConnectionIntentInteractionBody({
   );
   const isPending = interaction.status === "pending";
   const isAi = interaction.payload.purpose === "ai";
+  const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
   const focusTargetId = `connection-intent-focus-target-${interaction.id}`;
 
   const invalidateTask = async (
@@ -410,6 +412,7 @@ export function ConnectionIntentInteractionBody({
             <p className="mt-1 text-sm text-muted-foreground">
               {interaction.payload.purpose === "ai"
                 ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
+                : isEmail ? "Connect AgentMail to create an email address for this agent."
                 : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
             </p>
           </div>
@@ -423,7 +426,19 @@ export function ConnectionIntentInteractionBody({
           </p>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap justify-end gap-2">
+        {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
+          {setupContent}
+          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
+        </> : <AgentMailIntentSetup
+          companyId={interaction.companyId}
+          agentId={interaction.payload.requestingAgentId}
+          requestId={interaction.id}
+          savedCredentialId={setupQuery.data?.emailSetup?.credentialConnectionId}
+          readyConnectionId={setupQuery.data?.emailSetup?.readyConnectionId}
+          onComplete={async connectionId => { await completeMutation.mutateAsync(connectionId); }}
+          onDecline={() => declineMutation.mutate()}
+          declining={declineMutation.isPending}
+        /> : <div className="mt-4 flex flex-wrap justify-end gap-2">
           {!isAi && <Button
             type="button"
             variant="ghost"
@@ -468,10 +483,10 @@ export function ConnectionIntentInteractionBody({
               {setupContent}
             </DialogContent>
           </Dialog>}
-        </div>
+        </div>}
         {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
-        {completeMutation.isError ||
+        {(!isEmail && completeMutation.isError) ||
         (selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation) ||
         adoptMutation.isError ||
         declineMutation.isError ||

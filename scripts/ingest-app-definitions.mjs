@@ -945,6 +945,7 @@ const categoryBySlug = {
   miro: "productivity",
   mixpanel: "analytics",
   netlify: "developer",
+  neon: "data",
   notion: "content",
   oreilly: "content",
   pagerduty: "developer",
@@ -1018,6 +1019,11 @@ const apiKeySpec = {
     placeholder: "Paste your Kernel API key",
   },
   mem0: { name: "Authorization", prefix: "Bearer ", placeholder: "Paste your Mem0 API key" },
+  neon: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "napi_... or neon_project_key_...",
+  },
   oreilly: {
     name: "Authorization",
     prefix: "Bearer ",
@@ -1095,6 +1101,31 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "asana") return [
+    oauthMethodFor(entry, "managed", entry.serverUrl, {
+      label: "Sign in with Asana",
+      ownershipModes: ["platform_shared"],
+      oauthStrategy: "paperclip_cloud_connector",
+      connectorProfile: "asana.mcp",
+      grantKinds: ["user", "agent"],
+      defaults: { serverUrl: entry.serverUrl, scopesHint: ["default"] },
+      guidanceMd: "Sign in to Asana with Paperclip. Asana gives this connection access to the workspaces available to your account.",
+      whenToUse: "Connect your Asana account with Paperclip's app.",
+      warnings: [],
+    }),
+    {
+      ...customerOAuthMethodFor(entry),
+      defaults: {
+        serverUrl: entry.serverUrl,
+        discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        scopesHint: ["default"],
+      },
+      oauthClientSecretRequired: true,
+      guidanceMd: "Create an MCP app in Asana, then add the callback URL below under OAuth. Under Manage distribution, select your workspace and save. API apps do not work with Asana MCP.",
+      consoleLinks: { register: "https://app.asana.com/0/my-apps", docs: entry.docsUrl },
+      warnings: [],
+    },
+  ];
   if (entry.slug === "mem0" || entry.slug === "honcho") return [
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,
@@ -1389,6 +1420,61 @@ const specialMethodsFor = (entry) => {
       }),
     ];
   }
+  if (entry.slug === "neon") {
+    // Neon's hosted server narrows itself with documented query options:
+    // `projectId` pins one project and `readonly=true` limits SQL to SELECT
+    // and schema inspection. Its repeatable `category` filter has no
+    // comma-joined form, so catalog narrowing stays with per-action policies.
+    const tenantFields = [
+      {
+        key: "projectId",
+        label: "Pin to project ID",
+        type: "text",
+        advanced: true,
+        placeholder: "Optional Neon project ID",
+        helperMd:
+          "Optional. Restrict this connection to one project. Copy the project ID from Neon Console → Project settings → General.",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      },
+      {
+        key: "readOnly",
+        label: "Read-only mode",
+        type: "checkbox",
+        defaultValue: false,
+        helperMd:
+          "Enable this to limit SQL to SELECT queries and schema inspection.",
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      },
+    ];
+    const warning =
+      "Neon recommends its hosted server for development and testing. Review write and destructive actions before execution.";
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Neon in the browser. Open Advanced to pin one project or enable read-only mode. Write tools start enabled and remain governed by Paperclip's action policies.",
+        tenantFields,
+        warnings: [entry.prerequisite, warning],
+        requiredResourceFilters: ["project"],
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        guidanceMd:
+          "Use a customer-created Neon API key. Prefer a project-scoped key for one development project; personal and organization keys reach every project they can access. Write tools start enabled and remain governed by Paperclip's action policies.",
+        consoleLinks: {
+          keys: "https://console.neon.tech/app/settings/api-keys",
+          docs: entry.docsUrl,
+        },
+        tenantFields,
+        warnings: [entry.prerequisite, warning],
+        requiredResourceFilters: ["project"],
+      }),
+    ];
+  }
   if (entry.slug === "youcom") {
     // You.com also serves a documented keyless profile at ?profile=free with a
     // reduced read-only tool set. That is a real user choice: try web search
@@ -1490,7 +1576,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],

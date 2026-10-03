@@ -2479,7 +2479,7 @@ export class CapabilityLiveSession {
         config: createSkilllessCodexThreadConfig(this.#config.workingDirectory),
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
-        baseInstructions,
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2504,7 +2504,7 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
-        baseInstructions,
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
         completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [...semanticTools, ...codexSemanticToolSpecs()],
         experimentalRawEvents: true,

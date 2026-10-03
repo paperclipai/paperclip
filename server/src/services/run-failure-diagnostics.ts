@@ -1,4 +1,5 @@
 import type { heartbeatRuns } from "@paperclipai/db";
+import { readRunCancellation } from "./run-cancellation.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -143,6 +144,15 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  const cancellation = readRunCancellation(result);
+  if (cancellation) {
+    execution.cancellationSource = cancellation.source;
+    execution.cancellationExpected = cancellation.expected;
+    execution.cancellationInitiatorType = cancellation.initiator.type;
+  } else if (run.status === "cancelled") {
+    execution.cancellationSource = "unknown";
+    execution.cancellationExpected = false;
+  }
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",
@@ -186,7 +196,7 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
       const lock = read(error, "workspaceRestoreLock");
       const operation = read(lock, "operation");
-      if (["agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
+      if (["agent_directory_prepare", "agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
         execution.restoreLockOperation = operation as string;
       }
       const ownerState = read(lock, "ownerState");

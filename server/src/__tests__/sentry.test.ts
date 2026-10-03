@@ -136,6 +136,7 @@ describe("captureException", () => {
     const error = new AdapterStopTimeoutError(60_000, {
       runId: "11111111-1111-4111-8111-111111111111",
       adapterType: "cursor", runtimeMode: "legacy", abortRequested: true,
+      phase: "instruction_collection", phaseElapsedMs: 60_321,
     });
     Object.assign(error, { providerResponse: "private fixture payload" });
     captureException(error);
@@ -144,7 +145,8 @@ describe("captureException", () => {
     expect(sdk.captureException.mock.calls[0]).toEqual([
       expect.objectContaining({ message: error.message, stack: error.stack }),
       { tags: { error_code: "adapter_stop_unconfirmed" }, fingerprint: ["{{ default }}"], contexts: {
-        adapter_stop: { runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor", runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000 },
+        adapter_stop: { runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor", runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000,
+          phase: "instruction_collection", phaseElapsedMs: 60_321 },
       } },
     ]);
     expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private fixture payload");
@@ -159,10 +161,12 @@ describe("captureException", () => {
     await sentryReady;
     captureException(new AdapterStopTimeoutError(NaN, {
       runId: "private fixture payload", adapterType: "private fixture payload", runtimeMode: "private fixture payload",
+      phase: "private fixture payload", phaseElapsedMs: Infinity,
     }));
     expect(JSON.stringify(sdk.captureException.mock.calls)).not.toContain("private fixture payload");
     expect(sdk.captureException.mock.calls[0]).toEqual([expect.any(Error), expect.objectContaining({ contexts: {
-      adapter_stop: { runId: null, adapterType: "unknown", runtimeMode: "unknown", abortRequested: null, timeoutMs: null },
+      adapter_stop: { runId: null, adapterType: "unknown", runtimeMode: "unknown", abortRequested: null, timeoutMs: null,
+        phase: "unknown", phaseElapsedMs: null },
     } })]);
   });
 

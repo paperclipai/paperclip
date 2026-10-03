@@ -1,4 +1,5 @@
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
 import { browserUseService } from "./browser-use.js";
@@ -494,6 +495,8 @@ export function oauthClientIdMetadataDocument(input: {
 type OAuthProviderEndpoints = {
   provider: string;
   scopes: string[];
+  /** Refresh permission belongs to authorization-server metadata, not MCP tool scopes. */
+  offlineAccessSupported?: boolean;
   authorizationUrl: string;
   tokenUrl: string;
   registrationUrl?: string | null;
@@ -2491,13 +2494,16 @@ export function isGoogleWorkspaceToolAllowed(
 }
 
 type ManagedConnectorProfileId =
-  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
+  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
 
 function managedConnectorProfile(value: string | undefined): {
   id: ManagedConnectorProfileId;
-  provider: "google" | "github";
+  provider: "google" | "github" | "asana";
   scopes: readonly string[];
 } | null {
+  if (value && isAsanaConnectorProfileId(value)) {
+    return { id: value, provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
+  }
   if (value && isGoogleWorkspaceConnectorProfileId(value)) {
     return {
       id: value,
@@ -8402,6 +8408,27 @@ export function toolAccessService(
     return oauthClientConfig(provider);
   }
 
+  async function annotateSavedOAuthClientSecret(connections: ToolConnection[], viewerUserId?: string) {
+    const personal = connections.filter((connection) => connection.authKind === "oauth" && connection.credentialPolicy === "per_user");
+    const grants = viewerUserId && personal.length > 0
+      ? await db.select({ connectionId: connectionGrants.connectionId, refs: connectionGrants.credentialSecretRefs })
+        .from(connectionGrants)
+        .where(and(
+          inArray(connectionGrants.companyId, [...new Set(personal.map((connection) => connection.companyId))]),
+          inArray(connectionGrants.connectionId, personal.map((connection) => connection.id)),
+          eq(connectionGrants.kind, "user"),
+          eq(connectionGrants.subjectUserId, viewerUserId),
+          eq(connectionGrants.status, "active"),
+        ))
+      : [];
+    const savedPersonal = new Set(grants.filter((grant) => grant.refs.some((ref) => ref.configPath === "oauth.client_secret")).map((grant) => grant.connectionId));
+    for (const connection of connections) {
+      connection.hasSavedOAuthClientSecret = connection.credentialPolicy === "per_user"
+        ? savedPersonal.has(connection.id)
+        : connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.client_secret");
+    }
+  }
+
   async function oauthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
@@ -8727,6 +8754,9 @@ export function toolAccessService(
       firstPartyOrigin,
     );
     let scopes = normalizeOauthScopes(metadata.scopes_supported);
+    let offlineAccessSupported = Boolean(
+      authorizationUrl && scopes.includes("offline_access"),
+    );
     let codeChallengeMethodsSupported = normalizeOauthScopes(
       metadata.code_challenge_methods_supported,
     );
@@ -8779,6 +8809,15 @@ export function toolAccessService(
         !sameOAuthIssuer(advertisedIssuer, candidate.issuer)
       )
         continue;
+      // A document can carry its own endpoints and also list other servers.
+      // Adopt capabilities only from metadata bound to the selected endpoints
+      // and issuer; otherwise offline access could break an unrelated sign-in.
+      if (
+        (authorizationUrl && candidateAuthorizationUrl !== authorizationUrl) ||
+        (tokenUrl && candidateTokenUrl !== tokenUrl) ||
+        (issuer && !sameOAuthIssuer(issuer, advertisedIssuer ?? candidate.issuer))
+      )
+        continue;
       authorizationUrl = authorizationUrl ?? candidateAuthorizationUrl;
       tokenUrl = tokenUrl ?? candidateTokenUrl;
       registrationUrl =
@@ -8790,6 +8829,8 @@ export function toolAccessService(
           firstPartyOrigin,
         );
       issuer = issuer ?? advertisedIssuer ?? candidate.issuer;
+      offlineAccessSupported = offlineAccessSupported ||
+        normalizeOauthScopes(authMetadata.scopes_supported).includes("offline_access");
       if (scopes.length === 0)
         scopes = normalizeOauthScopes(authMetadata.scopes_supported);
       if (codeChallengeMethodsSupported.length === 0) {
@@ -8817,6 +8858,7 @@ export function toolAccessService(
     return {
       provider: oauthProviderForConnection(connection, metadataUrl),
       scopes,
+      offlineAccessSupported,
       authorizationUrl,
       tokenUrl,
       registrationUrl,
@@ -8883,9 +8925,31 @@ export function toolAccessService(
         ? oauth.resource.trim()
         : canonicalResourceIndicator(remoteEndpoint(connection.config));
     if (configuredAuthorizationUrl && configuredTokenUrl) {
+      // Pre-existing generic connections cached endpoints before refresh-scope
+      // support was recorded. Recover that capability from their bound metadata
+      // without adopting a different issuer or changing their requested tool scopes.
+      let refreshMetadata: OAuthProviderEndpoints | null = null;
+      if (
+        !connection.config.sourceTemplateKey &&
+        typeof oauth.offlineAccessSupported !== "boolean" &&
+        typeof oauth.metadataUrl === "string"
+      ) {
+        const discovered = await endpointsFromMetadataUrl(
+          connection, oauth.metadataUrl, rejections, firstPartyOrigin,
+        );
+        if (
+          discovered?.authorizationUrl === configuredAuthorizationUrl &&
+          discovered.tokenUrl === configuredTokenUrl &&
+          (typeof oauth.issuer !== "string" ||
+            (discovered.issuer && sameOAuthIssuer(discovered.issuer, oauth.issuer)))
+        ) refreshMetadata = discovered;
+      }
       return {
         provider,
         scopes,
+        offlineAccessSupported: typeof oauth.offlineAccessSupported === "boolean"
+          ? oauth.offlineAccessSupported
+          : refreshMetadata?.offlineAccessSupported,
         authorizationUrl: configuredAuthorizationUrl,
         tokenUrl: configuredTokenUrl,
         registrationUrl: safeOAuthEndpointUrl(
@@ -8900,6 +8964,9 @@ export function toolAccessService(
         tokenEndpointAuthMethodsSupported: normalizeOauthScopes(
           oauth.tokenEndpointAuthMethodsSupported,
         ),
+        grantTypesSupported: Array.isArray(oauth.grantTypesSupported)
+          ? normalizeOauthScopes(oauth.grantTypesSupported)
+          : refreshMetadata?.grantTypesSupported,
         grantType,
         metadataUrl:
           typeof oauth.metadataUrl === "string"
@@ -9030,6 +9097,17 @@ export function toolAccessService(
       connection.ownership !== "dcr" &&
       typeof storedOAuth.clientId === "string" &&
       storedOAuth.clientId.trim().length > 0;
+    // A reviewed protected-resource document is authoritative for this method.
+    // Some hosts still serve metadata for a retired MCP server at the root.
+    // Resolve it before cached endpoints, including on existing draft reconnects.
+    if (!smokeLabEndpoints && galleryMethod?.defaults?.discoveryUrl) {
+      const endpoints = await endpointsFromMetadataUrl(
+        connection, galleryMethod.defaults.discoveryUrl, [], originOf(redirectUri),
+      );
+      if (!endpoints) throw unprocessable("OAuth provider metadata could not be loaded");
+      assertNotSmokeLabOAuthEndpoints(connection, endpoints);
+      return endpoints;
+    }
     const hasCompleteGalleryEndpointHints = Boolean(
       galleryMethod?.defaults?.authorizationEndpoint &&
       galleryMethod.defaults.tokenEndpoint &&
@@ -9505,6 +9583,8 @@ export function toolAccessService(
         registrationUrl: input.endpoints.registrationUrl,
         metadataUrl: input.endpoints.metadataUrl ?? null,
         scopes: input.endpoints.scopes,
+        offlineAccessSupported: input.endpoints.offlineAccessSupported,
+        grantTypesSupported: input.endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           input.endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -9571,6 +9651,8 @@ export function toolAccessService(
         registrationUrl: input.endpoints.registrationUrl ?? null,
         metadataUrl: input.endpoints.metadataUrl ?? null,
         scopes: input.endpoints.scopes,
+        offlineAccessSupported: input.endpoints.offlineAccessSupported,
+        grantTypesSupported: input.endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           input.endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -9637,13 +9719,34 @@ export function toolAccessService(
    * reusing them across a moved binding would let a re-pointed endpoint borrow
    * another server's registration.
    */
+  function reviewedOAuthClientBinding(connection: typeof toolConnections.$inferSelect, endpoints: OAuthProviderEndpoints) {
+    const oauth = oauthConfig(connection);
+    // Only repair the known Asana v1 discovery mistake. Retain company and
+    // callback checks, and never carry a secret to an arbitrary new issuer.
+    if (connection.config.sourceTemplateKey === "asana"
+      && connection.config.connectionMethodKey === "mcp-own-oauth"
+      && connection.config.url === "https://mcp.asana.com/v2/mcp"
+      && oauth.clientRegistrationSource === "manual"
+      && connection.ownership !== "dcr"
+      && endpoints.issuer === "https://app.asana.com"
+      && endpoints.authorizationUrl === "https://app.asana.com/-/oauth_authorize"
+      && endpoints.tokenUrl === "https://app.asana.com/-/oauth_token"
+      && endpoints.resource === "https://mcp.asana.com/v2/mcp"
+      && [undefined, null, "https://mcp.asana.com", "https://app.asana.com"].includes(oauth.clientIssuer as string | null | undefined)
+      && [undefined, null, "https://mcp.asana.com", "https://mcp.asana.com/v2/mcp"].includes(oauth.clientResource as string | null | undefined)
+      && (oauth.clientIssuer === "https://mcp.asana.com" || oauth.clientResource === "https://mcp.asana.com")) {
+      return { ...oauth, clientIssuer: endpoints.issuer, clientResource: endpoints.resource };
+    }
+    return oauth;
+  }
+
   function oauthClientBindingMatches(
     connection: typeof toolConnections.$inferSelect,
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
     clientIdMetadataDocumentUrl: string | null,
   ): boolean {
-    const oauth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     if (typeof oauth.clientId !== "string" || !oauth.clientId.trim())
       return false;
     const source =
@@ -9708,7 +9811,8 @@ export function toolAccessService(
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
   ): Promise<typeof toolConnections.$inferSelect> {
-    const oauth = oauthConfig(connection);
+    const originalOAuth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     const nextBinding = {
       clientRedirectUri: redirectUri,
       clientIssuer:
@@ -9725,7 +9829,7 @@ export function toolAccessService(
           : connection.companyId,
     };
     const unchanged = Object.entries(nextBinding).every(
-      ([key, value]) => oauth[key] === value,
+      ([key, value]) => originalOAuth[key] === value,
     );
     if (unchanged) return connection;
     const nextConfig = {
@@ -13339,6 +13443,19 @@ export function toolAccessService(
           ),
         )
         .limit(1);
+      // A renamed connection can leave its old profile name in use. Resolve
+      // names against profiles too, including when finalizing an installed draft.
+      const otherProfiles = await tx
+        .select({ name: toolProfiles.name })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, companyId),
+          ne(toolProfiles.profileKey, profileKey),
+        ));
+      const profileName = nextAvailableConnectionName(
+        connection.name,
+        otherProfiles.map((profile) => profile.name),
+      );
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -13418,7 +13535,7 @@ export function toolAccessService(
         const [updated] = await tx
           .update(toolProfiles)
           .set({
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -13437,7 +13554,7 @@ export function toolAccessService(
           .values({
             companyId,
             profileKey,
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -14137,7 +14254,9 @@ export function toolAccessService(
         issuer:
           managedProfile.provider === "github"
             ? "https://github.com"
-            : "https://accounts.google.com",
+            : managedProfile.provider === "asana"
+              ? "https://app.asana.com"
+              : "https://accounts.google.com",
         resource: galleryMethod.defaults?.serverUrl ?? null,
         registrationSource: null,
       };
@@ -14161,10 +14280,24 @@ export function toolAccessService(
     });
     connection = resolvedClient.connection;
     const client = resolvedClient.client;
+    if (galleryMethod?.oauthClientSecretRequired && !client.clientSecret) {
+      throw unprocessable("This app requires an OAuth client secret. Add it in the app setup before signing in.");
+    }
     if (!client.clientId)
       throw unprocessable(
         `OAuth client id is not configured for ${endpoints.provider}`,
       );
+
+    const authorizationScopes = normalizeOauthScopes(
+      galleryMethod ? (requestedScopes ?? []) : (input.scopes ?? endpoints.scopes),
+    );
+    if (
+      !galleryMethod &&
+      endpoints.offlineAccessSupported &&
+      (!endpoints.grantTypesSupported?.length ||
+        endpoints.grantTypesSupported.includes("refresh_token")) &&
+      !authorizationScopes.includes("offline_access")
+    ) authorizationScopes.push("offline_access");
 
     await db
       .delete(toolOauthStates)
@@ -14186,7 +14319,7 @@ export function toolAccessService(
       createdByActorId: binding.actorId,
       createdBySessionId: binding.sessionId,
       subjectUserId: authorizationSubjectUserId,
-      requestedScopes: requestedScopes ?? undefined,
+      requestedScopes: authorizationScopes,
       returnTo: input.returnTo,
       issueId: intentLink?.issueId ?? input.issueId,
       interactionId: intentLink?.id,
@@ -14222,9 +14355,6 @@ export function toolAccessService(
     // method either sends its reviewed hint or omits scope entirely. Generic
     // MCP URLs retain discovery-first behavior because Paperclip has no manifest
     // against which it could safely judge the caller's requested scope.
-    const authorizationScopes = galleryMethod
-      ? (requestedScopes ?? [])
-      : (input.scopes ?? endpoints.scopes);
     if (authorizationScopes.length > 0)
       authorizationUrl.searchParams.set("scope", authorizationScopes.join(" "));
     const reviewedAuthorizationParams =
@@ -14239,6 +14369,10 @@ export function toolAccessService(
         "prompt",
         reviewedAuthorizationParams.prompt,
       );
+    else if (!galleryMethod && authorizationScopes.includes("offline_access"))
+      // OIDC offline access requires consent unless the provider has another
+      // established basis for granting it. A generic server has no reviewed override.
+      authorizationUrl.searchParams.set("prompt", "consent");
 
     if (
       authorizationSubjectUserId &&
@@ -14366,7 +14500,9 @@ export function toolAccessService(
         // Curated apps persist only the reviewed scopes attached to this OAuth
         // state. Discovery metadata can advertise a provider's entire scope
         // universe and must never silently become Paperclip's requested set.
-        scopes: galleryMethod ? (requestedScopes ?? []) : endpoints.scopes,
+        scopes: authorizationScopes,
+        offlineAccessSupported: endpoints.offlineAccessSupported,
+        grantTypesSupported: endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -14765,9 +14901,9 @@ export function toolAccessService(
       redemptionId: input.state,
     });
     const refreshToken = credentials.refreshToken;
-    if (profile.provider === "google" && !refreshToken) {
+    if ((profile.provider === "google" || profile.provider === "asana") && !refreshToken) {
       throw unprocessable(
-        `Google did not return offline access. Reconnect ${providerName} and grant the requested scopes.`,
+        `${providerName} did not return offline access. Reconnect and grant the requested permissions.`,
         {
           code: "oauth_refresh_missing",
         },
@@ -15433,6 +15569,11 @@ export function toolAccessService(
       input.redirectUri,
     );
     assertOAuthCallbackIssuer(connection, endpoints, input.iss);
+    // Generic states created before requested scopes were persisted may still
+    // complete after an upgrade. Keep their original cached/discovered scope set.
+    const authorizedScopes = normalizeOauthScopes(
+      stateRow.requestedScopes ?? (galleryEntry ? [] : endpoints.scopes),
+    );
     const client = await oauthClientForConnection(
       connection,
       endpoints.provider,
@@ -15555,7 +15696,7 @@ export function toolAccessService(
               strategy: "direct_oauth",
               accessTokenExpiresAt: expiresAt ?? undefined,
               scopes: normalizeOauthScopes(
-                token.scope ?? stateRow.requestedScopes,
+                token.scope ?? authorizedScopes,
               ),
               tokenType: token.tokenType,
               refreshedAt: connectedAt.toISOString(),
@@ -15593,9 +15734,7 @@ export function toolAccessService(
             authorizationUrl: endpoints.authorizationUrl,
             tokenUrl: endpoints.tokenUrl,
             metadataUrl: endpoints.metadataUrl ?? null,
-            scopes: galleryEntry
-              ? normalizeOauthScopes(stateRow.requestedScopes)
-              : endpoints.scopes,
+            scopes: authorizedScopes,
             clientIdEnv: client.clientIdEnv,
             clientSecretEnv: client.clientSecret
               ? client.clientSecretEnv
@@ -15857,9 +15996,7 @@ export function toolAccessService(
           authorizationUrl: endpoints.authorizationUrl,
           tokenUrl: endpoints.tokenUrl,
           metadataUrl: endpoints.metadataUrl ?? null,
-          scopes: galleryEntry
-            ? normalizeOauthScopes(stateRow.requestedScopes)
-            : endpoints.scopes,
+          scopes: authorizedScopes,
           clientIdEnv: client.clientIdEnv,
           clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
           credentialScope: credentialScope(connection, input.actor),
@@ -17180,6 +17317,7 @@ export function toolAccessService(
       }
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
+      await annotateSavedOAuthClientSecret(connections, viewerUserId);
       return connections;
     },
 
@@ -17284,6 +17422,7 @@ export function toolAccessService(
       );
       await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
+      await annotateSavedOAuthClientSecret([connection], viewerUserId);
       return connection;
     },
 

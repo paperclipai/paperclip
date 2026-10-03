@@ -144,6 +144,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       usage: true,
       reconciliation: true,
       dynamicTools: true,
+      toolRefreshOnResume: true,
       runtimeRequestResolution: true,
       goals: true,
       threadLineage: true,
@@ -199,6 +200,14 @@ export class CodexAppServerDriver implements HarnessDriver {
     return this.#options.baseInstructions ?? CODEX_SKILLLESS_BASE_INSTRUCTIONS;
   }
 
+  #instructionParams(instructions = this.#baseInstructions()): Record<string, string> {
+    // baseInstructions replaces Codex's stock prompt. Other providers use this
+    // driver as a protocol facade and retain their existing instruction field.
+    return (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND
+      ? { developerInstructions: instructions }
+      : { baseInstructions: instructions };
+  }
+
   async descriptor(): Promise<HarnessDriverDescriptor> {
     const unsupported = Object.entries(this.#caps)
       .filter(([, supported]) => !supported)
@@ -240,6 +249,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         reconciliation: this.#caps.reconciliation,
         usage: this.#caps.usage,
         dynamicTools: this.#caps.dynamicTools,
+        toolRefreshOnResume: this.#caps.resume && this.#caps.dynamicTools && this.#caps.toolRefreshOnResume,
         runtimeRequestResolution: this.#caps.runtimeRequestResolution,
         runtimeRequestHandoff: this.#caps.runtimeRequestResolution,
         goals: this.#caps.goals,
@@ -280,7 +290,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           ...(this.#direct()
             ? {}
             : {
-                baseInstructions: this.#baseInstructions(),
+                ...this.#instructionParams(),
                 completionContract: {
                   revision:
                     this.#options.taskEnvelope.completionContract.revision,
@@ -408,7 +418,7 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.includeSkillInstructions ?? false,
             this.#options.environment,
           ),
-          baseInstructions: this.#direct() ? "" : this.#baseInstructions(),
+          ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
           approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           dynamicTools: this.#providerDynamicTools(),

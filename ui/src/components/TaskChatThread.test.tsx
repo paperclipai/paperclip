@@ -152,6 +152,128 @@ function render(ui: ReactElement) {
   );
 }
 
+describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
+  const run = (id: string, status: string, minute: number) => ({
+    runId: id, status, runtimeMode, agentId: "agent", agentName: "Assistant",
+    adapterType: runtimeMode === "native" ? "paperclip_runner" : "claude_local",
+    createdAt: `2025-01-01T10:0${minute}:00Z`, startedAt: `2025-01-01T10:0${minute}:01Z`,
+    finishedAt: `2025-01-01T10:0${minute}:30Z`,
+  });
+  const comment = (id: string, body: string, runId?: string) => ({
+    id, body, runId, companyId: "company", issueId: "issue", authorType: "agent" as const,
+    authorAgentId: "agent", authorUserId: null, presentation: null, metadata: null,
+    createdAt: new Date("2025-01-01T10:00:20Z"), updatedAt: new Date("2025-01-01T10:00:20Z"),
+  });
+  const setTranscript = (id: string) => {
+    const state = runtimeMode === "native" ? nativeTranscriptState : transcriptState;
+    state.transcriptByRun.set(id, [
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:02Z", text: "Inspected the source." },
+      { kind: "tool_call", ts: "2025-01-01T10:00:03Z", name: "Read", input: { path: "README.md" }, toolUseId: "read" },
+      { kind: "tool_result", ts: "2025-01-01T10:00:04Z", toolUseId: "read", content: "Source content" },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "Saved the useful response." },
+    ]);
+  };
+
+  it.each([true, false].flatMap(streamlined => ["done", "cancelled"].map(issueStatus => ({ streamlined, issueStatus }))))("removes failures, stops, waits and stored notices on $issueStatus tasks (streamlined=$streamlined)", ({ streamlined, issueStatus }) => {
+    streamlinedState.enabled = streamlined;
+    setTranscript("failed");
+    const props = {
+      comments: [
+        comment("response", "Saved the useful response.", "failed"),
+        { ...comment("notice", "The previous execution needs to be checked.", "failed"), authorType: "system" as const,
+          presentation: { kind: "system_notice" as const, tone: "warning" as const, title: "Recovery pending", detailsDefaultOpen: true } },
+        { ...comment("human", "Please keep this message."), authorType: "user" as const, authorAgentId: null, authorUserId: "board" },
+        { ...comment("session", "/new"), conversationSessionGeneration: 1 },
+      ],
+      linkedRuns: [run("failed", "failed", 0), run("stopped", "cancelled", 1),
+        { ...run("wait", "cancelled", 2), startedAt: null, errorCode: "execution_reconciliation_required" },
+        run("empty-success", "succeeded", 3)],
+      onAdd: async () => {},
+    };
+    render(<TaskChatThread {...props} issueStatus="blocked" />);
+    render(<TaskChatThread {...props} issueStatus={issueStatus} />);
+    expect(container.textContent).toContain("Saved the useful response.");
+    expect(container.textContent).toContain("Please keep this message.");
+    expect(container.textContent).toContain("New session");
+    for (const status of ["Run failed", "Stopped", "Worked", "Run cancelled", "Waiting to resume", "Recovery pending", "Run completed", "previous execution needs"]) {
+      expect(container.textContent).not.toContain(status);
+    }
+    if (runtimeMode === "legacy") {
+      const activity = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.startsWith("Activity"));
+      expect(activity).toBeDefined();
+      flushSync(() => activity!.click());
+      expect(container.textContent).toContain("Inspected the source.");
+    } else {
+      expect(container.textContent).toContain("Inspected the source.");
+    }
+    expect(props.linkedRuns[0].status).toBe("failed");
+    expect(props.comments).toHaveLength(4);
+  });
+
+  it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
+    setTranscript("old");
+    const notice = { ...comment("notice", "Old recovery details."), authorType: "system" as const,
+      metadata: { version: 1 as const, sourceRunId: "old", sections: [] } };
+    const wait = { ...run("wait", "cancelled", 1), startedAt: null, errorCode: "execution_reconciliation_required" };
+    const props = { comments: [notice, comment("response", "Saved the useful response.", "old")], onAdd: async () => {}, issueStatus: "in_progress" };
+    render(<TaskChatThread {...props} linkedRuns={[run("old", "failed", 0), wait]} />);
+    expect(container.textContent).toContain("Run failed");
+    expect(container.textContent).toContain("Waiting to resume");
+    for (const linkedRuns of [[run("new", "succeeded", 2), wait, run("old", "failed", 0)], [run("old", "failed", 0), wait, run("new", "succeeded", 2)]]) {
+      render(<TaskChatThread {...props} linkedRuns={linkedRuns} />);
+      expect(container.textContent).not.toContain("Run failed");
+      expect(container.textContent).not.toContain("Waiting to resume");
+      expect(container.textContent).not.toContain("Stopped");
+      expect(container.querySelector('[data-testid="task-chat-system-notice"]')).toBeNull();
+      expect(container.textContent).toContain("Saved the useful response.");
+    }
+  });
+
+  it("keeps the latest failure actionable after hiding earlier errors", async () => {
+    const retry = vi.fn();
+    const linkedRuns = [run("new-failure", "failed", 2), run("old-failure", "failed", 0)];
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" linkedRuns={linkedRuns} onRetryFailedRun={retry} />);
+    expect(container.textContent?.match(/Run failed/g)).toHaveLength(1);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(button).not.toBeNull();
+    flushSync(() => button!.click());
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledExactlyOnceWith("new-failure");
+  });
+
+  it.each(["in_progress", "done"])("preserves a child's stop relay after parent work (%s)", (issueStatus) => {
+    const relay = { ...comment("child-relay", "System relay: [Child task](/issues/child) transitioned to `blocked`."),
+      authorType: "system" as const, authorAgentId: null };
+    render(<TaskChatThread comments={[relay]} onAdd={async () => {}} issueStatus={issueStatus}
+      linkedRuns={[run("parent-follow-up", "succeeded", 1)]} />);
+    expect(container.querySelector('[data-thread-anchor="child-relay"]')).not.toBeNull();
+    expect(container.textContent).toContain("Child task");
+  });
+
+  it("clears old notices as soon as a successor is live, before history refreshes", () => {
+    const old = run("old", "failed", 0);
+    const live = { ...run("live", "running", 1), id: "live", finishedAt: null,
+      invocationSource: "on_demand", triggerDetail: null };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress"
+      linkedRuns={[old]} activeRun={live} liveRuns={[live]} />);
+    expect(container.textContent).not.toContain("Run failed");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it("does not carry an old failure into a successful same-agent activity summary", () => {
+    setTranscript("old");
+    setTranscript("new");
+    const response = comment("new-response", "The follow-up succeeded.", "new");
+    response.createdAt = new Date("2025-01-01T10:01:20Z");
+    render(<TaskChatThread comments={[comment("old-response", "Saved the useful response.", "old"), response]}
+      onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[run("old", "failed", 0), run("new", "succeeded", 1)]} />);
+    expect(container.textContent).toContain("The follow-up succeeded.");
+    expect(container.textContent).toContain("Worked");
+    expect(container.textContent).not.toContain("Stopped");
+    expect(container.textContent).not.toContain("Run failed");
+  });
+});
+
 it.each([true, false])("interleaves browser sessions with their requests and preserves position on status updates (streamlined=%s)", (streamlined) => {
   streamlinedState.enabled = streamlined;
   const onOpenBrowser = vi.fn();
@@ -1384,7 +1506,7 @@ describe("TaskChatThread runtime transcript selection", () => {
           lastConfirmedActivityAt: null, retryAt: null, attempt: 2, maxAttempts: 3, recoveryOwner: null, nextAction: null,
           permittedActions: ["inspect_run" as const], predecessorRunId: null, successorRunId: "fresh-run" } } : {}),
       }]} />);
-    expect(container.textContent).toContain("Run failed");
+    expect(container.textContent?.includes("Run failed")).toBe(!continued);
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
@@ -3550,6 +3672,28 @@ describe("TaskChatThread Paperclip Runner queue", () => {
         '[data-testid="task-chat-queued-message-queued-prp-1"]',
       ),
     ).toBeNull();
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it.each(["steer", "interrupt"] as const)("preserves inline %s errors after the optimistic last row clears", async action => {
+    let rejectDelivery!: (error: Error) => void;
+    const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
+    const actionQueue = { ...queue, protocol: action === "interrupt" ? "legacy" as const : queue.protocol };
+    const props = { comments: [queuedComment], onAdd: async () => {}, queuedCommentQueue: actionQueue,
+      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery };
+    render(<TaskChatThread {...props} />);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-queued-prp-1"]`)!.click();
+    });
+    render(<TaskChatThread {...props} queuedCommentQueue={null} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => {
+      rejectDelivery(new Error("Connection lost"));
+      await delivery.catch(() => undefined);
+    });
+    await act(async () => { render(<TaskChatThread {...props} />); });
+    expect(container.textContent).toContain(action === "steer"
+      ? "Couldn’t steer. Message is still queued." : "Couldn’t interrupt. Message is still queued.");
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 

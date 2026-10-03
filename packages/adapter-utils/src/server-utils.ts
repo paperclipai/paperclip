@@ -19,6 +19,7 @@ import {
   normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
 import type {
+  AdapterExecutionContext,
   AdapterRuntimeToolAccess,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -2175,12 +2176,25 @@ export function isAssignmentShapedPaperclipWakeReason(
 
 // Select at the actual provider attempt boundary so a failed resume restores
 // the original snapshot once when retrying with a fresh session.
+export async function hydrateFreshSessionHandoff(
+  ctx: Pick<AdapterExecutionContext, "context" | "getFreshSessionHandoff">,
+  options: { resumedSession?: boolean } = {},
+): Promise<void> {
+  if (options.resumedSession === true || !ctx.getFreshSessionHandoff) return;
+  const handoff = await ctx.getFreshSessionHandoff();
+  if (handoff) ctx.context.paperclipFreshSessionHandoffMarkdown = handoff;
+  else delete ctx.context.paperclipFreshSessionHandoffMarkdown;
+}
+
 export function selectInitialCommunicationGuidance(
   context: Record<string, unknown> | null | undefined,
   options: { resumedSession?: boolean } = {},
 ): string {
   return options.resumedSession === true
-    ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+    ? "" : joinPromptSections([
+        asString(context?.paperclipTaskCommunicationGuidance, "").trim(),
+        asString(context?.paperclipFreshSessionHandoffMarkdown, "").trim(),
+      ]);
 }
 
 // Picks the task-context markdown variant for adapters that inject it into the

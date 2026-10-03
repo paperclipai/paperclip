@@ -59,6 +59,16 @@ The additive `ai_provider_defaults` table preserves the legacy per-method prefer
 Revocation retains the unavailable default; connecting another account does not
 silently replace it. Change it explicitly on the account detail page.
 
+Agent settings offer **Reconnect account** when the current personal default
+needs attention. This repairs the same connection and keeps its default and
+agent access. **Connect another account** states that the new account will
+become the user's provider default. It selects the returned grant before
+adopting the binding and retains the actual sign-in method. A failed default
+update stays visible and can be retried without another login. New account
+setup shows an agent-access checkbox, enabled for all company agents by default
+for connection managers. The owner can limit access to the current agent. This access applies only to
+the owner's tasks. Reconnect never expands existing access.
+
 ## Storage and API
 
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.
@@ -77,8 +87,10 @@ and authentication paths are never account labels.
 
 Company-scoped `/api/companies/:companyId/ai-connections` operations provide list,
 API-key creation/reconnect, personal defaults, completed login references, and
-active-run attribution. Existing Connections operations handle naming, access,
-and revocation. Mutation authorization is enforced server-side. OpenAPI documents the new board-only
+active-run attribution. The list includes `canManageConnections`, evaluated by
+the same server permission check as creation, including custom
+`tools:manage_connections` grants. Existing Connections operations handle naming,
+access, and revocation. Mutation authorization is enforced server-side. OpenAPI documents the new board-only
 operations. Agent-originated configuration and environment tests resolve the
 authenticated request’s responsible user; an agent ID is never a personal-account
 owner. A missing responsible identity blocks personal-default resolution.
@@ -96,6 +108,115 @@ remote environment blocks validation rather than probing the server host. The
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
+
+## On-demand usage limits
+
+The AI account detail has **Check usage**. It reads the selected account only
+when requested; opening the account, listing connections, and starting either
+runner do not invoke this probe. There is no scheduling, provider selection,
+quota enforcement, credit purchase, or automatic retry attached to it.
+
+`aiConnectionService(db).probeUsage(companyId, userId, connectionId, grantId?)`
+is the common server operation for legacy and native runner connections.
+`GET /api/companies/:companyId/ai-connections/:connectionId/usage?grantId=...`
+exposes it to board users. The UI client calls `aiConnectionsApi.probeUsage`.
+The optional grant ID must belong to this connection; omit it only when exactly
+one authorized grant exists. The company membership, personal owner/shared human
+audience, connection lifecycle, and credential ownership checks run before any
+provider request. Agent API keys cannot call this board endpoint. Internal
+execution callers must also use the normal runner connection selection checks
+for agent installation and responsible-user authority before using its result.
+
+The returned `AiConnectionUsage` contains a timestamp and probe status (`ok`,
+`unsupported`, `unavailable`, or `error`), provider/source, every reported limit
+window, model/feature scope, exact window duration when known, reset time,
+utilization/remaining percentage, absolute allowance when reported, and overage
+settings/balance. The list summary advertises `usageProbeSupported`.
+`limitReached` describes that window; `allowed` preserves explicit provider
+admission for its limit group. A model-specific exhausted window must not be
+treated as an account-wide denial. Codex workspace spend controls are also
+returned when present. Percentages remain provider percentages: 0.5 means 0.5%,
+99.99 stays below exhaustion, and values above 100 remain visible.
+
+Capability means the provider has a probe implementation, not that every token
+has permission to read it. Claude `setup-token` credentials characterized in
+this repo request only `user:inference`; the provider can require `user:profile`
+for [usage access](https://github.com/anthropics/claude-code/issues/13724).
+A 403 returns `permission_denied` with no limits, distinct from expired
+authentication or exhausted capacity. Minting another inference-only token
+does not establish usage access. This probe cannot add scopes to a stored token.
+
+| Connection | Read-only source | Observations |
+| --- | --- | --- |
+| Codex subscription | `GET https://chatgpt.com/backend-api/wham/usage` with stored access token and account ID | Primary/secondary windows, additional feature/model limits, provider admission, workspace spend control, credit balance |
+| Claude subscription | `GET https://api.anthropic.com/api/oauth/usage`, with stored OAuth token and `anthropic-beta: oauth-2025-04-20` | Legacy and structured session/weekly/scoped windows, monthly extra usage, structured spend when legacy extra usage is absent |
+| Grok subscription | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`, with stored token and `x-xai-token-auth: xai-grok-cli` | Included-plan utilization/period when reported, separately reported on-demand allowance and prepaid balance in USD cents |
+| OpenRouter API key | `GET https://openrouter.ai/api/v1/key` | Key credit cap, reset cadence, free-model daily request cap when returned |
+| Other API-key methods | No supported single-key allowance endpoint | Explicit `unsupported`; no provider or secret read |
+
+These subscription sources are provider-client endpoints, not a promise of a
+stable public API. Codex's current endpoint/shape is grounded in the official
+[backend client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs)
+and [response models](https://github.com/openai/codex/blob/main/codex-rs/codex-backend-openapi-models/src/models/rate_limit_status_payload.rs).
+Claude uses the same OAuth endpoint as the existing adapter probe; official
+[usage documentation](https://code.claude.com/docs/en/costs) describes plan windows,
+extra usage, and usage-check rate limiting. Grok's endpoint, optional fields, and
+USD-cent units follow its official
+[billing implementation](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-shell/src/extensions/billing.rs).
+It prefers `creditUsagePercent` and `currentPeriod`, with `used`/`monthlyLimit`
+as the legacy included-allowance fallback. The official
+[Grok commands](https://docs.x.ai/build/modes-and-commands) describe its usage screen.
+OpenRouter documents its
+[key limits endpoint](https://openrouter.ai/docs/api/reference/limits).
+
+Unknown values are `null`, never assumed zero. A present Grok `Cent` message `{}`
+means zero under its documented proto3 encoding; an absent message or omitted
+included-usage percentage remains unknown. Claude's `is_active` dashboard flag
+does not establish whether requests are allowed. Named Claude limit groups keep
+their own identities and scopes, including `session` and `weekly_all` groups.
+They do not replace the legacy account-wide windows. An enabled extra-usage switch or remaining
+spend allowance does not establish a funded usable balance; overage `available`
+stays unknown unless the provider confirms it or reports it disabled/exhausted.
+An unlimited OpenRouter key does not establish account balance. A Grok reset
+timestamp alone does not establish weekly/monthly cadence. API rate limiting
+of the *probe* is an error, not an exhausted subscription. Malformed/empty
+responses and network failures return no fresh limits. Responses are `no-store`,
+bounded to 256 KiB and 15 seconds, use fixed endpoints with redirects disabled,
+and contain neither credentials nor raw provider errors. Expired credentials
+report `authentication_required`; the probe does not exchange refresh tokens
+or change connection health.
+
+Verification:
+
+```sh
+pnpm exec vitest run server/src/services/ai-connection-usage.test.ts server/src/__tests__/ai-connections.test.ts ui/src/components/ai-connections/AiConnectionUsagePanel.test.tsx server/src/__tests__/openapi-routes.test.ts
+pnpm check:token-gates
+```
+
+Fixtures prove normalization, credential isolation and manual UI behavior. Live
+provider/account entitlement qualification is separate; provider-side omissions
+remain unknown and must not be used downstream as proof of available capacity.
+On 2026-10-02, a real local Codex access token was saved to an encrypted,
+disposable test connection. The actual connection usage HTTP route returned 200
+with `status: ok`, a weekly window at 100% used, its reset time, denied included
+usage, and available overage credits. The same stored connection passed selection
+checks for both `codex_local` and `paperclip_runner` with the native Codex provider.
+This verifies the connection API/vault/provider path and both selection paths;
+it does not claim a live runner turn or browser acceptance test. The disposable
+database and vault home were removed after verification.
+After the operator signed in again on 2026-10-02, real Claude Keychain and Grok
+file credentials were saved to encrypted disposable connections. Both the
+provider requests and actual connection usage HTTP route returned 200 with
+`status: ok`. Selection checks passed for `claude_local`, native Claude,
+ACP Claude, `grok_local`, and ACP Grok through `paperclip_runner`.
+Claude returned session and weekly usage at 0%, a scoped weekly window, and
+enabled extra usage. Grok returned a weekly period and zero on-demand allowance
+and prepaid balance, but omitted included-plan usage; it remains unknown rather
+than being reported as 0% or available capacity. The live shapes prompted
+regressions for Claude structured limits/spend and Grok legacy usage, monetary
+units, absent percentages, and proto3 zero messages. The disposable database
+and encrypted vault were removed. These checks started no provider turn and
+exchanged no refresh tokens.
 
 ## Runtime isolation
 
@@ -137,6 +258,13 @@ run results or logs. A historical generic terminal-limit message alone does not
 establish quota exhaustion.
 
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
+Test and Save mark the tested account as needing attention when its provider
+hello test rejects authentication or its API-key check returns 401 or 403.
+Network, quota, runtime, and environment failures
+do not change credential health. The same generation check protects a newer
+reconnect from a late test result. Claude ACP's typed `access` failure is its
+provider `auth_required` signal and enters the existing sign-in recovery path,
+including when only the generic terminal-access fallback message is available.
 Claude ACP validates working directories on the selected execution target. A
 sandbox directory does not need to exist on the Paperclip server. When the agent
 has no configured directory, the test uses the remote target's working directory.

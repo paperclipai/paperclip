@@ -410,6 +410,41 @@ function previousRun(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("capability-gated connection tool refresh", () => {
+  it("retains the exact provider session for an MCP-only change when the harness supports it", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.mcp.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const rebound = rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true });
+    expect(rebound).toMatchObject({ sessionId: "provider-thread-123", providerSessionId: "provider-thread-123", identity: { runId: currentRunId }, providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, refreshTools: true, toolRefreshOnResume: false })).toBeNull();
+  });
+
+  it("preserves instruction and identity fences even during a supported refresh", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.instructions.bundle.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.binding.agentId = randomUUID();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+  });
+
+  it("rebuilds the bootstrap when refresh requires a fresh session", () => {
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = execution(currentRunId);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: previousRun(), normalizedSessionId, refreshTools: true, toolRefreshOnResume: false, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
 it("wires exact-session recovery and guarded selected identity into heartbeat persistence", () => {
   const source = readFileSync(
     new URL("../heartbeat.ts", import.meta.url),
@@ -1839,6 +1874,12 @@ describe("rebindNativeSessionCheckpoint", () => {
       // Deployed v8 / finish_response_wake_concrete_object.v2 local catalog.
       retainedFingerprint:
         "sha256:5b7b302db36f7ed6686f9ea1ba70bbf79ebd7fabf86953b548d966a2bc38b648",
+    },
+    {
+      contract: "native completion tool guidance",
+      // Deployed v13 local catalog before canonical finish/block descriptions.
+      retainedFingerprint:
+        "sha256:68a51d34e091c55ee5d0d2b563153454dd727d72db16e6a27c358d342ae489c9",
     },
     {
       contract: "task-bound human-input description",

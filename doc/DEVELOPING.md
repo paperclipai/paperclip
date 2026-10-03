@@ -6,6 +6,9 @@ This project can run fully in local dev without setting up PostgreSQL manually.
 
 For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.
 
+For sandbox file synchronization, lock ownership, and the required upgrade
+procedure from directory locks, see [Workspace restore locks](workspace-restore-locks.md).
+
 Current implementation status:
 
 - canonical model: `local_trusted` and `authenticated` (with `private/public` exposure)
@@ -99,6 +102,20 @@ pnpm build-storybook
 ```
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
+
+Use **Components → Agent setup prompt** to review the shared setup handoff:
+hover/focus logo motion, one-click copying with a prompt preview, animated
+confirmation, and manual-copy recovery. Opening the preview copies immediately;
+clicking its trigger again copies without closing. Close and Escape only dismiss;
+the inner copy button remains available for retries and later copies. Stories include Slack and API copy, a compact quick-access placement,
+light and mobile views, and a clipboard paste check. `AgentSetupPrompt` accepts
+the complete `prompt`, `title`, `description`, trigger `label`, and popover
+placement. Use it for prompts handed to an external agent: Slack and GitHub
+connections, MCP configuration help, routine webhook setup, external-agent
+invitations, and task continuation. The **App placements** story collects the
+production controls; **Inside MCP help** exercises the popover inside a dialog.
+Prompt generation can pass `initialCopyStatus` to preserve its automatic copy
+result, and `onCopied` to clear an earlier generation-time clipboard error.
 
 Use **Design explorations → Agent chat sidebar** to review the production secondary
 agent navigation. **Components** covers selection, search, loading, empty results,
@@ -211,10 +228,14 @@ are not automatically deleted and will accumulate until an operator prunes them.
 
 Publishing requires both the original actor and the current rerunner to be
 individual GitHub accounts named in `.github/CODEOWNERS` on the current default
-branch. Comments, teams and email entries do not grant access. Authorization runs
-before the build and again before deployment, including deployment-only reruns.
+branch. Individual accounts from every ownership rule are included, regardless
+of which paths they own. Comments, teams and email entries do not grant access.
+Authorization runs before the build and again before deployment, including
+deployment-only reruns.
 GitHub also requires a CODEOWNER environment approval, so editing authorization
 code on a branch cannot grant AWS access without an authorized reviewer.
+CODEOWNERS membership does not automatically add an account to the environment's
+required reviewers; a configured reviewer must approve each deployment.
 
 The build downloads the public source archive with no GitHub token permissions,
 AWS credentials or repository secrets. Dependency caching and install lifecycle
@@ -823,8 +844,9 @@ The default `worktree init` still seeds eagerly. A lean worktree (created withou
 
 - `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source from the control-plane-provided base project workspace when it carries its own `.paperclip/config.json`, and otherwise from the control plane's own registered instance config; either way the workspace's manifest never selects it. Manual worktrees must pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot. Managed runs transparently seed a lean worktree from their registered base workspace; an unmanaged lean worktree must first run `worktree ensure-seeded --from-config <source-config>`.
-- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`, so the isolated config and pending manifest cannot be silently skipped. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
-- If the built-in provisioner reports an unavailable seed source config, decide whether the task needs a seeded development instance or only an isolated checkout. A seeded instance needs a canonical config from the registered base workspace or control-plane instance; environment-only server configuration does not provide that file. For a checkout-only worktree, explicitly set the `git_worktree` strategy's `provisionCommand` to `"true"`. This skips setup and does not establish runtime or seed readiness. Repair rejected symlinks or non-regular source files instead of treating those validation failures as a missing prerequisite.
+- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`. When a registered source config exists, setup creates the isolated config and pending manifest. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
+- An environment-configured server may have no local seed config. If neither the base checkout nor the default control-plane instance has one, a fresh worktree prepares its dependencies without creating a development instance. This also applies when `PAPERCLIP_CONFIG` names the default `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/config.json` path, as the Docker image does. Setup creates no config, environment file, or seed manifest and does not claim runtime or seed readiness. A later request for a seeded development runtime still needs a canonical registered source config. Once that source exists, provisioning the checkout again creates the development instance normally.
+- A missing custom `PAPERCLIP_CONFIG`, rejected symlink, or non-regular source file still fails setup. An existing worktree with a config, environment file, or seed state also fails if its source disappears; setup never downgrades that instance to a plain checkout. Repair the source before retrying.
 - The built-in deferred seed is recorded as its own terminal `workspace_seed` operation. A zero exit code is not enough for success: the operation succeeds only when `.paperclip/seed-manifest.json` contains complete verified evidence; failed, missing, or malformed manifests produce a failed operation with the seed phase in metadata.
 - Worktrees created before lazy seeding shipped may have neither marker. Paperclip adopts them only after their configured database proves a compatible migration journal and the core Paperclip schema; otherwise managed startup creates a pending manifest and performs the normal verified seed. Manual markerless worktrees must provide `--from-config` so the source remains explicit.
 

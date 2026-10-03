@@ -1,5 +1,5 @@
 {
-  "id": "950d92b6-7ed1-40ee-89c0-fc5fed818a37",
+  "id": "66a0b3c9-91bb-46b8-a868-a6facedbc14b",
   "prevId": "d0c40f4e-c2c5-4efd-bc15-c6ae5632047d",
   "version": "7",
   "dialect": "postgresql",
@@ -38500,18 +38500,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "deletion_claim_token": {
-          "name": "deletion_claim_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion_claim_expires_at": {
-          "name": "deletion_claim_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -46217,6 +46205,27 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_mcp_gateway_tokens_expiry_idx": {
+          "name": "tool_mcp_gateway_tokens_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}

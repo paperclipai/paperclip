@@ -102,7 +102,7 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, existingWorktree } = {}) {
+function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, existingWorktree, env = {} } = {}) {
   const worktreeCwd = existingWorktree ?? makeTempDir("paperclip-provision-worktree-");
   setupWorktree?.(worktreeCwd);
   const worktreesHome = makeTempDir("paperclip-provision-home-");
@@ -121,14 +121,16 @@ function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, exist
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
       PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+      ...(typeof env === "function" ? env(paperclipHome) : env),
     },
   });
   return { result, worktreeCwd, worktreesHome, paperclipHome };
 }
 
-function runRuntimeProvision(baseCwd, worktreeCwd) {
+function runRuntimeProvision(baseCwd, worktreeCwd, { setupInstance } = {}) {
   const worktreesHome = makeTempDir("paperclip-provision-runtime-home-");
   const paperclipHome = makeInstanceHome();
+  setupInstance?.(paperclipHome);
   return spawnSync("bash", [runtimeScript], {
     cwd: worktreeCwd,
     encoding: "utf8",
@@ -183,21 +185,121 @@ test("uses the base CLI when its import graph boots", () => {
   );
 });
 
-test("explains unavailable instance source config without creating target state", () => {
+for (const defaultConfigInEnv of [false, true]) {
+  test(`prepares a plain checkout without a default instance config (image default env: ${defaultConfigInEnv})`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      env: (home) => defaultConfigInEnv ? { PAPERCLIP_CONFIG: path.join(home, "instances", "default", "config.json") } : {},
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /preparing checkout dependencies without a seeded development instance/);
+    for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+      assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", file)), false);
+    }
+    assert.equal(fs.realpathSync(path.join(worktreeCwd, "cli", "node_modules")), path.join(baseCwd, "cli", "node_modules"));
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+test("rejects a missing custom seed source", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   const { result, worktreeCwd } = runProvision(baseCwd, {
-    setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+    env: { PAPERCLIP_CONFIG: path.join(baseCwd, "missing", "config.json") },
   });
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /config is unavailable \(control-plane instance\)/);
   assert.match(result.stderr, /For a seeded development instance, configure a canonical config/);
-  assert.match(result.stderr, /Only for a checkout-only worktree/);
-  assert.match(result.stderr, /workspaceStrategy\.provisionCommand to "true"/);
-  assert.match(result.stderr, /does not prepare a development runtime/);
   assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
   assert.deepEqual(readCliInvocations(baseCwd), []);
 });
+
+test("initializes a previously plain checkout once a registered seed source is available", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const first = runProvision(baseCwd, {
+    setupInstance: (home) => fs.rmSync(path.join(home, "instances"), { recursive: true }),
+  });
+  assert.equal(first.result.status, 0, first.result.stderr);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+
+  const second = runProvision(baseCwd, { existingWorktree: first.worktreeCwd });
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.equal(readWorktreeConfig(first.worktreeCwd).$meta.source, "fake-cli");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(first.worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state, "pending");
+});
+
+test("a plain checkout without a source is not ready for a seeded runtime", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  fs.mkdirSync(path.join(baseCwd, "scripts"));
+  fs.copyFileSync(script, path.join(baseCwd, "scripts", "provision-worktree.sh"));
+  const setupInstance = (home) => fs.rmSync(path.join(home, "instances"), { recursive: true });
+  const { result, worktreeCwd } = runProvision(baseCwd, { setupInstance });
+  assert.equal(result.status, 0, result.stderr);
+
+  const runtime = runRuntimeProvision(baseCwd, worktreeCwd, { setupInstance });
+  assert.notEqual(runtime.status, 0);
+  assert.match(runtime.stderr, /Worktree config still does not exist after built-in provisioning/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
+for (const relativePath of ["instances/default/config.json", "instances/default"]) {
+  test(`rejects a dangling implicit source symlink at ${relativePath}`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance(home) {
+        const sourcePath = path.join(home, relativePath);
+        fs.rmSync(sourcePath, { recursive: true });
+        fs.symlinkSync(path.join(home, "missing"), sourcePath);
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /canonical/);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+  test(`does not downgrade an existing development instance with ${file} when its source disappears`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      setupWorktree(root) {
+        fs.mkdirSync(path.join(root, ".paperclip"));
+        fs.writeFileSync(path.join(root, ".paperclip", file), "retained state\n");
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /config is unavailable/);
+    assert.equal(fs.readFileSync(path.join(worktreeCwd, ".paperclip", file), "utf8"), "retained state\n");
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+for (const installExit of [0, 42]) {
+  test(`plain checkout dependency provisioning preserves install exit ${installExit}`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const bin = makeTempDir("paperclip-checkout-pnpm-");
+    fs.writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh\nprintf '%s\\n' "$*" >> pnpm-calls\nmkdir -p node_modules cli/node_modules\nexit ${installExit}\n`, { mode: 0o700 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      pathPrefix: bin,
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      setupWorktree(root) {
+        fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+        fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      },
+    });
+    assert.equal(result.status, installExit, result.stderr);
+    assert.match(fs.readFileSync(path.join(worktreeCwd, "pnpm-calls"), "utf8"), /^install --prod=false --frozen-lockfile/);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "pnpm-install-fingerprint")), installExit === 0);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "config.json")), false);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json")), false);
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
 
 test("rejects a dangling base workspace config symlink instead of falling back", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });

@@ -970,7 +970,7 @@ function StandardConnectionSetupFlow({
   // Generic custom URLs remain usable without selecting a hidden provider.
   const visibleGalleryApps = useMemo(
     () => (galleryQuery.data?.apps ?? []).filter((app) => memoryConnectorsEnabled || !isMemoryConnectorId(app.slug)).filter((app) =>
-      chatConnectorsEnabled ||
+      app.slug === "agentmail" || chatConnectorsEnabled ||
       !app.methods.some((method) => method.transport === "chat_sdk") ||
       appSupportsToolCatalogSetup(app),
     ),
@@ -979,7 +979,12 @@ function StandardConnectionSetupFlow({
   const fullRequestedDefinition = requestedAppKey
     ? getConnectableAppDefinition(requestedAppKey)
     : null;
-  const requestedDefinitionUsesManagedConnector = Boolean(
+  const customOAuthMethod = fullRequestedDefinition?.methods.find((candidate) =>
+    connectionMethodAcceptsCustomerOAuthClient(candidate)
+    && !connectionMethodSupportsAutomaticOAuth(candidate),
+  );
+  const selectedCustomOAuth = Boolean(customOAuthMethod && connectionMethodKey === customOAuthMethod.key);
+  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && Boolean(
     fullRequestedDefinition?.methods.some((candidate) =>
       candidate.oauthStrategy === "paperclip_cloud_connector"
       || candidate.oauthStrategy === "paperclip_id_connector"
@@ -1613,14 +1618,16 @@ function StandardConnectionSetupFlow({
   }, [resumeConnectionId]);
 
   useEffect(() => {
+    const savedConnection = resumeConnection ?? reconnectConnection;
+    const savedOAuth = savedConnection?.config?.oauth as Record<string, unknown> | undefined;
     if (
-      !resumeConnection
+      !savedConnection
       || !entry
-      || resumeConnection.status !== "draft"
-      || hydratedResumeConnectionIdRef.current === resumeConnection.id
+      || (savedConnection.status !== "draft" && savedOAuth?.clientRegistrationSource !== "manual")
+      || hydratedResumeConnectionIdRef.current === savedConnection.id
     ) return;
-    const storedConfig = resumeConnection.config && typeof resumeConnection.config === "object"
-      ? resumeConnection.config
+    const storedConfig = savedConnection.config && typeof savedConnection.config === "object"
+      ? savedConnection.config
       : {};
     const storedSource = typeof storedConfig.sourceTemplateKey === "string"
       ? storedConfig.sourceTemplateKey
@@ -1635,7 +1642,7 @@ function StandardConnectionSetupFlow({
           (candidate) => candidate.key === storedMethodKey,
         ) ?? null
       : null;
-    setGalleryName(resumeConnection.name || entry.name);
+    setGalleryName(savedConnection.name || entry.name);
     if (resumedMethod) {
       setConnectionMethodKey(resumedMethod.key);
       const storedMethodConfig = storedConfig.methodConfig && typeof storedConfig.methodConfig === "object"
@@ -1676,9 +1683,9 @@ function StandardConnectionSetupFlow({
       setOAuthError(null);
     }
     setStep("key");
-    hydratedResumeConnectionIdRef.current = resumeConnection.id;
-    setHydratedResumeConnectionId(resumeConnection.id);
-  }, [credentialSource, entry, oauthCallbackCode, oauthCallbackOutcome, resumeConnection]);
+    hydratedResumeConnectionIdRef.current = savedConnection.id;
+    setHydratedResumeConnectionId(savedConnection.id);
+  }, [credentialSource, entry, oauthCallbackCode, oauthCallbackOutcome, resumeConnection, reconnectConnection]);
 
   /**
    * Commit the connection: action defaults, agent reach, and installs.
@@ -1971,7 +1978,7 @@ function StandardConnectionSetupFlow({
     )
   ) : null;
   // A provider can advertise registration and still refuse this deployment's
-  // callback (Asana refuses hosted ones). When the method also accepts an
+  // callback. When the method also accepts an
   // operator's own OAuth client, that client is the recovery path, so it sits
   // in the same Advanced panel and opens itself once sign-in has failed.
   const automaticCustomerClientMethod = automaticOAuthEntry
@@ -2295,6 +2302,11 @@ function StandardConnectionSetupFlow({
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
           </p>
+          {customOAuthMethod ? (
+            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
+              Use your own {entry.name} OAuth app
+            </Button>
+          ) : null}
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={backToGallery}>Back</Button>
             <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
@@ -2319,6 +2331,12 @@ function StandardConnectionSetupFlow({
                 </p>
               </div>
             </div>
+
+            {customOAuthMethod ? (
+              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
+                Use your own {entry.name} OAuth app
+              </Button>
+            ) : null}
 
             {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
               <InlineBanner tone="danger" className="mt-4">
@@ -2368,6 +2386,11 @@ function StandardConnectionSetupFlow({
           oauthClientId={curatedOAuthClientId}
           onOAuthClientIdChange={setCuratedOAuthClientId}
           oauthClientSecret={curatedOAuthClientSecret}
+          canReuseOAuthClientSecret={Boolean(
+            identityConnection?.config?.oauth
+            && (identityConnection.config.oauth as Record<string, unknown>).clientId === curatedOAuthClientId.trim()
+            && identityConnection.hasSavedOAuthClientSecret
+          )}
           onOAuthClientSecretChange={setCuratedOAuthClientSecret}
           credentialSource={credentialSource}
           vercelConnector={vercelConnector}
@@ -3401,6 +3424,7 @@ function KeyStep({
   oauthClientId,
   onOAuthClientIdChange,
   oauthClientSecret,
+  canReuseOAuthClientSecret,
   onOAuthClientSecretChange,
   credentialSource,
   vercelConnector,
@@ -3425,6 +3449,7 @@ function KeyStep({
   oauthClientId: string;
   onOAuthClientIdChange: (next: string) => void;
   oauthClientSecret: string;
+  canReuseOAuthClientSecret: boolean;
   onOAuthClientSecretChange: (next: string) => void;
   credentialSource: ToolConnectionCredentialSource;
   vercelConnector: string;
@@ -3515,7 +3540,10 @@ function KeyStep({
   const acceptsCustomerOAuthClient = connectionMethodAcceptsCustomerOAuthClient(method);
   const customerOAuthClientRequired = acceptsCustomerOAuthClient
     && !connectionMethodSupportsAutomaticOAuth(method);
-  const oauthClientFilled = usingVercel || !customerOAuthClientRequired || oauthClientId.trim().length > 0;
+  const oauthClientFilled = usingVercel || !customerOAuthClientRequired || (
+    oauthClientId.trim().length > 0
+    && (!method?.oauthClientSecretRequired || canReuseOAuthClientSecret || oauthClientSecret.trim().length > 0)
+  );
   const vercelConnectorFilled = !usingVercel || vercelConnector.trim().length > 0;
   const oauthCallbackUrl = method?.auth === "oauth" && acceptsCustomerOAuthClient
     ? oauthCallbackUrlForBrowser()
@@ -3565,27 +3593,26 @@ function KeyStep({
       {!capabilityKey && <p className="mt-2 text-xs text-muted-foreground">Choose an access level to continue.</p>}
     </div>
   ) : null;
-  const managedGoogleMethod = capabilityMethods.find((candidate) =>
-    candidate.oauthStrategy === "paperclip_cloud_connector"
-    && isGoogleWorkspaceConnectorProfileId(candidate.connectorProfile ?? ""),
+  const managedOAuthMethod = capabilityMethods.find((candidate) =>
+    candidate.oauthStrategy === "paperclip_cloud_connector",
   );
-  const customerGoogleMethod = managedGoogleMethod && capabilityMethods.find((candidate) =>
+  const customerOAuthMethod = managedOAuthMethod && capabilityMethods.find((candidate) =>
     connectionMethodAcceptsCustomerOAuthClient(candidate)
     && !connectionMethodSupportsAutomaticOAuth(candidate),
   );
-  const usingCustomGoogleOAuth = method?.key === customerGoogleMethod?.key;
-  const googleOAuthFieldsId = useId();
-  const authenticationSelection = managedGoogleMethod && customerGoogleMethod && capabilityMethods.length === 2 ? (
+  const usingCustomOAuth = method?.key === customerOAuthMethod?.key;
+  const customOAuthFieldsId = useId();
+  const authenticationSelection = managedOAuthMethod && customerOAuthMethod && capabilityMethods.length === 2 ? (
     <Button
       type="button"
       variant="link"
       className="h-auto p-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-      aria-expanded={usingCustomGoogleOAuth}
-      aria-controls={googleOAuthFieldsId}
+      aria-expanded={usingCustomOAuth}
+      aria-controls={customOAuthFieldsId}
       disabled={submitting}
-      onClick={() => onMethodChange(usingCustomGoogleOAuth ? managedGoogleMethod : customerGoogleMethod)}
+      onClick={() => onMethodChange(usingCustomOAuth ? managedOAuthMethod : customerOAuthMethod)}
     >
-      {usingCustomGoogleOAuth ? "Use Paperclip instead" : "Use your own Google OAuth app"}
+      {usingCustomOAuth ? "Use Paperclip instead" : `Use your own ${isGoogleWorkspaceConnectorProfileId(managedOAuthMethod.connectorProfile ?? "") ? "Google" : entry.name} OAuth app`}
     </Button>
   ) : capabilityMethods.length > 1 ? (
     // PAP-659 C1: the ranked default is already selected. This stays as the
@@ -3614,7 +3641,7 @@ function KeyStep({
     || hasAlternateMethods;
   // Keep the disclosure open when what is inside it is load-bearing right now:
   // a non-default method in use, or a selection the connector still needs.
-  const forceAdvancedOpen = usingCustomGoogleOAuth || !hasMethodSelection;
+  const forceAdvancedOpen = usingCustomOAuth || !hasMethodSelection;
   const advancedSettings = hasAdvancedSettings ? (
     <div className="space-y-6">
       {capabilitySelection}
@@ -3705,7 +3732,8 @@ function KeyStep({
     );
   }
 
-  const requirementsUrl = method?.consoleLinks?.docs ?? entry.docsUrl;
+  const managedAsana = method?.connectorProfile === "asana.mcp";
+  const requirementsUrl = managedAsana ? null : method?.consoleLinks?.docs ?? entry.docsUrl;
 
   return (
     <div className="mx-auto max-w-xl">
@@ -3724,6 +3752,9 @@ function KeyStep({
       ) : null}
 
       <div className="space-y-6">
+        {managedAsana ? (
+          <p className="text-sm text-muted-foreground">Sign in with Asana to choose your workspace and connect it to Paperclip.</p>
+        ) : null}
         {method?.capabilityProfile && (
           <p className="text-sm text-muted-foreground">
             {method.capabilityProfile.label}: {method.capabilityProfile.description}
@@ -3778,7 +3809,7 @@ function KeyStep({
 
 
         {!usingVercel && method?.auth === "oauth" && customerOAuthClientRequired ? (
-          <div id={googleOAuthFieldsId} role="region" aria-label="Your OAuth app">
+          <div id={customOAuthFieldsId} role="region" aria-label="Your OAuth app">
             <OAuthClientFields
               entry={entry}
               method={method}
@@ -3892,7 +3923,7 @@ function OAuthClientFields({
     <div className="space-y-4 rounded-lg border border-border p-4">
       <div>
         <div className="text-sm font-medium text-foreground">
-          {required ? `${entry.name} needs its own OAuth app` : "Use your own OAuth app"}
+          {required ? method.oauthClientSecretRequired ? "Your OAuth app" : `${entry.name} needs its own OAuth app` : "Use your own OAuth app"}
         </div>
         {/*
           When these fields are required it is a provider limitation, not a step
@@ -3900,7 +3931,7 @@ function OAuthClientFields({
           exception it is rather than as this connector's normal path.
         */}
         <p className="mt-1 text-xs text-muted-foreground">
-          {required
+          {method.oauthClientSecretRequired ? method.guidanceMd : required
             ? `${entry.name} does not let Paperclip register itself automatically, so this connector needs an OAuth app you create. Add the callback URL below in ${entry.name}, then paste the client details back here.`
             : `Register Paperclip's callback URI in ${entry.name}, then enter the customer-owned client details.`}
         </p>
@@ -3956,7 +3987,7 @@ function OAuthClientFields({
           value={clientSecret}
           onChange={(event) => onClientSecretChange(event.target.value)}
           autoComplete="off"
-          placeholder="Optional for public clients"
+          placeholder={method.oauthClientSecretRequired ? "Required" : "Optional for public clients"}
           className="mt-2 h-11 font-mono"
         />
       </div>

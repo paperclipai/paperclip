@@ -920,6 +920,43 @@ describe("realizeExecutionWorkspace", () => {
     }
   });
 
+  it.each([false, true])("realizes a plain Paperclip checkout without a local seed instance (image default env: %s)", async (defaultConfigInEnv) => {
+    const repoRoot = await createTempRepo();
+    const paperclipHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-env-only-home-")));
+    const previousEnv = {
+      PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
+      PAPERCLIP_CONFIG: process.env.PAPERCLIP_CONFIG,
+      PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
+    };
+    try {
+      await fs.mkdir(path.join(repoRoot, "scripts"));
+      await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
+      await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);
+      await runGit(repoRoot, ["commit", "-m", "Add Paperclip worktree provisioner"]);
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = "default";
+      if (defaultConfigInEnv) process.env.PAPERCLIP_CONFIG = path.join(paperclipHome, "instances", "default", "config.json");
+      else delete process.env.PAPERCLIP_CONFIG;
+
+      const workspace = await realizeWorktreeForTest(repoRoot, "HEAD");
+
+      expect(workspace.strategy).toBe("git_worktree");
+      expect(workspace.created).toBe(true);
+      expect(await readGit(workspace.cwd, ["branch", "--show-current"])).toBe(workspace.branchName);
+      for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+        expect(existsSync(path.join(workspace.cwd, ".paperclip", file))).toBe(false);
+      }
+      expect(await fs.readdir(paperclipHome)).toEqual([]);
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await fs.rm(repoRoot, { recursive: true, force: true });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  });
+
   it("defaults the repo-provided worktree provisioner for git worktree strategies", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });

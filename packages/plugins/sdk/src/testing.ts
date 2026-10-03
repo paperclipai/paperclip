@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -16,7 +16,6 @@ import type {
   Issue,
   IssueComment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
   IssueAttachment,
   IssueDocument,
   Agent,
@@ -1750,6 +1749,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (interaction.kind === "ask_user_questions") {
+          interaction = createIssueThreadInteractionSchema.parse(interaction);
         }
         const now = new Date();
         const current = issueInteractions.get(issueId) ?? [];

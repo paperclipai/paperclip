@@ -548,7 +548,7 @@ V1 non-terminal liveness rule:
 - recovery-action ownership is separate from source-task ownership: automatic repair and board escalation preserve both source assignee fields; reassignment requires an explicit board decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: bounded continuity and disposition repair may retry only the original agent; provider-quota failures create/reuse a scheduled wait-recovery monitor; every other exhausted or unsafe path creates/reuses a board-owned recovery action with `routingPolicy: board_escalation_no_takeover_v1` and no substitute-agent wake
 - legacy active agent-owned recovery actions remain readable, resolvable, and API-compatible after upgrade, but reconciliation does not enqueue another takeover wake for them
-- active-run output silence is an informational board UI signal at one hour (`suspicious`) and four hours (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
+- active-run output silence is an informational board UI signal at five minutes (`suspicious`) and fifteen minutes (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
 - board snooze and continue decisions suppress the run signal until their stored re-arm time; a false-positive decision suppresses it permanently for that run; open legacy evaluation issues remain readable and manually resolvable without automatic refresh
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
@@ -625,6 +625,27 @@ active-run conflicts, status-transition validation, interaction ownership,
 budget gates, and pause gates remain independently enforced. Comment access is
 structurally downstream of issue read access (`issue:comment` is a subset of
 `issue:read`).
+
+Low-trust agents may create self-assigned tasks and subtasks inside their existing
+project or root-task scope. Both creation endpoints enforce task-assignment
+authorization, including responsible-user and protected-assignment checks, even
+when the new task is unassigned. Created tasks retain the effective containment
+policy and quarantined source attribution. Self-assigned decomposition does not
+count as delegation back to another agent. Persistent instruction changes remain
+restricted except for self-edits requested through authenticated owner chat.
+That exception requires the current accepted identity and a recorded direct
+board-message wake, and rechecks the user's current instruction-editing permission
+when saving. It does not extend to outside work, subtasks, peer instructions, or
+other privileged configuration. Denials name the specific restriction.
+
+Authenticated board direction permits a low-trust agent to execute its own
+human conversation or the exact task explicitly assigned or addressed by a human.
+This server-owned exception is bound to the current assignee and the run's task;
+it uses existing conversation identity and authenticated execution-request records,
+including same-task retry ancestry. It does not expand inherited boundaries or
+grant privileged tools. Backlog assignments retain the existing human requester
+without starting a run. Reassignment transactionally cancels prior human requests,
+including service/plugin writes; cancelled runs cannot authorize later retries. See `doc/LOW-TRUST-PRESETS.md` for containment details.
 
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a
@@ -1188,6 +1209,14 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
+The dashboard agent cards show each linked task at most once. The server selects
+distinct task cards from bounded active and recent run samples before it applies
+the dashboard card limit. When multiple runs belong to one task, an active run
+takes precedence over completed runs.
+Runs without a linked task remain separate cards. The dashboard keeps the
+count of additional distinct cards in its link to the live runs page, which
+can show every run.
+
 ## 10.10 Error Semantics
 
 - `400` validation error
@@ -1504,6 +1533,7 @@ Required UX behaviors:
 
 - store only hashed agent API keys
 - redact secrets in logs (`adapter_config`, auth headers, env vars)
+- forward authorized semantic tool arguments unchanged, including credential-bearing document and instruction content; the provider harness owns credential-content policy, and diagnostic redaction must not act as a save or execution gate
 - CSRF protection for board session endpoints
 - rate limit auth and key-management endpoints
 - strict company boundary checks on every entity fetch/mutation
@@ -1652,6 +1682,8 @@ for persistence, migration, rendering, and integration contracts.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
 
+The Chat navigation entry reopens the last agent conversation visited by the current user in the current company. The browser keeps this recent order and any existing conversation ID locally; unavailable agents and removed conversations are skipped. An agent chat that has no issue yet can still reopen from the agent roster. The agent chooser remains the landing view when no saved chat is available.
+
 The server owns conversation state: `waiting` plus `in_review` denotes a healthy idle conversation, and `active` denotes an unanswered or executing turn. Successful replies settle a turn; they do not finish the issue. Idle containers are excluded from execution-work counts, ordinary task lists, timer work, and recovery invocations. Failed/unanswered turns retain normal handling. Child completion never wakes or completes the conversation. Search and direct task access preserve history.
 
 Standalone `/new` is an ordered queue command with no model response. It advances a durable session generation and boundary comment, resets only this issue's provider context, and preserves the issue ID and history. Generation checks reject stale context writes and replies. Fresh replay excludes earlier messages and summaries. The shared transcript renders a session divider.
@@ -1670,12 +1702,18 @@ Confirmed project creation appears as a durable card in the shared task transcri
 
 ### User continuation after execution recovery stops
 
-An authenticated user message or an exact failed-run Retry can start a fresh
+An authenticated user message, a validated undelivered native message queue, or an exact failed-run Retry can start a fresh
 native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
 action outcomes; do not replay tool calls or reset the failed incident's automatic
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
+The task recovery notice offers Retry for eligible failures and verified native
+startup cancellations, with failed attempts explained inline. Preparing native
+turns keep the Steer label. Steer and Interrupt immediately move the submitted
+messages from the composer queue into the conversation while delivery proceeds.
+Provider acknowledgement remains authoritative; failed delivery restores the
+latest queue with an inline error. Neither action produces a toast.
 
 ### Managed AI authentication
 
@@ -1688,15 +1726,24 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+The selected AI connection supports an on-demand usage probe through the common
+connection service, independent of legacy/native execution. The board usage
+endpoint rechecks company membership and the credential's human audience before
+reading its stored token. Report all returned allowance windows, model/feature
+scope, reset times, exhaustion and overage observations; missing values remain
+unknown and unsupported methods/provider failures are explicit. The account
+detail's Check usage action triggers the probe. No automatic detection, routing,
+budget enforcement, credential refresh or credit purchase follows from it.
+
 Provider login failures create a provider-specific Connections card on the task
 when the run fails, before generic recovery retries. Reconnect preserves account
 identity and permissions. Compatible legacy agents may explicitly adopt a
 validated connection inline; late failures must not invalidate newer credentials.
 
-### Experimental task-bound email
+### Task-bound email
 
-AgentMail channel connections extend the experimental conversation/task pipeline
-with explicit email publication. Each owned inbox/provider thread binds one task;
+AgentMail is a default connection and does not require the experimental chat
+setting. It extends the conversation/task pipeline with explicit email publication. Each owned inbox/provider thread binds one task;
 external email senders do not gain board authority. Incoming correspondence uses
 the assigned agent's normal execution controls. Internal task activity never
 implicitly sends email. New outgoing conversations create child tasks and durable

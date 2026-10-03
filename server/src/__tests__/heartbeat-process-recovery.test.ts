@@ -1,6 +1,8 @@
 import * as executionContinuation from "../services/execution-continuation.js";
 import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } from "../services/recovery/legacy-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
+import * as instructionWorkingCopies from "../services/agent-instruction-working-copies.js";
+import * as runEvents from "../services/heartbeat-run-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
@@ -6219,14 +6221,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
   });
 
-  it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
-    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+  it.each([false, "receipt", "launch", "provider", "cleanup"])("converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: %s)", async dispatchReceipt => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
       retryReason: "issue_continuation_needed",
       runErrorCode: "issue_continuation_waiting_on_review",
       runError: "Continuation parked: issue is waiting on review/approval",
     });
+    if (dispatchReceipt) {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.update(heartbeatRuns).set({ startedAt: null,
+        resultJson: { stopReason: "issue_continuation_waiting_on_review", timeoutSource: "stale_queued_run_gate" },
+      }).where(eq(heartbeatRuns.id, run.id));
+    }
+    if (dispatchReceipt === "launch" || dispatchReceipt === "provider") {
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+        eventType: dispatchReceipt === "launch" ? "native.process_start_requested" : "provider.event",
+        stream: "system", level: "info", message: "Contradictory execution evidence" });
+    } else if (dispatchReceipt === "cleanup") {
+      await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId,
+        provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+    }
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const openChildTodoId = randomUUID();
     const openChildInProgressId = randomUUID();
@@ -6268,6 +6284,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
+    if (dispatchReceipt && dispatchReceipt !== "receipt") {
+      expect(result.waitingOnReviewResolved).toBe(0);
+      expect(result.escalated).toBe(1);
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({
+        cause: "legacy_execution_requires_reconciliation", runId, canRetry: false,
+      });
+      return;
+    }
     expect(result.waitingOnReviewResolved).toBe(1);
     expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
@@ -7145,6 +7169,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolutionNote: "owner_not_invokable",
     });
     expect(repairWakeups).toHaveLength(0);
+  });
+
+  it.each([
+    { providerOutcome: "succeeded", cleanupAt: "inner", warningFails: false },
+    { providerOutcome: "failed", cleanupAt: "inner", warningFails: false },
+    { providerOutcome: "throws", cleanupAt: "inner", warningFails: false },
+    { providerOutcome: "succeeded", cleanupAt: "outer", warningFails: false },
+    { providerOutcome: "succeeded", cleanupAt: "inner", warningFails: true },
+  ] as const)("preserves a $providerOutcome provider outcome when instruction cleanup times out ($cleanupAt, warning failure: $warningFails)", async ({ providerOutcome, cleanupAt, warningFails }) => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    const interactionId = randomUUID();
+    const release = vi.fn().mockRejectedValue(Object.assign(new Error("Timed out waiting for workspace restore lock at /private/agent-files.lock"), {
+      code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
+    }));
+    if (cleanupAt === "outer") release.mockResolvedValueOnce(undefined);
+    const originalFactory = instructionWorkingCopies.agentInstructionWorkingCopyService;
+    const factory = vi.spyOn(instructionWorkingCopies, "agentInstructionWorkingCopyService").mockImplementation((...args) => ({
+      ...originalFactory(...args), release,
+    }));
+    const originalAppend = runEvents.appendHeartbeatRunEvent;
+    const append = vi.spyOn(runEvents, "appendHeartbeatRunEvent").mockImplementation((db, event) => {
+      if (warningFails && event.eventType === "instruction_cleanup") throw new Error("Fixture warning persistence failed");
+      return originalAppend(db, event);
+    });
+    mockAdapterExecute.mockImplementationOnce((async () => {
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, sourceRunId: runId,
+        kind: "request_confirmation", title: "Approve the saved plan", payload: { version: 1, prompt: "Accept the plan?" } });
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+      await db.insert(issueComments).values({ companyId, issueId, authorAgentId: agentId, createdByRunId: runId, body: "Plan saved; awaiting approval." });
+      if (providerOutcome === "throws") throw new Error("Original provider failure");
+      return { exitCode: providerOutcome === "succeeded" ? 0 : 1, signal: null, timedOut: false,
+        errorCode: providerOutcome === "succeeded" ? null : "provider_failed",
+        errorMessage: providerOutcome === "succeeded" ? null : "Original provider failure",
+        summary: "Plan saved; awaiting approval.", provider: "test", model: "test-model",
+        usage: { inputTokens: 100, outputTokens: 25 }, costUsd: 0.05 };
+    }) as typeof mockAdapterExecute);
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const settled = await heartbeat.getRun(runId);
+      expect(settled).toMatchObject({ status: providerOutcome === "succeeded" ? "succeeded" : "failed",
+        error: providerOutcome === "succeeded" ? null : "Original provider failure" });
+      if (providerOutcome !== "throws") {
+        expect(settled?.resultJson?.summary).toBe("Plan saved; awaiting approval.");
+        expect(settled?.usageJson).toMatchObject({ inputTokens: 100, outputTokens: 25 });
+        const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+        expect(costs).toHaveLength(1);
+        expect(costs[0]?.costCents).toBe(5);
+      }
+      expect(release).toHaveBeenCalledTimes(cleanupAt === "outer" ? 2 : 1);
+      expect(adapterExecutionControls.has(runId)).toBe(false);
+      const warnings = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "instruction_cleanup")));
+      expect(warnings).toHaveLength(warningFails ? 0 : 1);
+      if (!warningFails) expect(warnings[0]).toMatchObject({ level: "warn", payload: { state: "deferred" } });
+      expect(JSON.stringify(warnings)).not.toContain("/private/");
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual(expect.arrayContaining([
+        expect.objectContaining({ body: "Plan saved; awaiting approval." }),
+      ]));
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status).toBe("pending");
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_review");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    } finally {
+      factory.mockRestore();
+      append.mockRestore();
+    }
   });
 
   it("stops controller renewal and releases execution controls when teardown deadline cleanup throws", async () => {

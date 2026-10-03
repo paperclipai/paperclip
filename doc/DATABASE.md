@@ -177,6 +177,13 @@ idempotent actor synchronization operations, not arbitrary transactions. A
 persistent outage still fails the request after the bounded retries; each
 connection attempt remains subject to the configured database connect timeout.
 
+The dashboard's company lookup, task counts, pending approval count, and
+monthly spend each retry these connection errors at most twice. Each callback
+is read-only and rebuilds its query for each attempt. A failed read
+does not replay completed reads or the budget workflow. Missing companies,
+authentication errors, and other database errors propagate without retry.
+This does not enable general SQL replay.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock

@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Ban,
   Check,
-  ChevronDown,
   ChevronsUpDown,
   Clock,
   Loader2,
@@ -28,12 +27,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Dialog,
@@ -50,7 +43,6 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
-import { formatActionPermissionSummary } from "./action-permission-summary";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -67,13 +59,6 @@ function relTime(date: Date): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-/** Sub-line copy: first sentence of the catalog description, no trailing period. */
-function actionSubLine(entry: ToolCatalogEntry): string | null {
-  if (!entry.description) return null;
-  const firstSentence = entry.description.split(/(?<=\.)\s/)[0] ?? entry.description;
-  return firstSentence.replace(/\.+$/, "").trim() || null;
-}
-
 // ---------------------------------------------------------------------------
 // Decision badges
 // ---------------------------------------------------------------------------
@@ -88,9 +73,7 @@ const TEST_ACCESS_STALE_TIME_MS = 5 * 60_000;
 const TEST_ACCESS_GC_TIME_MS = 30 * 60_000;
 
 /**
- * Focused action tester used by the combined Permissions page. The modal keeps
- * the existing schema form and result renderer, but scopes agent selection and
- * test state to the action the user opened.
+ * Action tester opened from an action row on the Permissions page.
  */
 export function ActionTestDialog({
   connectionId,
@@ -185,7 +168,6 @@ export function ActionTestDialog({
                   onSelect={setRequestedAgentId}
                   connectionId={connectionId}
                   appName={appName}
-                  inline
                 />
                 <DecisionBadge decision={decision} />
               </div>
@@ -236,262 +218,6 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Panel
-// ---------------------------------------------------------------------------
-
-export function TestPanel({
-  connectionId,
-  appName,
-  active,
-  quarantined = [],
-}: {
-  connectionId: string;
-  appName: string;
-  /** Active (non-quarantined, non-removed) catalog entries. */
-  active: ToolCatalogEntry[];
-  /** New, not-yet-reviewed actions — shown as Off so they're reachable to test. */
-  quarantined?: ToolCatalogEntry[];
-}) {
-  const hasActions = active.length > 0 || quarantined.length > 0;
-  const testAgentsQuery = useQuery({
-    queryKey: queryKeys.tools.testAgents(connectionId),
-    queryFn: () => toolsApi.listTestAgents(connectionId),
-    enabled: !!connectionId && hasActions,
-  });
-
-  const agents = useMemo(
-    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
-      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
-    ),
-    [testAgentsQuery.data],
-  );
-
-  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
-  // The API returns only agents this user may write to. Prefer the highest
-  // agent in that accessible slice of the org tree, regardless of whether a
-  // lower-ranked agent happens to have a broader app policy today.
-  const agentId = requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)
-    ? requestedAgentId
-    : agents[0]?.id ?? null;
-  const selectedAgentBase = agents.find((agent) => agent.id === agentId) ?? null;
-  const testAgentAccessQuery = useQuery({
-    queryKey: queryKeys.tools.testAgentAccess(connectionId, agentId ?? "__none__"),
-    queryFn: () => toolsApi.getTestAgentAccess(connectionId, agentId!),
-    enabled: !!connectionId && !!agentId && hasActions,
-    staleTime: TEST_ACCESS_STALE_TIME_MS,
-    gcTime: TEST_ACCESS_GC_TIME_MS,
-    refetchOnWindowFocus: false,
-  });
-  const selectedAgent = useMemo<TestAgentWithAccess | null>(() => (
-    selectedAgentBase && testAgentAccessQuery.data
-      ? { ...selectedAgentBase, effectiveAccess: testAgentAccessQuery.data.access }
-      : null
-  ), [selectedAgentBase, testAgentAccessQuery.data]);
-
-  // Per-action decision for the selected agent, keyed by both the upstream and
-  // gateway tool names so we can match whatever the catalog stores.
-  const decisionByTool = useMemo(() => {
-    const map = new Map<string, ToolConnectionTestDecision>();
-    for (const tool of selectedAgent?.effectiveAccess.tools ?? []) {
-      map.set(tool.toolName, tool.decision);
-      map.set(tool.gatewayToolName, tool.decision);
-    }
-    return map;
-  }, [selectedAgent]);
-
-  const decisionFor = (entry: ToolCatalogEntry): ToolConnectionTestDecision =>
-    decisionByTool.get(entry.toolName) ?? "off";
-
-  // Search + read/write filter.
-  const [query, setQuery] = useState("");
-  const [kindFilter, setKindFilter] = useState<"all" | "read" | "write">("all");
-
-  const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
-    (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
-  const readActions = active.filter((e) => e.isReadOnly).sort(byName);
-  const writeActions = active.filter((e) => !e.isReadOnly).sort(byName);
-
-  const matches = (entry: ToolCatalogEntry) => {
-    if (kindFilter === "read" && !entry.isReadOnly) return false;
-    if (kindFilter === "write" && entry.isReadOnly) return false;
-    const needle = query.trim().toLowerCase();
-    if (!needle) return true;
-    return (
-      (entry.title ?? entry.toolName).toLowerCase().includes(needle) ||
-      (entry.description ?? "").toLowerCase().includes(needle)
-    );
-  };
-
-  const quarantinedActions = [...quarantined].sort(byName);
-
-  const visibleRead = readActions.filter(matches);
-  const visibleWrite = writeActions.filter(matches);
-  const visibleQuarantined = quarantinedActions.filter(matches);
-  const visibleCount = visibleRead.length + visibleWrite.length + visibleQuarantined.length;
-
-  if (!hasActions) {
-    return <EmptyState connectionId={connectionId} appName={appName} />;
-  }
-
-  if (testAgentsQuery.isLoading) {
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading agents…
-        </div>
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-full" />
-      </div>
-    );
-  }
-
-  if (testAgentsQuery.isError) {
-    return (
-      <TestLoadError
-        message="We couldn't load the agents available for testing."
-        onRetry={() => { void testAgentsQuery.refetch(); }}
-      />
-    );
-  }
-
-  if (agents.length === 0) {
-    return (
-      <div className="py-6 text-center">
-        <p className="text-sm font-medium text-foreground">No agents to test as</p>
-        <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
-          <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-            Permissions
-          </Link>{" "}
-          to test it here.
-        </p>
-      </div>
-    );
-  }
-
-  if (testAgentAccessQuery.isError && !testAgentAccessQuery.data) {
-    return (
-      <TestLoadError
-        message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
-        onRetry={() => { void testAgentAccessQuery.refetch(); }}
-      />
-    );
-  }
-
-  if (testAgentAccessQuery.isLoading || !selectedAgent) {
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading agent permissions…
-        </div>
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-full" />
-      </div>
-    );
-  }
-
-  const sharedRowProps = {
-    connectionId,
-    appName,
-    allAgents: agents,
-    onSelectAgent: setRequestedAgentId,
-  };
-
-  return (
-    <div className="space-y-8">
-      {selectedAgent && (
-        <TestAsHeader
-          appName={appName}
-          agents={agents}
-          selectedAgent={selectedAgent}
-          onSelect={setRequestedAgentId}
-          connectionId={connectionId}
-        />
-      )}
-
-      <section className="space-y-4 border-t border-border pt-8">
-        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-(--sz-12rem) flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              aria-label="Find an action"
-              placeholder="Find an action…"
-              className="pl-9"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </div>
-          <FilterChip label={`All ${active.length + quarantinedActions.length}`} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
-          <FilterChip label={`Read ${readActions.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
-          <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
-        </div>
-        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
-      </section>
-
-      {visibleCount === 0 ? (
-        <div className="py-6 text-center text-sm text-muted-foreground">
-          No actions match “{query}”. Clear the search to see them all.
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {visibleRead.length > 0 && selectedAgent && (
-            <ActionGroup
-              heading={`Read (${visibleRead.length})`}
-              entries={visibleRead}
-              decisionFor={decisionFor}
-              agent={selectedAgent}
-              {...sharedRowProps}
-            />
-          )}
-          {visibleWrite.length > 0 && selectedAgent && (
-            <ActionGroup
-              heading={`Write (${visibleWrite.length})`}
-              entries={visibleWrite}
-              decisionFor={decisionFor}
-              agent={selectedAgent}
-              {...sharedRowProps}
-            />
-          )}
-          {visibleQuarantined.length > 0 && selectedAgent && (
-            <ActionGroup
-              heading={`New (${visibleQuarantined.length})`}
-              subheading="New actions wait, switched off, until you turn them on."
-              entries={visibleQuarantined}
-              decisionFor={() => "off" as const}
-              agent={selectedAgent}
-              {...sharedRowProps}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
-  return (
-    <div className="py-8 text-center">
-      <p className="text-base font-bold text-foreground">Nothing to test yet</p>
-      <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
-        Once {appName} is connected, the actions it offers will show up here so you can try them out.
-      </p>
-      <Button asChild className="mt-4" variant="outline">
-        <Link to={appTabHref(connectionId, "permissions")}>Go to Permissions</Link>
-      </Button>
-    </div>
-  );
-}
-
 function TestLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div className="py-8 text-center">
@@ -504,51 +230,8 @@ function TestLoadError({ message, onRetry }: { message: string; onRetry: () => v
 }
 
 // ---------------------------------------------------------------------------
-// Test-as header + agent picker
+// Agent picker
 // ---------------------------------------------------------------------------
-
-function TestAsHeader({
-  appName,
-  agents,
-  selectedAgent,
-  onSelect,
-  connectionId,
-}: {
-  appName: string;
-  agents: ToolConnectionTestAgent[];
-  selectedAgent: TestAgentWithAccess;
-  onSelect: (agentId: string) => void;
-  connectionId: string;
-}) {
-  return (
-    <section className="space-y-5">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">Test an action</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Run a real action as an agent.
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-muted-foreground">Agent</p>
-          <AgentPicker
-            agents={agents}
-            selectedAgent={selectedAgent}
-            onSelect={onSelect}
-            connectionId={connectionId}
-            appName={appName}
-          />
-        </div>
-        <Link
-          className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          to={appTabHref(connectionId, "permissions")}
-        >
-          {formatActionPermissionSummary(selectedAgent.effectiveAccess)}
-        </Link>
-      </div>
-    </section>
-  );
-}
 
 function AgentPicker({
   agents,
@@ -556,14 +239,12 @@ function AgentPicker({
   onSelect,
   connectionId,
   appName,
-  inline,
 }: {
   agents: ToolConnectionTestAgent[];
   selectedAgent: ToolConnectionTestAgent;
   onSelect: (agentId: string) => void;
   connectionId: string;
   appName: string;
-  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -577,17 +258,14 @@ function AgentPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(
-            "items-center gap-1.5 text-foreground outline-none hover:text-primary focus-visible:text-primary",
-            inline ? "inline-flex font-semibold underline-offset-2 hover:underline" : "mt-0.5 flex text-lg font-bold",
-          )}
+          className="inline-flex items-center gap-1.5 font-semibold text-foreground underline-offset-2 outline-none hover:text-primary hover:underline focus-visible:text-primary"
           aria-label="Choose which agent to test as"
         >
           {selectedAgent.name}
-          <ChevronsUpDown className={cn("text-muted-foreground", inline ? "h-3.5 w-3.5" : "h-4 w-4")} />
+          <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0" disablePortal={inline}>
+      <PopoverContent align="start" className="w-80 p-0" disablePortal>
         <div className="border-b border-border p-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -658,114 +336,6 @@ function AgentPicker({
         </div>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function FilterChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-        active
-          ? "border-primary bg-primary/10 text-primary"
-          : "border-border text-muted-foreground hover:bg-accent",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Action group + rows
-// ---------------------------------------------------------------------------
-
-type RowSharedProps = {
-  connectionId: string;
-  appName: string;
-  allAgents: ToolConnectionTestAgent[];
-  onSelectAgent: (agentId: string) => void;
-};
-
-function ActionGroup({
-  heading,
-  subheading,
-  entries,
-  decisionFor,
-  agent,
-  ...shared
-}: {
-  heading: string;
-  subheading?: string;
-  entries: ToolCatalogEntry[];
-  decisionFor: (entry: ToolCatalogEntry) => ToolConnectionTestDecision;
-  agent: TestAgentWithAccess;
-} & RowSharedProps) {
-  return (
-    <section>
-      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
-      {subheading && <p className="mb-1.5 -mt-1 text-xs text-muted-foreground">{subheading}</p>}
-      <div className="divide-y divide-border">
-        {entries.map((entry) => (
-          <ActionRow
-            key={entry.id}
-            entry={entry}
-            decision={decisionFor(entry)}
-            agent={agent}
-            {...shared}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ActionRow({
-  entry,
-  decision,
-  agent,
-  ...shared
-}: {
-  entry: ToolCatalogEntry;
-  decision: ToolConnectionTestDecision;
-  agent: TestAgentWithAccess;
-} & RowSharedProps) {
-  const [open, setOpen] = useState(() => Boolean(loadStoredAskFirstOutcome(shared.connectionId, entry, agent)));
-  const title = entry.title ?? entry.toolName;
-  const sub = actionSubLine(entry);
-
-  useEffect(() => {
-    if (loadStoredAskFirstOutcome(shared.connectionId, entry, agent)) {
-      setOpen(true);
-    }
-  }, [shared.connectionId, entry, agent]);
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none hover:bg-accent/40 focus-visible:bg-accent/40"
-        >
-          <ChevronDown
-            className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
-          />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-foreground">{title}</span>
-            {sub && <span className="block truncate text-xs text-muted-foreground">{sub}</span>}
-          </span>
-          <DecisionBadge decision={decision} />
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="border-t border-border py-4 pl-11">
-          <ActionTester entry={entry} decision={decision} agent={agent} {...shared} />
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 
@@ -854,7 +424,11 @@ function ActionTester({
   entry: ToolCatalogEntry;
   decision: ToolConnectionTestDecision;
   agent: TestAgentWithAccess;
-} & RowSharedProps) {
+  connectionId: string;
+  appName: string;
+  allAgents: ToolConnectionTestAgent[];
+  onSelectAgent: (agentId: string) => void;
+}) {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const rawSchema = (entry.inputSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
@@ -1202,6 +776,59 @@ function isEmptyResult(value: unknown): boolean {
   return false;
 }
 
+/** The gateway keeps the original MCP blocks inside `data`; the top-level
+ * `content` is only a flattened convenience string. Prefer structured output,
+ * then parse individual text blocks when they happen to contain JSON. */
+function resultPreview(value: unknown): { items: Array<{ label: string | null; value: unknown }>; summary: unknown; rawFallback?: boolean } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { items: [{ label: null, value }], summary: value };
+  }
+  const wrapper = value as Record<string, unknown>;
+  const data = wrapper.data && typeof wrapper.data === "object" && !Array.isArray(wrapper.data)
+    ? wrapper.data as Record<string, unknown>
+    : null;
+  const result = data && (Array.isArray(data.content) || data.structuredContent != null) ? data : wrapper;
+  const blocks = Array.isArray(result.content) ? result.content : null;
+  if (!blocks && result.structuredContent == null) {
+    return { items: [{ label: null, value }], summary: value };
+  }
+
+  const parseText = (text: string): unknown => {
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  const structured = result.structuredContent;
+  const items: Array<{ label: string | null; value: unknown }> = [];
+  const structuredValue = typeof structured === "string" ? parseText(structured) : structured;
+  if (structured !== null && structured !== undefined) {
+    items.push({ label: null, value: structuredValue });
+  }
+  for (const block of blocks ?? []) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) {
+      return { items: [{ label: null, value }], summary: value, rawFallback: true };
+    }
+    const content = block as Record<string, unknown>;
+    if (content.type === "text" && typeof content.text === "string") {
+      const parsed = parseText(content.text);
+      if (structured === null || structured === undefined || safeStringify(parsed) !== safeStringify(structuredValue)) {
+        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? "Text" : null, value: parsed });
+      }
+    } else if (content.type === "image" || content.type === "audio") {
+      items.push({ label: content.type === "image" ? "Image" : "Audio", value: typeof content.mimeType === "string" ? content.mimeType : "Media attachment" });
+    } else if (content.type === "resource_link") {
+      items.push({ label: "Resource", value: content.title ?? content.name ?? content.uri ?? "Resource link" });
+    } else if (content.type === "resource" && content.resource && typeof content.resource === "object") {
+      const resource = content.resource as Record<string, unknown>;
+      items.push({ label: "Resource", value: typeof resource.text === "string" ? parseText(resource.text) : resource.uri ?? "Embedded resource" });
+    } else {
+      return { items: [{ label: null, value }], summary: value, rawFallback: true };
+    }
+  }
+  if (items.length === 0 && typeof wrapper.content === "string") {
+    items.push({ label: null, value: parseText(wrapper.content) });
+  }
+  return { items, summary: structured !== null && structured !== undefined ? structuredValue : items[0]?.value };
+}
+
 function writeVerb(entry: ToolCatalogEntry): string | null {
   const n = `${entry.toolName} ${entry.title ?? ""}`.toLowerCase();
   if (/\b(append|add|insert|create|new)\b/.test(n)) return "added";
@@ -1231,27 +858,35 @@ function AllowedResult({
   connectionId: string;
 }) {
   const value = outcome.result.result;
+  const preview = resultPreview(value);
   return (
     <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-4">
       <div className="flex items-center gap-2">
         <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-        <span className="text-sm font-medium text-foreground">{successHeadline(value, entry, appName)}</span>
+        <span className="text-sm font-medium text-foreground">{successHeadline(preview.summary, entry, appName)}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
         Ran as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
       </p>
 
-      {!isEmptyResult(value) && (
+      {preview.items.some((item) => !isEmptyResult(item.value)) && (
         <div className="mt-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
           <div className="mt-1.5">
-            <PrettyPreview value={value} />
+            <div className="space-y-2">
+              {preview.items.map((item, index) => (
+                <div key={index}>
+                  {item.label && <p className="mb-1 text-xs font-medium text-muted-foreground">{item.label}</p>}
+                  <PrettyPreview value={item.value} />
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      <RawResponseDisclosure value={value} />
+      <RawResponseDisclosure value={value} initiallyOpen={preview.rawFallback} />
 
       <p className="mt-3 text-xs text-muted-foreground">
         This call is in the{" "}
@@ -1265,12 +900,25 @@ function AllowedResult({
   );
 }
 
-/** Pretty preview: table for row arrays, depth-limited JSON otherwise, plain text for strings. */
+/** Pretty preview: tables for row arrays, labeled fields for objects, plain text for prose. */
 function PrettyPreview({ value }: { value: unknown }) {
   const rows = asRows(value);
   if (rows) {
     const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r)))).slice(0, 6);
     const shown = rows.slice(0, 6);
+    const needsCards = columns.length > 4 || shown.some((row) =>
+      columns.some((column) => cellText(row[column]).length > 80)
+    );
+    if (needsCards) {
+      return (
+        <div className="space-y-2">
+          {shown.map((row, index) => <PreviewRowCard key={index} row={row} index={index} />)}
+          {rows.length > shown.length && (
+            <p className="text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows in the raw response</p>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full text-left text-xs">
@@ -1300,10 +948,58 @@ function PrettyPreview({ value }: { value: unknown }) {
   if (typeof value === "string") {
     return <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-xs text-foreground">{value}</pre>;
   }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return (
+      <dl className="max-h-64 overflow-auto divide-y divide-border rounded-md border border-border bg-background text-xs">
+        {Object.entries(value as Record<string, unknown>).map(([key, field]) => (
+          <div key={key} className="grid grid-cols-3 gap-3 px-3 py-2">
+            <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
+            <dd className="col-span-2 min-w-0 break-words whitespace-pre-wrap text-foreground">{typeof field === "object" && field !== null ? safeStringify(collapseDeep(field, 2)) : cellText(field)}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
   return (
     <pre className="max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
       {safeStringify(collapseDeep(value, 2))}
     </pre>
+  );
+}
+
+function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: number }) {
+  const titleKey = ["title", "name", "label"].find((key) => typeof row[key] === "string" && row[key] !== "");
+  const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
+  const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
+  const details = Object.entries(row)
+    .filter(([key]) => key !== titleKey && key !== summaryKey && (key !== "url" || !url))
+    .sort(([left], [right]) => {
+      const order = ["url", "type", "status", "timestamp", "id"];
+      const leftRank = order.indexOf(left);
+      const rightRank = order.indexOf(right);
+      return (leftRank < 0 ? order.length : leftRank) - (rightRank < 0 ? order.length : rightRank);
+    });
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-background p-3 text-xs">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <p className="min-w-0 break-words text-sm font-medium text-foreground">
+          {titleKey ? cellText(row[titleKey]) : `Result ${index + 1}`}
+        </p>
+        {url && <a className="shrink-0 text-primary hover:underline" href={url} target="_blank" rel="noopener noreferrer">Open link</a>}
+      </div>
+      {summaryKey && <p className="mt-1 line-clamp-2 break-words text-muted-foreground">{cellText(row[summaryKey]).replace(/\*\*(.*?)\*\*/g, "$1")}</p>}
+      {details.length > 0 && (
+        <dl className="mt-2 space-y-1">
+          {details.slice(0, 3).map(([key, field]) => (
+            <div key={key} className="grid grid-cols-3 gap-2">
+              <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
+              <dd className="col-span-2 min-w-0 break-all text-foreground">{cellText(field)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {details.length > 3 && <p className="mt-2 text-muted-foreground">{details.length - 3} more {details.length === 4 ? "field" : "fields"} in the raw response</p>}
+    </div>
   );
 }
 
@@ -1325,8 +1021,8 @@ function collapseDeep(value: unknown, maxDepth: number, depth = 0): unknown {
   return out;
 }
 
-function RawResponseDisclosure({ value }: { value: unknown }) {
-  const [showRaw, setShowRaw] = useState(false);
+function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknown; initiallyOpen?: boolean }) {
+  const [showRaw, setShowRaw] = useState(initiallyOpen);
   if (value === undefined || value === null) return null;
   return (
     <div className="mt-3">
@@ -1384,6 +1080,7 @@ function ErrorResult({
           ))}
         </ul>
       </div>
+      {outcome.result.result !== undefined && <RawResponseDisclosure value={outcome.result.result} initiallyOpen />}
       <p className="mt-3 text-xs text-muted-foreground">
         {needsReconnect ? "After reconnecting, run this action again." : "Adjust the input above and try again."}
       </p>

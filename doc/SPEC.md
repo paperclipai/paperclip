@@ -39,6 +39,11 @@ on the task immediately after failure. Users can reconnect inline and resume;
 legacy agents keep their authentication until an explicit, validated adoption.
 See [AI Connections](connections/AI-CONNECTIONS.md).
 
+AI connections also expose an on-demand, credential-scoped usage probe. It
+reports provider windows, scoped exhaustion, reset times and overage observations
+for downstream decisions, with explicit unknown/unsupported/error states.
+Probing does not change runner routing or enforce provider limits automatically.
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:
@@ -284,6 +289,13 @@ All agent communication flows through the **task system**.
 - **Delegation** = creating a task and assigning it to another agent
 - **Coordination** = commenting on tasks
 - **Status updates** = updating task status and fields
+
+Low-trust agents can create self-assigned tasks and subtasks within their
+permitted scope, subject to assignment permissions and the responsible user's
+authority. Created work retains containment. An authorized user's direct message
+in their own Agent Chat may authorize an agent to edit its own `AGENTS.md`;
+outside work and subtasks do not inherit this authority. Permission failures
+should name the rejected action and the specific restriction.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 

@@ -1,3 +1,4 @@
+import { AgentAvatar } from "../components/AgentAvatar";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
@@ -171,6 +172,10 @@ vi.mock("../api/issues", async (importOriginal) => {
   // This also exercises the current-revision check used by both queue surfaces.
   return { ...actual, issuesApi: Object.assign(actual.issuesApi, mockIssuesApi) };
 });
+
+vi.mock("../api/email", () => ({
+  emailApi: { thread: vi.fn().mockResolvedValue(null) },
+}));
 
 vi.mock("../api/activity", () => ({
   activityApi: mockActivityApi,
@@ -750,10 +755,12 @@ function createTooltipRoot(container: Element): Root {
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
     resolve = innerResolve;
+    reject = innerReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
@@ -1433,6 +1440,19 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+    const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
+    expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
+    expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
+    expect(breadcrumbs[0].leadingKey).toBe(`agent:${agent.id}:${JSON.stringify(agent.appearance)}`);
+    const updatedAgent = { ...agent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "deep-tide" } } as Agent;
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent: updatedAgent, issue: canonical, ensureIssue: async () => canonical }} /></QueryClientProvider>);
+    });
+    await flushReact();
+    const [updatedBreadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
+    expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
+    expect(updatedBreadcrumbs[0].leadingKey).not.toBe(breadcrumbs[0].leadingKey);
+
   });
 
   it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
@@ -3907,11 +3927,11 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
-  it("projects a native follow-up into the steering well before the post resolves", async () => {
+  it.each(["native", "legacy"] as const)("projects a native follow-up into the steering well before the post resolves with %s persisted mode", async (runtimeMode) => {
     const postedComment = createDeferred<IssueComment>();
     const activeRun = {
       id: "run-native",
-      runtimeMode: "native" as const,
+      runtimeMode,
       status: "running",
       invocationSource: "issue",
       triggerDetail: null,
@@ -3943,6 +3963,7 @@ describe("IssueDetail", () => {
         state: null,
         targetRunId: null,
         entries: [],
+        protocol: "legacy",
         steeringDisposition: "temporarily_unavailable",
       }),
     );
@@ -5857,11 +5878,11 @@ describe("IssueDetail", () => {
     },
   );
 
-  it("keeps the last queued message mounted until steering is acknowledged so rejection stays visible", async () => {
+  it.each([true, false])("optimistically promotes the last steering message and restores it without a toast on rejection (history loaded: %s)", async historyLoaded => {
     const queue = createQueuedCommentQueue();
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
     mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
-    mockIssuesApi.listComments.mockResolvedValue([queue.entries[0].comment]);
+    mockIssuesApi.listComments.mockResolvedValue(historyLoaded ? [queue.entries[0].comment] : []);
     mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
       id: "run-active-1", runtimeMode: "native", status: "running", invocationSource: "issue",
@@ -5882,13 +5903,18 @@ describe("IssueDetail", () => {
     });
     let pending!: Promise<unknown>;
     await act(async () => { pending = props.onSteerQueuedComment("queued-comment-1", queue.revision).catch(error => error); });
-    // The child owns its pending/error state. Unmounting it here loses any later error.
     const whilePending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
-    expect(whilePending.queuedCommentQueue?.entries).toHaveLength(1);
+    expect(whilePending.queuedCommentQueue).toBeNull();
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.comments).toContainEqual(expect.objectContaining({
+      id: "queued-comment-1", steeredIntoRunId: "run-active-1", queueState: undefined,
+    }));
     const failure = new ApiError("This runner does not support steering", 409, { code: "steering_unsupported" });
     await act(async () => { rejectSteer(failure); await pending; });
     expect(await pending).toBe(failure);
-    expect((mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props).queuedCommentQueue?.entries).toHaveLength(1);
+    await waitForAssertion(() => {
+      expect((mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props).queuedCommentQueue?.entries).toHaveLength(1);
+    });
+    expect(mockPushToast).not.toHaveBeenCalled();
   });
 
   it("promotes a steered message immediately while its durable timeline position refreshes", async () => {
@@ -5957,14 +5983,16 @@ describe("IssueDetail", () => {
     mockActivityApi.forIssue.mockReturnValue(activityRefresh);
 
     let steeringPromise!: Promise<void>;
+    let deliverySettled = false;
     await act(async () => {
-      steeringPromise = steer("queued-comment-1", queue.revision);
+      steeringPromise = steer("queued-comment-1", queue.revision).then(() => { deliverySettled = true; });
       await Promise.resolve();
     });
     await waitForAssertion(() => {
       expect(mockIssuesApi.steerQueuedComment).toHaveBeenCalled();
       expect(mockActivityApi.forIssue.mock.calls.length).toBeGreaterThan(1);
       expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.queuedCommentQueue).toBeNull();
+      expect(deliverySettled).toBe(true);
     });
 
     const whileRefreshing = mockIssueChatThreadRender.mock.calls.at(
@@ -6025,6 +6053,82 @@ describe("IssueDetail", () => {
         props.comments?.find((comment) => comment.id === "queued-comment-1"),
       ).not.toMatchObject({ clientStatus: "queued", queueState: "queued" });
     });
+  });
+
+  it.each([
+    ["success", true], ["failure", true], ["success", false], ["failure", false],
+  ] as const)("optimistically promotes the interrupt queue with no toast on %s (history loaded: %s)", async (outcome, historyLoaded) => {
+    const queue = createQueuedCommentQueue({ protocol: "legacy", steeringDisposition: "unsupported" });
+    queue.entries.push({ ...queue.entries[0], position: 1, comment: createIssueComment({ id: "queued-comment-2", body: "Second direction" }) });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "codex_local" })]);
+    mockIssuesApi.listComments.mockResolvedValue(historyLoaded ? queue.entries.map(entry => entry.comment) : []);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "legacy", status: "running", invocationSource: "issue",
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Coder", adapterType: "codex_local", issueId: "issue-1",
+    });
+    const delivery = createDeferred<IssueQueuedCommentQueue>();
+    mockIssuesApi.interruptQueuedComments.mockReturnValue(delivery.promise);
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    type Props = { onInterruptQueued: (runId: string | null) => Promise<void>; queuedCommentQueue: IssueQueuedCommentQueue | null; comments: Array<{ id: string; queueState?: string; conversationAnchorAt?: string }> };
+    let props!: Props;
+    await waitForAssertion(() => {
+      props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(props.queuedCommentQueue?.entries).toHaveLength(2);
+    });
+    let pending!: Promise<unknown>;
+    await act(async () => { pending = props.onInterruptQueued("run-active-1").catch(error => error); });
+    const whilePending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+    expect(whilePending.queuedCommentQueue).toBeNull();
+    for (const entry of queue.entries) expect(whilePending.comments).toContainEqual(expect.objectContaining({
+      id: entry.comment.id, queueState: undefined, conversationAnchorAt: expect.any(String),
+    }));
+    expect(mockPushToast).not.toHaveBeenCalled();
+    await act(async () => {
+      if (outcome === "failure") delivery.reject(new Error("Connection lost"));
+      else delivery.resolve(createQueuedCommentQueue({ entries: [] }));
+      await pending;
+    });
+    await waitForAssertion(() => {
+      const final = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      if (outcome === "failure") expect(final.queuedCommentQueue?.entries).toHaveLength(2);
+      else expect(final.queuedCommentQueue).toBeNull();
+    });
+    expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it("restores a failed classic interrupt inline without a toast or an unhandled rejection", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "codex_local" })]);
+    mockIssuesApi.listComments.mockResolvedValue([createIssueComment({ id: "queued-comment-1", body: "Next direction", createdAt: new Date("2026-04-21T00:00:05.000Z") })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "legacy", status: "running", invocationSource: "issue",
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Coder", adapterType: "codex_local", issueId: "issue-1",
+    });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({ protocol: "legacy", steeringDisposition: "unsupported" }));
+    const delivery = createDeferred<IssueQueuedCommentQueue>();
+    mockIssuesApi.interruptQueuedComments.mockReturnValue(delivery.promise);
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    type Props = { onInterruptQueued: (runId: string | null) => Promise<void>; comments: Array<{ id: string; queueState?: string }> };
+    let props!: Props;
+    await waitForAssertion(() => {
+      props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(props.comments).toContainEqual(expect.objectContaining({ id: "queued-comment-1", queueState: "queued" }));
+    });
+    let pending!: Promise<unknown>;
+    await act(async () => { pending = props.onInterruptQueued("run-active-1").catch(error => error); });
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.comments).toContainEqual(expect.objectContaining({ id: "queued-comment-1", queueState: undefined }));
+    await act(async () => { delivery.reject(new Error("Connection lost")); await pending; });
+    expect(await pending).toBeUndefined();
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Couldn’t interrupt. Message is still queued.");
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.comments).toContainEqual(expect.objectContaining({ id: "queued-comment-1", queueState: "queued" }));
+    });
+    expect(mockPushToast).not.toHaveBeenCalled();
   });
 
   it("keeps an unacknowledged queue visible while withholding server controls", async () => {

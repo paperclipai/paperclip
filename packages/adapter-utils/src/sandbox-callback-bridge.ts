@@ -26,6 +26,7 @@ import type { RunProcessResult } from "./server-utils.js";
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
+const MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // A `BridgeBodyReservation` owner (`http2-bridge-server.ts`) now bounds the
@@ -350,6 +351,22 @@ function buildRunnerFailureMessage(action: string, result: RunProcessResult): st
   return `${action} failed with exit code ${result.exitCode ?? "null"}${detail ? `: ${detail}` : ""}`;
 }
 
+export function runSandboxBridgeControlCommand(
+  runner: CommandManagedRuntimeRunner,
+  input: Parameters<CommandManagedRuntimeRunner["execute"]>[0],
+): Promise<RunProcessResult> {
+  // These short file/control operations must not inherit an hours-long agent
+  // lifetime. Enforce the deadline on the host too: a provider may never settle
+  // its promise even when it receives timeoutMs. This does not prove the remote
+  // operation stopped; callers must not replay an uncertain write on timeout.
+  const controlTimeoutMs = Math.min(
+    normalizeTimeoutMs(input.timeoutMs, MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS),
+    MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS,
+  );
+  return withTimeout(runner.execute({ ...input, timeoutMs: controlTimeoutMs }),
+    controlTimeoutMs, "Sandbox bridge control command");
+}
+
 async function runShell(
   runner: CommandManagedRuntimeRunner,
   cwd: string,
@@ -358,7 +375,7 @@ async function runShell(
   shellCommand: "bash" | "sh" = "sh",
   stdin?: string,
 ): Promise<RunProcessResult> {
-  return await runner.execute({
+  return await runSandboxBridgeControlCommand(runner, {
     command: shellCommand,
     args: shellCommandArgs(script),
     cwd,
@@ -1833,7 +1850,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxBodyBytes: input.maxBodyBytes,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
-  const startResult = await input.runner.execute({
+  const startResult = await runSandboxBridgeControlCommand(input.runner, {
     command: shellCommand,
     args: shellCommandArgs(
       [
@@ -1909,7 +1926,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
     directories,
     stop: async () => {
-      const stopResult = await input.runner.execute({
+      const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(
           [

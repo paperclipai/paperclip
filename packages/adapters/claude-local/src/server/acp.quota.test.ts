@@ -180,3 +180,23 @@ it("does not infer quota from the historical generic terminal-limit error", () =
     title: "ACP agent reported a terminal limit failure.",
   }, now)).toBeNull();
 });
+
+it.each([
+  "Failed to authenticate. API Error: 401 Invalid bearer token",
+  "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+  "Authentication required. Please run claude login.",
+  "Sign in to continue using Claude.",
+  "ACP agent reported a terminal access failure.",
+])("routes a typed provider login rejection to sign-in recovery: %s", async (title) => {
+  const { result } = await executeFailure(title, "access");
+  expect(result).toMatchObject({ exitCode: 1, errorCode: "claude_auth_required" });
+  if (title === "ACP agent reported a terminal access failure.") expect(result.errorMessage).toBe("Claude sign-in failed. Sign in again and try again.");
+  expect(result.errorFamily).not.toBe("provider_quota");
+});
+
+it.each([
+  "Permission denied while opening workspace file.",
+  "Tool authorization denied.",
+])("does not treat a tool or workspace request failure as a login rejection: %s", (title) => {
+  expect(classifyClaudeTerminalSessionFailure({ category: "request", title }, now)).toBeNull();
+});

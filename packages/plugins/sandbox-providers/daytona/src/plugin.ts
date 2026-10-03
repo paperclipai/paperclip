@@ -1775,6 +1775,9 @@ async function executeOneShot(
 // Fallback reads full log snapshots as well as status. Limit the heavier
 // polling path while keeping output available to interactive commands.
 const SESSION_LOG_POLL_INTERVAL_MS = 1000;
+// A socket can stay open after it stops delivering output. Switch to saved
+// logs after this much silence; silence never proves that the command exited.
+const SESSION_LOG_STREAM_IDLE_MS = 15_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1907,7 +1910,7 @@ function createSessionStreamBuffer(
 
 type SessionLogStreamResult = {
   exitCode: number | null;
-  closedStream: boolean;
+  pollUntilExit: boolean;
   buffer: ReturnType<typeof createSessionStreamBuffer>;
 };
 
@@ -1945,8 +1948,8 @@ async function observeSessionCommand<T>(timeoutMs: number, action: () => Promise
 
 // Stream stdout and stderr of one session command from the callback log form.
 // The stream buffer drops a replayed prefix by byte offset on a reconnect.
-// Both a rejected stream and a clean close without a confirmed process exit
-// use bounded reconnects, then polling.
+// Rejected streams and clean closes use bounded reconnects, then polling.
+// An idle socket goes directly to polling, including one that never settles.
 async function runSessionLogStream(
   sandbox: Sandbox,
   sessionId: string,
@@ -1955,32 +1958,56 @@ async function runSessionLogStream(
   buffer: ReturnType<typeof createSessionStreamBuffer>,
 ): Promise<SessionLogStreamResult> {
   let reconnects = 0;
-  let closedStream = false;
+  let pollUntilExit = false;
   while (true) {
     let streamClosed = false;
     let acceptingOutput = true;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let signalIdle!: () => void;
+    const idle = new Promise<"idle">((resolve) => { signalIdle = () => resolve("idle"); });
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(signalIdle, SESSION_LOG_STREAM_IDLE_MS);
+    };
+    const receive = (stream: "stdout" | "stderr", chunk: string) => {
+      if (!acceptingOutput || !chunk) return;
+      armIdleTimer();
+      if (stream === "stdout") buffer.onStdout(chunk);
+      else buffer.onStderr(chunk);
+    };
     try {
-      await sandbox.process.getSessionCommandLogs(
-        sessionId,
-        commandId,
-        (chunk) => { if (acceptingOutput) buffer.onStdout(chunk); },
-        (chunk) => { if (acceptingOutput) buffer.onStderr(chunk); },
-      );
+      armIdleTimer();
+      const outcome = await Promise.race([
+        sandbox.process.getSessionCommandLogs(
+          sessionId,
+          commandId,
+          (chunk) => receive("stdout", chunk),
+          (chunk) => receive("stderr", chunk),
+        ).then(() => "closed" as const),
+        idle,
+      ]);
+      if (outcome === "idle") {
+        // Do not wait for the abandoned socket or open another one. The SDK
+        // exposes no cancellation handle. Fence its callbacks before the
+        // snapshot path resets the buffer's byte cursors.
+        return { exitCode: null, pollUntilExit: true, buffer };
+      }
       streamClosed = true;
-      closedStream = true;
+      pollUntilExit = true;
     } catch {
       // The command can still be running after a log transport failure.
     } finally {
       // The SDK exposes no cancellation handle for this socket. Session
       // teardown owns closing it; late data cannot change a settled execution.
       acceptingOutput = false;
+      clearTimeout(idleTimer);
     }
     if (streamClosed) {
       const exitCode = await readSessionExitCode(sandbox, sessionId, commandId, timeoutMs);
-      if (exitCode !== null) return { exitCode, closedStream, buffer };
+      if (exitCode !== null) return { exitCode, pollUntilExit, buffer };
     }
     if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
-      return { exitCode: null, closedStream, buffer };
+      return { exitCode: null, pollUntilExit, buffer };
     }
     reconnects += 1;
     buffer.resetConnectionCursors();
@@ -2110,14 +2137,14 @@ async function executeInSession(
     // Keep forwarding output while waiting for the actual command exit. ACP
     // peers may need a tool response before they can finish the command. Waiting
     // for exit before reading logs would strand those peers after a stream loss.
-    // An EOF after a live stream does not end the command's lifetime. Bound
+    // A closed or idle log socket does not end the command's lifetime. Bound
     // each recovery read independently; the caller still owns stop/teardown.
     // Preserve the legacy budget starting at fallback entry when both stream
     // attempts fail, including a stream that fails after running for hours.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
     const observe = async <T>(action: () => Promise<T>): Promise<T> => {
       try {
-        return await (streamResult.closedStream
+        return await (streamResult.pollUntilExit
           ? observeSessionCommand(effectiveTimeoutMs, action)
           : beforeSessionDeadline(deadlineMs, action));
       } catch (error) {
@@ -2146,7 +2173,7 @@ async function executeInSession(
       // Full log snapshots are heavier than a status read. Limit fallback
       // traffic to one snapshot per second. Failed-stream fallback retains
       // its original deadline, including the time spent waiting between reads.
-      await sleep(streamResult.closedStream ? SESSION_LOG_POLL_INTERVAL_MS
+      await sleep(streamResult.pollUntilExit ? SESSION_LOG_POLL_INTERVAL_MS
         : Math.max(0, Math.min(SESSION_LOG_POLL_INTERVAL_MS, deadlineMs - Date.now())));
     }
   } catch (error) {

@@ -1,3 +1,5 @@
+import { emailChannelService } from "./email-channels.js";
+import { emailConnectionService } from "./email-connections.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
@@ -237,7 +239,7 @@ export function connectionIntentService(db: Db) {
     agentId: string;
     responsibleUserId: string;
     serviceSlug: string;
-    purpose?: "ai";
+    purpose?: "ai" | "channel";
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
   }) {
     const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug) : null;
@@ -248,6 +250,11 @@ export function connectionIntentService(db: Db) {
       } catch (error) { if ([403, 404, 422].includes((error as { status?: number }).status ?? 0)) return null; throw error; }
     }
     if (input.purpose === "ai") return null;
+    if (input.purpose === "channel") {
+      if (input.serviceSlug !== "agentmail") return null;
+      const inboxes = await assignedAgentmailInboxes(db, input.companyId, input.agentId);
+      return inboxes[0] ? access.getConnection(inboxes[0].connectionId, input.companyId) : null;
+    }
     const inventory = input.inventory ?? await connectionInventory(input.companyId);
     const matching = inventory.connections.filter((connection) =>
       sourceSlugForConnection(connection, inventory.applicationsById) === input.serviceSlug
@@ -318,11 +325,24 @@ export function connectionIntentService(db: Db) {
     ));
   }
 
-  async function resolveService(service: string, companyId: string, userId: string, agentId: string, purpose?: "ai") {
+  // Readiness uses the same credential, feature and assignment checks as the
+  // runtime's AgentMail tools; it never starts a worker or contacts the provider.
+  function assignedAgentmailInboxes(database: Db, companyId: string, agentId: string) {
+    return emailChannelService(database, { heartbeat: { wakeup: async () => {
+      throw new Error("Connection discovery cannot start an email worker");
+    } } }).assignedInboxes(companyId, agentId);
+  }
+
+  async function resolveService(service: string, companyId: string, userId: string, agentId: string, purpose?: "ai" | "channel") {
     if (!service.startsWith("connection:")) {
       const app = getAppStoreDefinition(service);
       if (!app) throw notFound("Connection service was not found");
-      const methods = purpose === "ai" ? getAvailableConnectionMethods(app).filter(method => method.transport === "runtime_auth") : availableToolConnectionMethods(app);
+      if (purpose === "channel" && service !== "agentmail") {
+        throw unprocessable("This email connection is not available");
+      }
+      const methods = purpose === "ai" ? getAvailableConnectionMethods(app).filter(method => method.transport === "runtime_auth")
+        : purpose === "channel" ? getAvailableConnectionMethods(app).filter(method => method.purpose === "channel")
+        : availableToolConnectionMethods(app);
       return { ...app, available: app.availability?.available !== false,
         searchCapabilities: methods.map((method) =>
           `${method.whenToUse} ${method.capabilityProfile?.label ?? ""} ${method.capabilityProfile?.description ?? ""}`).join(" "),
@@ -364,7 +384,7 @@ export function connectionIntentService(db: Db) {
     const candidates: Array<{ item: ConnectionSearchResultItem; score: number; nameScore: number }> = [];
     const authorizedCatalogs = new Map<string, Awaited<ReturnType<typeof indexedCatalog>>>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
-      .filter(method => method.purpose !== "channel" || settings.enableChatConnectors);
+      .filter(method => method.purpose !== "channel" || app.slug === "agentmail" || settings.enableChatConnectors);
     const services = [...APP_STORE_DEFINITIONS.filter(app => discoveryMethods(app).length).map((app) => app.slug),
       ...inventory.connections.filter((connection) =>
         sourceSlugForConnection(connection, inventory.applicationsById)?.startsWith("connection:")
@@ -406,7 +426,7 @@ export function connectionIntentService(db: Db) {
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
-        responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : undefined, inventory });
+        responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
       candidates.push({ score, nameScore, item: {
         service, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
@@ -540,7 +560,7 @@ export function connectionIntentService(db: Db) {
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
       return { version: 1, query, results: results.slice(0, 40),
-        instruction: "Multiple apps match this query. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods use connection_request and channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
+        instruction: "Multiple apps match this query. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods and AgentMail use connection_request to show the inline setup card; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
     }
   }
 
@@ -550,9 +570,13 @@ export function connectionIntentService(db: Db) {
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"
         ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "Call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
       : !suggestions && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For available or needs_user_action tool methods, call connection_request with the service identifier to present its setup card. For available or needs_user_action channel or AI methods, share the method's setupPath. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
+      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For available or needs_user_action tool methods or AgentMail, call connection_request with the service identifier to present its setup card. For other available or needs_user_action channel or AI methods, share the method's setupPath. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
       : results[0]!.state === "ready" && results[0]!.methods.every(method => method.purpose === "ai")
         ? "AI authentication is available for this agent's next execution. Do not create another connection request or ask the user to reconnect."
+      : results[0]!.service === "agentmail"
+        ? results[0]!.state === "ready"
+          ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address. Do not request another connection."
+          : "Call connection_request with service agentmail to show the inline API-key card. Do not send a setup link or ask for the key in chat. The card creates an inbox for this agent; wait for completion before claiming an email address."
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
         ? "Choose the method relevant to the task using its purpose and label. Share its setupPath with the user to open the existing channel or AI setup flow. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
@@ -615,7 +639,7 @@ export function connectionIntentService(db: Db) {
   async function request(
     claims: ConnectionRunClaims,
     serviceSlug: string,
-    options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
+    options: { purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
     return requestWithContext(context, serviceSlug, options);
@@ -624,7 +648,7 @@ export function connectionIntentService(db: Db) {
   async function requestWithContext(
     context: Awaited<ReturnType<typeof loadRunContext>>,
     serviceSlug: string,
-    options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
+    options: { purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const claims = { sub: context.agent.id, company_id: context.run.companyId, run_id: context.run.id, responsible_user_id: context.run.responsibleUserId! };
     const route = parseAggregatorRoute(serviceSlug);
@@ -653,6 +677,9 @@ export function connectionIntentService(db: Db) {
       upstreamService = { slug: route.targetService, name: selected.aggregator.targetName, selectionInteractionId: options.selectionInteractionId };
       serviceSlug = route.provider;
     }
+    // AgentMail has one channel method. Infer it from the server-owned catalog
+    // identifier instead of asking the model to invent a new tool argument.
+    if (serviceSlug === "agentmail" && !options.purpose) options = { ...options, purpose: "channel" };
     const app = await resolveService(serviceSlug, context.run.companyId, context.run.responsibleUserId!, context.agent.id, options.purpose);
     if (!app.available || app.methods.length === 0) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);
@@ -671,10 +698,10 @@ export function connectionIntentService(db: Db) {
         state: "ready",
         connectionId: ready.id,
         interactionId: null,
-        instruction: isRemoteMcpConnectorId(app.slug) ? aggregatorContinuationInstruction(app.slug, upstreamService?.name ?? "The requested app") : options.purpose === "ai" ? `${app.name} authentication is available for the next execution.` : `${app.name} is connected. Use its installed tools; a native continuation will refresh tools if needed.`,
+        instruction: isRemoteMcpConnectorId(app.slug) ? aggregatorContinuationInstruction(app.slug, upstreamService?.name ?? "The requested app") : options.purpose === "channel" ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address; do not request another connection." : options.purpose === "ai" ? `${app.name} authentication is available for the next execution.` : `${app.name} is connected. Use its installed tools; a native continuation will refresh tools if needed.`,
       };
     }
-    if (options.purpose !== "ai" && await administrativeDenial(context.run.companyId, context.agent.id, app.slug, await connectionInventory(context.run.companyId))) {
+    if (!options.purpose && await administrativeDenial(context.run.companyId, context.agent.id, app.slug, await connectionInventory(context.run.companyId))) {
       throw forbidden("This agent has no permitted actions for this service. Ask an administrator to review tool permissions; reconnecting will not remove a denial.");
     }
     const outcomeId = context.run.contextSnapshot?.interactionId;
@@ -702,7 +729,7 @@ export function connectionIntentService(db: Db) {
         sourceRunId: context.run.id,
         sourceIdentityContextId: context.run.activeIdentityContextId,
         addresseeUserId: context.run.responsibleUserId!,
-        idempotencyKey: `connection-intent:${context.run.id}:${context.run.responsibleUserId}:${app.slug}${upstreamService ? `:${upstreamService.slug}` : ""}${options.purpose ? ":ai" : ""}`,
+        idempotencyKey: `connection-intent:${context.run.id}:${context.run.responsibleUserId}:${app.slug}${upstreamService ? `:${upstreamService.slug}` : ""}${options.purpose ? `:${options.purpose}` : ""}`,
       },
     );
     if (interaction.status !== "pending") throw conflict("This connection request has already been resolved. Follow its recorded outcome.");
@@ -738,6 +765,25 @@ export function connectionIntentService(db: Db) {
     const loaded = await loadIntent(interactionId);
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
     const app = await resolveService(payload.serviceSlug, loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId, payload.purpose);
+    if (payload.purpose === "channel") {
+      const [saved] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, loaded.issue.companyId),
+        eq(toolConnections.uid, `agentmail-account-${interactionId}`),
+      ));
+      // A retry may recover only this card's account, after checking the
+      // addressed person's current access. No arbitrary connection is selected.
+      const credential = saved ? await emailConnectionService(db).get(loaded.issue.companyId, saved.id, { userId: loaded.interaction.addresseeUserId! }) : null;
+      const inboxes = await assignedAgentmailInboxes(db, loaded.issue.companyId, payload.requestingAgentId);
+      return {
+        version: 1, interaction: loaded.interaction,
+        service: { service: app.slug, name: app.name, description: app.description ?? null,
+          logoUrl: app.branding.logoUrl ?? null, methods: app.methods, source: app.source,
+          state: "needs_user_action", connectionId: null },
+        existingConnections: [], requestedAgentId: payload.requestingAgentId,
+        emailSetup: { credentialConnectionId: credential?.id ?? null,
+          readyConnectionId: inboxes.find(inbox => inbox.id === interactionId)?.connectionId ?? null },
+      };
+    }
     let managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug) : null;
     if (payload.purpose === "ai" && !managed) {
       const [source] = await db.select().from(heartbeatRuns).where(and(
@@ -873,6 +919,22 @@ export function connectionIntentService(db: Db) {
         throw conflict("Finish and test this connection before using it for the task");
       }
 
+      if (payload.purpose === "channel") {
+        if (payload.serviceSlug !== "agentmail" || !options.canManageOrganizationGrant) {
+          throw forbidden("AgentMail inbox setup requires connection-management authority");
+        }
+        const inboxes = await assignedAgentmailInboxes(txDb, loaded.issue.companyId, payload.requestingAgentId);
+        const inbox = inboxes.find(inbox => inbox.connectionId === selectedConnection.id);
+        if (!inbox?.address) throw conflict("Finish creating an active inbox for the requesting agent before continuing");
+        const credentialId = selectedConnection.config?.credentialConnectionId;
+        if (typeof credentialId !== "string") throw conflict("Use a saved AgentMail account for this inbox");
+        await emailConnectionService(txDb).get(loaded.issue.companyId, credentialId, { userId });
+        return txInteractions.resolveConnectionIntent(loaded.issue, interactionId, {
+          version: 1, outcome: "connected", connectionId: selectedConnection.id,
+          instruction: "Your AgentMail inbox is ready. Use agentmail_inboxes to read its verified address and continue the user's request.",
+        }, { userId });
+      }
+      if (selectedConnection.connectionPurpose === "channel") throw conflict("An email inbox cannot satisfy a tool connection request");
       if (payload.purpose === "ai" && selectedConnection.connectionPurpose !== "ai") throw conflict("Select an AI account for this authentication request");
       if (selectedConnection.connectionPurpose === "ai") {
         if (payload.purpose !== "ai") throw conflict("AI authentication cannot satisfy a tool connection request");

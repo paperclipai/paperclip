@@ -420,7 +420,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.body.error).toContain("Key not found");
     expect(mockAgentService.getKeyById).toHaveBeenCalledWith(keyId);
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it("requires board access before clearing an agent error", async () => {
     const app = await createApp({

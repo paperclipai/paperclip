@@ -184,6 +184,8 @@ export interface NativeSessionGoalControl {
 }
 
 export interface ExecuteNativeSessionOptions {
+  /** Read bounded task history only after recovery requires a fresh conversation. */
+  getFreshSessionHandoff?: () => Promise<string | null>;
   /** Durable launch intent, after cleanup admission and before provider calls. */
   onSessionAdmission?: () => Promise<void>;
   input: NativeExecutionInput;
@@ -2335,6 +2337,10 @@ export async function executeNativeSession(
           let modelEnvelope = recovered
             ? buildNativeModelEnvelope(input, { resumedSession: true })
             : buildNativeModelEnvelope(input);
+          if (!recovered && options.getFreshSessionHandoff && "task" in modelEnvelope) {
+            const handoff = await options.getFreshSessionHandoff();
+            if (handoff) modelEnvelope.task.prompt = `${handoff}\n\n${modelEnvelope.task.prompt}`;
+          }
           const dispositionOnlyRecovery = Boolean(
             recovered &&
             !recoveredSnapshot.semanticResult &&

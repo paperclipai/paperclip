@@ -35,7 +35,11 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
-  it("keeps unconfirmed Stop context off unrelated events and drops arbitrary error fields", async () => {
+  it.each([
+    { phase: "workspace_restore", phaseElapsedMs: 60_123, expectedPhase: "workspace_restore", expectedElapsedMs: 60_123 },
+    { phase: "private-provider-phase", phaseElapsedMs: 100, expectedPhase: "unknown", expectedElapsedMs: null },
+    { phase: "workspace_restore", phaseElapsedMs: Infinity, expectedPhase: "workspace_restore", expectedElapsedMs: null },
+  ])("keeps bounded unconfirmed Stop context off unrelated events ($expectedPhase)", async ({ phase, phaseElapsedMs, expectedPhase, expectedElapsedMs }) => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];
     vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
@@ -55,6 +59,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     const timeout = Object.assign(new AdapterStopTimeoutError(60_000, {
       runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor",
       runtimeMode: "legacy", abortRequested: true,
+      phase, phaseElapsedMs,
     }), {
       cause: new Error("private-provider-cause"),
       providerResponse: { headers: "private-provider-headers", body: "private-provider-body" },
@@ -72,6 +77,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       contexts: { adapter_stop: {
         runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor",
         runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000,
+        phase: expectedPhase, phaseElapsedMs: expectedElapsedMs,
       } },
     });
     expect(JSON.stringify(events)).not.toContain("private-provider-");

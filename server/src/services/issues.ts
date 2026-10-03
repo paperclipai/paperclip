@@ -1943,6 +1943,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
+  assertCanReuseIssue?: (issue: typeof issues.$inferSelect) => Promise<void>;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
@@ -9249,6 +9250,7 @@ export function issueService(db: Db) {
               "Child creation idempotency key belongs to another parent issue",
             );
           }
+          await data.assertCanReuseIssue?.(existingChild);
           data.onDeduplicated?.("idempotency_key");
           const [enriched] = await withIssueLabels(db, [existingChild]);
           const [withRelations] = await withIssueRelationSummaries(
@@ -9752,6 +9754,7 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
+        assertCanReuseIssue,
         onDeduplicated,
         ...issueData
       } = data;
@@ -9877,6 +9880,8 @@ export function issueService(db: Db) {
           if (existingIssue) deduplicationReason = "recent_open_title";
         }
         if (existingIssue) {
+          // A duplicate may have a different scope or assignee than the proposed task.
+          await assertCanReuseIssue?.(existingIssue);
           if (idempotencyKey) {
             await tx
               .insert(issueCreateIdempotencyKeys)
@@ -10217,6 +10222,7 @@ export function issueService(db: Db) {
             issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: initialPlan,
             createdByAgentId: issueData.createdByAgentId, createdByUserId: issueData.createdByUserId,
             createdByRunId: actorRunId,
+            sourceTrust: issue.sourceTrust,
           });
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
@@ -10950,6 +10956,15 @@ export function issueService(db: Db) {
         if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== receiptExisting.assigneeAgentId)
           || (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== receiptExisting.assigneeUserId)) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
+          // Invalidate human direction at the common assignment boundary, including
+          // plugin/service writes that do not go through HTTP run cancellation.
+          // Keep the requester attribution for audit; cancellation revokes its use.
+          await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
+              eq(agentWakeupRequests.requestedByActorType, "user"),
+              sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
+                ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
+                ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`));
         }
         // Reasserting Blocked or changing its blockers is a fresh decision even
         // when the status string stays the same. Invalidate recovery's prior

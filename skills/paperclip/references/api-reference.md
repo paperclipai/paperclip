@@ -930,7 +930,7 @@ Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy
 
 **Text answer (copy this complete payload)**
 
-For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. Send one complete `payload.questionSet` containing every text and choice question. The server generates matching `payload.questions` entries for storage and answer compatibility. Legacy choice-only payloads remain supported. If both fields are supplied, their IDs, prompts, required flags, modes, and visible options must agree. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -942,13 +942,6 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "questions": [{
-      "id": "responsibility",
-      "prompt": "What should the new agent be responsible for?",
-      "selectionMode": "single",
-      "required": true,
-      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
-    }],
     "questionSet": {
       "schema": "paperclip.question_set.v1",
       "questions": [{
@@ -964,7 +957,7 @@ POST /api/issues/{issueId}/interactions
 
 **Multiple choice**
 
-Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+Use `ask_user_questions` for a short question card. Use `payload.questionSet` with `answerMode: "single_select"` or `"multi_select"`, an explicit `required` flag, and options with `id` and `label`. Use `customAnswer: { "enabled": true }` to offer a written alternative. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -976,20 +969,24 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "questions": [{
-      "id": "responsibility",
-      "prompt": "What should the new agent be responsible for?",
-      "selectionMode": "single",
-      "required": true,
-      "allowOther": true,
-      "options": [
-        { "id": "research", "label": "Research", "description": "Find and summarize information." },
-        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
-      ]
-    }]
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "answerMode": "single_select",
+        "required": true,
+        "customAnswer": { "enabled": true },
+        "options": [
+          { "id": "research", "label": "Research", "description": "Find and summarize information." },
+          { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+        ]
+      }]
+    }
   }
 }
 ```
+
 
 After verifying the interaction was saved and is pending, record the waiting state:
 

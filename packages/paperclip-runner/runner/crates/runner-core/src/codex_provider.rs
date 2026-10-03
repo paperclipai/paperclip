@@ -1038,12 +1038,19 @@ impl CodexProvider {
                 "model": config.model,
                 "approvalPolicy": config.approval_policy,
                 "runtimeWorkspaceRoots": [config.cwd],
-                "baseInstructions": config.instructions,
                 "dynamicTools": dynamic_tools,
             });
             let params_object = params
                 .as_object_mut()
                 .expect("Codex thread parameters are an object");
+            // Codex's baseInstructions replaces its stock prompt. OpenCode
+            // uses the same protocol facade but keeps its existing contract.
+            let instruction_field = if config.provider == "codex" {
+                "developerInstructions"
+            } else {
+                "baseInstructions"
+            };
+            params_object.insert(instruction_field.to_owned(), json!(config.instructions));
             if provider.permission_profile == "paperclip-runner-external-sandbox" {
                 // The execution target (for example Daytona) is the OS sandbox.
                 // Codex must not try to create nested user/network namespaces,

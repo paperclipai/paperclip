@@ -1,3 +1,4 @@
+import { AgentMailApiKeyField } from "@/features/connections/AgentMailApiKeyField";
 import { TaskBrowserFooter } from "@/components/task-side-panel/TaskBrowserFooter";
 import { TaskBrowserActivity } from "@/components/task-side-panel/TaskBrowserActivity";
 import type { TaskBrowser } from "@paperclipai/shared";
@@ -494,6 +495,7 @@ function ComposerActionsExample() {
 }
 
 export function DesignGuide() {
+  const [agentmailDemoKey, setAgentmailDemoKey] = useState("");
   const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
@@ -1028,6 +1030,7 @@ export function DesignGuide() {
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
       <Section title="Select">
+        <p className="mb-4 text-sm text-muted-foreground">Native single-value dropdowns share an inset, theme-aware caret and reserve room for it in the base stylesheet. Multiple-selection lists and controls with a custom icon keep their own appearance.</p>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Default size">
             <Select value={selectValue} onValueChange={setSelectValue}>
@@ -2286,7 +2289,7 @@ export function DesignGuide() {
       </Section>
 
       <Section title="Browser setup prompt">
-        <p className="text-sm text-muted-foreground">A shared copy action for provider setup instructions. Confirms success inline and offers selectable text if clipboard access fails.</p>
+        <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
         <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
       </Section>
 
@@ -2297,7 +2300,8 @@ export function DesignGuide() {
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
           Pending connections stay in the timeline beside a usable composer. The independently
           addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
-          layouts, completion, and historical outcomes.
+          layouts, completion, and historical outcomes. AgentMail uses an inline API-key field
+          with fixed access defaults; its field and direct key-page link are shared with Apps setup.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard
@@ -2312,6 +2316,14 @@ export function DesignGuide() {
             interaction={connectedConnectionIntentInteraction}
             currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
           />
+        </div>
+      </Section>
+
+      <Section title="AgentMail API key">
+        <p className="text-sm text-muted-foreground">AgentMail setup has two steps: pick an agent, then pick an email address. Ask for the API key alongside the agent only when needed. Keep address errors beside the field and additional settings under Advanced options.</p>
+        <p className="text-sm text-muted-foreground">Preview only. This field does not save or submit a credential.</p>
+        <div className="max-w-md">
+          <AgentMailApiKeyField value={agentmailDemoKey} onChange={setAgentmailDemoKey} />
         </div>
       </Section>
 

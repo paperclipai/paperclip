@@ -16,6 +16,19 @@ import {
 } from "@/fixtures/issueThreadInteractionFixtures";
 import { ConnectionIntentInteractionBody } from "./ConnectionIntentInteractionBody";
 
+const emailConnectMock = vi.hoisted(() => vi.fn());
+const emailSetupMock = vi.hoisted(() => vi.fn());
+const emailListMock = vi.hoisted(() => vi.fn());
+const emailControlMock = vi.hoisted(() => vi.fn());
+const emailCredentialsMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/email", () => ({ emailApi: {
+  credentials: (...args: unknown[]) => emailCredentialsMock(...args),
+  list: (...args: unknown[]) => emailListMock(...args),
+  control: (...args: unknown[]) => emailControlMock(...args),
+  connect: (...args: unknown[]) => emailConnectMock(...args),
+  setup: (...args: unknown[]) => emailSetupMock(...args),
+} }));
+
 const credentialRender = vi.hoisted(() => vi.fn());
 const setupOptionsMock = vi.hoisted(() => vi.fn());
 const completeMock = vi.hoisted(() => vi.fn());
@@ -113,12 +126,12 @@ async function flush() {
 async function waitForAssertion(assertion: () => void, attempts = 20) {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await flush();
     try {
       assertion();
       return;
     } catch (error) {
       lastError = error;
-      await flush();
     }
   }
   throw lastError;
@@ -175,6 +188,12 @@ function button(label: string) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
+  emailCredentialsMock.mockReset().mockResolvedValue([]);
+  emailListMock.mockReset().mockResolvedValue([]);
+  emailControlMock.mockReset().mockResolvedValue({});
+  emailConnectMock.mockReset().mockResolvedValue({ id: "email-account" });
+  emailSetupMock.mockReset().mockResolvedValue({ connectionId: "email-inbox" });
   setDefaultMock.mockReset();
   getAgentMock.mockReset();
   updateAgentMock.mockReset();
@@ -196,6 +215,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   if (root) await act(() => root?.unmount());
+  await queryClient.cancelQueries();
+  queryClient.clear();
   host?.remove();
   document.body
     .querySelectorAll("[data-radix-focus-guard]")
@@ -579,5 +600,170 @@ describe("AI repair inside the card", () => {
     renderBody({ ...interaction, status: "rejected" });
     expect(document.body.textContent).toContain("The task still needs a working AI connection");
     expect(document.body.textContent).not.toContain("can continue without it");
+  });
+});
+
+describe("AgentMail inline setup", () => {
+  const interaction: ConnectionIntentInteraction = {
+    ...pendingConnectionIntentInteraction,
+    payload: { ...pendingConnectionIntentInteraction.payload, purpose: "channel", serviceSlug: "agentmail", serviceName: "AgentMail" },
+  };
+  async function clickReadyButton(label: string) {
+    await waitForAssertion(() => expect(button(label)?.disabled).toBe(false));
+    await act(() => button(label)!.click());
+    await flush();
+  }
+  async function enterKey() {
+    await waitForAssertion(() => expect(document.querySelector('input[type="password"]')).not.toBeNull());
+    const input = document.querySelector('input[type="password"]') as HTMLInputElement;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "fixture-api-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  it("shows only the key inline, saves company access for this agent and completes after inbox setup", async () => {
+    renderBody(interaction);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await waitForAssertion(() => expect(document.querySelectorAll("input")).toHaveLength(1));
+    expect(document.querySelector('a[href="https://console.agentmail.to/dashboard/api-keys"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"], select')).toBeNull();
+    expect(button("Connect AgentMail")?.disabled).toBe(true);
+    await enterKey();
+    await clickReadyButton("Connect AgentMail");
+    expect(emailConnectMock).toHaveBeenCalledWith(interaction.companyId, {
+      apiKey: "fixture-api-key", grantKind: "organization", allAgents: false,
+      agentIds: [interaction.payload.requestingAgentId], idempotencyKey: interaction.id,
+    });
+    expect(emailSetupMock).toHaveBeenCalledWith(interaction.companyId, {
+      assignedAgentId: interaction.payload.requestingAgentId, credentialConnectionId: "email-account",
+      receiveMode: "websocket", idempotencyKey: interaction.id,
+    });
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "email-inbox");
+  });
+  it("keeps invalid credentials retryable and does not create an inbox or accept the request", async () => {
+    emailConnectMock.mockRejectedValueOnce(new Error("AgentMail request failed (401)"));
+    renderBody(interaction); await flush(); await enterKey();
+    await clickReadyButton("Connect AgentMail");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("401");
+    expect(emailSetupMock).not.toHaveBeenCalled();
+    expect(completeMock).not.toHaveBeenCalled();
+    await clickReadyButton("Connect AgentMail");
+    expect(completeMock).toHaveBeenCalledTimes(1);
+  });
+  it("retries inbox setup without asking for or saving the key again", async () => {
+    emailSetupMock.mockRejectedValueOnce(new Error("Inbox setup unavailable"));
+    renderBody(interaction); await flush(); await enterKey();
+    await clickReadyButton("Connect AgentMail");
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+    await clickReadyButton("Finish setup");
+    expect(emailConnectMock).toHaveBeenCalledTimes(1);
+    expect(emailSetupMock).toHaveBeenCalledTimes(2);
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "email-inbox");
+  });
+  it("can choose another key after a saved key fails, retiring an empty draft and preserving the retry identity", async () => {
+    emailCredentialsMock.mockResolvedValue([{ id: "saved-account", label: "Saved key", scope: "organization", createdAt: "2026-10-01T14:00:00Z" }]);
+    emailSetupMock.mockRejectedValueOnce(new Error("Inbox already assigned"))
+      .mockRejectedValueOnce(new Error("Temporary provider failure"));
+    emailListMock.mockResolvedValue([{ id: interaction.id, address: null, status: "draft" }]);
+    renderBody(interaction); await flush();
+    await waitForAssertion(() => expect(button("Connect AgentMail")?.disabled).toBe(false));
+    expect((document.querySelector("select") as HTMLSelectElement)?.value).toBe("saved-account");
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    await clickReadyButton("Connect AgentMail");
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    await clickReadyButton("Change API key");
+    expect(emailControlMock).toHaveBeenCalledWith(interaction.id, "remove");
+    await enterKey();
+    await clickReadyButton("Connect AgentMail");
+    const next = emailSetupMock.mock.calls[1][1].idempotencyKey;
+    expect(next).not.toBe(interaction.id);
+    expect(emailConnectMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({ idempotencyKey: next }));
+    expect(sessionStorage.getItem(`paperclip.agentmail-inline:${interaction.companyId}:${interaction.id}`)).not.toContain("fixture-api-key");
+    await act(() => root!.unmount()); host!.remove(); queryClient.clear();
+    renderBody(interaction); await flush();
+    await clickReadyButton("Finish setup");
+    expect(emailSetupMock.mock.calls[2][1].idempotencyKey).toBe(next);
+    expect(emailConnectMock).toHaveBeenCalledTimes(1);
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "email-inbox");
+  });
+  it("does not switch keys after an inbox address is allocated", async () => {
+    setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "saved-account", readyConnectionId: null } });
+    emailListMock.mockResolvedValue([{ id: interaction.id, address: "reserved@example.test", status: "draft" }]);
+    renderBody(interaction); await flush();
+    await clickReadyButton("Change API key");
+    expect(document.body.textContent).toContain("reserved@example.test is already reserved");
+    expect(emailControlMock).not.toHaveBeenCalled();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+  });
+  it("recovers the server-saved account when refresh interrupted its response", async () => {
+    const resumedInteraction = { ...interaction, id: "a381e91e-7127-427d-9d2d-519d4deba89f" };
+    sessionStorage.setItem(`paperclip.agentmail-inline:${interaction.companyId}:${resumedInteraction.id}`, JSON.stringify({
+      setupRequestId: resumedInteraction.id, credentialId: null, inboxConnectionId: null, selectedCredentialId: "",
+    }));
+    setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "server-saved-account", readyConnectionId: null } });
+    renderBody(resumedInteraction); await flush();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+    await clickReadyButton("Finish setup");
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    expect(emailSetupMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({
+      credentialConnectionId: "server-saved-account", idempotencyKey: resumedInteraction.id,
+    }));
+  });
+  it("keeps a different saved-key selection when recovering an interrupted save", async () => {
+    const resumedInteraction = { ...interaction, id: "a381e91e-7127-427d-9d2d-519d4deba89f" };
+    sessionStorage.setItem(`paperclip.agentmail-inline:${interaction.companyId}:${resumedInteraction.id}`, JSON.stringify({
+      setupRequestId: resumedInteraction.id, credentialId: null, inboxConnectionId: null, selectedCredentialId: "selected-account",
+    }));
+    emailCredentialsMock.mockResolvedValue([{ id: "selected-account", label: "My selected key", scope: "organization", createdAt: "2026-10-01T14:00:00Z" }]);
+    setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "earlier-account", readyConnectionId: null } });
+    renderBody(resumedInteraction); await flush();
+    await waitForAssertion(() => expect((document.querySelector('select') as HTMLSelectElement)?.value).toBe("selected-account"));
+    await clickReadyButton("Connect AgentMail");
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    expect(emailSetupMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({
+      credentialConnectionId: "selected-account", idempotencyKey: resumedInteraction.id,
+    }));
+  });
+  it("does not restore an abandoned server account after the user changes keys", async () => {
+    const replacementRequestId = "a381e91e-7127-427d-9d2d-519d4deba89f";
+    sessionStorage.setItem(`paperclip.agentmail-inline:${interaction.companyId}:${interaction.id}`, JSON.stringify({
+      setupRequestId: replacementRequestId, credentialId: null, inboxConnectionId: null, selectedCredentialId: "",
+    }));
+    setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "abandoned-account", readyConnectionId: null } });
+    renderBody(interaction); await flush(); await enterKey();
+    await clickReadyButton("Connect AgentMail");
+    expect(emailConnectMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({ idempotencyKey: replacementRequestId }));
+    expect(emailSetupMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({
+      credentialConnectionId: "email-account", idempotencyKey: replacementRequestId,
+    }));
+  });
+  it("resumes a saved account after reload and retries acceptance without recreating the inbox", async () => {
+    setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "email-account", readyConnectionId: "email-inbox" } });
+    completeMock.mockRejectedValueOnce(new Error("Retry completion"));
+    renderBody(interaction); await flush();
+    await clickReadyButton("Continue");
+    await clickReadyButton("Continue");
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    expect(emailSetupMock).not.toHaveBeenCalled();
+    expect(completeMock).toHaveBeenCalledTimes(2);
+  });
+  it("declines without provider requests and hides credentials from other viewers", async () => {
+    renderBody(interaction); await flush();
+    await clickReadyButton("Not now");
+    expect(declineMock).toHaveBeenCalledWith(interaction.id);
+    expect(emailConnectMock).not.toHaveBeenCalled();
+    expect(emailSetupMock).not.toHaveBeenCalled();
+    await act(() => root!.render(<QueryClientProvider client={queryClient}><ConnectionIntentInteractionBody interaction={interaction} currentUserId="different-user" addresseeLabel="Carol" /></QueryClientProvider>));
+    expect(document.querySelector('input')).toBeNull();
+  });
+  it("can decline even when inbox setup options fail to load", async () => {
+    setupOptionsMock.mockRejectedValue(new Error("Email setup is unavailable"));
+    renderBody(interaction);
+    await waitForAssertion(() => expect(document.body.textContent).toContain("Email setup is unavailable"));
+    await clickReadyButton("Not now");
+    expect(declineMock).toHaveBeenCalledWith(interaction.id);
+    expect(emailConnectMock).not.toHaveBeenCalled();
   });
 });

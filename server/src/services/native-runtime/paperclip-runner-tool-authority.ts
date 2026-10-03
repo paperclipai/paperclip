@@ -9,6 +9,9 @@ import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { authorizationService } from "../authorization.js";
+import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
+import { normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
+import { buildLowTrustSourceTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
@@ -17,7 +20,7 @@ import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
 import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
 import {
   isPaperclipExternalChatContractTurn,
@@ -51,6 +54,7 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
@@ -127,9 +131,9 @@ type Binding = {
   syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   enqueueWakeup?: (agentId: string, options: {
-    source: "assignment";
+    source: "assignment" | "automation";
     triggerDetail: "system";
-    reason: "issue_assigned";
+    reason: "issue_assigned" | "issue_commented";
     payload: Record<string, unknown>;
     idempotencyKey: string;
     requestedByActorType: "agent";
@@ -309,14 +313,14 @@ export class PaperclipRunnerToolAuthority {
             notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
           )).limit(1);
           if (!(await delivered()).length) try { await this.binding.enqueueWakeup(this.binding.agentId, {
-            source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+            source: "automation", triggerDetail: "system", reason: "issue_commented",
             payload: { issueId: this.binding.issueId, mutation: "connection_tools_refreshed" },
             idempotencyKey,
             issueStateGuard: { statuses: ["in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
             requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
-            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, forceFreshSession: true, wakeReason: "issue_assigned", source: "connection_tools.refreshed" },
+            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, refreshTools: true, wakeReason: "issue_commented", source: "connection_tools.refreshed" },
           }); } catch (error) { if (!(await delivered()).length) throw error; }
-          return { ...result, instruction: "Access is already authorized. A fresh continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
+          return { ...result, instruction: "Access is already authorized. A continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
         }
       }
       return result;
@@ -952,8 +956,36 @@ export class PaperclipRunnerToolAuthority {
     const inputFingerprint = createHash("sha256")
       .update(canonicalJson(input))
       .digest("hex");
+    const authorizeCreate = async (tx: Db, context: {
+      run: typeof heartbeatRuns.$inferSelect;
+      issue: typeof issues.$inferSelect;
+      actor: typeof agents.$inferSelect;
+    }) => {
+      const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      const projectId = nullableProviderId(input.projectId) ?? (parentIssueId ? context.issue.projectId : null);
+      const scope = { projectId, parentIssueId, assigneeAgentId, assigneeUserId: null };
+      const decision = await authorizationService(tx).decide({
+        actor: { type: "agent", source: "agent_jwt", companyId: this.binding.companyId,
+          agentId: this.binding.agentId, runId: this.binding.runId, onBehalfOfUserId: context.run.responsibleUserId },
+        action: "tasks:assign",
+        resource: { type: "issue", companyId: this.binding.companyId, ...scope },
+        scope,
+      });
+      if (!decision.allowed) throw forbidden(decision.explanation);
+      await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
+      const project = projectId
+        ? await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, this.binding.companyId))).then(rows => rows[0] ?? null)
+        : null;
+      const trust = resolveCoreTrustPreset({
+        companyId: this.binding.companyId, agent: context.actor, project,
+        run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
+      });
+      if (trust.kind === "denied") throw forbidden(trust.detail);
+      return { projectId, trust };
+    };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
+      const { projectId, trust } = await authorizeCreate(tx, context);
       const conversation = Boolean(context.issue.conversationAgentId);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
@@ -979,8 +1011,14 @@ export class PaperclipRunnerToolAuthority {
         };
       }
       let deduplicated = false;
+      const issueId = randomUUID();
       const createInput = {
-        projectId: nullableProviderId(input.projectId),
+        id: issueId,
+        projectId,
+        ...(trust.kind === "low_trust_review" ? {
+          executionPolicy: { ...normalizeIssueExecutionPolicy({ authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } }) },
+          sourceTrust: buildLowTrustSourceTrust({ issueId, runId: this.binding.runId, agentId: this.binding.agentId }),
+        } : {}),
         initialPlan: nullableProviderId(input.initialPlan),
         title: requiredString(input.title),
         description: input.description === null || input.description === undefined
@@ -1053,7 +1091,7 @@ export class PaperclipRunnerToolAuthority {
           assigneeActorId: child.assigneeAgentId,
         },
       };
-    }) as Record<string, unknown>;
+    }, { beforeReceiptReplay: async (tx, context) => { await authorizeCreate(tx, context); } }) as Record<string, unknown>;
 
     if (publication) publishActivity(publication);
     const task = record(result.task);

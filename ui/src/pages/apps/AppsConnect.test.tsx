@@ -53,8 +53,13 @@ const GITHUB_MANAGED = {
 };
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
+const ASANA_MANAGED = {
+  ...ASANA,
+  ownershipAvailability: { ...ASANA.ownershipAvailability, platform_shared: true },
+};
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
+const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -981,6 +986,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(gmail?.textContent).not.toContain("Coming soon");
   });
 
+  it("defaults Asana to managed sign-in and allows a custom app before enrollment", async () => {
+    mockSearch.value = "source=asana";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...ASANA, methods: ASANA.methods.filter((method) => !method.oauthStrategy), ownershipAvailability: {
+      ...ASANA.ownershipAvailability, platform_shared: false,
+    } }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ configured: false, status: "not_configured", origins: [] });
+    await render();
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect with Paperclip");
+    await act(async () => { buttonByText("Use your own Asana OAuth app")!.click(); });
+    await flushReact();
+    expect(container.textContent).toContain("Your OAuth app");
+    expect(container.textContent).toContain("API apps do not work with Asana MCP");
+    expect(container.textContent).not.toContain("You must connect this instance");
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "asana-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("requires the acting user's saved Asana client secret for reuse (%s)", async (hasSavedOAuthClientSecret) => {
+    mockSearch.value = "source=asana&resume=conn-asana";
+    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-asana", status: "draft", metadata: { sourceTemplateKey: "asana" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: "conn-asana", applicationId: "app-asana", name: "Asana", authKind: "oauth",
+      credentialPolicy: "per_user", status: "draft", credentialSecretRefs: [], hasSavedOAuthClientSecret,
+      config: { sourceTemplateKey: "asana", connectionMethodKey: "mcp-own-oauth", oauth: { clientId: "saved-asana-client", clientRegistrationSource: "manual" } },
+      transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")?.value).toBe("saved-asana-client");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(!hasSavedOAuthClientSecret);
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "different-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+  });
+
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
     listGalleryMock.mockResolvedValue({ apps: [BOX] });
     mockParams.appKey = "box";
@@ -1023,28 +1067,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
-  it("gives Asana the one-click path now that its server advertises registration", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+  it("connects Asana through the shared app without client credentials", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
     mockParams.appKey = "asana";
     await render();
     await flushReact();
 
-    // No console detour: the connect screen is the handoff, not a form.
     expect(container.textContent).not.toContain("needs its own OAuth app");
     expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
-    const primary = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.trim().startsWith("Continue to"),
-    );
+    const primary = buttonByText("Continue to sign in");
     expect(primary).toBeTruthy();
     expect(primary?.disabled).toBe(false);
+    await act(async () => { primary!.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "asana", connectionMethodKey: "managed", grantKind: "user",
+    }));
   });
 
-  it("offers Asana's own-OAuth-app fields as the recovery when registration is refused", async () => {
-    // Asana advertises registration but refuses hosted callbacks, so a failed
-    // sign-in must still leave the customer-owned client path within reach.
-    listGalleryMock.mockResolvedValue({ apps: [ASANA] });
+  it("allows a custom Asana app from the shared sign-in setup", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
     mockParams.appKey = "asana";
-    connectAppMock.mockRejectedValueOnce(new Error("Asana refused the redirect URI."));
     connectAppMock.mockResolvedValueOnce({
       connectionId: "conn-asana",
       application: { id: "app-asana", name: "Asana" },
@@ -1058,25 +1101,28 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
 
-    await act(async () => {
-      buttonByText("Continue to Asana")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    await openAccessAdvanced();
     await flushReact();
+    const customApp = buttonByText("Use your own Asana OAuth app");
+    expect(customApp).toBeTruthy();
+    await act(async () => { customApp!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flushReact();
 
     const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id");
+    const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret");
     expect(clientId).toBeTruthy();
-    await act(async () => setInputValue(clientId!, "asana-own-client"));
-    await flushReact();
+    expect(clientSecret).toBeTruthy();
     await act(async () => {
-      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      setInputValue(clientId!, "asana-own-client");
+      setInputValue(clientSecret!, "asana-own-secret");
     });
     await flushReact();
+    await act(async () => { buttonByText("Continue to sign in")!.click(); });
     await flushReact();
 
     expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
-      galleryKey: "asana",
-      oauthClient: expect.objectContaining({ clientId: "asana-own-client" }),
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "asana-own-client", clientSecret: "asana-own-secret" },
     }));
   });
 
@@ -1795,6 +1841,48 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
+    mockParams.appKey = "neon";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });
+    await render();
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Neon")?.getAttribute("aria-checked")).toBe("true");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(container.textContent).toContain("Pin to project ID");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional Neon project ID"]')).toBeTruthy();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    // The key is the only required input on this method: Connect waits for it
+    // and for nothing else, since both narrowing controls are optional.
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "napi_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "neon",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "napi_test-key" },
+      configValues: { readOnly: false },
+    }));
   });
 
   it("connects PostHog without a project ID and keeps optional controls advanced", async () => {

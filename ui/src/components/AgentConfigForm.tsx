@@ -58,7 +58,7 @@ import {
   resolveManagedSandboxEnvironmentId,
 } from "../lib/adapter-test-environment";
 import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
-import { extractModelName, extractProviderId } from "../lib/model-utils";
+import { adapterCuratesModelOrder, extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import {
@@ -1744,6 +1744,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
                 required={adapterType === "opencode_local" || adapterType === "pi_local"}
                 groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
+                preserveOrder={adapterCuratesModelOrder(adapterType)}
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
@@ -3725,6 +3726,7 @@ export function ModelDropdown({
   allowDefault,
   required,
   groupByProvider,
+  preserveOrder,
   creatable,
   detectedModel,
   detectedModelCandidates,
@@ -3743,6 +3745,8 @@ export function ModelDropdown({
   allowDefault: boolean;
   required: boolean;
   groupByProvider: boolean;
+  /** Keep the adapter's list order (curated lists) instead of sorting ungrouped entries by id. */
+  preserveOrder?: boolean;
   creatable?: boolean;
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
@@ -3787,12 +3791,10 @@ export function ModelDropdown({
   }, [models, modelSearch, promotedModelIds]);
   const groupedModels = useMemo(() => {
     if (!groupByProvider) {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
-        },
-      ];
+      // A hand-ordered list (newest release of each family first, older releases at the end) is
+      // shown as the adapter ordered it; a discovered list has no stable order, so sort it.
+      const entries = preserveOrder ? filteredModels : [...filteredModels].sort((a, b) => a.id.localeCompare(b.id));
+      return [{ provider: "models", entries }];
     }
     const map = new Map<string, AdapterModel[]>();
     for (const model of filteredModels) {
@@ -3807,7 +3809,7 @@ export function ModelDropdown({
         provider,
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
-  }, [filteredModels, groupByProvider]);
+  }, [filteredModels, groupByProvider, preserveOrder]);
 
   async function handleDetectModel() {
     if (!onDetectModel) return;

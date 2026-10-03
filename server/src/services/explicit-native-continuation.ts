@@ -1,4 +1,5 @@
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
@@ -75,7 +76,7 @@ export async function admitExplicitNativeContinuation(input: {
   failedRunId?: string | null;
   /** Server-recorded board intent to send an existing legacy message queue. */
   queuedCommentInterruptId?: string;
-  /** Internal delivery of an unconsumed, user-authored legacy queue entry. */
+  /** Internal delivery of an unconsumed, user-authored saved queue entry. */
   queuedCommentRequestId?: string;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
@@ -113,10 +114,14 @@ export async function admitExplicitNativeContinuation(input: {
     !savedQueue.idempotencyKey?.startsWith("chat-inbound:") &&
     queuedCommentIdsFromWakePayload(savedQueue.payload).includes(commentId));
   if (input.queuedCommentRequestId && !queuedRequest) return null;
+  let partiallyDeliveredQueue = false;
   if (queuedRequest) {
     const ids = queuedCommentIdsFromWakePayload(savedQueue!.payload);
     const undelivered = await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, ids);
-    if (undelivered.length !== ids.length) return null;
+    // A partly consumed queue still owns its remaining input. Admission and
+    // adoption both recheck the durable queue and discard already delivered IDs.
+    if (undelivered.at(-1) !== commentId) return null;
+    partiallyDeliveredQueue = undelivered.length !== ids.length;
   }
   const [comment] = retry || response ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
@@ -167,12 +172,9 @@ export async function admitExplicitNativeContinuation(input: {
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
-    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
-        !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
-    if (queuedRequest && !queuedInterrupt && ((run.status === "cancelled" && !unusedAdmission) ||
-        run.contextSnapshot?.wakeCommentId === commentId ||
+    if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||
         (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
     if (legacyUserTurn) {
       const historicalAdapter = await historicalAdapterType(db, run);
@@ -198,6 +200,16 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("workspace_repair_required", "Verify safe workspace staging or repair before continuing. Your message is saved.");
     }
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
+    if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup) return null;
+    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
+        !(queuedRequest && run.runtimeMode === "native" &&
+          (run.status !== "cancelled" || authorizedAt > run.finishedAt!)) &&
+        !(queuedRequest && cancelledStartup && authorizedAt > run.finishedAt!) &&
+        !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
+    if (queuedRequest && !queuedInterrupt && run.status === "cancelled" && !unusedAdmission &&
+        !canContinueCancelledRun(run) && !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
+    if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
+      return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
     // A provider failure can finish the normal result/assessment commit path.
@@ -212,9 +224,13 @@ export async function admitExplicitNativeContinuation(input: {
           sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
         )).limit(1)
       : [];
+    // A terminal failure may retain a result accepted before checkpoint or
+    // cleanup failed. That immutable result is history, not an active commit.
+    // Keep it intact and require the same controller/process/lease stop proofs
+    // before admitting new user input; never apply or replay the old result.
     if (!cancelledStartup && coordinator && (
         (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
-        (coordinator.resultId && !committedFailure) || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+        coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
             : "Waiting for the previous run to finish recovery. Your message will start automatically.");

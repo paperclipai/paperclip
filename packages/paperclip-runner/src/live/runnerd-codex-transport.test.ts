@@ -55,6 +55,10 @@ import {
   createCodexTaskEnvelope,
 } from "../contracts/codex.js";
 import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
+import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
@@ -1336,14 +1340,19 @@ it("includes ACPX terminal tools in the authenticated bridge catalog", () => {
   });
 });
 
-it("preserves answer and internal wait descriptions in the serialized native tool catalog", () => {
+it.each(["codex", "opencode", "claude_managed", "aws_agentcore", "acpx"] as const)("preserves answer and internal wait descriptions in the serialized native %s tool catalog", (provider) => {
   const catalog = JSON.parse(
-    JSON.stringify(authorizedToolSetForProvider("codex", codexSemanticToolSpecs())),
+    JSON.stringify(authorizedToolSetForProvider(provider, codexSemanticToolSpecs())),
   );
   const finish = catalog.operations.find(
     (operation: { operationId: string }) =>
       operation.operationId === "paperclip_finish",
   );
+  const block = catalog.operations.find(
+    (operation: { operationId: string }) => operation.operationId === "paperclip_block",
+  );
+  expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+  expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   expect(finish.inputSchema.properties.summary.description).toContain(
     "complete user-facing answer",
   );
@@ -4154,7 +4163,9 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
   );
   const tracePath = join(traceDirectory, "trace.ndjson");
   const bundle = createCapabilityRunnerdCodexTransport({
-    runnerBinary: defaultCapabilityRunnerdBinary(),
+    // Qualification builds a debug daemon for this exact source. Its selected
+    // binary must win over any separately staged product/runtime artifact.
+    runnerBinary: process.env.PAPERCLIP_STOCK_PREFLIGHT_RUNNERD ?? defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(traceDirectory, "--structured-activity"),
     stateDirectory: join(traceDirectory, "state"),
@@ -4247,11 +4258,14 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     decodedFrames.find((frame) => frame.method === "thread/start"),
   ).toMatchObject({
     params: {
-      baseInstructions: withCodexCollaborationRuntimeInstructions(
+      developerInstructions: withCodexCollaborationRuntimeInstructions(
         CODEX_SKILLLESS_BASE_INSTRUCTIONS,
       ),
     },
   });
+  expect(
+    (decodedFrames.find((frame) => frame.method === "thread/start")?.params as Record<string, unknown>),
+  ).not.toHaveProperty("baseInstructions");
   const stages = new Set(
     [...nativeEntries, ...rehydratedEntries]
       .filter((entry) => entry.kind === "interpretation")

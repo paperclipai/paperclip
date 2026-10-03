@@ -163,7 +163,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 
 **Human input questions.**
 
-For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). `questionSet` controls presentation; the matching `questions` entry is required storage compatibility and must not be sent alone.
+For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). Put every text and choice question in one complete `questionSet`. Paperclip generates the compatibility `questions` entries. Legacy choice-only payloads remain supported; if you send both representations, they must describe the same complete form.
 
 Omit `addresseeUserId` for ordinary questions.
 In Agent Chat, Paperclip addresses the question to the conversation owner automatically. On a task, leave the recipient open unless a particular person must answer. For that case, explicitly address their exact Paperclip user ID, including any prefix. The server rejects unknown or unauthorized recipients. Do not guess IDs or infer authority from a title. Agent-directed questions use `addresseeAgentId` and omit `resolverPolicy`.
@@ -179,8 +179,7 @@ In Agent Chat, Paperclip addresses the question to the conversation owner automa
     "questionSet": {
       "schema": "paperclip.question_set.v1",
       "questions": [{ "id": "detail", "prompt": "What should I know?", "answerMode": "text", "required": true }]
-    },
-    "questions": [{ "id": "detail", "prompt": "What should I know?", "selectionMode": "single", "required": true, "options": [{ "id": "text", "label": "Your answer", "freeText": true }] }]
+    }
   }
 }
 ```

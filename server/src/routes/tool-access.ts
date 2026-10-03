@@ -393,7 +393,7 @@ export function toolAccessRoutes(
         : null;
       if (
         parsed.host.toLowerCase() === normalizedRoutedHost
-        && (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)))
+        && parsed.protocol === "https:"
       ) {
         return parsed.origin;
       }

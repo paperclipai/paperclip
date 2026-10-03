@@ -289,6 +289,12 @@
       "darkAsset": "/brands/apps/netlify-dark.svg"
     },
     {
+      "slug": "neon",
+      "provider": "Neon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/neon.png"
+    },
+    {
       "slug": "notion",
       "provider": "Notion",
       "catalogVisible": true,

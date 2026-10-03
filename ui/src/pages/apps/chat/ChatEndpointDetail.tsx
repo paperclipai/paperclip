@@ -7,6 +7,9 @@ import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
 import { EmailEndpointSettings } from "./EmailEndpointSetup";
+import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
+import { emailApi } from "@/api/email";
+import { toolsApi } from "@/api/tools";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -279,7 +282,8 @@ export function ChatEndpointDetail() {
         </Button>
       </div>
     );
-  if (endpoint.provider === "agentmail") return <EmailEndpointSettings endpointId={endpoint.id} companyId={endpoint.companyId} />;
+  if (endpoint.provider === "agentmail" && activeTab === "settings")
+    return <EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} />;
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
     ["draft", "verifying", "attention", "revoked"].includes(endpoint.status);
@@ -292,7 +296,7 @@ export function ChatEndpointDetail() {
             {endpoint.assignedAgentName} in {providerNames[endpoint.provider]}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {endpoint.providerAccountLabel ?? "Chat connection"}
+            {endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
           </p>
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -329,7 +333,8 @@ export function ChatEndpointDetail() {
       )}
       {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} />}
 {activeTab === "access" && endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="access" />}
-{activeTab === "access" && endpoint.provider !== "github" && (
+{activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
+{activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
         <Access
           endpointId={endpoint.id}
           allowUnlinked={endpoint.allowUnlinkedPeople}
@@ -344,6 +349,32 @@ export function ChatEndpointDetail() {
       )}
     </div>
   );
+}
+
+function EmailAccess({ endpoint }: { endpoint: ChatEndpoint }) {
+  const connection = useQuery({
+    queryKey: queryKeys.tools.connection(endpoint.connectionId ?? ""),
+    queryFn: () => toolsApi.getConnection(endpoint.connectionId!),
+    enabled: Boolean(endpoint.connectionId),
+  });
+  const agents = useQuery({
+    queryKey: queryKeys.agents.list(endpoint.companyId),
+    queryFn: () => agentsApi.list(endpoint.companyId),
+  });
+  if (!endpoint.connectionId || agents.isError || connection.isError) return (
+    <div className="space-y-3">
+      <p role="alert" className="text-sm text-destructive">Connection access could not be loaded.</p>
+      <Button variant="outline" onClick={() => { void agents.refetch(); void connection.refetch(); }}>Try again</Button>
+    </div>
+  );
+  if (agents.isPending || connection.isPending) return <p role="status" className="text-sm text-muted-foreground">Loading access…</p>;
+  const sourceId = connection.data.config?.credentialConnectionId;
+  const credentialId = typeof sourceId === "string" ? sourceId : endpoint.connectionId;
+  return <section className="max-w-3xl space-y-4">
+    <h2 className="text-lg font-semibold">Access</h2>
+    {credentialId !== endpoint.connectionId && <p className="text-sm text-muted-foreground">These settings apply to the saved AgentMail account and all inboxes using it.</p>}
+    <EmailConnectionAccess key={credentialId} companyId={endpoint.companyId} connectionId={credentialId} agents={agents.data} />
+  </section>;
 }
 
 function Settings({
@@ -744,10 +775,16 @@ function Conversations({
       <div>
         <h2 className="text-lg font-semibold">Conversations</h2>
       </div>
-      {rows.length === 0 ? (
+      {query.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading conversations…</p> : query.isError ? (
+        <div className="space-y-3">
+          <p role="alert" className="text-sm text-destructive">Conversations could not be loaded.</p>
+          <Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>
+        </div>
+      ) : rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-          No conversations yet. Address the agent in an enabled destination to
-          start one.
+          {provider === "agentmail"
+            ? "No email conversations yet. Send an email to this agent’s address to start one."
+            : "No conversations yet. Address the agent in an enabled destination to start one."}
         </p>
       ) : (
         <ul aria-label="Conversations" className="divide-y divide-border overflow-x-auto border-y border-border">
@@ -877,20 +914,25 @@ function Activity({
       }),
   });
   const lifecycle = useMutation({
-    mutationFn: (action: "pause" | "resume" | "remove") =>
-      chatEndpointsApi.setup(endpointId, { action }),
+    mutationFn: async (action: "pause" | "resume" | "remove") =>
+      endpoint.provider === "agentmail"
+        ? emailApi.control(endpointId, action)
+        : chatEndpointsApi.setup(endpointId, { action }),
     onSuccess: async (next, action) => {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.chatEndpoints.list(next.companyId),
       });
+      if (endpoint.provider === "agentmail") {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["email-inboxes", next.companyId] }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.detail(endpointId) }),
+        ]);
+      }
       if (action === "remove") {
         navigate("/apps");
         return;
       }
-      queryClient.setQueryData(
-        queryKeys.chatEndpoints.detail(endpointId),
-        next,
-      );
+      if (endpoint.provider !== "agentmail") queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
       pushToast({
         title: action === "pause" ? "Connection paused" : "Connection resumed",
         tone: "success",
@@ -1034,7 +1076,9 @@ function Activity({
                 disabled={lifecycle.isPending}
                 onClick={() =>
                   navigate(
-                    `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}${status === "draft" || status === "verifying" ? "" : "&reconnect=1"}`,
+                    endpoint.provider === "agentmail" && status !== "draft" && status !== "verifying"
+                      ? `/apps/chat/${endpoint.id}/settings`
+                      : `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}${status === "draft" || status === "verifying" ? "" : "&reconnect=1"}`,
                   )
                 }
               >
@@ -1067,6 +1111,12 @@ function Activity({
         <h3 className="text-sm font-semibold">
           Recent activity
         </h3>
+        {endpoint.provider === "agentmail" && rows.some((item) => item.kind === "publication" && item.status === "delivery_unknown") && (
+          <p className="text-sm text-muted-foreground">
+            Review unconfirmed email delivery in the{" "}
+            <Link to={`/apps/chat/${endpointId}/conversations`} className="underline underline-offset-4">conversation’s task</Link>.
+          </p>
+        )}
         <div className="divide-y divide-border border-y border-border">
           {query.isLoading && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
@@ -1122,7 +1172,7 @@ function Activity({
                     </p>
                   )}
                 </div>
-                {isReplayEligible(item) && (
+                {endpoint.provider !== "agentmail" && isReplayEligible(item) && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1138,7 +1188,7 @@ function Activity({
                     Replay
                   </Button>
                 )}
-                {isResolutionEligible(item) && (
+                {endpoint.provider !== "agentmail" && isResolutionEligible(item) && (
                   <Button
                     size="sm"
                     variant="outline"
