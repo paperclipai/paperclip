@@ -1006,7 +1006,7 @@ export function projectService(
           .where(eq(projects.id, id))
           .for("update");
         if (!project) return { row: null, workspaceCwds: [] as string[] };
-        if (project.status === "deleting" && !removeOptions.deletionClaimToken) {
+        if (project.deletionClaimToken && !removeOptions.deletionClaimToken) {
           throw conflict("Project deletion is already in progress. Retry the requested deletion.");
         }
         if (removeOptions.deletionClaimToken) {
