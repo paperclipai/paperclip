@@ -771,6 +771,18 @@ describeEmbeddedPostgres("pipeline routes", () => {
       hasMore: true,
       order: "asc",
     });
+
+    // order=desc serves the NEWEST page first; callers that need the latest
+    // verdict on a long-lived case must not get the oldest window.
+    const newest = await http
+      .get(`/api/cases/${caseId}/events?order=desc&limit=${PIPELINE_CASE_EVENTS_MAX_LIMIT}`)
+      .expect(200);
+    expect(newest.body.pagination).toMatchObject({ order: "desc", hasMore: true });
+    const updatedIndexes = newest.body.items
+      .filter((event: { type: string }) => event.type === "updated")
+      .map((event: { payload: { index: number } }) => event.payload.index);
+    expect(updatedIndexes[0]).toBe(PIPELINE_CASE_EVENTS_MAX_LIMIT + 24);
+    await http.get(`/api/cases/${caseId}/events?order=sideways`).expect(400);
   });
 
   it("returns a bounded context-pack event tail for large histories", async () => {
