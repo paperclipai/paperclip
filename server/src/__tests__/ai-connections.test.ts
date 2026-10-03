@@ -8,8 +8,9 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
+import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
@@ -46,6 +47,43 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("caches quota after a real secret read but invalidates credential rotation and revocation", async () => {
+    const owner = "quota-cache-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Quota cache account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "quota-cache-original");
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+    const secretId = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+    const [before] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 42 } })));
+    try {
+      const first = await fetchCompanyQuotaWindows(db, companyId, owner);
+      const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+      expect(after.lastResolvedAt).not.toBeNull();
+      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+      expect(first[0].ok).toBe(true);
+      expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await secretService(db).rotate(secretId, { value: "quota-cache-rotated" });
+      const rotated = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(rotated[0].ok).toBe(true);
+      expect(rotated[0].accountKey).not.toBe(first[0].accountKey);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSpy).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer quota-cache-rotated" }) }));
+      await db.update(userSecretDefinitions).set({ status: "disabled" }).where(eq(userSecretDefinitions.id, before.userSecretDefinitionId!));
+      const disabled = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(disabled[0]).toMatchObject({ ok: false, errorFamily: "credentials_unavailable", windows: [] });
+      expect(disabled[0].accountKey).not.toBe(rotated[0].accountKey);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      await db.update(userSecretDefinitions).set({ status: "active" }).where(eq(userSecretDefinitions.id, before.userSecretDefinitionId!));
+      expect((await fetchCompanyQuotaWindows(db, companyId, owner))[0].ok).toBe(true);
+      await db.update(companySecretVersions).set({ status: "disabled", revokedAt: new Date() }).where(and(eq(companySecretVersions.secretId, secretId), eq(companySecretVersions.version, 2)));
+      const revoked = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(revoked[0].ok).toBe(false);
+      expect(revoked[0].windows).toEqual([]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally { fetchSpy.mockRestore(); }
+  });
+
   it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
     const userId = `custom-manager-${manager}`;
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
@@ -188,6 +226,18 @@ describe("managed AI connections", () => {
     await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "succeeded", responsibleUserId: "alice", contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1000) });
     expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
   });
+
+  it("lists quotas only for the current member's accessible subscription accounts", async () => {
+    const user = `quota-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "member" });
+    const subscription = await service.save(companyId, user, { provider: "openai", method: "subscription", ownership: "personal", name: "Private quota", loginSessionId: "fixture", allAgents: true, agentIds: [] }, JSON.stringify({ tokens: { access_token: "fixture", account_id: "fixture", refresh_token: "fixture" } }));
+    expect((await service.quotaAccounts(companyId, user)).some(row => row.connection.id === subscription.connectionId)).toBe(true);
+    expect((await service.quotaAccounts(companyId, "bob")).some(row => row.connection.id === subscription.connectionId)).toBe(false);
+    expect(await service.quotaAccounts(otherCompanyId, user)).toEqual([]);
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, user)));
+    expect(await service.quotaAccounts(companyId, user)).toEqual([]);
+  });
+
   it.each([
     ["anthropic", "claude_local", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     ["openai", "codex_local", "CODEX_HOME", "OPENAI_API_KEY"],

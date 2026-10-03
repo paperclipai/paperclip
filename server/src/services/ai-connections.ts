@@ -848,5 +848,17 @@ export function aiConnectionService(db: Db) {
       });
     });
   }
-  return { list, select, credential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  // A quota read uses the same credential audience as execution. Operator status
+  // alone never grants access to another member's personal subscription.
+  async function quotaAccounts(companyId: string, userId: string) {
+    if (!(await membership(companyId, userId))) return [];
+    const visible = await list(companyId, userId);
+    const accounts = await rows(companyId);
+    return accounts.flatMap(row => {
+      const summary = visible.find(item => item.id === row.connection.id && item.grantId === row.grant.id);
+      if (!summary || summary.method !== "subscription" || !["openai", "anthropic"].includes(summary.provider)) return [];
+      return [{ ...row, summary }];
+    });
+  }
+  return { list, quotaAccounts, select, credential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }
