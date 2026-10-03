@@ -257,8 +257,14 @@ paperclipai uninstall
 ```
 
 `upgrade` aliases `update`. `uninstall` removes managed code and the shim but
-preserves instance data under `~/.paperclip/instances/`. See
-`doc/INSTALLING.md` for installation methods, security notes, PATH setup, and
+preserves instance data under `~/.paperclip/instances/`.
+
+On Windows, `install` and `update` execute npm's entry point (`npm-cli.js`) directly
+through Node to avoid `spawn ENOENT` errors caused by Windows `npm.cmd` wrappers.
+The CLI automatically resolves `npm-cli.js` beside the active Node installation or
+via directories containing `npm.cmd` on `PATH`.
+
+See `doc/INSTALLING.md` for installation methods, security notes, PATH setup, and
 the complete update and rollback behavior.
 
 ## Onboarding And Service Management
