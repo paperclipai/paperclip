@@ -208,7 +208,47 @@ describe("budgetService", () => {
     });
   });
 
-  it("surfaces a budget-owned company pause distinctly from a manual pause", async () => {
+  it("surfaces a manually paused company as a non-budget block", async () => {
+    const dbStub = createDbStub([
+      [{
+        status: "idle",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+      [{
+        status: "paused",
+        pauseReason: null,
+        name: "Paperclip",
+      }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    expect(block).toEqual({
+      scopeType: "company",
+      scopeId: "company-1",
+      scopeName: "Paperclip",
+      reason: "Company is paused and cannot start new work.",
+    });
+  });
+
+  it("surfaces a budget-owned company pause while a hard-stop policy is still exceeded", async () => {
+    const companyPolicy = {
+      id: "policy-company-1",
+      companyId: "company-1",
+      scopeType: "company",
+      scopeId: "company-1",
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
     const dbStub = createDbStub([
       [{
         status: "idle",
@@ -221,6 +261,8 @@ describe("budgetService", () => {
         pauseReason: "budget",
         name: "Paperclip",
       }],
+      [companyPolicy],
+      [{ total: 620 }],
     ]);
 
     const service = budgetService(dbStub.db as any);
@@ -231,6 +273,110 @@ describe("budgetService", () => {
       scopeId: "company-1",
       scopeName: "Paperclip",
       reason: "Company is paused because its budget hard-stop was reached.",
+    });
+  });
+
+  it("auto-resumes a budget-paused company once the window rolls over and no policy is exceeded", async () => {
+    const companyPolicy = {
+      id: "policy-company-1",
+      companyId: "company-1",
+      scopeType: "company",
+      scopeId: "company-1",
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [{
+        status: "idle",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+      [{
+        status: "paused",
+        pauseReason: "budget",
+        name: "Paperclip",
+      }],
+      [companyPolicy],
+      [{ total: 120 }],
+      [],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    expect(block).toBeNull();
+    expect(dbStub.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "active",
+        pauseReason: null,
+        pausedAt: null,
+      }),
+    );
+  });
+
+  it("hard-stops a calendar_day_utc policy when the current UTC day crosses the cap", async () => {
+    const policy = {
+      id: "policy-day-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 512 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{ id: "approval-1", companyId: "company-1", status: "pending" }]);
+    dbStub.queueInsert([{
+      id: "incident-1",
+      companyId: "company-1",
+      policyId: "policy-day-1",
+      approvalId: "approval-1",
+    }]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(dbStub.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policyId: "policy-day-1",
+        windowKind: "calendar_day_utc",
+        thresholdType: "hard",
+        amountLimit: 500,
+        amountObserved: 512,
+      }),
+    );
+    expect(cancelWorkForScope).toHaveBeenCalledWith({
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
     });
   });
 
@@ -636,5 +782,44 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("counts only the current UTC day against a calendar_day_utc policy", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    await insertCostEvent({ companyId, agentId, costCents: 480, occurredAt: yesterday });
+
+    const overviewBefore = await service.overview(companyId);
+    expect(overviewBefore.policies[0]).toMatchObject({
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      observedAmount: 0,
+      status: "ok",
+    });
+
+    const todayEvent = await insertCostEvent({ companyId, agentId, costCents: 510 });
+    await service.evaluateCostEvent(todayEvent);
+
+    const [agentAfterHardStop] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterHardStop).toMatchObject({ status: "paused", pauseReason: "budget" });
+    expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId });
   });
 });
