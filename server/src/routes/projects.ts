@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
@@ -53,6 +53,11 @@ import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
+const PROJECT_DELETION_CLAIM_TTL_MS = 60_000;
+const PROJECT_DELETION_CLAIM_RENEW_MS = 10_000;
+const PROJECT_DELETION_DRAIN_STATUSES = [
+  "queued", "scheduled_retry", "running", "succeeded", "interrupted", "failed", "cancelled", "timed_out",
+];
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -128,28 +133,33 @@ export function projectRoutes(db: Db) {
     const referencedActiveRuns =
       referencedRunIds.length > 0
         ? await db
-            .select({ id: heartbeatRuns.id })
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
             .from(heartbeatRuns)
             .where(
               and(
                 inArray(heartbeatRuns.id, referencedRunIds),
-                inArray(heartbeatRuns.status, ["queued", "running"]),
+                inArray(
+                  heartbeatRuns.status,
+                  project.status === "deleting" ? PROJECT_DELETION_DRAIN_STATUSES : ["queued", "running"],
+                ),
               ),
             )
         : [];
     const contextualActiveRuns = await db
-      .select({ id: heartbeatRuns.id })
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, project.companyId),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
+        inArray(
+          heartbeatRuns.status,
+          project.status === "deleting" ? PROJECT_DELETION_DRAIN_STATUSES : ["queued", "running"],
+        ),
         sql`${heartbeatRuns.contextSnapshot} ->> 'projectId' = ${project.id}`,
       ));
 
-    const activeRunIds = new Set([
-      ...referencedActiveRuns.map((row) => row.id),
-      ...contextualActiveRuns.map((row) => row.id),
-    ]);
+    const candidateRuns = [...referencedActiveRuns, ...contextualActiveRuns];
+    const activeRunIds = new Set(candidateRuns.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id));
+    const drainRunIds = new Set(candidateRuns.map((run) => run.id));
     for (const runId of activeRunIds) {
       await heartbeat.cancelRun(runId, "Cancelled because the project was deleted");
     }
@@ -170,7 +180,7 @@ export function projectRoutes(db: Db) {
         workspaceCwd: workspace.cwd,
       });
     }
-    for (const runId of activeRunIds) {
+    for (const runId of drainRunIds) {
       await heartbeat.waitForRunExecutionDrain(runId, { timeoutMs: 30_000 });
     }
   }
@@ -845,16 +855,29 @@ export function projectRoutes(db: Db) {
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
+    let deletionClaimToken: string | null = null;
     if (deleteFiles) {
       assertBoard(req);
+      const claimToken = randomUUID();
+      deletionClaimToken = claimToken;
       const claimed = await db.transaction(async (tx) =>
         tx
           .update(projects)
-          .set({ status: "deleting", updatedAt: new Date() })
+          .set({
+            status: "deleting",
+            deletionClaimToken: claimToken,
+            deletionClaimExpiresAt: new Date(Date.now() + PROJECT_DELETION_CLAIM_TTL_MS),
+            updatedAt: new Date(),
+          })
           .where(and(
             eq(projects.id, existing.id),
             eq(projects.companyId, existing.companyId),
-            ne(projects.status, "deleting"),
+            or(
+              ne(projects.status, "deleting"),
+              isNull(projects.deletionClaimToken),
+              isNull(projects.deletionClaimExpiresAt),
+              lt(projects.deletionClaimExpiresAt, new Date()),
+            ),
           ))
           .returning({ id: projects.id }),
       );
@@ -862,31 +885,58 @@ export function projectRoutes(db: Db) {
         res.status(409).json({ error: "Project deletion is already in progress." });
         return;
       }
+      let claimLost = false;
+      const renewal = setInterval(() => {
+        void db
+          .update(projects)
+          .set({ deletionClaimExpiresAt: new Date(Date.now() + PROJECT_DELETION_CLAIM_TTL_MS) })
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)))
+          .returning({ id: projects.id })
+          .then((rows) => { if (rows.length === 0) claimLost = true; })
+          .catch(() => { claimLost = true; });
+      }, PROJECT_DELETION_CLAIM_RENEW_MS);
+      renewal.unref?.();
       try {
         await stopProjectDeletionActivity(existing);
+        const stillClaimed = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)))
+          .limit(1);
+        if (claimLost || stillClaimed.length === 0) {
+          clearInterval(renewal);
+          await db
+            .update(projects)
+            .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+            .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)));
+          res.status(409).json({ error: "Project deletion claim expired. Retry the deletion." });
+          return;
+        }
       } catch (err) {
+        clearInterval(renewal);
         await db
           .update(projects)
-          .set({ status: existing.status, updatedAt: new Date() })
-          .where(and(eq(projects.id, existing.id), eq(projects.status, "deleting")));
+          .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, deletionClaimToken)));
         if (err instanceof Error && err.message.startsWith("Timed out waiting for heartbeat run ")) {
           res.status(409).json({
-            error: "Project activity could not be stopped. The project was not deleted; retry after its active runs stop.",
+            error: "Project activity is still stopping. The project remains fenced; retry the deletion after its active runs stop.",
           });
           return;
         }
         throw err;
       }
+      clearInterval(renewal);
     }
     let project;
     try {
       project = await svc.remove(existing.id, { deleteFiles });
     } catch (err) {
-      if (deleteFiles) {
+      if (deleteFiles && deletionClaimToken) {
         await db
           .update(projects)
-          .set({ status: existing.status, updatedAt: new Date() })
-          .where(and(eq(projects.id, existing.id), eq(projects.status, "deleting")));
+          .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, deletionClaimToken)));
       }
       throw err;
     }

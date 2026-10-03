@@ -2045,6 +2045,13 @@
       "when": 1790796608171,
       "tag": "0293_broad_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1790906400000,
+      "tag": "0294_resumable_project_deletion",
+      "breakpoints": true
     }
   ]
 }

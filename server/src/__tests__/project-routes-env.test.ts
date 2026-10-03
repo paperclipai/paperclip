@@ -250,7 +250,7 @@ describe("project env routes", () => {
     );
   });
 
-  it("allows only one concurrent project deletion claim and restores status after stop failure", async () => {
+  it("allows only one concurrent project deletion claim and keeps the project fenced after stop failure", async () => {
     let status = "backlog";
     let releaseStop!: () => void;
     let stopStarted!: () => void;
@@ -316,7 +316,7 @@ describe("project env routes", () => {
       releaseStop();
       const firstResult = await firstDelete;
       expect(firstResult.status).toBe(409);
-      expect(status).toBe("backlog");
+      expect(status).toBe("deleting");
       expect(mockProjectService.remove).not.toHaveBeenCalled();
     } finally {
       await new Promise<void>((resolve, reject) => {
