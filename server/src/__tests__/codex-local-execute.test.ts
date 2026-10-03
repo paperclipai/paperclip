@@ -1721,4 +1721,133 @@ process.exit(1);
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("mounts skill sources read-only in the workspace sandbox so CODEX_HOME skill links resolve", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-sandbox-skills-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const bwrapPath = path.join(root, "bwrap");
+    const codexHome = path.join(root, "codex-home");
+    const bwrapCapturePath = path.join(root, "bwrap.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    // Records the bwrap argv, then runs the confined command without confinement.
+    await fs.writeFile(bwrapPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+fs.writeFileSync(process.env.PAPERCLIP_TEST_BWRAP_CAPTURE, JSON.stringify(argv));
+const sep = argv.indexOf("--");
+const r = require("node:child_process").spawnSync(argv[sep + 1], argv.slice(sep + 2), { stdio: "inherit" });
+process.exit(r.status ?? 1);
+`, "utf8");
+    await fs.chmod(bwrapPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+
+    try {
+      await execute({
+        runId: "run-sandbox-skills",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex Coder", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: bwrapPath,
+          env: { CODEX_HOME: codexHome, PAPERCLIP_TEST_BWRAP_CAPTURE: bwrapCapturePath },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const bwrapArgs = JSON.parse(await fs.readFile(bwrapCapturePath, "utf8")) as string[];
+      const link = path.join(codexHome, "skills", "paperclip");
+      const source = path.resolve(path.dirname(link), await fs.readlink(link));
+      const bind = bwrapArgs.findIndex((arg, i) => arg === "--ro-bind" && bwrapArgs[i + 1] === source);
+      expect(bind).toBeGreaterThanOrEqual(0);
+      expect(bwrapArgs[bind + 2]).toBe(source);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mount the target of a preserved CODEX_HOME skill link outside the Paperclip sources", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-foreign-skill-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const bwrapPath = path.join(root, "bwrap");
+    const codexHome = path.join(root, "codex-home");
+    const bwrapCapturePath = path.join(root, "bwrap.json");
+    // CODEX_HOME is writable inside the sandbox, so a kept link may point at any host directory.
+    const foreignDir = path.join(root, "host-secrets");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(foreignDir, { recursive: true });
+    await fs.writeFile(path.join(foreignDir, "SKILL.md"), "not a paperclip skill\n", "utf8");
+    await fs.mkdir(path.join(codexHome, "skills"), { recursive: true });
+    await fs.symlink(foreignDir, path.join(codexHome, "skills", "paperclip"));
+    await writeFakeCodexCommand(commandPath);
+    await fs.writeFile(bwrapPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+fs.writeFileSync(process.env.PAPERCLIP_TEST_BWRAP_CAPTURE, JSON.stringify(argv));
+const sep = argv.indexOf("--");
+const r = require("node:child_process").spawnSync(argv[sep + 1], argv.slice(sep + 2), { stdio: "inherit" });
+process.exit(r.status ?? 1);
+`, "utf8");
+    await fs.chmod(bwrapPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    const stderr: string[] = [];
+
+    try {
+      await execute({
+        runId: "run-foreign-skill-link",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex Coder", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: bwrapPath,
+          env: { CODEX_HOME: codexHome, PAPERCLIP_TEST_BWRAP_CAPTURE: bwrapCapturePath },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          if (stream === "stderr") stderr.push(chunk);
+        },
+      });
+
+      const bwrapArgs = JSON.parse(await fs.readFile(bwrapCapturePath, "utf8")) as string[];
+      expect(await fs.readlink(path.join(codexHome, "skills", "paperclip"))).toBe(foreignDir);
+      expect(bwrapArgs.some((arg) => arg === foreignDir || arg.startsWith(`${foreignDir}/`))).toBe(false);
+      expect(stderr.join("")).toContain('Codex skill "paperclip"');
+      // The Paperclip source of the skill is still mounted.
+      const roBinds = bwrapArgs.filter((arg, i) => i > 0 && bwrapArgs[i - 1] === "--ro-bind");
+      expect(roBinds.some((arg) => path.basename(arg) === "paperclip")).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
