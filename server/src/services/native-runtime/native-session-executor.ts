@@ -3,6 +3,7 @@ import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
+import { inferOpenAiCompatibleBiller, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import {
   isSupportedRemoteCodexVersion,
   parseCodexCliVersion,
@@ -7256,6 +7257,7 @@ export async function executePaperclipNativeSession(input: {
     collectStopped: () => Promise<void>;
   };
   /** Persist task-level continuity before a durable goal can outlive this run. */
+  onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>;
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
@@ -7267,6 +7269,7 @@ export async function executePaperclipNativeSession(input: {
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
+  billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -8597,6 +8600,20 @@ async function executePaperclipNativeSessionWithinScope(
       },
       { parentName: "task.run" },
     );
+    // Persist provider accounting before any workspace/issue finalization. A
+    // detached controller or failed finalizer must not lose a completed turn.
+    const accountingUsage = normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
+    const accountingCost = nativeUsageCostUsd(native.usage, input.execution.provider);
+    const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
+    await input.onUsage?.({ usage: accountingUsage, ...billing, complete: true, usageBasis: "per_run",
+      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null });
+    if (!input.onUsage) await input.db.update(heartbeatRuns).set({
+      costAccountingPending: true,
+      usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
+        ...accountingUsage, ...billing, accountingReceiptReady: true, model: input.execution.provider.model ?? "unknown",
+        costUsd: accountingCost ?? null, usageSource: "per_run",
+      })}::jsonb`,
+    }).where(and(eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), isNull(heartbeatRuns.costAccountedAt)));
     try {
       await completeManagedNativeCredentialTurn(managedCredentialSession);
     } catch {
@@ -9219,9 +9236,9 @@ async function executePaperclipNativeSessionWithinScope(
     summary: native.result.summary,
     sessionId: native.normalizedSessionId,
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
-    provider: nativeUsageBiller(input.execution.provider),
+    ...resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity),
     model: input.execution.provider.model,
-    usage: normalizeNativeUsage(native.usage),
+    usage: normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" }),
     costUsd: nativeUsageCostUsd(native.usage, input.execution.provider),
     usageBasis: "per_run",
     nativeFinalization: finalization,
@@ -9297,18 +9314,14 @@ export function nativeUsageCostUsd(
   if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
-  const direct =
-    numericUsageField(usage, [
-      "providerCostUsd",
-      "cacheAdjustedCostUsd",
-      "costUsd",
-    ]) ??
-    numericUsageField(measurement, [
-      "providerCostUsd",
-      "cacheAdjustedCostUsd",
-      "costUsd",
-    ]);
-  if (direct !== undefined) return direct;
+  const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"])
+    ?? numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"]);
+  // PRP currently defaults an absent providerCostUsd to zero. That zero is
+  // not proof of a free request when the runtime observed token consumption.
+  if (direct !== undefined && direct > 0) return direct;
+  if (direct === 0 && (numericUsageField(measurement, ["inputTokens"]) ?? 0) === 0
+    && (numericUsageField(measurement, ["outputTokens"]) ?? 0) === 0
+    && (numericUsageField(measurement, ["cacheReadTokens", "cachedInputTokens"]) ?? 0) === 0) return 0;
   const cost = record(usage.cost);
   const currency =
     typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
@@ -9316,7 +9329,34 @@ export function nativeUsageCostUsd(
   return numericUsageField(cost, ["amount", "total"]);
 }
 
-export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
+/** Billing identity follows the selected runtime and resolved credentials.
+ * Unknown authentication remains unknown; a provider name does not prove billing mode. */
+export function resolveNativeBilling(provider: NativeExecutionInput["provider"], env: NodeJS.ProcessEnv = {}, identity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">): Pick<AdapterExecutionResult, "provider" | "biller" | "billingType"> {
+  if (identity) return identity.provider === "openai" && identity.billingType === "metered_api"
+    ? { ...identity, biller: inferOpenAiCompatibleBiller(env, identity.biller ?? "unknown") }
+    : identity;
+  if (provider.kind === "claude_managed") return { provider: "anthropic", biller: "anthropic", billingType: "metered_api" };
+  if (provider.kind === "aws_agentcore") return { provider: "aws_agentcore", biller: "aws_agentcore", billingType: "metered_api" };
+  if (provider.kind === "acpx" && ["cursor", "copilot"].includes(provider.agent)) {
+    const biller = nativeUsageBiller(provider);
+    return { provider: biller, biller, billingType: "unknown" };
+  }
+  if (provider.kind === "acpx" && provider.agent === "claude") {
+    if (env.CLAUDE_CODE_USE_BEDROCK === "1") return { provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" };
+    return { provider: "anthropic", biller: "anthropic", billingType: env.ANTHROPIC_API_KEY ? "metered_api" : env.CLAUDE_CODE_OAUTH_TOKEN ? "subscription_included" : "unknown" };
+  }
+  if (provider.kind === "opencode" || (provider.kind === "acpx" && provider.agent === "pi")) {
+    const parts = (provider.model ?? "").split("/");
+    const biller = parts.length > 1 ? parts[0] : provider.kind === "acpx" ? nativeUsageBiller(provider) : "unknown";
+    const modelProvider = biller === "openrouter" && parts.length > 2 ? parts[1] : biller;
+    return { provider: modelProvider, biller, billingType: "unknown" };
+  }
+  if (provider.kind !== "codex" && !(provider.kind === "acpx" && provider.agent === "codex"))
+    return { provider: "unknown", biller: "unknown", billingType: "unknown" };
+  return { provider: "openai", biller: env.OPENAI_API_KEY ? inferOpenAiCompatibleBiller(env, "openai") : "unknown", billingType: env.OPENAI_API_KEY ? "metered_api" : "unknown" };
+}
+
+export function normalizeNativeUsage(usage: Record<string, unknown> | null, options: { inputIncludesCacheReads?: boolean } = {}) {
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const cache = record(measurement.cache);
@@ -9327,13 +9367,13 @@ export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
       "cacheReadTokens",
       "cachedReadTokens",
     ]) ?? numericUsageField(cache, ["read"]);
+  const cacheWriteTokens = numericUsageField(measurement, ["cacheWriteTokens", "cacheCreationInputTokens", "cachedWriteTokens"]) ?? numericUsageField(cache, ["write"]);
   return {
-    inputTokens:
-      numericUsageField(measurement, [
-        "inputTokens",
-        "input",
-        "promptTokens",
-      ]) ?? 0,
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    inputTokens: Math.max(0,
+      (numericUsageField(measurement, ["inputTokens", "input", "promptTokens"]) ?? 0)
+      - (options.inputIncludesCacheReads ? cachedInputTokens ?? 0 : 0)
+    ) + (options.inputIncludesCacheReads ? 0 : cacheWriteTokens ?? 0),
     outputTokens:
       numericUsageField(measurement, [
         "outputTokens",

@@ -877,7 +877,7 @@ export function statusCardService(
         ? await tx.select({
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
-          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
         }).from(costEvents).where(eq(costEvents.heartbeatRunId, actor.runId))
         : [];
       const existingUpdate = await tx.select().from(statusCardUpdates)

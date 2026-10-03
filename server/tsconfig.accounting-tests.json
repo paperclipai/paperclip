@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true
+  },
+  "include": [
+    "src/__tests__/cost-accounting-*.test.ts",
+    "src/__tests__/codex-pricing.test.ts",
+    "src/__tests__/provider-billing-import.test.ts",
+    "src/__tests__/company-quota-windows.test.ts",
+    "src/__tests__/fixtures/accounting-writer.ts",
+    "src/**/*.d.ts",
+    "vitest.accounting-mutations.config.ts",
+    "vitest.accounting.config.ts",
+    "../tests/e2e/cost-accounting.spec.ts"
+  ],
+  "exclude": []
+}

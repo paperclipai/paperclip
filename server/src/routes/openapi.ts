@@ -124,6 +124,11 @@ import {
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
+  repairAccountingSchema,
+  retryAccountingSchema,
+  importBillingInvoiceSchema,
+  importProviderCostsSchema,
+  adjustCostSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Announcements
@@ -1320,6 +1325,7 @@ const PUBLIC_OPERATIONS = new Set([
 ]);
 
 const BOARD_ONLY_PREFIXES = [
+  "/api/companies/{companyId}/accounting/",
   "/api/announcements/",
   "/api/auth/",
   "/api/admin/",
@@ -5250,6 +5256,12 @@ registry.registerPath({
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
 
+const costReportQuerySchema = z.object({
+  period: z.enum(["month", "all"]).optional().describe("Defaults to the current UTC month. All-time cannot be combined with date bounds."),
+  from: z.union([z.iso.datetime({ offset: true }), z.iso.date()]).optional().describe("Inclusive start bound."),
+  to: z.union([z.iso.datetime({ offset: true }), z.iso.date()]).optional().describe("Inclusive end bound; must not precede from."),
+});
+
 const costSummaryPaths = [
   "summary",
   "by-agent",
@@ -5271,7 +5283,12 @@ for (const segment of costSummaryPaths) {
     path: `/api/companies/{companyId}/costs/${segment}`,
     tags: ["costs"],
     summary: `Cost report: ${segment}`,
-    request: { params: z.object({ companyId: z.string() }) },
+    request: {
+      params: z.object({ companyId: z.string() }),
+      ...(!["window-spend", "quota-windows"].includes(segment) ? {
+        query: segment === "finance-events" ? costReportQuerySchema.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }) : costReportQuerySchema,
+      } : {}),
+    },
     responses: { 200: r.ok(), 401: r.unauthorized },
   });
 }
@@ -5281,11 +5298,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/cost-events",
   tags: ["costs"],
   summary: "Record a cost event",
+  description: "Amounts are USD cents, including fractional cents. Decimal strings preserve exact nanodollar precision. Reuse the idempotency key and original receipt on retries; conflicting reuse returns 409.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createCostEventSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -5293,12 +5311,46 @@ registry.registerPath({
   path: "/api/companies/{companyId}/finance-events",
   tags: ["costs"],
   summary: "Record a finance event",
+  description: "Amounts accept exact decimal cents in the recorded currency. Credits use a nonnegative amount with direction credit. No currency conversion is inferred. Receipt-key conflicts return 409.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createFinanceEventSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
+
+for (const [suffix, summary] of [
+  ["health", "Inspect pending receipts, unpriced charges, cancellation backlog, and held reservations"],
+  ["inspect", "Independently compare ledger evidence and stored totals"],
+  ["invoices", "List imported provider invoices"],
+  ["invoices/{invoiceId}", "Review exact invoice matches and unresolved differences"],
+  ["events/{eventId}/adjustments", "Read append-only correction history and prior pricing evidence"],
+] as const) {
+  registry.registerPath({
+    method: "get", path: `/api/companies/{companyId}/accounting/${suffix}`, tags: ["costs"], summary,
+    description: "Company-scoped board access is required. Board viewers may inspect; agents cannot access operator accounting evidence.",
+    request: { params: z.object({ companyId: z.string(),
+      ...(suffix.includes("invoiceId") ? { invoiceId: z.string() } : {}),
+      ...(suffix.includes("eventId") ? { eventId: z.string() } : {}),
+    }) },
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
+
+for (const operation of [
+  { suffix: "repair", schema: repairAccountingSchema, status: 200, summary: "Repair reviewed ledger projections", description: "Requires an audit reason and the current inspection fingerprint. A stale inspection returns 409. Missing evidence is never invented." },
+  { suffix: "retry", schema: retryAccountingSchema, status: 200, summary: "Retry accounting for a company-owned run", description: "Retries accounting only. Provider work is never re-executed; incomplete evidence remains pending." },
+  { suffix: "provider-costs/import", schema: importProviderCostsSchema, status: 200, summary: "Import a scoped provider cost report", description: "Reads up to 31 completed UTC days from OpenAI or Anthropic with a company admin credential. Requires explicit provider account and project/workspace identifiers. All pages validate before writing. Reimports append only the difference; run costs are not repriced. Report totals remain separate from invoices." },
+  { suffix: "invoices", schema: importBillingInvoiceSchema, status: 201, summary: "Import normalized invoice evidence", description: "Idempotent by company, biller, and external invoice ID. Conflicting reuse returns 409. Import atomically creates finance timeline events and does not reprice run costs." },
+  { suffix: "events/{eventId}/adjustments", schema: adjustCostSchema, status: 201, summary: "Apply a reviewed cost correction", description: "Requires the expected exact cents, an idempotency key, reason, and pricing evidence. Original amounts and pricing revisions remain in history. Stale reviews return 409; ambiguous or contradictory invoice evidence returns 422." },
+] as const) {
+  registry.registerPath({
+    method: "post", path: `/api/companies/{companyId}/accounting/${operation.suffix}`, tags: ["costs"],
+    summary: operation.summary, description: `${operation.description} Company-scoped board write access is required; viewers and agents cannot mutate accounting.`,
+    request: { params: z.object({ companyId: z.string(), ...(operation.suffix.includes("eventId") ? { eventId: z.string() } : {}) }), body: jsonBody(operation.schema) },
+    responses: { [operation.status]: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+  });
+}
 
 registry.registerPath({
   method: "post",

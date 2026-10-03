@@ -876,6 +876,7 @@ async function startServerWithDatabaseTeardown(
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
+  const accountingHeartbeat = heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
   };
@@ -1223,8 +1224,7 @@ async function startServerWithDatabaseTeardown(
   // so a just-failed lease does not draw a retry on every tick. The startup
   // sweep passes zero, so a restart retries a stranded orphan at once.
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
-  const environmentLeaseCleanupHeartbeat =
-    heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
+  const environmentLeaseCleanupHeartbeat = accountingHeartbeat;
   const chatCompletionDeliveries = chatCompletionDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
   // Activity publication happens after the status transaction commits. This is
   // a best-effort fast path; the durable outbox and sweeps remain authoritative.
@@ -1442,6 +1442,7 @@ async function startServerWithDatabaseTeardown(
       },
       "worktree run-execution cutoff state",
     );
+    await accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -1457,8 +1458,7 @@ async function startServerWithDatabaseTeardown(
         // workers before cleanup or retry admission, including unmanaged installs.
         await app.locals.bundledPluginsStartup;
         try {
-          const nativeRecovery =
-            await heartbeat.recoverNativeRunsAfterRestart();
+          const nativeRecovery = await heartbeat.recoverNativeRunsAfterRestart();
           if (nativeRecovery.dispositions.length > 0) {
             logger.info(
               {
@@ -1756,6 +1756,9 @@ async function startServerWithDatabaseTeardown(
           }));
 
         trackHeartbeatSchedulerWork(chatCompletionDeliveries.sweepPending().catch((err) => logger.error({ err }, "chat completion delivery failed")));
+
+        trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
+
         trackHeartbeatSchedulerWork(connectionDeliveries.sweepPending().catch((err) => logger.error({ err }, "connection continuation delivery failed")));
         trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
         trackHeartbeatSchedulerWork(app.locals.toolGateway.cleanupExpiredSessions().catch((err: unknown) => logger.error({ err }, "gateway token cleanup failed")));
@@ -1832,8 +1835,10 @@ async function startServerWithDatabaseTeardown(
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
     // the enabled path does.
+    await accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
+      trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       scheduleGitHubConnectionEventPoll();

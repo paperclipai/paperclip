@@ -221,6 +221,21 @@ describe("cost routes", () => {
     });
   });
 
+  it("requires an explicit all-time request and rejects conflicting ranges", () => {
+    const { parseCostDateRange } = loadCostParsers();
+    expect(parseCostDateRange({})).toBeUndefined();
+    expect(parseCostDateRange({ period: "all" })).toEqual({ allTime: true });
+    for (const input of [
+      { from: "2026-09-02", to: "2026-09-01" },
+      { from: ["2026-09-01"] },
+      { from: "2026-02-30" },
+      { from: "" },
+      { from: "09/01/2026" },
+      { period: "all", from: "2026-09-01" },
+      { period: "unknown" },
+    ]) expect(() => parseCostDateRange(input)).toThrow();
+  });
+
   it("returns 400 for an invalid 'from' date string", async () => {
     const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ from: "not-a-date" })).toThrow(/invalid 'from' date/i);
@@ -270,7 +285,7 @@ describe("cost routes", () => {
 
   it("returns 400 for invalid finance event list limits", async () => {
     const { parseCostLimit } = loadCostParsers();
-    expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
+    for (const limit of ["0", "25garbage", "1.5", ["25"], "501"]) expect(() => parseCostLimit({ limit })).toThrow(/invalid 'limit'/i);
   });
 
   it("accepts valid finance event list limits", async () => {
@@ -352,7 +367,8 @@ describe("cost routes", () => {
   });
 
   it("allows authorized board users to update an agent budget and budget policy", async () => {
-    mockAgentService.update.mockResolvedValueOnce({
+    mockAgentService.getById.mockResolvedValueOnce({ id: "agent-1", companyId: "company-1", name: "Budget Agent", budgetMonthlyCents: 100, spentMonthlyCents: 0 });
+    mockAgentService.getById.mockResolvedValueOnce({
       id: "agent-1",
       companyId: "company-1",
       name: "Budget Agent",
@@ -373,7 +389,9 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith("agent-1", { budgetMonthlyCents: 2500 });
+    expect(res.body.budgetMonthlyCents).toBe(2500);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).toHaveBeenCalledTimes(1);
     expect(mockBudgetService.upsertPolicy).toHaveBeenCalledWith(
       "company-1",
       {
@@ -384,19 +402,8 @@ describe("cost routes", () => {
       },
       "board-user",
     );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        companyId: "company-1",
-        actorType: "user",
-        actorId: "board-user",
-        agentId: null,
-        action: "agent.budget_updated",
-        entityType: "agent",
-        entityId: "agent-1",
-        details: { budgetMonthlyCents: 2500 },
-      }),
-    );
+    // Policy mutation owns the atomic entity update and activity log.
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });
 
@@ -692,6 +699,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       issueCount: 3,
       includeDescendants: true,
       costCents: 600,
+      costCentsExact: "600.0000000",
       inputTokens: 60,
       cachedInputTokens: 6,
       outputTokens: 12,

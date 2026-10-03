@@ -1,3 +1,5 @@
+import { publishAccountingActivities } from "./accounting-transaction.js";
+import { budgetServiceInTransaction } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -47,7 +49,7 @@ import {
 } from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
 
@@ -332,12 +334,16 @@ export function companyService(db: Db) {
       data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
+      const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
@@ -431,6 +437,13 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await budgetServiceInTransaction(tx as unknown as Db, budgetPublications).upsertPolicy(id, {
+            scopeType: "company", scopeId: id, amount: data.budgetMonthlyCents, windowKind: "calendar_month_utc",
+          }, actor.actorType === "user" ? actor.actorId : null);
+          const [budgetUpdated] = await tx.select().from(companies).where(eq(companies.id, id));
+          Object.assign(updated, budgetUpdated);
+        }
         const [hydrated] = await hydrateCompanySpend([{
           ...updated,
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
@@ -448,6 +461,7 @@ export function companyService(db: Db) {
         };
       });
       if (!result) return null;
+      publishAccountingActivities(id, budgetPublications);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
       // could throw: a Cloud-pinned primary company that crossed the
       // archived boundary (either direction) rings the harness so the

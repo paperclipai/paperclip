@@ -326,6 +326,8 @@ Full hierarchy: **Initiative** (company goal) → Projects → Milestones → Is
 
 ## 6. Cost Tracking [DRAFT]
 
+The implemented receipt, recovery, precision, currency, and budget-admission contracts are described in [Cost accounting and budget enforcement](COST-ACCOUNTING.md) and [the V1 implementation spec](SPEC-implementation.md#13-cost-and-budget-system).
+
 Token/LLM cost budgeting is a core part of Paperclip. External revenue and expense tracking is a future plugin.
 
 ### Cost Reporting
@@ -348,6 +350,8 @@ Three tiers:
 1. **Visibility** — dashboards showing spend at every level (Agent, task, project, Company)
 2. **Soft alerts** — configurable thresholds (e.g. warn at 80% of budget)
 3. **Hard ceiling** — auto-pause the Agent when budget is hit. Board notified. Board can override/raise the limit.
+
+The implementation also supports estimated per-run reservations, durable receipt recovery, exact decimal reporting, independent integrity inspection, and audited invoice corrections. Recorded spend and reservations do not replace a provider-enforced invoice cap. See [cost accounting](COST-ACCOUNTING.md).
 
 Budgets can be set to **unlimited** (no ceiling).
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeAdapterRunUsage,
   resolveCacheAdjustedCostUsd,
   resolveLedgerCostStatus,
 } from "../services/heartbeat.js";
@@ -33,6 +34,13 @@ describe("heartbeat cost accounting", () => {
       cachedInputTokens: 2_632_998,
       outputTokens: 32_644,
     })).toBe("unpriced");
+  });
+
+  it("distinguishes missing receipts, reported zeroes, and included subscription usage", () => {
+    const noTokens = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    expect(resolveLedgerCostStatus({ ...noTokens, costUsd: null })).toBe("unpriced");
+    expect(resolveLedgerCostStatus({ ...noTokens, costUsd: 0 })).toBe("reported");
+    expect(resolveLedgerCostStatus({ ...noTokens, costUsd: null, billingType: "subscription_included" })).toBe("reported");
   });
 
   it("marks reported CLI cost as priced", () => {
@@ -84,5 +92,19 @@ describe("heartbeat cost accounting", () => {
       costUsd: 3.1,
       cacheAdjustedCostUsd: 1.5,
     })).toBe(1.5);
+  });
+});
+
+
+describe("adapter usage basis", () => {
+  const prior = { inputTokens: 100, cachedInputTokens: 500, outputTokens: 20 };
+  it.each([undefined, null, "per_run"] as const)("keeps equal consecutive run usage when the basis is %s", (basis) => {
+    expect(normalizeAdapterRunUsage(prior, prior, basis)).toEqual(prior);
+  });
+  it("subtracts session totals only when explicitly declared", () => {
+    expect(normalizeAdapterRunUsage({ inputTokens: 110, cachedInputTokens: 700, outputTokens: 25 }, prior, "session_cumulative"))
+      .toEqual({ inputTokens: 10, cachedInputTokens: 200, outputTokens: 5 });
+    expect(normalizeAdapterRunUsage({ inputTokens: 5, cachedInputTokens: 10, outputTokens: 2 }, prior, "session_cumulative"))
+      .toEqual({ inputTokens: 5, cachedInputTokens: 10, outputTokens: 2 });
   });
 });

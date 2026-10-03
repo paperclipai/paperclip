@@ -1,16 +1,17 @@
-import { agentAvatarUrl, resolveAgentAppearance } from "@paperclipai/shared";
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { receiptFingerprint } from "./receipt-fingerprint.js";
+import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, normalizeCents, type MoneyInput } from "@paperclipai/shared";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
-import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { activityLog, agents, agentRuntimeState, companies, costEvents, heartbeatRuns, issues, projects, goals } from "@paperclipai/db";
+import { notFound, unprocessable, conflict } from "../errors.js";
+import { budgetService, budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
+import { logActivity, type LogActivityInput, type ActivityPublication } from "./activity-log.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
-export interface CostDateRange {
-  from?: Date;
-  to?: Date;
-}
+import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
+export type { CostDateRange } from "./cost-date-range.js";
 
 const METERED_BILLING_TYPE = "metered_api";
 const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
@@ -26,6 +27,26 @@ function currentUtcMonthWindow(now = new Date()) {
     start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
     end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
   };
+}
+
+/** Increment an initialized month under the company lock. On upgrade or UTC
+ * rollover, initialize from the ledger in the same transaction exactly once.
+ * Reports, budgets and the integrity checker continue reading the ledger. */
+export async function updateMonthlySpendProjections(db: Db, companyId: string, agentId: string, amountCents: MoneyInput, occurredAt: Date) {
+  const { start, end } = currentUtcMonthWindow();
+  const month = start.toISOString().slice(0, 10);
+  const delta = occurredAt >= start && occurredAt < end ? normalizeCents(amountCents) : "0.0000000";
+  for (const table of [companies, agents] as const) {
+    const id = table === companies ? companyId : agentId;
+    const companyCondition = table === companies ? eq(companies.id, companyId) : eq(agents.companyId, companyId);
+    await db.update(table).set({
+      spentMonthlyCents: sql`case when ${table.spendMonthUtc} = ${month} then ${table.spentMonthlyCents} + ${delta}::numeric else (
+        select coalesce(sum(${costEvents.costCents}),0) from ${costEvents} where ${costEvents.companyId} = ${companyId}
+        and ${costEvents.occurredAt} >= ${start.toISOString()}::timestamptz and ${costEvents.occurredAt} < ${end.toISOString()}::timestamptz
+        ${table === agents ? sql`and ${costEvents.agentId} = ${agentId}` : sql``}) end`,
+      spendMonthUtc: month, updatedAt: new Date(),
+    }).where(and(eq(table.id, id), companyCondition));
+  }
 }
 
 export async function getMonthlySpendTotal(
@@ -50,56 +71,84 @@ export async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
+export async function createCostEventInTransaction(db: Db, companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, publications: ActivityPublication[] = [], actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">) {
+  const parsed = createCostEventSchema.safeParse({ ...data, occurredAt: data.occurredAt.toISOString() });
+  if (!parsed.success) throw unprocessable("Invalid cost receipt", parsed.error.flatten());
+  const values = {
+    ...parsed.data,
+    issueId: parsed.data.issueId ?? null,
+    projectId: parsed.data.projectId ?? null,
+    goalId: parsed.data.goalId ?? null,
+    heartbeatRunId: parsed.data.heartbeatRunId ?? null,
+    billingCode: parsed.data.billingCode ?? null,
+    idempotencyKey: parsed.data.idempotencyKey ?? null,
+    costCents: normalizeCents(parsed.data.costCents),
+    occurredAt: new Date(parsed.data.occurredAt),
+  };
+  const receiptHash = receiptFingerprint(values);
+  // Older receipts hashed the numeric API value. Retain replay compatibility
+  // only when the decimal value survives that representation exactly.
+  let legacyHash: string | null = null;
+  try {
+    if (normalizeCents(Number(values.costCents)) === values.costCents) legacyHash = receiptFingerprint({ ...values, costCents: Number(values.costCents) });
+  } catch { /* The legacy number may round beyond the decimal storage limit. */ }
+  if (values.idempotencyKey) {
+    const [existing] = await db.select().from(costEvents).where(and(
+      eq(costEvents.companyId, companyId), eq(costEvents.idempotencyKey, values.idempotencyKey),
+    ));
+    if (existing) {
+      if (existing.receiptHash !== receiptHash && existing.receiptHash !== legacyHash) throw conflict("Idempotency key already used for a different cost receipt");
+      const [exact] = await db.select({ costCents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(eq(costEvents.id, existing.id));
+      return { ...existing, costCentsExact: normalizeCents(exact.costCents) };
+    }
+  }
+  const links = [
+    [agents, values.agentId, "Agent"], [issues, values.issueId, "Issue"],
+    [projects, values.projectId, "Project"], [goals, values.goalId, "Goal"],
+    [heartbeatRuns, values.heartbeatRunId, "Heartbeat run"],
+  ] as const;
+  for (const [table, id, label] of links) {
+    if (!id) continue;
+    const [row] = await db.select({ companyId: table.companyId }).from(table).where(eq(table.id, id));
+    if (!row) throw notFound(`${label} not found`);
+    if (row.companyId !== companyId) throw unprocessable(`${label} does not belong to company`);
+  }
+  if (values.heartbeatRunId) {
+    const [run] = await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, values.heartbeatRunId));
+    if (run.agentId !== values.agentId) throw unprocessable("Heartbeat run does not belong to agent");
+  }
+  const [event] = await db.insert(costEvents).values({ ...values, costCents: sql`${values.costCents}::numeric`, reportedCostCents: values.costCents, id: data.id, companyId, receiptHash }).returning();
+  await updateMonthlySpendProjections(db, companyId, event.agentId, values.costCents, event.occurredAt);
+  // Separately reported charges linked to an already-accounted run contribute
+  // to lifetime totals too. Before acknowledgement, accountRunCost includes
+  // all of the run's events atomically when it initializes the projection.
+  if (event.heartbeatRunId) {
+    const [run] = await db.select({ acknowledged: heartbeatRuns.costAccountedAt, version: heartbeatRuns.accountingProjectionVersion })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, event.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
+    if (run.acknowledged && run.version === "v2") await db.update(agentRuntimeState).set({
+      totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${values.costCents}::numeric`,
+      totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${event.inputTokens}`,
+      totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${event.cachedInputTokens}`,
+      totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${event.outputTokens}`,
+      updatedAt: new Date(),
+    }).where(and(eq(agentRuntimeState.agentId, event.agentId), eq(agentRuntimeState.companyId, companyId)));
+  }
+  await budgetServiceInTransaction(db, publications).evaluateCostEvent(event);
+  await logActivity(db, {
+    companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "cost_accounting", agentId: actor?.agentId ?? event.agentId,
+    runId: event.heartbeatRunId, action: "cost.reported", entityType: "cost_event", entityId: event.id,
+    details: { costCents: event.costCents, costCentsExact: values.costCents, model: event.model, costStatus: event.costStatus },
+  }, publications);
+  return { ...event, costCentsExact: values.costCents };
+}
+
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
-    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
-      const agent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, data.agentId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agent) throw notFound("Agent not found");
-      if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
-      }
-
-      const event = await db
-        .insert(costEvents)
-        .values({
-          ...data,
-          companyId,
-          biller: data.biller ?? data.provider,
-          billingType: data.billingType ?? "unknown",
-          cachedInputTokens: data.cachedInputTokens ?? 0,
-        })
-        .returning()
-        .then((rows) => rows[0]);
-
-      const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
-        getMonthlySpendTotal(db, { companyId }),
-      ]);
-
-      await db
-        .update(agents)
-        .set({
-          spentMonthlyCents: agentMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, event.agentId));
-
-      await db
-        .update(companies)
-        .set({
-          spentMonthlyCents: companyMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
-
-      await budgets.evaluateCostEvent(event);
-
+    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">) => {
+      if (data.idempotencyKey?.startsWith("heartbeat:")) throw unprocessable("The heartbeat idempotency namespace is reserved for run receipts");
+      const event = await withAccountingTransaction(db, companyId, (tx, publications) => createCostEventInTransaction(tx, companyId, data, publications, actor));
+      await budgets.deliverPendingEnforcement(companyId);
       return event;
     },
 
@@ -112,17 +161,28 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       if (!company) throw notFound("Company not found");
 
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, totalExact, eventCount, unpricedEventCount, estimatedEventCount }] = await db
         .select({
+          eventCount: sql<number>`count(*)::int`,
+          estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
+          unpricedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`,
           total: sumAsNumber(costEvents.costCents),
+          totalExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
         })
         .from(costEvents)
         .where(and(...conditions));
 
+      const pendingConditions = [eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.costAccountingPending, true),
+        inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"])];
+      if (range?.from) pendingConditions.push(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${range.from.toISOString()}::timestamptz`);
+      if (range?.to) pendingConditions.push(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) <= ${range.to.toISOString()}::timestamptz`);
+      const [pending] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(...pendingConditions));
+      const pendingRunCount = pending?.count ?? 0;
       const spendCents = Number(total);
       const utilization =
         company.budgetMonthlyCents > 0
@@ -131,7 +191,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       return {
         companyId,
+        eventCount,
+        unpricedEventCount,
+        estimatedEventCount,
+        pendingRunCount,
+        pricingComplete: unpricedEventCount === 0 && pendingRunCount === 0,
         spendCents,
+        spendCentsExact: normalizeCents(totalExact),
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
       };
@@ -238,6 +304,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .select({
             issueCount: sql<number>`count(distinct ${issues.id})::int`,
             costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
             inputTokens: sumAsNumber(costEvents.inputTokens),
             cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
             outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -270,6 +337,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         issueCount: Number(costRow?.issueCount ?? 0),
         includeDescendants: true,
         costCents: Number(costRow?.costCents ?? 0),
+        costCentsExact: normalizeCents(costRow?.costCentsExact ?? 0),
         inputTokens: Number(costRow?.inputTokens ?? 0),
         cachedInputTokens: Number(costRow?.cachedInputTokens ?? 0),
         outputTokens: Number(costRow?.outputTokens ?? 0),
@@ -279,6 +347,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgent: async (companyId: string, range?: CostDateRange) => {
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -289,7 +358,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           agentName: agents.name,
           agentAppearance: agents.appearance,
           agentStatus: agents.status,
+          eventCount: sql<number>`count(*)::int`,
+          estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
           costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -316,6 +388,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -327,6 +400,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: costEvents.billingType,
           model: costEvents.model,
           costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -348,6 +422,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byBiller: async (companyId: string, range?: CostDateRange) => {
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -356,6 +431,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .select({
           biller: costEvents.biller,
           costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -390,14 +466,16 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         { label: "7d", hours: 168 },
       ] as const;
 
+      const now = new Date();
       const results = await Promise.all(
         windows.map(async ({ label, hours }) => {
-          const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+          const since = new Date(now.getTime() - hours * 60 * 60 * 1000);
           const rows = await db
             .select({
               provider: costEvents.provider,
               biller: sql<string>`case when count(distinct ${costEvents.biller}) = 1 then min(${costEvents.biller}) else 'mixed' end`,
               costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
               inputTokens: sumAsNumber(costEvents.inputTokens),
               cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
               outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -407,6 +485,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               and(
                 eq(costEvents.companyId, companyId),
                 gte(costEvents.occurredAt, since),
+                lte(costEvents.occurredAt, now),
               ),
             )
             .groupBy(costEvents.provider)
@@ -418,6 +497,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             window: label as string,
             windowHours: hours,
             costCents: row.costCents,
+            costCentsExact: normalizeCents(row.costCentsExact),
             inputTokens: row.inputTokens,
             cachedInputTokens: row.cachedInputTokens,
             outputTokens: row.outputTokens,
@@ -429,6 +509,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgentModel: async (companyId: string, range?: CostDateRange) => {
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -446,7 +527,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           biller: costEvents.biller,
           billingType: costEvents.billingType,
           model: costEvents.model,
+          eventCount: sql<number>`count(*)::int`,
+          estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
           costCents: sumAsNumber(costEvents.costCents),
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -473,9 +557,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db
-        .selectDistinctOn([activityLog.runId, issues.projectId], {
+        .select({
           runId: activityLog.runId,
-          projectId: issues.projectId,
+          projectId: sql<string>`min(${issues.projectId}::text)::uuid`.as("linked_project_id"),
         })
         .from(activityLog)
         .innerJoin(
@@ -493,10 +577,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             isNotNull(issues.projectId),
           ),
         )
-        .orderBy(activityLog.runId, issues.projectId, desc(activityLog.createdAt))
+        .groupBy(activityLog.runId)
+        .having(sql`count(distinct ${issues.projectId}) = 1`)
         .as("run_project_links");
 
-      const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${runProjectLinks.projectId})`;
+      const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, case when ${costEvents.receiptHash} is null then ${runProjectLinks.projectId} end)`;
+      range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -505,18 +591,19 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       return db
         .select({
-          projectId: effectiveProjectId,
+          projectId: projects.id,
           projectName: projects.name,
           costCents: costCentsExpr,
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
         })
         .from(costEvents)
         .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
-        .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
-        .where(and(...conditions, sql`${effectiveProjectId} is not null`))
-        .groupBy(effectiveProjectId, projects.name)
+        .leftJoin(projects, and(eq(projects.companyId, companyId), sql`${projects.id} = ${effectiveProjectId}`))
+        .where(and(...conditions))
+        .groupBy(projects.id, projects.name)
         .orderBy(desc(costCentsExpr));
     },
   };

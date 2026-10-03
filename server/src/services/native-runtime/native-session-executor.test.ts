@@ -305,6 +305,7 @@ import {
   nativeUsageCostUsd,
   nativeUsageBiller,
   normalizeNativeUsage,
+  resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
@@ -985,6 +986,35 @@ describe("native provider usage normalization", () => {
     expect(nativeUsageCostUsd(usage, provider)).toBeUndefined();
     expect(normalizeNativeUsage(usage)).toMatchObject({ inputTokens: 100, outputTokens: 12 });
   });
+
+  it("retains cache writes and avoids counting Codex cache hits twice", () => {
+    expect(normalizeNativeUsage({ runDelta: { inputTokens: 120, cacheReadTokens: 100, cacheWriteTokens: 5, outputTokens: 10 } }, { inputIncludesCacheReads: true }))
+      .toEqual({ inputTokens: 20, cachedInputTokens: 100, cacheWriteTokens: 5, outputTokens: 10 });
+  });
+  it("does not treat a protocol-default price as free usage", () => {
+    expect(nativeUsageCostUsd({ runDelta: { inputTokens: 20, outputTokens: 10, providerCostUsd: 0 } })).toBeUndefined();
+  });
+  it("reports the actual runtime billing identity", () => {
+    expect(resolveNativeBilling({ kind: "opencode", model: "openrouter/deepseek/test", permissionMode: "allow" }))
+      .toEqual({ provider: "deepseek", biller: "openrouter", billingType: "unknown" });
+    expect(resolveNativeBilling({ kind: "acpx", agent: "claude", model: "claude-test", permissionMode: "approve-all",
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+        agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
+        agentRuntimeVersion: null, commandDigest: "fixture" },
+    }, { ANTHROPIC_API_KEY: "test" }))
+      .toEqual({ provider: "anthropic", biller: "anthropic", billingType: "metered_api" });
+  });
+
+  it("prefers the adjusted turn price to cumulative session prices", () => {
+    expect(nativeUsageCostUsd({ providerCostUsd: 10, runDelta: { inputTokens: 10, providerCostUsd: 2, cacheAdjustedCostUsd: 1 } })).toBe(1);
+  });
+  it.each(["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_BASE_URL"])("does not price native or managed proxy traffic as direct OpenAI using %s", key => {
+    const provider = { kind: "codex", model: "gpt-6-astra" } as Parameters<typeof resolveNativeBilling>[0];
+    expect(resolveNativeBilling(provider, { OPENAI_API_KEY: "fixture", [key]: "https://proxy.example/v1" }).biller).toBe("unknown");
+    expect(resolveNativeBilling(provider, { [key]: "https://proxy.example/v1" }, { provider: "openai", biller: "openai", billingType: "metered_api" }).biller).toBe("unknown");
+    expect(resolveNativeBilling(provider, {}, { provider: "openai", biller: "openai", billingType: "metered_api" })).toMatchObject({ biller: "openai", billingType: "metered_api" });
+  });
+
   it("reads remote runner run-delta tokens and provider cost", () => {
     const usage = {
       total: {

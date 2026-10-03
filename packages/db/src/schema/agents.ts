@@ -2,6 +2,7 @@ import type { AgentAppearance } from "@paperclipai/shared";
 import {
   type AnyPgColumn,
   pgTable,
+  numeric,
   uuid,
   text,
   integer,
@@ -31,7 +32,8 @@ export const agents = pgTable(
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
-    spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    spendMonthUtc: text("spend_month_utc"),
+    spentMonthlyCents: numeric("spent_monthly_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     errorReason: text("error_reason"),

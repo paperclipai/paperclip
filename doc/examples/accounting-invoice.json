@@ -1,0 +1,15 @@
+{
+  "biller": "anthropic",
+  "externalId": "example-invoice-2026-09",
+  "currency": "USD",
+  "lines": [
+    {
+      "externalId": "example-line-1",
+      "kind": "inference",
+      "amountCents": "12.5000000",
+      "occurredAt": "2026-09-01T00:00:00Z",
+      "providerRequestId": "replace-with-the-provider-request-id",
+      "pricing": { "source": "provider_invoice", "version": "2026-09", "evidence": "example-invoice-2026-09" }
+    }
+  ]
+}

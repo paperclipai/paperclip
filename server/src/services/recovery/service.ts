@@ -3827,6 +3827,12 @@ export function recoveryService(
       current.companyId,
       current.id,
     );
+    // Budget admission may wait behind another recovery worker. Read the
+    // execution paths after the persisted counter so a newly reserved
+    // successor cannot be mistaken for permission to schedule the next one.
+    const currentState = await collectDispositionRepairSourceState(db, { issue: current });
+    if (currentState.hasActiveExecutionPath || currentState.hasDurableWaitingPath) return "skipped";
+    if (!episode && currentState.fingerprint !== state.fingerprint) return "skipped";
     const runAttempt =
       previousAttempt?.fingerprint === state.fingerprint
         ? previousAttempt.attempt

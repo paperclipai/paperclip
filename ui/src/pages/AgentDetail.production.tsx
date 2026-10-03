@@ -380,7 +380,7 @@ function runMetrics(run: HeartbeatRun) {
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    totalTokens: input + cached + output,
     provider,
     model,
   };
@@ -935,6 +935,8 @@ export function AgentDetail() {
       metric: "billed_cents",
       windowKind: "calendar_month_utc",
       amount: budgetMonthlyCents,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: spentMonthlyCents,
       remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
       utilizationPercent:
