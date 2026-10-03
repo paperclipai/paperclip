@@ -152,12 +152,18 @@ export interface WakeQueueTransaction {
     reason: string | null;
     releasePolicy: unknown;
   }>;
-  getCommentSelfAuthorship(input: {
+  getCommentReopenFacts(input: {
     companyId: string;
     issueId: string;
     finishingRunId: string;
     commentIds: string[];
-  }): Promise<{ allSelfAuthored: boolean }>;
+    terminalAt: Date;
+    runStartedAt: Date;
+  }): Promise<{
+    allSelfAuthored: boolean;
+    referencedCommentsComplete: boolean;
+    hasLiveNonSelfCommentAfterRunStartedAt: boolean;
+  }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;
