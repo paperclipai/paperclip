@@ -166,7 +166,7 @@ import {
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
-import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { hasUsableClaudeHostLogin, runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import {
   SetupTokenSessionService,
@@ -3623,18 +3623,22 @@ export function agentRoutes(
     },
   );
 
-  // The claude_local branch of the auth-signal read. It checks two host-local
-  // sources for a usable Claude Code OAuth token: the resolved envVars of the
-  // caller's selected environment, and the caller's own stored Claude login. It
-  // returns "present" the moment either source holds a non-empty token, so it
-  // never resolves more than the one env key it needs.
+  // The claude_local branch of the auth-signal read. It checks three host-local
+  // sources for a usable Claude Code login: the resolved envVars of the caller's
+  // selected environment, the caller's own stored Claude login, and -- in
+  // local_trusted mode when the host is the execution target -- the host's own
+  // Claude Code credentials file, which is what claude_local runs use when no
+  // other credential is configured. It returns "present" the moment any source
+  // holds a usable login, so it never resolves more than the one env key it
+  // needs. Like codex_local, a sandbox never reports "present" from a host
+  // login it does not share; it reports "unknown" instead.
   async function evaluateClaudeAuthSignal(
     req: Request,
     companyId: string,
     environmentId: string | null,
   ): Promise<AdapterAuthSignal> {
+    const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
     if (environmentId) {
-      const environment = await environmentsSvc.getById(environmentId);
       const environmentEnv = Object.fromEntries(
         Object.entries(parseObject(environment?.envVars)).filter(
           ([key]) => !isForbiddenConfigEnvKey(key),
@@ -3656,6 +3660,12 @@ export function agentRoutes(
     if (ownerUserId) {
       const stored = await secretsSvc.readClaudeOAuthUserSecretStatus(companyId, ownerUserId);
       if (stored) return "present";
+    }
+    if (environment && environment.driver !== "local") return "unknown";
+    // The raw option is read, not the local_trusted default, so a router built
+    // without a deployment mode never reports the host login.
+    if (options.deploymentMode === "local_trusted" && (await hasUsableClaudeHostLogin())) {
+      return "present";
     }
     return "absent";
   }
@@ -3707,17 +3717,19 @@ export function agentRoutes(
 
   // The cheap host-local authentication signal for one adapter type. The route
   // reads host-local state only: a stored Claude login, a resolved environment
-  // env var, or the local Codex credential readiness check. It leases no
-  // sandbox, starts no shell command, and starts no model request. The two
-  // access gates below run before any read, so a caller who cannot create
-  // agents for the company and a foreign environment both fail closed before
-  // the route touches a credential source.
+  // env var, the host's Claude Code credentials file, or the local Codex
+  // credential readiness check. It leases no sandbox, starts no shell command,
+  // and starts no model request. The two access gates below run before any
+  // read, so a caller who cannot create agents for the company and a foreign
+  // environment both fail closed before the route touches a credential source.
   router.get(
     "/companies/:companyId/adapters/:type/auth-signal",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      const type = req.params.type as string;
       await assertCanCreateAgentsForCompany(req, companyId);
+      // An unregistered type is a caller error, not an "unknown" signal. The
+      // check runs after the permission gate so it cannot probe the registry.
+      const type = assertKnownAdapterType(req.params.type as string);
       const environmentId = asNonEmptyString(req.query.environmentId);
       if (environmentId) {
         await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
