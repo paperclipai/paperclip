@@ -18,6 +18,19 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+### Workspace cleanup performance
+
+The terminal-workspace reaper checks issue-tree terminal state, the cleanup
+cooldown, reopen fences, and active runs before inspecting Git. An undelivered,
+dirty, or uninspectable workspace is retried after ten minutes, or sooner if its
+workspace revision, lifecycle generation, or terminal-tree timestamp changes.
+This backoff is held in memory and is bounded to 2,000 workspaces. Explicit close
+readiness and destructive cleanup always inspect current Git state.
+
+Compare `workspace_git_scan` logs for
+`execution_workspaces.close_readiness_status` before and after a change. Include
+idle periods: background reaper scans can consume resources without UI requests.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
