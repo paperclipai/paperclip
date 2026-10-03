@@ -131,6 +131,7 @@ import { TaskChatPresentationProvider } from "@/components/task-chat/presentatio
 import {
   readTaskChatViewMode,
   saveTaskChatViewMode,
+  taskChatThreadHasFocusTurns,
   TaskChatViewModeProvider,
   TaskChatViewModeToggle,
   type TaskChatViewMode,
@@ -2608,6 +2609,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           item.author === "human" &&
           item.optimistic === "pending",
       ));
+  const showViewModeToggle =
+    paperclipRunnerTail ||
+    optimisticRunnerStartup ||
+    taskChatThreadHasFocusTurns(items);
 
   // Feedback votes keyed by the comment they target (targetType
   // "issue_comment"), mirroring IssueChatThread — the redesign attaches the
@@ -2958,7 +2963,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 )}
                 inert={!historyRevealed}
               >
-                {items.length > 0 || tailRunId ? (
+                {showViewModeToggle ? (
                   <div
                     className={cn(
                       "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2",

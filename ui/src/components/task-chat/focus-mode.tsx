@@ -1,7 +1,9 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
+import type { TaskChatItem } from "./task-chat-model";
 
 export type TaskChatViewMode = "full" | "focus";
 
@@ -46,8 +48,9 @@ export function useTaskChatFocusMode(): boolean {
 }
 
 /**
- * Rows that Focus view never folds: runtime requests can wait for an operator
- * decision, and plan documents are durable artifacts rather than runner noise.
+ * Rows that Focus view never folds: resolved request receipts record an
+ * operator decision, and plan documents are durable artifacts rather than
+ * runner noise. Pending requests render at the composer, not in the timeline.
  */
 export function isTaskChatFocusPersistentRow(row: {
   kind: string;
@@ -56,6 +59,18 @@ export function isTaskChatFocusPersistentRow(row: {
   return (
     row.kind === "plan_document" ||
     (row.kind === "protocol" && row.surface === "runtime_request")
+  );
+}
+
+/**
+ * Focus view only folds Paperclip Runner (standalone-header) turns. Threads
+ * without such a turn keep the classic fold, so the toggle would do nothing.
+ */
+export function taskChatThreadHasFocusTurns(items: readonly TaskChatItem[]): boolean {
+  return items.some(
+    (item) =>
+      (item.kind === "turn" && item.standaloneHeader === true) ||
+      (item.kind === "message" && item.attachedTurn?.standaloneHeader === true),
   );
 }
 
@@ -80,19 +95,23 @@ export function TaskChatViewModeToggle({
       data-testid="task-chat-view-mode-toggle"
     >
       {VIEW_MODE_OPTIONS.map((option) => (
-        <button
+        <Button
           key={option.mode}
           type="button"
+          variant="outline"
+          size="xs"
           aria-pressed={mode === option.mode}
           data-view-mode={option.mode}
           className={cn(
-            "rounded-sm px-2 py-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            mode === option.mode && "bg-muted text-foreground",
+            "bg-card",
+            mode === option.mode
+              ? "bg-accent text-accent-foreground dark:bg-accent"
+              : "text-muted-foreground",
           )}
           onClick={() => onChange(option.mode)}
         >
           {t(option.labelKey)}
-        </button>
+        </Button>
       ))}
     </div>
   );

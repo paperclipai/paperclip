@@ -13,11 +13,16 @@ import {
   readTaskChatViewMode,
   saveTaskChatViewMode,
   TASK_CHAT_VIEW_MODE_STORAGE_KEY,
+  taskChatThreadHasFocusTurns,
   TaskChatViewModeProvider,
   TaskChatViewModeToggle,
   type TaskChatViewMode,
 } from "./focus-mode";
-import type { TaskChatTurnChildItem, TaskChatTurnItem } from "./task-chat-model";
+import type {
+  TaskChatItem,
+  TaskChatTurnChildItem,
+  TaskChatTurnItem,
+} from "./task-chat-model";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -133,9 +138,32 @@ describe("task chat view mode storage", () => {
   });
 });
 
+describe("task chat view mode toggle visibility", () => {
+  const CLASSIC_TURN: TaskChatTurnItem = { ...TURN, id: "t0", standaloneHeader: false };
+  const HUMAN: TaskChatItem = { id: "m1", kind: "message", author: "human", text: "Hi" };
+
+  it("hides the toggle for a thread without runner turns", () => {
+    expect(taskChatThreadHasFocusTurns([])).toBe(false);
+    expect(taskChatThreadHasFocusTurns([HUMAN, CLASSIC_TURN])).toBe(false);
+    expect(
+      taskChatThreadHasFocusTurns([{ ...HUMAN, attachedTurn: CLASSIC_TURN }]),
+    ).toBe(false);
+  });
+
+  it("shows the toggle for a standalone runner turn, also when attached", () => {
+    expect(taskChatThreadHasFocusTurns([HUMAN, TURN])).toBe(true);
+    expect(taskChatThreadHasFocusTurns([{ ...HUMAN, attachedTurn: TURN }])).toBe(true);
+  });
+});
+
 describe("Focus view", () => {
   it("keeps the full timeline by default", () => {
     act(() => root.render(<Harness />));
+    for (const mode of ["full", "focus"] as const) {
+      expect(toggleButton(mode).getAttribute("data-slot")).toBe("button");
+      expect(toggleButton(mode).getAttribute("data-variant")).toBe("outline");
+      expect(toggleButton(mode).getAttribute("data-size")).toBe("xs");
+    }
     expect(toggleButton("full").getAttribute("aria-pressed")).toBe("true");
     expect(toggleButton("focus").getAttribute("aria-pressed")).toBe("false");
     expect(foldButton()).toBeNull();
