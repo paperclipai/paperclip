@@ -7,10 +7,14 @@ import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclip
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import {
+  canBufferForUtf8Validation,
   formatAttachmentSize,
   isAllowedContentType,
   isInlineAttachmentContentType,
+  isTextualAttachmentContentType,
+  isValidUtf8Buffer,
   MAX_ATTACHMENT_BYTES,
+  withUtf8CharsetIfTextual,
 } from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
@@ -348,8 +352,40 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const inlineSafe = mediaType !== SVG_CONTENT_TYPE
       && isInlineAttachmentContentType(mediaType);
-    res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
+
+    // Storage accepts arbitrary bytes for textual content types (upload never
+    // validates encoding), so only assert charset=utf-8 once the full body is
+    // confirmed to actually be valid UTF-8. A range response only carries a
+    // slice of the bytes, which can't be validated reliably, so it stays unlabeled.
+    let bufferedBody: Buffer | null = null;
+    let responseHeaderContentType = responseContentType;
+    if (
+      !range &&
+      isTextualAttachmentContentType(responseContentType) &&
+      canBufferForUtf8Validation(asset.byteSize ?? object.contentLength)
+    ) {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of object.stream) {
+          chunks.push(chunk as Buffer);
+        }
+        bufferedBody = Buffer.concat(chunks);
+      } catch (err) {
+        next(err);
+        return;
+      }
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, {
+        validatedUtf8: isValidUtf8Buffer(bufferedBody),
+      });
+    } else {
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, { validatedUtf8: false });
+    }
+
+    res.setHeader("Content-Type", responseHeaderContentType);
+    res.setHeader(
+      "Content-Length",
+      String(bufferedBody ? bufferedBody.length : range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0),
+    );
     if (range) {
       res.status(206);
       res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
@@ -365,11 +401,15 @@ export function assetRoutes(db: Db, storage: StorageService) {
       : "attachment";
     res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
-    object.stream.on("error", (err) => {
-      next(err);
-    });
-    res.on("close", () => object.stream.destroy());
-    object.stream.pipe(res);
+    if (bufferedBody) {
+      res.end(bufferedBody);
+    } else {
+      object.stream.on("error", (err) => {
+        next(err);
+      });
+      res.on("close", () => object.stream.destroy());
+      object.stream.pipe(res);
+    }
   });
 
   return router;
