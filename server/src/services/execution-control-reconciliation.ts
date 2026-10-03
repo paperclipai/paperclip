@@ -194,7 +194,9 @@ export async function reconcileAbandonedExecutionControl(
           }
           await tx
             .update(agents)
-            .set({ status: "idle", updatedAt: now })
+            // The agent stops being `running` here, so it is no longer in error
+            // and must not keep a stale reason from an earlier failure.
+            .set({ status: "idle", errorReason: null, updatedAt: now })
             .where(
               and(
                 eq(agents.id, run.agentId),
