@@ -889,6 +889,42 @@ describe("AgentConfigForm environment selector", () => {
     });
   });
 
+  it("displays unsupported saved effort as unsupported rather than Auto for existing agents", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "claude_local",
+        adapterConfig: {
+          model: "claude-haiku-4-5",
+          effort: "high",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const buttons = Array.from(result.container.querySelectorAll("button"));
+    const effortButton = buttons.find((button) => button.textContent?.includes("High (unsupported)"));
+    expect(effortButton).not.toBeUndefined();
+  });
+
+  it("displays unsupported saved effort for Antigravity with suffixed model", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "agy_local",
+        adapterConfig: {
+          model: "gemini-3.8-flash-high",
+          effort: "low",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const buttons = Array.from(result.container.querySelectorAll("button"));
+    const effortButton = buttons.find((button) => button.textContent?.includes("Low (unsupported)"));
+    expect(effortButton).not.toBeUndefined();
+  });
+
   it("names the Claude default for new and existing agents without pinning it", async () => {
     const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
     const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });

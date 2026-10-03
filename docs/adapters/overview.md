@@ -18,6 +18,7 @@ When a heartbeat fires, Paperclip:
 
 | Adapter | Type Key | Description |
 |---------|----------|-------------|
+| [Antigravity](/adapters/agy-local) | `agy_local` | Runs Google Antigravity (agy) CLI locally with multi-workspace, persona discovery, structured output, and session resume |
 | [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally, with a native ACP engine when available |
 | [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally, with a native ACP engine when available |
 | [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |

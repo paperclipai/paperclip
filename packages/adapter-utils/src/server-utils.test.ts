@@ -38,7 +38,40 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
+  ensurePaperclipSkillSymlink,
 } from "./server-utils.js";
+
+describe("ensurePaperclipSkillSymlink", () => {
+  it("uses the injected unlink implementation when repairing a managed link", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-link-"));
+    const target = path.join(root, "target");
+    const source = path.join(root, "source");
+    await fs.mkdir(source);
+    await fs.symlink(
+      path.join(root, "missing"),
+      target,
+      process.platform === "win32" ? "junction" : undefined,
+    );
+    const calls: string[] = [];
+    const linkSkill = async (_source: string, target: string) => {
+      calls.push(`link:${target}`);
+    };
+    const unlinkSkill = async (target: string) => {
+      calls.push(`unlink:${target}`);
+    };
+
+    const result = await ensurePaperclipSkillSymlink(
+      source,
+      target,
+      linkSkill,
+      unlinkSkill,
+    );
+
+    expect(result).toBe("repaired");
+    expect(calls).toEqual([`unlink:${target}`, `link:${target}`]);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {

@@ -59,6 +59,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 // controls its resolved value and its failure, so it stays independent of a
 // real Codex home on disk.
 const mockEvaluateCodexCredentialReadiness = vi.hoisted(() => vi.fn());
+const mockEvaluateAgyCredentialReadiness = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -109,6 +110,14 @@ vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
   return {
     ...actual,
     evaluateCodexCredentialReadiness: mockEvaluateCodexCredentialReadiness,
+  };
+});
+
+vi.mock("@paperclipai/adapter-agy-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-agy-local/server")>();
+  return {
+    ...actual,
+    evaluateAgyCredentialReadiness: mockEvaluateAgyCredentialReadiness,
   };
 });
 
@@ -176,6 +185,10 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
+    mockEvaluateAgyCredentialReadiness.mockReturnValue({
+      ready: false,
+      authMode: "none",
+    });
   });
 
   afterEach(() => {
@@ -226,6 +239,164 @@ describe("adapter auth-signal route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ status: "unknown" });
   });
+
+  it("returns present for agy_local when evaluateAgyCredentialReadiness reports ready", async () => {
+    mockEvaluateAgyCredentialReadiness.mockReturnValueOnce({
+      ready: true,
+      authMode: "subscription",
+      tokenPath: "/home/user/.gemini/antigravity-cli/antigravity-oauth-token",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockEvaluateAgyCredentialReadiness).toHaveBeenCalled();
+  });
+
+  it("returns absent for agy_local when evaluateAgyCredentialReadiness reports not ready", async () => {
+    mockEvaluateAgyCredentialReadiness.mockReturnValueOnce({
+      ready: false,
+      authMode: "none",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "absent" });
+  });
+
+  it("returns unknown for agy_local when evaluateAgyCredentialReadiness throws", async () => {
+    mockEvaluateAgyCredentialReadiness.mockImplementationOnce(() => {
+      throw new Error("Filesystem error");
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "unknown" });
+  });
+
+  it("returns unknown for agy_local on a sandbox environment even when the host reports ready", async () => {
+    mockEvaluateAgyCredentialReadiness.mockReturnValueOnce({
+      ready: true,
+      authMode: "subscription",
+      tokenPath: "/home/user/.gemini/antigravity-cli/antigravity-oauth-token",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "unknown" });
+    expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
+  });
+
+  it("returns present for agy_local on a sandbox environment that holds GEMINI_API_KEY", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_1,
+      companyId: COMPANY_1,
+      name: "Sandbox QA",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake-plugin" },
+      envVars: {
+        GEMINI_API_KEY: { type: "secret_ref", secretId: "secret-1" },
+      },
+    });
+    mockSecretService.resolveEnvBindings.mockResolvedValueOnce({
+      env: { GEMINI_API_KEY: "resolved-gemini-key" },
+      secretKeys: new Set(["GEMINI_API_KEY"]),
+      manifest: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
+  });
+
+  it("returns present for agy_local on a sandbox environment that holds AGY_API_KEY", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_1,
+      companyId: COMPANY_1,
+      name: "Sandbox QA",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake-plugin" },
+      envVars: {
+        AGY_API_KEY: { type: "secret_ref", secretId: "secret-2" },
+      },
+    });
+    mockSecretService.resolveEnvBindings.mockResolvedValueOnce({
+      env: { AGY_API_KEY: "resolved-agy-key" },
+      secretKeys: new Set(["AGY_API_KEY"]),
+      manifest: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
+  });
+
+  it("returns present for agy_local on a sandbox environment that holds ANTIGRAVITY_API_KEY", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_1,
+      companyId: COMPANY_1,
+      name: "Sandbox QA",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake-plugin" },
+      envVars: {
+        ANTIGRAVITY_API_KEY: { type: "secret_ref", secretId: "secret-3" },
+      },
+    });
+    mockSecretService.resolveEnvBindings.mockResolvedValueOnce({
+      env: { ANTIGRAVITY_API_KEY: "resolved-antigravity-key" },
+      secretKeys: new Set(["ANTIGRAVITY_API_KEY"]),
+      manifest: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
+  });
+
+  it("uses the host readiness predictor for agy_local on a local-driver environment", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_1,
+      companyId: COMPANY_1,
+      name: "Local host",
+      driver: "local",
+      status: "active",
+      config: {},
+      envVars: {},
+    });
+    mockEvaluateAgyCredentialReadiness.mockReturnValueOnce({
+      ready: true,
+      authMode: "subscription",
+      tokenPath: "/home/user/.gemini/antigravity-cli/antigravity-oauth-token",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockEvaluateAgyCredentialReadiness).toHaveBeenCalled();
+  });
+
 
   it("returns unknown for codex_local on a sandbox environment even when the host reports ready", async () => {
     // The host readiness predictor is ready, but the selected sandbox holds no
