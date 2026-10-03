@@ -84,6 +84,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
+import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
 import { IssueChatThread } from "../components/IssueChatThread";
@@ -2347,26 +2348,41 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null },
   ) => {
     if (!conversationIssueId) return;
-    if (reassignment) {
-      await issuesApi.update(conversationIssueId, {
-        comment: body,
-        assigneeAgentId: reassignment.assigneeAgentId,
-        assigneeUserId: reassignment.assigneeUserId,
-        ...(reopen ? { status: "todo" } : {}),
-      });
-    } else {
-      const queuedRunId = conversationRunningRun?.id ?? null;
-      const comment = await issuesApi.addComment(conversationIssueId, body, reopen);
-      if (queuedRunId) {
-        setLocallyQueuedConversationCommentRunIds((current) => {
-          const next = new Map(current);
-          next.set(comment.id, queuedRunId);
-          return next;
+    try {
+      if (reassignment) {
+        await issuesApi.update(conversationIssueId, {
+          comment: body,
+          assigneeAgentId: reassignment.assigneeAgentId,
+          assigneeUserId: reassignment.assigneeUserId,
+          ...(reopen ? { status: "todo" } : {}),
         });
+      } else {
+        const queuedRunId = conversationRunningRun?.id ?? null;
+        const comment = await issuesApi.addComment(conversationIssueId, body, reopen);
+        if (queuedRunId) {
+          setLocallyQueuedConversationCommentRunIds((current) => {
+            const next = new Map(current);
+            next.set(comment.id, queuedRunId);
+            return next;
+          });
+        }
       }
+      await invalidateConversation();
+    } catch (error) {
+      // This caller bypasses the Board mutation layer, so it must own the
+      // error toast itself; the composer still restores the draft. An
+      // unconfirmed submission is different: the composer shows its own
+      // review-the-conversation treatment, and a "Message not sent" toast
+      // would contradict it and invite a duplicate resend.
+      if (error instanceof CommentSubmissionUnknownError) throw error;
+      pushToast({
+        title: "Message not sent",
+        body: error instanceof Error ? error.message : "The message could not be sent.",
+        tone: "error",
+      });
+      throw error;
     }
-    await invalidateConversation();
-  }, [conversationIssueId, conversationRunningRun?.id, invalidateConversation]);
+  }, [conversationIssueId, conversationRunningRun?.id, invalidateConversation, pushToast]);
 
   const updateConversationWorkMode = useCallback(async (workMode: IssueWorkMode) => {
     if (!conversationIssueId) return;
