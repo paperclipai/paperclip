@@ -116,6 +116,66 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
     }
   });
+  it("reuses a managed checkout when repo URLs differ only by .git and slash", async () => {
+    const sourceRepo = await createLocalSourceRepo();
+    try {
+      const first = await ensureManagedProjectWorkspace({
+        companyId: "company-url-identity",
+        projectId: "project-url-identity",
+        repoUrl: sourceRepo,
+      });
+      await execFile("git", ["remote", "set-url", "origin", `${sourceRepo}/.git`], { cwd: first.cwd });
+      const reused = await ensureManagedProjectWorkspace({
+        companyId: "company-url-identity",
+        projectId: "project-url-identity",
+        repoUrl: `${sourceRepo}/`,
+      });
+      expect(reused.cwd).toBe(first.cwd);
+      expect(reused.warning).toBeNull();
+    } finally {
+      await fs.rm(sourceRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps local repositories that differ only by a .git suffix separate", async () => {
+    const plain = await createLocalSourceRepo();
+    const suffixed = `${plain}.git`;
+    await execFile("git", ["clone", plain, suffixed]);
+    const companyId = "company-local-suffix";
+    const projectId = "project-local-suffix";
+    try {
+      const first = await ensureManagedProjectWorkspace({ companyId, projectId, repoUrl: plain });
+      const second = await ensureManagedProjectWorkspace({ companyId, projectId, repoUrl: suffixed });
+      expect(second.cwd).not.toBe(first.cwd);
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: second.cwd })).stdout.trim()).toBe(suffixed);
+    } finally {
+      await Promise.all([plain, suffixed].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
+  it("adopts an equivalent origin that wins the checkout rename", async () => {
+    const sourceRepo = await createLocalSourceRepo();
+    const companyId = "cross-process-equivalent";
+    const projectId = "same-repo";
+    const sharedCwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+    try {
+      // Another process publishes a checkout of the same repository, recorded with
+      // an equivalent origin, after this caller chose its destination.
+      const resolveGitAuth = vi.fn(async () => {
+        if (!(await fs.stat(sharedCwd).catch(() => null))) {
+          await execFile("git", ["clone", sourceRepo, sharedCwd]);
+          await execFile("git", ["remote", "set-url", "origin", `${sourceRepo}/.git`], { cwd: sharedCwd });
+        }
+        return null;
+      });
+      const result = await ensureManagedProjectWorkspace({ companyId, projectId, repoUrl: `${sourceRepo}/`, resolveGitAuth });
+      expect(resolveGitAuth).toHaveBeenCalled();
+      expect(result.cwd).toBe(sharedCwd);
+    } finally {
+      await fs.rm(sourceRepo, { recursive: true, force: true });
+    }
+  });
+
   it("rechecks the repository when another process wins the checkout rename", async () => {
     const first = await createLocalSourceRepo();
     const second = await createLocalSourceRepo();

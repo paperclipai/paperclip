@@ -2418,6 +2418,25 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
 }
 
 /**
+ * Compare repository sources by identity. A remote URL names the same repository with or
+ * without a trailing `.git`, but a local path does not: `/tmp/repo.git` and `/tmp/repo` can be
+ * two different repositories. For a local path only a trailing `/.git` (the repository's own
+ * git directory) and trailing separators are dropped.
+ */
+function normalizeRepoUrl(url: string): string {
+  const trimmed = url.trim();
+  const isRemote =
+    /^(?!file:)[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) || /^[^/\\\s]+@[^/\\\s]+:/.test(trimmed);
+  if (isRemote) return trimmed.replace(/\/+$/, "").replace(/\.git$/, "");
+  // On POSIX a backslash is an ordinary file-name character, so only a Windows
+  // path (drive letter or UNC) treats it as a separator.
+  const windowsPath = /^[a-z]:[\\/]/i.test(trimmed) || trimmed.startsWith("\\\\");
+  return windowsPath
+    ? trimmed.replace(/[\\/]+$/, "").replace(/[\\/]\.git$/, "")
+    : trimmed.replace(/\/+$/, "").replace(/\/\.git$/, "");
+}
+
+/**
  * In-flight managed-checkout materializations keyed by target cwd. Two issues on the same
  * project can wake within seconds of each other; without this, both runs raced the same
  * clone target — the loser saw "destination path already exists" and its failure cleanup
@@ -2444,7 +2463,7 @@ export async function ensureManagedProjectWorkspace(input: {
   if (input.repoUrl && await fs.stat(path.join(cwd, ".git")).catch(() => null)) {
     const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
       .then((result) => result.stdout.trim()).catch(() => null);
-    if (origin && origin !== input.repoUrl) {
+    if (origin && normalizeRepoUrl(origin) !== normalizeRepoUrl(input.repoUrl)) {
       cwd = `${cwd}-${createHash("sha256").update(input.repoUrl).digest("hex").slice(0, 12)}`;
     }
   }
@@ -2464,7 +2483,7 @@ export async function ensureManagedProjectWorkspace(input: {
     // initial origin check and the atomic rename. Never adopt its other repo.
     const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
       .then((value) => value.stdout.trim()).catch(() => null);
-    if (origin && origin !== input.repoUrl) {
+    if (origin && normalizeRepoUrl(origin) !== normalizeRepoUrl(input.repoUrl)) {
       if (cwd !== defaultCwd) throw new Error("Managed checkout origin does not match the requested repository");
       return ensureManagedProjectWorkspace(input);
     }
@@ -2596,7 +2615,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   workspaces: Array<Pick<typeof projectWorkspaces.$inferSelect, "id" | "repoUrl" | "repoRef"> & { cwd?: string | null }>;
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
-  const identity = (url: string) => url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
+  const identity = normalizeRepoUrl;
   const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
   const selected = input.workspaces.filter((workspace) => {
     if (!workspace.repoUrl || seen.has(identity(workspace.repoUrl))) return false;
