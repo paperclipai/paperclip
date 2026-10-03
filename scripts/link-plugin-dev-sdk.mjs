@@ -43,8 +43,16 @@ export function linkExcludedPlugins() {
 // repo-internal scripts (e.g. the standalone package builder) can relink a
 // single package after a fresh install.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { linked, skipped } = linkExcludedPlugins();
-  console.log(`  ✓ Linked @paperclipai/plugin-sdk into ${linked} excluded plugin(s) (skipped ${skipped})`);
+  if (process.argv.length > 2) {
+    const packageDir = resolve(process.argv[2]);
+    if (process.argv.length !== 3 || !excludedPluginDirs().includes(packageDir)) {
+      throw new Error("SDK linking target must be an excluded repository plugin package");
+    }
+    linkSdkInto(packageDir);
+  } else {
+    const { linked, skipped } = linkExcludedPlugins();
+    console.log(`  ✓ Linked @paperclipai/plugin-sdk into ${linked} excluded plugin(s) (skipped ${skipped})`);
+  }
 }
 
 // Recursively collect package directories (those containing a package.json)

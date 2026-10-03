@@ -65,12 +65,11 @@ async function createBundledPluginFixture(
   const pluginKey = `paperclip.${slug.replace(/^plugin-/, "").replace(/-/g, "_")}`;
   const packageRoot = path.join(options.rootDir ?? repoPluginRoot, slug);
   const distDir = path.join(packageRoot, "dist");
-  const isStandaloneFixture = (options.rootDir ?? repoPluginRoot) === standaloneRepoPluginRoot;
-  const postinstallScript = isStandaloneFixture
-    ? `node ${path.relative(packageRoot, path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs"))}`
-    : null;
 
   await mkdir(path.join(packageRoot, "scripts"), { recursive: true });
+  if ((options.rootDir ?? repoPluginRoot) === standaloneRepoPluginRoot) {
+    await writeFile(path.join(packageRoot, ".npmrc"), "ignore-scripts=true\n");
+  }
   await writeFile(
     path.join(packageRoot, "package.json"),
     JSON.stringify({
@@ -79,7 +78,6 @@ async function createBundledPluginFixture(
       private: true,
       type: "module",
       scripts: {
-        ...(postinstallScript ? { postinstall: postinstallScript } : {}),
         build: "node ./scripts/build.mjs",
       },
       paperclipPlugin: {
@@ -241,7 +239,7 @@ describe("ensureLocalPluginBuilt", () => {
       { execFileAsyncImpl: execStub },
     );
 
-    expect(execStub).toHaveBeenCalledTimes(2);
+    expect(execStub).toHaveBeenCalledTimes(3);
     expect(execStub).toHaveBeenNthCalledWith(
       1,
       "pnpm",
@@ -250,6 +248,12 @@ describe("ensureLocalPluginBuilt", () => {
     );
     expect(execStub).toHaveBeenNthCalledWith(
       2,
+      process.execPath,
+      [path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs"), fixture.packageRoot],
+      { cwd: fixture.packageRoot, timeout: 120_000 },
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      3,
       "pnpm",
       ["build"],
       { cwd: fixture.packageRoot, timeout: 120_000 },
@@ -273,11 +277,17 @@ describe("ensureLocalPluginBuilt", () => {
       { execFileAsyncImpl: execStub },
     );
 
-    expect(execStub).toHaveBeenCalledTimes(1);
+    expect(execStub).toHaveBeenCalledTimes(2);
     expect(execStub).toHaveBeenNthCalledWith(
       1,
       "pnpm",
       ["install", "--ignore-workspace", "--no-lockfile"],
+      { cwd: fixture.packageRoot, timeout: 120_000 },
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      2,
+      process.execPath,
+      [path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs"), fixture.packageRoot],
       { cwd: fixture.packageRoot, timeout: 120_000 },
     );
   });
@@ -401,7 +411,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("does not appear to be a Paperclip plugin (no manifest found)");
     expect(res.body.error).toContain(path.relative(REPO_ROOT, fixture.packageRoot));
-    expect(res.body.error).toContain("pnpm install --ignore-workspace --no-lockfile && pnpm build");
+    expect(res.body.error).toContain("pnpm install --ignore-workspace --no-lockfile && node ../../../../scripts/link-plugin-dev-sdk.mjs . && pnpm build");
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(false);
     expect(mockLifecycle.load).not.toHaveBeenCalled();
   }, 20_000);
