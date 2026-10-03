@@ -50,6 +50,19 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
 
+### Declare a risk tier
+
+Every pull request must declare a change-class risk tier so review and merge
+gates stay consistent:
+
+- Prefer a single GitHub label: `risk:low`, `risk:medium`, or `risk:high`
+- Or write `Risk tier: low|medium|high` in the PR body
+
+High-risk changes (auth, payments, data migrations, external contracts) must
+include a documented rollback plan. Commitperclip fails the PR when the tier is
+missing or when a high-risk PR lacks rollback evidence. Full rules:
+[`doc/reviews/risk-tiers.md`](doc/reviews/risk-tiers.md).
+
 ### Link Issues or Describe Them In-PR
 
 We do not gate PRs on a pre-existing issue. Two acceptable paths:
