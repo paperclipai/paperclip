@@ -10,6 +10,7 @@ import {
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
   resolveNpmInstallRequest,
+  resolvePublishedVersion,
   runCommandWithDiagnostics,
 } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
@@ -60,6 +61,15 @@ describe("managed install commands", () => {
     });
     expect(() => resolveNpmInstallRequest({ canary: true, version: "1.2.3" })).toThrow();
     expect(() => resolveNpmInstallRequest({ version: "latest" })).toThrow();
+  });
+
+  it("parses npm view version output from npm 11 and npm 12", async () => {
+    for (const stdout of ['"2026.916.1"\n', '[\n  "2026.916.1"\n]\n', "2026.916.1\n"]) {
+      const runCommand = vi.fn(async () => ({ stdout, stderr: "" }));
+      await expect(resolvePublishedVersion("latest", runCommand)).resolves.toBe("2026.916.1");
+    }
+    const multiple = vi.fn(async () => ({ stdout: '["2026.916.0","2026.916.1"]', stderr: "" }));
+    await expect(resolvePublishedVersion("latest", multiple)).rejects.toThrow("unexpected version response");
   });
 
   it("resolves branch, tag, full SHA, and short SHA refs through GitHub", async () => {
