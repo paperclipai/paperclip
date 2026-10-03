@@ -37,6 +37,7 @@ import {
   type FeedbackVoteValue,
 } from "@paperclipai/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveOpenCodePerAgentDataDir } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import {
@@ -570,6 +571,7 @@ async function buildOpenCodeTraceFiles(input: {
   stdoutText: string;
   state: ReturnType<typeof createFeedbackRedactionState>;
   notes: string[];
+  agentId?: string | null;
 }) {
   const files: FeedbackTraceBundleFile[] = [];
   if (!input.sessionId) {
@@ -589,8 +591,15 @@ async function buildOpenCodeTraceFiles(input: {
     };
   }
 
+  // Local opencode_local runs get a per-agent data home (see
+  // packages/adapters/opencode-local/src/server/agent-data-home.ts), so the
+  // session storage lives under that agent's dir rather than the shared
+  // ~/.local/share/opencode. Runs started before the split, and remote runs,
+  // still resolve through the shared default.
+  const perAgentDataDir = resolveOpenCodePerAgentDataDir({ agentId: input.agentId });
   const opencodeRoot = resolveHomeAwarePath(
-    process.env.PAPERCLIP_OPENCODE_STORAGE_DIR ?? "~/.local/share/opencode",
+    process.env.PAPERCLIP_OPENCODE_STORAGE_DIR ??
+      (perAgentDataDir ?? "~/.local/share/opencode"),
   );
   const sessionRoot = path.join(opencodeRoot, "storage", "session");
   const diffRoot = path.join(opencodeRoot, "storage", "session_diff");
@@ -1623,6 +1632,7 @@ async function buildFeedbackTraceBundleFromRow(
           stdoutText,
           state,
           notes,
+          agentId: run.agentId,
         });
         files.push(...adapter.files);
         rawAdapterTrace = adapter.raw;
