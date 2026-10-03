@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
+  commandPathCandidates,
   readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
@@ -192,6 +193,50 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
+  });
+});
+
+describe("commandPathCandidates", () => {
+  const originalPlatform = process.platform;
+  const setPlatform = (platform: NodeJS.Platform) =>
+    Object.defineProperty(process, "platform", { configurable: true, value: platform });
+
+  afterEach(() => setPlatform(originalPlatform));
+
+  it("probes each PATHEXT form of a bare command on Windows", () => {
+    setPlatform("win32");
+    expect(commandPathCandidates("bin", "codex-acp", { env: { PATHEXT: ".EXE;.CMD" } })).toEqual([
+      path.join("bin", "codex-acp.EXE"),
+      path.join("bin", "codex-acp.CMD"),
+    ]);
+  });
+
+  it("probes the bare name last on Windows when asked", () => {
+    setPlatform("win32");
+    expect(
+      commandPathCandidates("bin", "codex-acp", {
+        env: { PATHEXT: ".EXE;.CMD" },
+        includeBareName: true,
+      }),
+    ).toEqual([
+      path.join("bin", "codex-acp.EXE"),
+      path.join("bin", "codex-acp.CMD"),
+      path.join("bin", "codex-acp"),
+    ]);
+  });
+
+  it("probes a command that already has an extension as-is on Windows", () => {
+    setPlatform("win32");
+    expect(commandPathCandidates("bin", "codex-acp.exe", { env: { PATHEXT: ".EXE;.CMD" } })).toEqual([
+      path.join("bin", "codex-acp.exe"),
+    ]);
+  });
+
+  it("probes only the bare command on other platforms", () => {
+    setPlatform("linux");
+    expect(commandPathCandidates("bin", "codex-acp", { env: { PATHEXT: ".EXE;.CMD" } })).toEqual([
+      path.join("bin", "codex-acp"),
+    ]);
   });
 });
 
