@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import type { AgentApiKeyScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -20,5 +21,8 @@ export const agentApiKeys = pgTable(
   (table) => ({
     keyHashIdx: index("agent_api_keys_key_hash_idx").on(table.keyHash),
     companyAgentIdx: index("agent_api_keys_company_agent_idx").on(table.companyId, table.agentId),
+    activeHostWatcherIdx: uniqueIndex("agent_api_keys_active_host_watcher_uq")
+      .on(table.agentId)
+      .where(sql`${table.revokedAt} is null and ${table.scopeConfig}->>'kind' = 'host_watcher'`),
   }),
 );
