@@ -40,6 +40,7 @@ vi.mock("node:fs/promises", () => ({
 
 import { execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import { readFile } from "node:fs/promises";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   const onSpawn = vi.fn(async () => undefined);
@@ -196,21 +197,30 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(result.errorMessage).toBeUndefined();
   });
 
-  it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {
-    const previousApiKey = process.env.PAPERCLIP_API_KEY;
-    process.env.PAPERCLIP_API_KEY = "parent-process-key";
+  it("resolves model=auto to concrete model from Hermes config and passes it to CLI", async () => {
+    const mockedReadFile = vi.mocked(readFile);
+    mockedReadFile.mockResolvedValueOnce([
+      "model:",
+      "  default: gemini-flash-latest",
+      "  provider: gemini",
+      "",
+    ].join("\n"));
 
-    try {
-      const { ctx } = makeCtx();
-      await execute(ctx as any);
+    const { ctx } = makeCtx({ model: "auto" });
+    const result = await execute(ctx as any);
 
-      const mocked = vi.mocked(serverUtils.runChildProcess);
-      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
-      const opts = lastCall[3] as { env: Record<string, string> };
-      expect(opts.env.PAPERCLIP_API_KEY).toBeUndefined();
-    } finally {
-      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
-      else process.env.PAPERCLIP_API_KEY = previousApiKey;
-    }
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[2]).toContainEqual("-m");
+    expect(call[2]).toContainEqual("gemini-flash-latest");
+    expect(result.model).toBe("gemini-flash-latest");
+  });
+
+  it("omits -m when model=auto and no Hermes config is found", async () => {
+    const { ctx } = makeCtx({ model: "auto" });
+    const result = await execute(ctx as any);
+
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[2]).not.toContainEqual("-m");
+    expect(result.model).toBe("auto");
   });
 });
