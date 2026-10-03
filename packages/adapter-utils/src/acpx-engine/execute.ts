@@ -100,6 +100,7 @@ import {
   type AcpRuntimeTurnResult,
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
+  type AcpSessionRecord,
   type AcpSessionStore,
 } from "acpx/runtime";
 import {
@@ -3478,6 +3479,19 @@ async function emitAcpxFailure(input: {
   return { classified, message, childStderrTail };
 }
 
+// Returns a copy of an ACPX session record without `acpx.session_options.env`.
+// Drops `session_options` when nothing else remains in it. Never mutates `record`.
+function withoutSessionEnv(record: AcpSessionRecord): AcpSessionRecord {
+  const sessionOptions = record.acpx?.session_options;
+  if (!record.acpx || !sessionOptions || !("env" in sessionOptions)) return record;
+  const { env: _env, ...remainingOptions } = sessionOptions;
+  const { session_options: _sessionOptions, ...acpx } = record.acpx;
+  return {
+    ...record,
+    acpx: Object.keys(remainingOptions).length > 0 ? { ...acpx, session_options: remainingOptions } : acpx,
+  };
+}
+
 function isResumeFailure(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /resume|load|not found|no session|unknown session|conversation/i.test(message);
@@ -4267,7 +4281,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               },
             };
           },
-          save: (record) => persistedRuntimeStore.save(record),
+          // The launch environment (resolved secrets, run API key, inherited
+          // host env) must never reach disk: `load()` above always replaces it
+          // with the current run's env. Persist a copy without it and leave the
+          // live record untouched, because ACPX still reads it in memory.
+          save: (record) => persistedRuntimeStore.save(withoutSessionEnv(record)),
         };
         const runtimeOptions: PaperclipAcpRuntimeOptions = {
           cwd: prepared.cwd,
