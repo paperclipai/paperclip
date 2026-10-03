@@ -8,6 +8,7 @@ const websocketState = vi.hoisted(() => ({
   failAgentRequests: 0,
   events: [] as string[],
   messages: [] as string[],
+  streamEvents: [] as Array<{ stream: string; data: Record<string, unknown> }>,
 }));
 
 vi.mock("ws", async () => {
@@ -51,6 +52,19 @@ vi.mock("ws", async () => {
         ? { protocol: 3 }
         : { status: "ok", runId: "remote-run-1", summary: "done" };
       queueMicrotask(() => {
+        if (request.method === "agent" && websocketState.streamEvents.length > 0) {
+          for (const ev of websocketState.streamEvents) {
+            this.emit("message", JSON.stringify({
+              type: "event",
+              event: "agent",
+              payload: {
+                runId: "run-1",
+                stream: ev.stream,
+                data: ev.data,
+              },
+            }));
+          }
+        }
         this.emit("message", JSON.stringify({
           type: "res",
           id: request.id,
@@ -109,6 +123,7 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     websocketState.failAgentRequests = 0;
     websocketState.events = [];
     websocketState.messages = [];
+    websocketState.streamEvents = [];
   });
 
   afterEach(() => {
@@ -225,5 +240,31 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     });
     expect(websocketState.connectionAttempts).toBe(1);
     expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("assembles streamed assistant chunks preserving inter-word spacing in the final summary", async () => {
+    websocketState.streamEvents = [
+      { stream: "assistant", data: { delta: "Found" } },
+      { stream: "assistant", data: { delta: " the" } },
+      { stream: "assistant", data: { delta: " issue" } },
+      { stream: "assistant", data: { delta: " and" } },
+      { stream: "assistant", data: { delta: " resolved" } },
+      { stream: "assistant", data: { delta: " it." } },
+    ];
+
+    const result = await execute(createContext());
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Found the issue and resolved it.");
+  });
+
+  it("falls back to text when streamed assistant chunk delta is whitespace-only", async () => {
+    websocketState.streamEvents = [
+      { stream: "assistant", data: { delta: " ", text: "Step 1 complete." } },
+      { stream: "assistant", data: { delta: "\n\nStep 2 complete." } },
+    ];
+
+    const result = await execute(createContext());
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Step 1 complete.\n\nStep 2 complete.");
   });
 });
