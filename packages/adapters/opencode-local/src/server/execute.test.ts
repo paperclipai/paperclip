@@ -10,6 +10,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
 });
 
 import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
+import { OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS } from "./output-inactivity-monitor.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
@@ -138,7 +139,7 @@ describe("OpenCode local skill injection", () => {
     expect(result.clearSession).toBe(false);
   });
 
-  it("honors the remaining SIGTERM grace before SIGKILL when the group survives an early resolve", { timeout: 20_000 }, async () => {
+  it("holds the run resolve until a surviving group tears down, honoring the full grace before SIGKILL", { timeout: 20_000 }, async () => {
     if (process.platform === "win32") return;
     // A real detached process group that ignores SIGTERM, mirroring a
     // detached tool subprocess that survived its parent's SIGTERM and closed
@@ -161,6 +162,8 @@ describe("OpenCode local skill injection", () => {
     });
     let groupWasAliveAfterSpawn = false;
     await fs.writeFile(path.join(configHome, "fake-opencode-grace"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    let terminatedAt = 0;
+    const logs: string[] = [];
     runProcessMock
       .mockReset()
       .mockImplementation(async (...args: unknown[]) => {
@@ -188,7 +191,12 @@ describe("OpenCode local skill injection", () => {
           outputInactivityTimeoutMs: 50,
         },
         context: createPromptContextFixture(),
-        onLog: async () => {},
+        onLog: async (_stream, chunk) => {
+          logs.push(String(chunk));
+          if (String(chunk).includes("terminating opencode child via SIGTERM")) {
+            terminatedAt = Date.now();
+          }
+        },
       });
       expect(groupWasAliveAfterSpawn).toBe(true);
       expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
@@ -196,13 +204,91 @@ describe("OpenCode local skill injection", () => {
         | { terminationSignal?: NodeJS.Signals | null }
         | undefined;
       expect(monitorInfo?.terminationSignal).toBe("SIGTERM");
-      // The run resolved well inside the 5s grace: the surviving group must
-      // still be alive right now — an immediate SIGKILL on resolve would have
-      // denied it the promised graceful window.
-      expect(groupAlive()).toBe(true);
-      // The scheduled SIGKILL must still fire once the grace elapses.
+      // The result must land only after the surviving group tore down: the
+      // heartbeat executor may immediately start the next queued run for the
+      // same agent once this result resolves, and that run must not race a
+      // tool subprocess that is still writing to the shared workspace. The
+      // group cannot be probed for absence here — an SIGKILLed orphan can
+      // linger as an unreaped zombie group member on hosts whose pid 1 never
+      // reaps — so the proof is that the resolve happened only after the
+      // scheduled grace-end SIGKILL, with its settle window granted.
       const exit = await exited;
       expect(exit.signal).toBe("SIGKILL");
+      expect(terminatedAt).toBeGreaterThan(0);
+      expect(Date.now() - terminatedAt).toBeGreaterThanOrEqual(
+        OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS - 500,
+      );
+      expect(logs.some((line) => line.includes("holding the run result until teardown completes"))).toBe(true);
+    } finally {
+      if (groupAlive()) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }
+      await exited.catch(() => undefined);
+    }
+  });
+
+  it("resolves promptly when a surviving group tears itself down before the grace ends", { timeout: 20_000 }, async () => {
+    if (process.platform === "win32") return;
+    // A real detached group that ignores SIGTERM but self-exits well inside
+    // the 5s grace window.
+    const child = spawn("sh", ["-c", 'trap "" TERM; sleep 0.4 & wait'], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    const pgid = child.pid!;
+    const groupAlive = () => {
+      try {
+        process.kill(-pgid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    let groupWasAliveAfterSpawn = false;
+    await fs.writeFile(path.join(configHome, "fake-opencode-selfexit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock
+      .mockReset()
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[4] as
+          | { onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void> }
+          | undefined;
+        await options?.onSpawn?.({ pid: pgid, processGroupId: pgid, startedAt: new Date().toISOString() });
+        groupWasAliveAfterSpawn = groupAlive();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return probeResult({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "" });
+      });
+    try {
+      const startedAt = Date.now();
+      const result = await execute({
+        runId: "run-monitor-selfexit",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: "sess_selfexit", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: path.join(configHome, "fake-opencode-selfexit"),
+          cwd: configHome,
+          model: "openai/gpt-5",
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+          outputInactivityTimeoutMs: 50,
+        },
+        context: createPromptContextFixture(),
+        onLog: async () => {},
+      });
+      expect(groupWasAliveAfterSpawn).toBe(true);
+      expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
+      // Teardown finished on its own, so the run must resolve shortly after
+      // — not hold out the remainder of the 5s grace waiting for a kill that
+      // is no longer needed.
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(groupAlive()).toBe(false);
+      const exit = await exited;
+      expect(exit.signal).toBeNull();
     } finally {
       if (groupAlive()) {
         try {

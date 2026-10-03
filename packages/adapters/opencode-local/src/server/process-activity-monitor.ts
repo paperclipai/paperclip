@@ -127,3 +127,48 @@ export function createOpenCodeProcessActivityMonitor(
     },
   };
 }
+
+function parseProcStateAndGroup(stat: string): { state: string; processGroupId: number } | null {
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fields = stat.slice(commandEnd + 2).trim().split(/\s+/);
+  const state = fields[0] ?? "";
+  const processGroupId = Number(fields[2]);
+  if (state.length === 0 || !Number.isFinite(processGroupId)) return null;
+  return { state, processGroupId };
+}
+
+/**
+ * Whether any live (non-zombie) member of the process group still exists.
+ *
+ * A zombie holds no memory, file descriptors, or workspace access, so it
+ * cannot keep writing after its death — but `kill(-pgid, 0)` keeps reporting
+ * the group as existing while an unreaped zombie remains a member (orphaned
+ * grandchildren are reaped by pid 1, which on some hosts never reaps). The
+ * teardown wait must treat "zombies only" as torn down, or it would hold
+ * every monitor-killed run until its deadline on those hosts.
+ *
+ * Returns false when the platform cannot scan /proc (non-Linux) or the group
+ * id is unusable; callers fall back to signal-based liveness in those cases.
+ */
+export async function hasLiveProcessGroupMember(processGroupId: number): Promise<boolean> {
+  if (process.platform !== "linux" || !(processGroupId > 0)) return false;
+  let entries: string[];
+  try {
+    entries = await fs.readdir("/proc");
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const parsed = parseProcStateAndGroup(await fs.readFile(`/proc/${entry}/stat`, "utf8"));
+      if (!parsed || parsed.processGroupId !== processGroupId) continue;
+      if (parsed.state === "Z") continue;
+      return true;
+    } catch {
+      // Processes can exit between listing /proc and reading their stat file.
+    }
+  }
+  return false;
+}

@@ -2,6 +2,12 @@ import { parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 export const DEFAULT_OPENCODE_OUTPUT_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 export const OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS = 5_000;
+/** Poll interval while waiting for a surviving process group to tear down. */
+export const OPENCODE_SURVIVING_GROUP_TEARDOWN_POLL_MS = 250;
+/** Settle window granted to the SIGKILL to finish delivery before resolving. */
+export const OPENCODE_SURVIVING_GROUP_SIGKILL_SETTLE_MS = 250;
+/** Hard slack on top of the grace bounding the whole teardown wait. */
+export const OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS = 1_500;
 
 export type OpenCodeOutputInactivityMonitorResolution =
   | { mode: "default"; timeoutMs: number }

@@ -66,6 +66,9 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 import {
   OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  OPENCODE_SURVIVING_GROUP_SIGKILL_SETTLE_MS,
+  OPENCODE_SURVIVING_GROUP_TEARDOWN_POLL_MS,
+  OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS,
   createOpenCodeOutputInactivityMonitor,
   formatOpenCodeOutputInactivityMonitorErrorMessage,
   resolveOpenCodeInactivityTimeout,
@@ -73,6 +76,7 @@ import {
 import {
   OPENCODE_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
   createOpenCodeProcessActivityMonitor,
+  hasLiveProcessGroupMember,
   type OpenCodeProcessActivityMonitorHandle,
 } from "./process-activity-monitor.js";
 
@@ -149,6 +153,20 @@ function isSpawnTargetAlive(target: { pid: number; processGroupId: number | null
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether the spawn target can still touch its workspace. Linux groups are
+ * checked zombie-aware (`hasLiveProcessGroupMember`): an orphaned grandchild
+ * can remain an unreaped group member on hosts whose pid 1 never reaps, and
+ * a zombie holds no memory or descriptors, so it cannot write anywhere.
+ * Elsewhere the signal-based existence check is the best available probe.
+ */
+async function isSpawnTargetLive(target: { pid: number; processGroupId: number | null }): Promise<boolean> {
+  if (process.platform === "linux" && target.processGroupId && target.processGroupId > 0) {
+    return hasLiveProcessGroupMember(target.processGroupId);
+  }
+  return isSpawnTargetAlive(target);
 }
 
 function parseModelProvider(model: string | null): string | null {
@@ -757,6 +775,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       let monitorTimeoutMs = 0;
       let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+      let sigkillFired = false;
       let monitorLogPromise: Promise<unknown> | null = null;
       const processActivityMonitor: { current: OpenCodeProcessActivityMonitorHandle | null } = { current: null };
       const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
@@ -804,6 +823,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (sentSig) monitorTerminationSignal = "SIGTERM";
         sigkillTimer = setTimeout(() => {
           sigkillTimer = null;
+          sigkillFired = true;
           const stillSent = signalOpenCodeChild(target, "SIGKILL");
           if (stillSent) monitorTerminationSignal = "SIGKILL";
         }, OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
@@ -884,9 +904,45 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // subprocess receives the full promised grace window before the
           // forced shutdown; cancel only when there is nothing left to
           // signal, so the escalation cannot be lost and leak the group.
-          if (!canSignalSpawnTarget(killTarget, executionTargetIsRemote) || !isSpawnTargetAlive(killTarget)) {
+          const signalableTarget = canSignalSpawnTarget(killTarget, executionTargetIsRemote) ? killTarget : null;
+          if (!signalableTarget || !isSpawnTargetAlive(signalableTarget)) {
             clearTimeout(sigkillTimer);
             sigkillTimer = null;
+          } else {
+            // The surviving subprocess still owns the workspace, and once
+            // this result resolves the heartbeat executor may immediately
+            // start the next queued run for the same agent. Preserve the
+            // full grace for the subprocess, but hold the resolve until its
+            // teardown completes — self-exit or the scheduled SIGKILL at
+            // grace end — so the next run cannot start while the old tool
+            // is still writing. Liveness is zombie-aware: an orphaned
+            // grandchild can stay an unreaped group member on hosts whose
+            // pid 1 never reaps, and a zombie can no longer write anywhere.
+            // A hard slack bounds the wait so a group that survives even
+            // SIGKILL (e.g. uninterruptible disk sleep) can never hang the
+            // run.
+            monitorLogPromise = Promise.resolve(
+              onLog(
+                "stderr",
+                "[paperclip] Surviving process group is still alive after opencode exited; holding the run result until teardown completes so the next queued run cannot start early.\n",
+              ),
+            ).catch(() => {});
+            const teardownDeadlineMs =
+              Date.now() + OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS + OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS;
+            while (!sigkillFired && Date.now() < teardownDeadlineMs && (await isSpawnTargetLive(signalableTarget))) {
+              await new Promise((resolve) => setTimeout(resolve, OPENCODE_SURVIVING_GROUP_TEARDOWN_POLL_MS));
+            }
+            if (sigkillFired) {
+              // The SIGKILL was just delivered to the group; grant it a brief
+              // settle so its members finish dying before the next queued
+              // run may start.
+              await new Promise((resolve) => setTimeout(resolve, OPENCODE_SURVIVING_GROUP_SIGKILL_SETTLE_MS));
+            } else {
+              // The group tore itself down (or the slack elapsed) — cancel
+              // the no-longer-needed escalation.
+              clearTimeout(sigkillTimer);
+              sigkillTimer = null;
+            }
           }
         }
         if (monitorLogPromise) {
