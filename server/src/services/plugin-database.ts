@@ -5,6 +5,13 @@ import { and, eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  PLUGIN_DATABASE_TRANSACTION_LIMITS,
+  PLUGIN_RPC_ERROR_CODES,
+  validatePluginDatabaseTransactionSql,
+  type PluginDatabaseTransactionInput,
+  type PluginDatabaseTransactionResult,
+} from "@paperclipai/plugin-sdk/protocol";
+import {
   pluginDatabaseNamespaces,
   pluginMigrations,
   plugins,
@@ -19,6 +26,7 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
 
 type SqlRef = { schema: string; table: string; keyword: string };
+type RuntimeTableRef = { schema: string | null; table: string; keyword: string };
 type QualifiedRefPattern =
   | { pattern: RegExp; groups: "keyword-schema-table" }
   | { pattern: RegExp; groups: "schema-table"; keyword: string };
@@ -27,6 +35,24 @@ export type PluginDatabaseRuntimeResult<T = Record<string, unknown>> = {
   rows?: T[];
   rowCount?: number;
 };
+
+/** Raised when an exact affected-row precondition aborts an atomic plugin batch. */
+export class PluginDatabaseConditionFailedError extends Error {
+  override readonly name = "PluginDatabaseConditionFailedError";
+  readonly code = PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED;
+  readonly condition = "CONDITION_FAILED" as const;
+
+  constructor(
+    readonly stepIndex: number,
+    readonly expectedRowCount: number,
+    readonly actualRowCount: number,
+  ) {
+    super(
+      `CONDITION_FAILED: transaction step ${stepIndex} expected rowCount `
+      + `${expectedRowCount}, received ${actualRowCount}`,
+    );
+  }
+}
 
 export function derivePluginDatabaseNamespace(
   pluginKey: string,
@@ -150,6 +176,124 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
         refs.push({ keyword: mapping.keyword, schema: match[1]!, table: match[2]! });
       }
     }
+  }
+  return refs;
+}
+
+function unquoteRuntimeIdentifier(value: string): string {
+  return value.startsWith("\"") && value.endsWith("\"")
+    ? value.slice(1, -1).replaceAll("\"\"", "\"")
+    : value;
+}
+
+/**
+ * Remove runtime string contents before structural matching and fail closed on
+ * comments. Comments are unnecessary for worker mutations and otherwise let a
+ * comment between `FROM` and a schema evade whitespace-based table matching.
+ * Double-quoted identifiers stay intact so namespace validation still sees
+ * their exact structure.
+ */
+function maskRuntimeSqlForStructure(statement: string): string {
+  let masked = "";
+  let singleQuoted = false;
+  let doubleQuoted = false;
+
+  for (let index = 0; index < statement.length; index += 1) {
+    const char = statement[index]!;
+    const next = statement[index + 1];
+
+    if (singleQuoted) {
+      if (char === "\\") {
+        throw new Error(
+          "ctx.db.execute runtime mutations must bind backslash-containing strings as parameters",
+        );
+      }
+      masked += char === "\n" ? "\n" : " ";
+      if (char === "'" && next === "'") {
+        masked += " ";
+        index += 1;
+      } else if (char === "'") {
+        singleQuoted = false;
+      }
+      continue;
+    }
+    if (doubleQuoted) {
+      masked += char;
+      if (char === "\"" && next === "\"") {
+        masked += next;
+        index += 1;
+      } else if (char === "\"") {
+        doubleQuoted = false;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      throw new Error("ctx.db.execute runtime mutations cannot contain SQL comments");
+    }
+    if (char === "/" && next === "*") {
+      throw new Error("ctx.db.execute runtime mutations cannot contain SQL comments");
+    }
+    if (
+      ((char === "e" || char === "E") && next === "'")
+      || ((char === "u" || char === "U") && next === "&" && statement[index + 2] === "'")
+    ) {
+      throw new Error(
+        "ctx.db.execute runtime mutations must bind escape strings as parameters",
+      );
+    }
+    if (char === "$" && /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(statement.slice(index))) {
+      throw new Error(
+        "ctx.db.execute runtime mutations must bind dollar-quoted strings as parameters",
+      );
+    }
+    if (char === "'") {
+      singleQuoted = true;
+      masked += " ";
+      continue;
+    }
+    if (char === "\"") doubleQuoted = true;
+    masked += char;
+  }
+
+  return masked;
+}
+
+/**
+ * Runtime mutations do not support CTEs, so every table-bearing keyword can
+ * be required to name a fully-qualified table. Keeping this separate from the
+ * more permissive migration parser prevents an unqualified secondary table
+ * from resolving through PostgreSQL's `search_path` into `public`.
+ */
+function extractRuntimeTableRefs(statement: string): RuntimeTableRef[] {
+  const identifier = `\"(?:[^\"]|\"\")+\"|[A-Za-z_][A-Za-z0-9_]*`;
+  const refs: RuntimeTableRef[] = [];
+  const addMatch = (keyword: string, first: string, second?: string) => {
+    refs.push(second
+      ? {
+          keyword,
+          schema: unquoteRuntimeIdentifier(first),
+          table: unquoteRuntimeIdentifier(second),
+        }
+      : {
+          keyword,
+          schema: null,
+          table: unquoteRuntimeIdentifier(first),
+        });
+  };
+
+  const updateTargetPattern = new RegExp(
+    `^\\s*update\\s+(?:only\\s+)?(${identifier})(?:\\s*\\.\\s*(${identifier}))?`,
+    "i",
+  );
+  const updateTarget = statement.match(updateTargetPattern);
+  if (updateTarget) addMatch("update", updateTarget[1]!, updateTarget[2]);
+
+  const relationPattern = new RegExp(
+    `\\b(from|join|using|into|table)\\s+(?:only\\s+)?(${identifier})(?:\\s*\\.\\s*(${identifier}))?`,
+    "gi",
+  );
+  for (const match of statement.matchAll(relationPattern)) {
+    addMatch(match[1]!.toLowerCase(), match[2]!, match[3]);
   }
   return refs;
 }
@@ -280,20 +424,45 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
   }
   const statement = statements[0]!;
   assertNoBannedSql(statement);
-  const normalized = normaliseSql(statement);
+  const structuralStatement = maskRuntimeSqlForStructure(statement);
+  const normalized = structuralStatement.replace(/\s+/g, " ").trim().toLowerCase();
   if (!/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
     throw new Error("ctx.db.execute only allows INSERT, UPDATE, or DELETE");
   }
   if (/\b(alter|create|drop|truncate)\b/.test(normalized)) {
     throw new Error("ctx.db.execute cannot contain DDL keywords");
   }
+  if (/\btablesample\b/.test(normalized)) {
+    throw new Error("ctx.db.execute does not allow TABLESAMPLE clauses");
+  }
+  if (/\b(set_config|pg_sleep|pg_(?:try_)?advisory_(?:xact_)?(?:lock|unlock)(?:_shared|_all)?)\b/.test(normalized)) {
+    throw new Error("ctx.db.execute cannot call timeout or advisory-lock control functions");
+  }
 
-  const refs = extractQualifiedRefs(statement);
+  const identifier = `\"(?:[^\"]|\"\")+\"|[A-Za-z_][A-Za-z0-9_]*`;
+  const relationListPattern = new RegExp(
+    `\\b(from|using)\\s+(?:only\\s+)?(?:${identifier})`
+    + `(?:\\s*\\.\\s*(?:${identifier}))?`
+    + `(?:\\s+(?:as\\s+)?(?:${identifier}))?\\s*,`,
+    "i",
+  );
+  if (relationListPattern.test(structuralStatement) || /\b(from|using)\s*\(/i.test(
+    structuralStatement,
+  )) {
+    throw new Error("ctx.db.execute does not allow comma or derived-table relation lists");
+  }
+
+  const refs = extractRuntimeTableRefs(structuralStatement);
   const target = refs.find((ref) => ["into", "update", "from"].includes(ref.keyword));
   if (!target || target.schema !== namespace) {
     throw new Error(`ctx.db.execute target must be inside plugin namespace "${namespace}"`);
   }
   for (const ref of refs) {
+    if (ref.schema === null) {
+      throw new Error(
+        `ctx.db.execute table "${ref.table}" must use the fully qualified plugin namespace`,
+      );
+    }
     if (ref.schema !== namespace) {
       throw new Error("ctx.db.execute cannot reference public or other non-plugin schemas");
     }
@@ -305,24 +474,179 @@ function bindSql(statement: string, params: readonly unknown[] = []): SQL {
   if (params.length === 0) return sql.raw(statement);
   const chunks: SQL[] = [];
   let cursor = 0;
-  const placeholderPattern = /\$(\d+)/g;
   const seen = new Set<number>();
 
-  for (const match of statement.matchAll(placeholderPattern)) {
-    const index = Number(match[1]);
-    if (!Number.isInteger(index) || index < 1 || index > params.length) {
-      throw new Error(`SQL placeholder $${match[1]} has no matching parameter`);
+  let quote: "'" | "\"" | null = null;
+  let dollarQuote = "";
+  let lineComment = false;
+  let blockCommentDepth = 0;
+  for (let offset = 0; offset < statement.length; offset += 1) {
+    const char = statement[offset]!;
+    const next = statement[offset + 1];
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
     }
-    chunks.push(sql.raw(statement.slice(cursor, match.index)));
-    chunks.push(sql`${params[index - 1]}`);
-    seen.add(index);
-    cursor = match.index! + match[0].length;
+    if (blockCommentDepth > 0) {
+      if (char === "/" && next === "*") {
+        blockCommentDepth += 1;
+        offset += 1;
+      } else if (char === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        offset += 1;
+      }
+      continue;
+    }
+    if (dollarQuote) {
+      if (statement.startsWith(dollarQuote, offset)) {
+        offset += dollarQuote.length - 1;
+        dollarQuote = "";
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        if (next === quote) {
+          offset += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      offset += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockCommentDepth = 1;
+      offset += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (char !== "$") continue;
+
+    const dollarQuoteMatch = statement.slice(offset).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
+    if (dollarQuoteMatch) {
+      dollarQuote = dollarQuoteMatch[0];
+      offset += dollarQuote.length - 1;
+      continue;
+    }
+
+    const placeholderMatch = statement.slice(offset).match(/^\$(\d+)/);
+    if (!placeholderMatch) continue;
+    const parameterIndex = Number(placeholderMatch[1]);
+    if (
+      !Number.isInteger(parameterIndex)
+      || parameterIndex < 1
+      || parameterIndex > params.length
+    ) {
+      throw new Error(`SQL placeholder $${placeholderMatch[1]} has no matching parameter`);
+    }
+    chunks.push(sql.raw(statement.slice(cursor, offset)));
+    chunks.push(sql`${params[parameterIndex - 1]}`);
+    seen.add(parameterIndex);
+    cursor = offset + placeholderMatch[0].length;
+    offset = cursor - 1;
   }
   chunks.push(sql.raw(statement.slice(cursor)));
   if (seen.size !== params.length) {
     throw new Error("Every ctx.db parameter must be referenced by a $n placeholder");
   }
   return sql.join(chunks, sql.raw(""));
+}
+
+type PreparedPluginDatabaseTransactionStep = {
+  statement: SQL;
+  targetTable: string;
+  expectRowCount?: number;
+};
+
+function runtimeMutationRowCount(result: unknown): number {
+  const value = (result as { rowCount?: number | string; count?: number | string } | null);
+  const count = value?.rowCount ?? value?.count ?? 0;
+  const parsed = Number(count);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Plugin database driver returned an invalid row count: ${String(count)}`);
+  }
+  return parsed;
+}
+
+/**
+ * Validate and bind the complete batch before the host opens a transaction.
+ * This deliberately accepts data, not a callback, so worker code never owns a
+ * live database transaction across JSON-RPC.
+ */
+export function preparePluginDatabaseTransaction(
+  input: PluginDatabaseTransactionInput,
+  namespace: string,
+): PreparedPluginDatabaseTransactionStep[] {
+  if (!input || typeof input !== "object" || !Array.isArray(input.steps)) {
+    throw new Error("ctx.db.executeTransaction requires a steps array");
+  }
+  if (input.steps.length === 0) {
+    throw new Error("ctx.db.executeTransaction requires at least one step");
+  }
+  if (input.steps.length > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxSteps) {
+    throw new Error(
+      `ctx.db.executeTransaction accepts at most ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxSteps} steps`,
+    );
+  }
+
+  let parameterCount = 0;
+  for (const [index, step] of input.steps.entries()) {
+    if (!step || typeof step !== "object") {
+      throw new Error(`ctx.db.executeTransaction step ${index} must be an object`);
+    }
+    if (typeof step.sql !== "string" || step.sql.trim().length === 0) {
+      throw new Error(`ctx.db.executeTransaction step ${index} SQL must be a non-empty string`);
+    }
+    if (step.params !== undefined && !Array.isArray(step.params)) {
+      throw new Error(`ctx.db.executeTransaction step ${index} params must be an array`);
+    }
+    if (
+      step.expectRowCount !== undefined
+      && (!Number.isSafeInteger(step.expectRowCount) || step.expectRowCount < 0)
+    ) {
+      throw new Error(
+        `ctx.db.executeTransaction step ${index} expectRowCount must be a non-negative safe integer`,
+      );
+    }
+    parameterCount += step.params?.length ?? 0;
+  }
+  if (parameterCount > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxParams) {
+    throw new Error(
+      `ctx.db.executeTransaction accepts at most ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxParams} parameters`,
+    );
+  }
+
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input);
+  } catch {
+    throw new Error("ctx.db.executeTransaction input must be JSON-serializable");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxBytes) {
+    throw new Error(
+      `ctx.db.executeTransaction payload exceeds ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxBytes} bytes`,
+    );
+  }
+
+  return input.steps.map((step) => {
+    const target = validatePluginDatabaseTransactionSql(step.sql, namespace);
+    return {
+      statement: bindSql(step.sql, step.params),
+      targetTable: target.table,
+      ...(step.expectRowCount === undefined
+        ? {}
+        : { expectRowCount: step.expectRowCount }),
+    };
+  });
 }
 
 async function listSqlMigrationFiles(migrationsDir: string): Promise<string[]> {
@@ -566,7 +890,63 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
       const namespace = await getRuntimeNamespace(pluginId);
       validatePluginRuntimeExecute(statement, namespace);
       const result = await db.execute(bindSql(statement, params));
-      return { rowCount: Number((result as { count?: number | string }).count ?? 0) };
+      return { rowCount: runtimeMutationRowCount(result) };
+    },
+
+    async executeTransaction(
+      pluginId: string,
+      input: PluginDatabaseTransactionInput,
+    ): Promise<PluginDatabaseTransactionResult> {
+      const namespace = await getRuntimeNamespace(pluginId);
+      const steps = preparePluginDatabaseTransaction(input, namespace);
+      if (typeof db.transaction !== "function") {
+        throw new Error("Plugin database transactions are unavailable on this database client");
+      }
+      for (const targetTable of new Set(steps.map((step) => step.targetTable))) {
+        const relations = Array.from(
+          await db.execute(sql<{ relkind: string }>`
+            SELECT c.relkind
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = ${namespace} AND c.relname = ${targetTable}
+          `) as Iterable<{ relkind: string }>,
+        );
+        if (
+          relations.length !== 1
+          || !["r", "p"].includes(relations[0]!.relkind)
+        ) {
+          throw new Error(
+            `ctx.db.executeTransaction target "${targetTable}" must be a plugin base table`,
+          );
+        }
+      }
+
+      return db.transaction(async (tx) => {
+        const client = tx as PluginDatabaseClient;
+        const results: PluginDatabaseTransactionResult["results"] = [];
+        for (const [index, step] of steps.entries()) {
+          await client.execute(sql.raw(
+            `SET LOCAL search_path = pg_catalog, ${quoteIdentifier(namespace)}`,
+          ));
+          await client.execute(sql.raw(
+            `SET LOCAL statement_timeout = '${PLUGIN_DATABASE_TRANSACTION_LIMITS.statementTimeoutMs}ms'`,
+          ));
+          await client.execute(sql.raw(
+            `SET LOCAL lock_timeout = '${PLUGIN_DATABASE_TRANSACTION_LIMITS.statementTimeoutMs}ms'`,
+          ));
+          const result = await client.execute(step.statement);
+          const rowCount = runtimeMutationRowCount(result);
+          if (step.expectRowCount !== undefined && rowCount !== step.expectRowCount) {
+            throw new PluginDatabaseConditionFailedError(
+              index,
+              step.expectRowCount,
+              rowCount,
+            );
+          }
+          results.push({ rowCount });
+        }
+        return { results };
+      });
     },
   };
 }
