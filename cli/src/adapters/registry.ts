@@ -69,6 +69,11 @@ const hermesLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printHermesStreamEvent,
 };
 
+const googleVertexCLIAdapter: CLIAdapterModule = {
+  type: "google_vertex",
+  formatStdoutEvent: printHermesStreamEvent,
+};
+
 const openclawGatewayCLIAdapter: CLIAdapterModule = {
   type: "openclaw_gateway",
   formatStdoutEvent: printOpenClawGatewayStreamEvent,
@@ -87,6 +92,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     kimiLocalCLIAdapter,
     hermesGatewayCLIAdapter,
     hermesLocalCLIAdapter,
+    googleVertexCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,

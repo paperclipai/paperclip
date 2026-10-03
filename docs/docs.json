@@ -102,6 +102,7 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/google-vertex",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
