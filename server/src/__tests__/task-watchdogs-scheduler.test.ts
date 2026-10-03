@@ -357,6 +357,44 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdogIssues).toHaveLength(0);
   });
 
+  it("does not trigger while an agent-owned issue has a future monitor", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-MONITOR",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    const nextCheckAt = new Date(Date.now() + 60_000);
+    await db.update(issues).set({
+      assigneeUserId: null,
+      monitorNextCheckAt: nextCheckAt,
+      monitorScheduledBy: "assignee",
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          scheduledBy: "assignee",
+          kind: "external_service",
+          serviceName: "github",
+          externalRef: "paperclipai/paperclip#915",
+          timeoutAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          maxAttempts: 16,
+        },
+      },
+    }).where(eq(issues.id, sourceId));
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
+  });
+
   it("does not keep the source live for runs under a nested task-watchdog issue", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-NEST", status: "done" });
