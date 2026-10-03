@@ -47,6 +47,7 @@ export interface IssueLivenessAgentInput {
   title?: string | null;
   status: string;
   reportsTo?: string | null;
+  adapterType?: string | null;
 }
 
 export interface IssueLivenessExecutionPathInput {
@@ -149,7 +150,8 @@ function isInvokableAgent(
   agent: IssueLivenessAgentInput | null | undefined,
   agentsById: Map<string, IssueLivenessAgentInput>,
 ) {
-  return Boolean(agent && isAgentInvokable({ agent, agents: [...agentsById.values()] }));
+  if (!agent || agent.adapterType === "human") return false;
+  return Boolean(isAgentInvokable({ agent, agents: [...agentsById.values()] }));
 }
 
 function hasActiveExecutionPath(
