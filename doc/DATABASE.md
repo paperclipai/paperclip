@@ -450,6 +450,22 @@ Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVID
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
+### Atomic review-stage issue updates
+
+When `PATCH /api/issues/:id` contains a review-stage transition and an ordinary
+comment, the issue update, `issue_execution_decisions` row, and comment receipt
+are persisted in one database transaction. A comment persistence failure rolls
+back the transition and decision instead of returning an error after advancing
+the workflow. Comment reference indexing, activity publication, and assignee
+wakeups run only after that transaction commits.
+
+Board and user clients should send a stable `commentClientRequestId`. If the
+transaction fails, they can retry with that same receipt key. After a successful
+decision, a replay is rejected with HTTP 422 by the completed-stage check; it
+does not return a second success or insert another comment or decision. Agent
+requests do not send `commentClientRequestId`; the completed-stage check prevents
+them from applying the decision again.
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock

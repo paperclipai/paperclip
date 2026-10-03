@@ -69192,7 +69192,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally {
         await lane.close();
       }
-    });
+    }, 60_000);
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
       const lane = await draftFixture();

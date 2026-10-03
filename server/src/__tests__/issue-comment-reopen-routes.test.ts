@@ -2906,6 +2906,14 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Approved for ship",
+      expect.anything(),
+      expect.objectContaining({ clientRequestId: undefined }),
+      mockTx,
+    );
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
@@ -2932,6 +2940,187 @@ describe.sequential("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+  });
+
+  it("rolls back a PATCH decision when its ordinary comment cannot be persisted", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review" as const,
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+          returnAssignee: {
+            type: "agent",
+            agentId: "22222222-2222-4222-8222-222222222222",
+          },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const persistedState = {
+      status: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+      executionState: structuredClone(issue.executionState),
+      decisionRows: [] as Record<string, unknown>[],
+    };
+    let transactionState: typeof persistedState | null = null;
+    mockDb.transaction.mockImplementation(async (callback) => {
+      const stagedState = structuredClone(persistedState);
+      transactionState = stagedState;
+      try {
+        const result = await callback(mockTx);
+        Object.assign(persistedState, stagedState);
+        return result;
+      } finally {
+        transactionState = null;
+      }
+    });
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => {
+        if (transactionState) {
+          if (typeof patch.status === "string") {
+            transactionState.status = patch.status;
+          }
+          if ("assigneeAgentId" in patch) {
+            transactionState.assigneeAgentId =
+              patch.assigneeAgentId as string | null;
+          }
+          if ("executionState" in patch) {
+            transactionState.executionState = patch.executionState;
+          }
+        }
+        return makeIssueUpdateReceipt(issue, patch);
+      },
+    );
+    mockTxInsertValues.mockImplementation(async (row: Record<string, unknown>) => {
+      transactionState?.decisionRows.push(row);
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockRejectedValueOnce(
+      new HttpError(400, "synthetic comment persistence failure"),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        status: "done",
+        comment: "Approved for ship",
+        commentClientRequestId: "88888888-8888-4888-8888-888888888881",
+      });
+
+    expect(res.status).toBe(400);
+    expect(persistedState).toEqual({
+      status: "in_review",
+      assigneeAgentId: null,
+      executionState: issue.executionState,
+      decisionRows: [],
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issue.id,
+      "Approved for ship",
+      expect.anything(),
+      expect.objectContaining({
+        clientRequestId: "88888888-8888-4888-8888-888888888881",
+      }),
+      mockTx,
+    );
+    expect(mockTxInsertValues).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not double-apply a PATCH decision when the same comment receipt is retried", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review" as const,
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+          returnAssignee: {
+            type: "agent",
+            agentId: "22222222-2222-4222-8222-222222222222",
+          },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const completedIssue = {
+      ...issue,
+      status: "done" as const,
+      executionState: {
+        ...issue.executionState,
+        status: "completed",
+        lastDecisionId: "decision-1",
+        lastDecisionOutcome: "approved",
+      },
+    };
+    let completed = false;
+    mockIssueService.getById.mockImplementation(async () =>
+      completed ? completedIssue : issue,
+    );
+    mockIssueService.getByIdForUpdate.mockImplementation(async () =>
+      completed ? completedIssue : issue,
+    );
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => {
+        completed = true;
+        return makeIssueUpdateReceipt(issue, patch);
+      },
+    );
+
+    const payload = {
+      status: "done",
+      comment: "Approved for ship",
+      commentClientRequestId: "88888888-8888-4888-8888-888888888882",
+    };
+    const app = await installActor(createApp());
+    const first = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send(payload);
+    const second = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send(payload);
+
+    expect(first.status).toBe(200);
+    // The completed stage rejects a replay before another comment or decision
+    // can be admitted; the original receipt remains the sole durable result.
+    expect(second.status).toBe(422);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment.mock.calls[0]?.[3]).toMatchObject({
+      clientRequestId: payload.commentClientRequestId,
+    });
+    expect(mockTxInsertValues).toHaveBeenCalledTimes(1);
   });
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {

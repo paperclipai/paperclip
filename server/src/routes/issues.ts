@@ -13702,14 +13702,9 @@ export function issueRoutes(
       });
       const decision =
         transition.decision && decisionId ? transition.decision : null;
-      let transactionalComment: Awaited<ReturnType<typeof svc.addComment>> | null =
-        null;
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
-        ? await sourceTrustForActorWrite(existing, actor)
-        : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
         commentWithAdapterOverrides ||
@@ -13717,6 +13712,25 @@ export function issueRoutes(
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
         reviewPolicySensitiveMutationRequested;
+      let transactionalComment: Awaited<ReturnType<typeof svc.addComment>> | null =
+        null;
+      let commentPersistedTransactionally = false;
+      const transactionalCommentSourceTrust =
+        commentBody &&
+        shouldUseTransactionalIssueUpdate &&
+        actor.actorType === "agent"
+          ? await sourceTrustForActorWrite(
+              {
+                ...existing,
+                projectId:
+                  updateFields.projectId === undefined
+                    ? existing.projectId
+                    : (updateFields.projectId as string | null),
+                executionPolicy: nextExecutionPolicy,
+              },
+              actor,
+            )
+          : undefined;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
@@ -13727,9 +13741,10 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
-              // Adapter settings, reassignment, comment and upload binding commit together.
-              // A failed comment or invalid receipt rolls back the issue update.
+            if (commentBody) {
+              // Reassignment, stage decisions, and ordinary comment persistence
+              // commit together. A comment or decision failure rolls back the
+              // complete workflow transition, including the issue receipt.
               transactionalComment = await svc.addComment(
                 id,
                 commentBody,
@@ -13741,14 +13756,20 @@ export function issueRoutes(
                   onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
                 },
                 {
-                  attachmentIds: commentAttachmentIds,
-                  clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+                  ...(commentAttachmentIds?.length
+                    ? { attachmentIds: commentAttachmentIds }
+                    : {}),
+                  clientRequestId:
+                    actor.actorType === "user"
+                      ? commentClientRequestId
+                      : undefined,
                   mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: transactionalCommentSourceTrust,
                 },
                 tx,
               );
+              commentPersistedTransactionally = true;
             }
 
             if (decision && decisionId) {
@@ -14341,22 +14362,24 @@ export function issueRoutes(
         const commentReferenceSummaryBefore =
           updateReferenceSummaryAfter ??
           (await issueReferencesSvc.listIssueReferenceSummary(issue.id));
-        comment ??= await svc.addComment(
-          id,
-          commentBody,
-          {
-            agentId: actor.agentId ?? undefined,
-            userId: actor.actorType === "user" ? actor.actorId : undefined,
-            runId: actor.runId,
-            onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-          },
-          {
-            authorizationReason: issueMutationAuthorizationReason,
-            clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
-            mirrorToSlack: actor.actorType === "user",
-            sourceTrust: await sourceTrustForActorWrite(issue, actor),
-          },
-        );
+        if (!commentPersistedTransactionally) {
+          comment = await svc.addComment(
+            id,
+            commentBody,
+            {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+              onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+            },
+            {
+              authorizationReason: issueMutationAuthorizationReason,
+              clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+              mirrorToSlack: actor.actorType === "user",
+              sourceTrust: await sourceTrustForActorWrite(issue, actor),
+            },
+          );
+        }
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
         if (
