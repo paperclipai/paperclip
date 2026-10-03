@@ -116,6 +116,12 @@ export const issues = pgTable(
       table.status,
     ),
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
+    // The cross-issue influence guard counts how many issues a heartbeat run holds a
+    // checkout on, to decide whether an unscoped run has one unambiguous subject issue.
+    // That count runs inside the transaction holding the run row lock, so an unindexed
+    // scan there would slow every write it gates. The `onDelete: set null` on
+    // `checkoutRunId` scans the same way when a run row is deleted.
+    checkoutRunIdx: index("issues_company_checkout_run_idx").on(table.companyId, table.checkoutRunId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),

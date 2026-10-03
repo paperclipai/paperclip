@@ -2052,6 +2052,13 @@
       "when": 1790891286527,
       "tag": "0294_chilly_marvel_apes",
       "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1790992035496,
+      "tag": "0295_dashing_ironclad",
+      "breakpoints": true
     }
   ]
 }
