@@ -330,6 +330,13 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(resolveEnvBindings.mock.calls[2]?.[2]).toMatchObject({
       allowedBindingIds: ["binding-1"],
     });
+    // Inherited scopes (environment/project/routine) ask resolveEnvBindings to
+    // omit a disallowed binding rather than throw. The agent's own
+    // adapterConfig.env goes through resolveAdapterConfigForRuntime instead,
+    // which has no such option and stays hard-fail.
+    expect(resolveEnvBindings.mock.calls[0]?.[3]).toEqual({ omitDisallowedBindings: true });
+    expect(resolveEnvBindings.mock.calls[1]?.[3]).toEqual({ omitDisallowedBindings: true });
+    expect(resolveEnvBindings.mock.calls[2]?.[3]).toEqual({ omitDisallowedBindings: true });
   });
 
   it("does not project brokered GitHub credentials across a low-trust boundary", async () => {
