@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_run_context_rejected",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -259,6 +260,46 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
+
+      };
+
+    // Deliberately NOT a variant of the copy above. `required` means the caller
+    // sent no run id, and resending the header is the whole fix. `rejected` means
+    // a run id *was* supplied and the server could not bind it to a live run of
+    // this agent, so retrying the *same* id burns a run per attempt against a
+    // wall that will not move.
+    //
+    // The remedy then splits by credential, because `req.actor.runId` is sourced
+    // differently on each path: an agent JWT carries the run id in the signed
+    // claim (and a header that disagrees is rejected upstream, before this
+    // denial), while an agent API key takes `runId` straight from the
+    // `X-Paperclip-Run-Id` header. Telling an API-key caller that the id "is
+    // read from the signed credential" is false for them, and hides the one
+    // change that actually fixes their request.
+    case "cross_issue_influence_run_context_rejected":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Heartbeat run context",
+        title: "The run id on this request did not resolve to a live run",
+        description:
+          `Every agent comment and task update is attributed to a heartbeat run so the ` +
+          `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
+          `This request carried a run id, but it does not resolve to a live run of ` +
+          `${actor} in this company, so the write could not be contained. Where that id ` +
+          `came from depends on the credential: an agent JWT carries it in the signed ` +
+          `claim, while an API key reads it from the \`X-Paperclip-Run-Id\` header.`,
+        whoCanAct:
+          `${actor}, from inside the run that owns this work.`,
+        sanctionedPath:
+          `Do not retry with the same run id — check that the run is still ` +
+          `\`running\`, since it may have already ended. If you authenticate with an ` +
+          `API key, resend \`X-Paperclip-Run-Id\` with the run id you are actually ` +
+          `in. If you use an agent JWT the run id is fixed in the credential and no ` +
+          `header can change it, so end this attempt and let the next heartbeat ` +
+          `pick the work up under its own run-scoped credential. If a child task ` +
+          `carries the work, ${CHILD_ISSUE_PATH}.`,
 
       };
 

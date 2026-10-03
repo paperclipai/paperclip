@@ -3774,7 +3774,16 @@ export function issueRoutes(
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId)
-      throw crossIssueInfluenceRunContextError();
+      // A caller that already sent a run id is not in the "no run at all" case
+      // and must not be told to resend it. On the agent-JWT path the run id
+      // comes from the signed claim (and a header that disagrees is rejected
+      // upstream), so `required` copy here sends agents into a retry loop
+      // against a wall that will not move. Header presence is the honest
+      // discriminator: it separates "sent nothing" from "sent something the
+      // server could not bind".
+      throw crossIssueInfluenceRunContextError({
+        runIdPresent: Boolean(req.header("x-paperclip-run-id")),
+      });
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.

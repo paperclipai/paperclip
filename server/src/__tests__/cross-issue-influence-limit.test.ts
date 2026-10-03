@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  claimOverrides: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -22,12 +23,27 @@ function counterDb(
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          // The live-claim read: `runHoldsIssue` asks whether this run still
+          // holds the target issue, which is what makes an unscoped
+          // `heartbeat_timer` wake in-boundary for the work it checked out.
+          if (Object.keys(selection).includes("checkoutRunId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) => resolve(claimOverrides === null ? [] : [{
+                issueId: "55555555-5555-4555-8555-555555555555",
+                status: "in_progress",
+                checkoutRunId: null,
+                executionRunId: null,
+                ...claimOverrides,
+              }]),
+            };
+          }
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
                 id: "11111111-1111-4111-8111-111111111111",
                 companyId: "22222222-2222-4222-8222-222222222222",
                 agentId: "33333333-3333-4333-8333-333333333333",
+                status: "running",
                 responsibleUserId: "user-1",
                 contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
                 ...runOverrides,
@@ -177,7 +193,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_rejected" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -193,12 +209,31 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_rejected" },
     });
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it.each([
+    ["checkout_run_id", { checkoutRunId: "11111111-1111-4111-8111-111111111111" }],
+    ["execution_run_id", { executionRunId: "11111111-1111-4111-8111-111111111111" }],
+  ] as const)(
+    "lets an unscoped run write the issue it holds via %s",
+    async (_column, claimOverrides) => {
+      const fake = counterDb(0, { contextSnapshot: {} }, claimOverrides);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        companyId: "22222222-2222-4222-8222-222222222222",
+        runId: "11111111-1111-4111-8111-111111111111",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        targetIssueId: "55555555-5555-4555-8555-555555555555",
+        kind: "update",
+      })).resolves.toBeNull();
+      expect(fake.inserted).toEqual([]);
+    },
+  );
+
+  it("charges an unscoped run that holds no claim against the cap instead of refusing", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -207,10 +242,79 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
-    expect(fake.inserted).toEqual([]);
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+    ]);
   });
+
+  it("does not let a terminal run's stale claim exempt a write", async () => {
+    const fake = counterDb(0, { contextSnapshot: {}, status: "succeeded" }, {
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+    ]);
+  });
+
+  // A live run can still reference a *finished* issue: recovery and retry
+  // paths leave `checkoutRunId` / `executionRunId` in place after the issue
+  // reaches a terminal status. The run being alive is not evidence that the
+  // claim is current, so a terminal issue must not buy an uncounted
+  // cross-issue write (Greptile P1 on the claim fallback).
+  it.each(["done", "cancelled"])(
+    "does not let a %s issue's stale binding exempt a write from a running run",
+    async (issueStatus) => {
+      const fake = counterDb(0, { contextSnapshot: {}, status: "running" }, {
+        status: issueStatus,
+        checkoutRunId: "11111111-1111-4111-8111-111111111111",
+      });
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        companyId: "22222222-2222-4222-8222-222222222222",
+        runId: "11111111-1111-4111-8111-111111111111",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        targetIssueId: "55555555-5555-4555-8555-555555555555",
+        kind: "update",
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+      ]);
+    },
+  );
+
+  // `issues.executionRunId` is written at *scheduling* time, so it can already
+  // name a run that has no process. A queued or scheduled-retry run is a
+  // reservation, not a claim, and must not buy an uncounted exemption.
+  it.each(["queued", "scheduled_retry"])(
+    "does not let a %s run's unstarted reservation exempt a write",
+    async (status) => {
+      const fake = counterDb(0, { contextSnapshot: {}, status }, {
+        executionRunId: "11111111-1111-4111-8111-111111111111",
+      });
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        companyId: "22222222-2222-4222-8222-222222222222",
+        runId: "11111111-1111-4111-8111-111111111111",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        targetIssueId: "55555555-5555-4555-8555-555555555555",
+        kind: "update",
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+      ]);
+    },
+  );
 });

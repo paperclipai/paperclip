@@ -97,6 +97,7 @@ const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })))
 const mockCrossIssueInfluence = vi.hoisted(() => ({
   sourceIssueId: null as string | null,
   priorCount: 0,
+  claimsTargetIssue: false,
   inserted: [] as Array<Record<string, unknown>>,
 }));
 const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) => unknown) => callback({
@@ -109,6 +110,21 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
               resolve([{ count: mockCrossIssueInfluence.priorCount }]),
           };
         }
+        // The live-claim read: `runHoldsIssue` asks whether this run still
+        // holds the target issue. Without this branch the guard throws before
+        // it can reach the cap, and the route answers 500 instead of 429.
+        if (Object.keys(selection).includes("checkoutRunId")) {
+          return {
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              resolve(mockCrossIssueInfluence.claimsTargetIssue
+                ? [{
+                    issueId: ISSUE_ID,
+                    checkoutRunId: RUN_2,
+                    executionRunId: null,
+                  }]
+                : []),
+          };
+        }
         const run = mockRunAttribution.value;
         return {
           for: () => ({
@@ -117,6 +133,7 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
                   id: run.runId ?? null,
                   companyId: run.companyId ?? null,
                   agentId: run.agentId ?? null,
+                  status: run.status ?? "running",
                   responsibleUserId: run.responsibleUserId ?? null,
                   contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
                 }]
@@ -580,6 +597,7 @@ describe.sequential("issue thread interaction routes", () => {
     // resolution is a same-issue write and the cross-issue counter must ignore it.
     mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
     mockCrossIssueInfluence.priorCount = 0;
+    mockCrossIssueInfluence.claimsTargetIssue = false;
     mockCrossIssueInfluence.inserted.length = 0;
     // Keep cold route imports in setup rather than the HTTP assertion timeout.
     await loadAppModules();
@@ -3367,6 +3385,29 @@ describe.sequential("issue thread interaction routes", () => {
     stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
     mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
     mockCrossIssueInfluence.priorCount = 20;
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-ask_user_questions/respond`)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
+    expect(mockCrossIssueInfluence.inserted).toEqual([]);
+  });
+
+  // An unassigned `heartbeat_timer` wake has no issue in its `contextSnapshot`, so
+  // `sourceIssueId` is null and this looks like an unscoped company-wide reach. The
+  // run holds the target issue, so it is in boundary and must not be refused.
+  it("resolves an interaction for an unscoped run that holds the target issue", async () => {
+    stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
+    mockCrossIssueInfluence.sourceIssueId = null;
+    mockCrossIssueInfluence.claimsTargetIssue = true;
     const app = await createApp({
       type: "agent",
       agentId: ASSIGNEE_AGENT_ID,
