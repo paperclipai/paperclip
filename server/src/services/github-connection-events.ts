@@ -19,6 +19,7 @@ import {
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { githubPrClosureSweepService } from "./github-pr-closure-sweep.js";
 import { logger } from "../middleware/logger.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -266,6 +267,18 @@ export function githubConnectionEventService(
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    }
+    if (!snapshot.merged && snapshot.state === "closed" && event.action === "closed") {
+      const result = await githubPrClosureSweepService(db, { wakeup: options.wakeup, now })
+        .sweepClosedWithoutMergedPrApprovals([{
+          companyId,
+          owner: snapshot.owner,
+          repo: snapshot.repo,
+          number: snapshot.number,
+        }]);
+      if (result.cancelled > 0) {
+        logger.info(result, "cancelled stale approval cards for closed PR");
+      }
     }
   }
 

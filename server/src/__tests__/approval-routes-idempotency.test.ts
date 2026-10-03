@@ -24,6 +24,12 @@ const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
 
+const mockIssueServiceInstance = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+  listReviewAttention: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
@@ -41,6 +47,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueServiceInstance,
   }));
 }
 
@@ -125,6 +134,9 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueServiceInstance.getById.mockReset();
+    mockIssueServiceInstance.update.mockReset();
+    mockIssueServiceInstance.listReviewAttention.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
@@ -136,6 +148,17 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueServiceInstance.getById.mockResolvedValue({
+      id: "00000000-0000-0000-0000-000000000001",
+      companyId: "company-1",
+      status: "in_progress",
+    });
+    mockIssueServiceInstance.update.mockResolvedValue({
+      id: "00000000-0000-0000-0000-000000000001",
+      companyId: "company-1",
+      status: "blocked",
+    });
+    mockIssueServiceInstance.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -364,6 +387,105 @@ describe("approval routes idempotent retries", () => {
         action: "approval.created",
       }),
     );
+    expect(mockIssueServiceInstance.getById).toHaveBeenCalledWith("00000000-0000-0000-0000-000000000001");
+    expect(mockIssueServiceInstance.update).toHaveBeenCalledWith(
+      "00000000-0000-0000-0000-000000000001",
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Decide pending approval card" },
+        companyGuard: "company-1",
+      }),
+    );
+  });
+
+  it("does not auto-block linked issues in terminal states", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-terminal",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve terminal" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueServiceInstance.getById.mockResolvedValue({
+      id: "00000000-0000-0000-0000-000000000001",
+      companyId: "company-1",
+      status: "done",
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve terminal" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueServiceInstance.update).not.toHaveBeenCalled();
+  });
+
+  it("skips auto-block when issue does not exist", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-missing",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve missing" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueServiceInstance.getById.mockResolvedValue(null);
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve missing" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueServiceInstance.update).not.toHaveBeenCalled();
+  });
+
+  it("still returns 201 if auto-block update throws", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-err",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve err" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueServiceInstance.update.mockRejectedValue(new Error("concurrent update conflict"));
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve err" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 
   it("blocks status-only recovery runs from creating approvals", async () => {
@@ -437,5 +559,117 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-filed approval when issueIds is null", async () => {
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: null,
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("Agent-filed approvals must include at least one issueId");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-filed approval when issueIds is an empty array", async () => {
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: [],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("Agent-filed approvals must include at least one issueId");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows agent-filed approve_ceo_strategy with no issueIds", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-ceo",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { plan: "Bootstrap plan" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "approve_ceo_strategy",
+        payload: { plan: "Bootstrap plan" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+  });
+
+  it("allows agent-filed hire_agent with no issueIds", async () => {
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockResolvedValue({ name: "New Agent" });
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-hire",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { name: "New Agent" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: { name: "New Agent" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+  });
+
+  it("allows user-filed approval with issueIds null (human-exempt path)", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: null,
+      requestedByUserId: "user-1",
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: null,
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
   });
 });
