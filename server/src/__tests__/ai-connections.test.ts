@@ -47,9 +47,12 @@ afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) 
 
 describe("managed AI connections", () => {
   it.each([
-    ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
-  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {
-    const userId = `auth-recovery-${provider}-${switchMethod}`;
+    ["anthropic", false, "standard"], ["openai", false, "standard"],
+    ["anthropic", true, "standard"], ["openai", true, "standard"],
+    ["anthropic", false, "read_only"], ["openai", false, "read_only"],
+    ["anthropic", true, "read_only"], ["openai", true, "read_only"],
+  ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s, work mode: %s)", async (provider, switchMethod, workMode) => {
+    const userId = `auth-recovery-${provider}-${switchMethod}-${workMode}`;
     const id = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
@@ -57,9 +60,10 @@ describe("managed AI connections", () => {
     const selectedBinding = { provider, method: "api_key", mode: "responsible_user" } as const;
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id, companyId, name: "Auth recovery", adapterType, runtimeConfig: { aiConnection: selectedBinding } });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", workMode, assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
-    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
+    // Avoid inheriting the contributor's project/provider auth overrides.
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: { cwd: path.parse(home).root } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
       contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await runtime.cleanup();

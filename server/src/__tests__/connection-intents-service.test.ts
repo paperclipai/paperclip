@@ -186,6 +186,10 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     try {
       await expect(connectionIntentService(db).request(claims, "notion"))
         .rejects.toMatchObject({ status: 403, details: { code: "issue_write_read_only_run" } });
+      // The agent cannot opt into the controller-only recovery path with purpose=ai.
+      await expect(connectionIntentService(db).request(claims, "openai", { purpose: "ai" }))
+        .rejects.toMatchObject({ status: 403, details: { code: "issue_write_read_only_run" } });
+      expect(await connectionIntentService(db).requestForRunAuthFailure(runId)).toBeNull();
       expect(await interactions()).toEqual(before);
       const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
       process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();

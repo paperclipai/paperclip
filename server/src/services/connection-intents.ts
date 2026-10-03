@@ -620,17 +620,9 @@ export function connectionIntentService(db: Db) {
     options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
-    return requestWithContext(context, serviceSlug, options);
-  }
-
-  async function requestWithContext(
-    context: Awaited<ReturnType<typeof loadRunContext>>,
-    serviceSlug: string,
-    options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
-  ): Promise<ConnectionRequestResult> {
-    // Both REST and MCP runtime tools bypass the general /api actor guard.
-    // Enforce the class here, before any connection-intent write (including
-    // the shared AI-auth recovery path), while leaving discovery readable.
+    // All agent-facing REST and MCP requests enter here, including purpose=ai.
+    // Controller auth recovery uses a separate failed-run-validated entry point;
+    // read-only constrains agent actions, not server-owned lifecycle repair.
     if (context.issue.workMode === "read_only") {
       const { body } = issueWriteDenialResponse("issue_write_read_only_run", {
         issueIdentifier: context.issue.identifier,
@@ -642,6 +634,14 @@ export function connectionIntentService(db: Db) {
         workMode: context.issue.workMode,
       });
     }
+    return requestWithContext(context, serviceSlug, options);
+  }
+
+  async function requestWithContext(
+    context: Awaited<ReturnType<typeof loadRunContext>>,
+    serviceSlug: string,
+    options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
+  ): Promise<ConnectionRequestResult> {
     const claims = { sub: context.agent.id, company_id: context.run.companyId, run_id: context.run.id, responsible_user_id: context.run.responsibleUserId! };
     const route = parseAggregatorRoute(serviceSlug);
     let upstreamService: { slug: string; name: string; selectionInteractionId?: string } | undefined;
