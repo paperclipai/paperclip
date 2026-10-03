@@ -9,6 +9,7 @@ import {
   sessionCodec as geminiSessionCodec,
   isGeminiSessionUnrecoverableError,
 } from "@paperclipai/adapter-gemini-local/server";
+import { sessionCodec as agySessionCodec } from "@paperclipai/adapter-agy-local/server";
 import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
@@ -174,6 +175,86 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("normalizes agy session params with cwd", () => {
+    const parsed = agySessionCodec.deserialize({
+      session_id: "agy-session-1",
+      cwd: "/tmp/agy",
+      workspaceId: "ws-1",
+    });
+    expect(parsed).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+      workspaceId: "ws-1",
+    });
+
+    const serialized = agySessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+      workspaceId: "ws-1",
+    });
+    expect(agySessionCodec.getDisplayId?.(serialized ?? null)).toBe("agy-session-1");
+  });
+
+  it("preserves cumulativeUsage across agy sessionCodec serialization and deserialization", () => {
+    const raw = {
+      session_id: "agy-session-1",
+      cwd: "/tmp/agy",
+      cumulative_usage: {
+        input_tokens: 1200,
+        output_tokens: 120,
+        cache_read_tokens: 60,
+      },
+    };
+    const parsed = agySessionCodec.deserialize(raw);
+    expect(parsed).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+      cumulativeUsage: {
+        inputTokens: 1200,
+        outputTokens: 120,
+        cachedInputTokens: 60,
+      },
+    });
+
+    const serialized = agySessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+      cumulativeUsage: {
+        inputTokens: 1200,
+        outputTokens: 120,
+        cachedInputTokens: 60,
+      },
+    });
+    expect(agySessionCodec.deserialize(serialized)).toEqual(serialized);
+    expect(agySessionCodec.deserialize(JSON.parse(JSON.stringify(serialized)))).toEqual(serialized);
+  });
+
+  it("handles stringified cumulative_usage and snake_case remote_execution in agy sessionCodec", () => {
+    const raw = {
+      session_id: "agy-session-2",
+      remote_execution: { transport: "ssh", target: "devbox" },
+      cumulative_usage: JSON.stringify({
+        input_tokens: 500,
+        output_tokens: 50,
+        cache_read_tokens: 25,
+      }),
+    };
+    const parsed = agySessionCodec.deserialize(raw);
+    expect(parsed).toEqual({
+      sessionId: "agy-session-2",
+      remoteExecution: { transport: "ssh", target: "devbox" },
+      cumulativeUsage: {
+        inputTokens: 500,
+        outputTokens: 50,
+        cachedInputTokens: 25,
+      },
+    });
+    const serialized = agySessionCodec.serialize(parsed);
+    expect(serialized).toEqual(parsed);
   });
 
   it("preserves gemini ACP session params for ACP lane resumes", () => {

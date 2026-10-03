@@ -1,0 +1,5 @@
+{"event":"init","conversation_id":"77777777-7777-4777-8777-777777777777","init":{"cwd":"/workspace/sanitized","tools":["ask_permission","run_command"],"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"conversation_id":"77777777-7777-4777-8777-777777777777","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"77777777-7777-4777-8777-777777777777","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"OK"}}
+{"event":"step_update","step_update":{"conversation_id":"77777777-7777-4777-8777-777777777777","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":2.4706524,"usage":{"input_tokens":28174,"output_tokens":156,"thinking_tokens":155,"cache_read_tokens":0,"total_tokens":28330}}}
+{"event":"result","result":{"conversation_id":"77777777-7777-4777-8777-777777777777","status":"SUCCESS","response":"OK\n","duration_seconds":36.0568457,"num_turns":1,"usage":{"input_tokens":28174,"output_tokens":156,"thinking_tokens":155,"cache_read_tokens":0,"total_tokens":28330}}}

@@ -227,4 +227,77 @@ describe("buildTranscript", () => {
       },
     ]);
   });
+
+  it("coalesces deltas with the same itemId and keeps entries separate when itemId differs", () => {
+    const entries = buildTranscript(
+      [
+        { ts: "2026-09-30T12:00:00Z", stream: "stdout", chunk: "line1\nline2\nline3\n" },
+      ],
+      (line, lineTs) => {
+        if (line === "line1") return [{ kind: "assistant", ts: lineTs, text: "Hello ", delta: true, itemId: "item-1" }];
+        if (line === "line2") return [{ kind: "assistant", ts: lineTs, text: "world", delta: true, itemId: "item-1" }];
+        if (line === "line3") return [{ kind: "assistant", ts: lineTs, text: "Next step", delta: true, itemId: "item-2" }];
+        return [];
+      },
+    );
+
+    expect(entries).toEqual([
+      { kind: "assistant", ts: "2026-09-30T12:00:00Z", text: "Hello world", delta: true, itemId: "item-1" },
+      { kind: "assistant", ts: "2026-09-30T12:00:00Z", text: "Next step", delta: true, itemId: "item-2" },
+    ]);
+  });
+
+  it("does not coalesce deltas when one has itemId and the other does not", () => {
+    const entries = buildTranscript(
+      [
+        { ts: "2026-09-30T12:00:00Z", stream: "stdout", chunk: "a\nb\n" },
+      ],
+      (line, lineTs) => {
+        if (line === "a") return [{ kind: "assistant", ts: lineTs, text: "With ID", delta: true, itemId: "item-1" }];
+        if (line === "b") return [{ kind: "assistant", ts: lineTs, text: " Without ID", delta: true }];
+        return [];
+      },
+    );
+
+    expect(entries).toEqual([
+      { kind: "assistant", ts: "2026-09-30T12:00:00Z", text: "With ID", delta: true, itemId: "item-1" },
+      { kind: "assistant", ts: "2026-09-30T12:00:00Z", text: " Without ID", delta: true },
+    ]);
+  });
+
+  it("coalesces thinking deltas with matching itemId and isolates different itemIds", () => {
+    const entries = buildTranscript(
+      [
+        { ts: "2026-09-30T12:00:00Z", stream: "stdout", chunk: "t1\nt2\nt3\n" },
+      ],
+      (line, lineTs) => {
+        if (line === "t1") return [{ kind: "thinking", ts: lineTs, text: "Think 1...", delta: true, itemId: "think-1" }];
+        if (line === "t2") return [{ kind: "thinking", ts: lineTs, text: " more 1", delta: true, itemId: "think-1" }];
+        if (line === "t3") return [{ kind: "thinking", ts: lineTs, text: "Think 2", delta: true, itemId: "think-2" }];
+        return [];
+      },
+    );
+
+    expect(entries).toEqual([
+      { kind: "thinking", ts: "2026-09-30T12:00:00Z", text: "Think 1... more 1", delta: true, itemId: "think-1" },
+      { kind: "thinking", ts: "2026-09-30T12:00:00Z", text: "Think 2", delta: true, itemId: "think-2" },
+    ]);
+  });
+
+  it("preserves lifecycle on coalesced thinking entries when later delta completes", () => {
+    const entries = buildTranscript(
+      [
+        { ts: "2026-09-30T12:00:00Z", stream: "stdout", chunk: "t1\nt2\n" },
+      ],
+      (line, lineTs) => {
+        if (line === "t1") return [{ kind: "thinking", ts: lineTs, text: "Thinking started", delta: true, lifecycle: "started", itemId: "think-1" }];
+        if (line === "t2") return [{ kind: "thinking", ts: lineTs, text: " and finished", delta: true, lifecycle: "completed", itemId: "think-1" }];
+        return [];
+      },
+    );
+
+    expect(entries).toEqual([
+      { kind: "thinking", ts: "2026-09-30T12:00:00Z", text: "Thinking started and finished", delta: true, lifecycle: "completed", itemId: "think-1" },
+    ]);
+  });
 });

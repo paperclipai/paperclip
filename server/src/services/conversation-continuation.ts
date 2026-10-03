@@ -5,7 +5,7 @@ import { readProcessStartedAt } from "./hot-restart.js";
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
 export const CONVERSATION_ADAPTER_TYPES = [
-  "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+  "claude_local", "codex_local", "cursor", "gemini_local", "agy_local", "opencode_local",
   "pi_local", "grok_local", "kimi_local", "hermes_local",
 ] as const;
 

@@ -39,7 +39,11 @@ export function portableRelative(root, path) {
 }
 
 export function sha256(source) {
-  return createHash("sha256").update(source).digest("hex");
+  return createHash("sha256").update(normalizeLineEndings(source)).digest("hex");
+}
+
+export function normalizeLineEndings(source) {
+  return source.replace(/\r\n/g, "\n");
 }
 
 function collectReferences(value, output = []) {

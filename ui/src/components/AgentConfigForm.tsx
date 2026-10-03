@@ -34,6 +34,7 @@ import {
 import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_AGY_LOCAL_MODEL } from "@paperclipai/adapter-agy-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
@@ -1607,6 +1608,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "agy_local") {
+                      nextValues.dangerouslySkipPermissions = false;
+                      nextValues.model = DEFAULT_AGY_LOCAL_MODEL;
                     } else if (t === "kimi_local") {
                       nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
                     } else if (t === "cursor") {

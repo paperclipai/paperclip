@@ -22,6 +22,7 @@ const directBuiltInAdapterTypes = [
   "cursor_cloud",
   "cursor",
   "gemini_local",
+  "agy_local",
   "grok_local",
   "hermes_gateway",
   "hermes_local",

@@ -72,6 +72,17 @@ import {
   models as geminiModels,
 } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as agyExecute,
+  listAgySkills,
+  syncAgySkills,
+  testEnvironment as agyTestEnvironment,
+  sessionCodec as agySessionCodec,
+} from "@paperclipai/adapter-agy-local/server";
+import {
+  agentConfigurationDoc as agyAgentConfigurationDoc,
+  models as agyModels,
+} from "@paperclipai/adapter-agy-local";
+import {
   execute as grokExecute,
   listGrokSkills,
   syncGrokSkills,
@@ -746,6 +757,28 @@ const geminiLocalAdapter: ServerAdapterModule = {
   getConfigSchema: getGeminiConfigSchema,
 };
 
+const agyLocalAdapter: ServerAdapterModule = {
+  type: "agy_local",
+  runtimeToolDelivery: "native_mcp",
+  execute: agyExecute,
+  testEnvironment: agyTestEnvironment,
+  listSkills: listAgySkills,
+  syncSkills: syncAgySkills,
+  sessionCodec: agySessionCodec,
+  sessionManagement: getAdapterSessionManagement("agy_local") ?? undefined,
+  models: agyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "agy"),
+    detectCommand: readConfiguredCommand(config, "agy"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: agyAgentConfigurationDoc,
+};
+
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
   runtimeToolDelivery: "environment",
@@ -883,6 +916,7 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    agyLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,
     hermesGatewayAdapter,

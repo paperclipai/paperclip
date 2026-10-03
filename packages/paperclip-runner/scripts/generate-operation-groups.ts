@@ -15,8 +15,8 @@ const generated = renderOperationGroupsDocument(loadOperationGroupsInput());
 const check = process.argv.includes("--check");
 
 if (check) {
-  const current = readFileSync(outputPath, "utf8");
-  if (current !== generated) {
+  const current = readFileSync(outputPath, "utf8").replace(/\r\n/g, "\n");
+  if (current !== generated.replace(/\r\n/g, "\n")) {
     throw new Error(
       "paperclip-agent-operation-groups.md is stale; run the generator without --check.",
     );
