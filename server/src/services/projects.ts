@@ -595,7 +595,6 @@ export function projectService(
     removeManagedFiles?: (input: {
       companyId: string;
       projectId: string;
-      workspaceCwds: string[];
     }) => Promise<void>;
   } = {},
 ) {
@@ -988,11 +987,7 @@ export function projectService(
           .where(eq(projects.id, id))
           .for("update");
         if (!project) return { row: null };
-        if (
-          project.deletionClaimToken &&
-          (!project.deletionClaimExpiresAt || project.deletionClaimExpiresAt.getTime() > Date.now()) &&
-          !removeOptions.deletionClaimToken
-        ) {
+        if (project.deletionClaimToken && !removeOptions.deletionClaimToken) {
           throw conflict("Project deletion is already in progress. Retry the requested deletion.");
         }
         if (removeOptions.deletionClaimToken) {

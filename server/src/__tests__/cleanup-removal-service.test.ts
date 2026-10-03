@@ -332,6 +332,21 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("not_requested");
   });
 
+  it("does not let plain deletion bypass an expired managed-file cleanup claim", async () => {
+    const { projectId } = await seedProjectFixture();
+    await db
+      .update(projects)
+      .set({
+        status: "deleting",
+        deletionClaimToken: randomUUID(),
+        deletionClaimExpiresAt: new Date(Date.now() - 1_000),
+      })
+      .where(eq(projects.id, projectId));
+
+    await expect(projectService(db).remove(projectId)).rejects.toMatchObject({ status: 409 });
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(1);
+  });
+
   it("reports project cleanup failure after completing database deletion", async () => {
     const { projectId } = await seedProjectFixture();
     const removeManagedFiles = vi.fn().mockRejectedValue(new Error("permission denied"));
