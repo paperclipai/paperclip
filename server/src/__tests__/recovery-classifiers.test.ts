@@ -108,6 +108,66 @@ describe("recovery classifier boundary", () => {
     expect(findings).toEqual([]);
   });
 
+  it("reports a spent monitor as in_review_without_action_path, not as a broken review participant", () => {
+    // Dispatching a monitor writes executionState.monitor even on issues that
+    // have no review stages. A bare non-null execution state must not be read
+    // as an unresolvable review participant — that hid the real defect, which
+    // is that the issue has no action path left at all.
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-04-30T20:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-2945",
+          title: "Wait for external review",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: {
+            status: "idle",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            returnAssignee: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            monitor: {
+              status: "triggered",
+              nextCheckAt: null,
+              lastTriggeredAt: "2026-04-30T19:00:00.000Z",
+              attemptCount: 1,
+              notes: null,
+              scheduledBy: "assignee",
+              clearedAt: null,
+              clearReason: null,
+            },
+          },
+          monitorNextCheckAt: null,
+          monitorAttemptCount: 1,
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("in_review_without_action_path");
+  });
+
   it("does not treat overdue or exhausted monitors as explicit waiting paths", () => {
     const baseIssue = {
       id: issueId,
