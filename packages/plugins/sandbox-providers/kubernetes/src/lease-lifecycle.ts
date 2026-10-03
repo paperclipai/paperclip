@@ -156,6 +156,12 @@ export interface DestroyLeaseInput {
   backend: "sandbox-cr" | "job";
   podName: string | null;
   secretName: string | null;
+  /**
+   * The Sandbox API version recorded on the lease, when the caller has it.
+   * Without it the delete call falls back to discovery, and then to every
+   * supported version, so a discovery outage cannot strand the resources.
+   */
+  apiVersion?: unknown;
 }
 
 /**
@@ -170,7 +176,9 @@ export async function destroyLeaseResources(
   input: DestroyLeaseInput,
 ): Promise<void> {
   if (input.backend === "sandbox-cr") {
-    await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name));
+    await ignoreNotFound(
+      deleteSandboxCr(clients, input.namespace, input.name, { apiVersion: input.apiVersion }),
+    );
   } else {
     await ignoreNotFound(deleteJob(clients, input.namespace, input.name));
   }
