@@ -28,7 +28,10 @@ import { issueService } from "../services/issues.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
-import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import {
+  assertCanResolveProposal,
+  hasSecretDefinitionAdminAccess as actorHasSecretDefinitionAdminAccess,
+} from "../services/secret-proposal-authorization.js";
 
 type SecretRoutesDeps = {
   heartbeat?: IssueAssignmentWakeupDeps;
@@ -68,9 +71,7 @@ function setProposalPaginationHeaders(
 function hasSecretDefinitionAdminAccess(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
   assertCompanyAccess(req, companyId);
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-  const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
-  return membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole));
+  return actorHasSecretDefinitionAdminAccess(req.actor, companyId);
 }
 
 function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
@@ -180,7 +181,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     if (proposal.status !== "pending") {
       return { ...proposal, viewerCanApprove: false, approveBlockReason: "Proposal is no longer pending" };
     }
-    if (proposal.kind === "secret" && !hasSecretDefinitionAdminAccess(req, req.params.companyId as string)) {
+    // A binding backed by a still-pending secret proposal needs `cascade: true`,
+    // which creates the company secret and therefore requires the same admin
+    // access as approving that secret directly. Reflect that in the preflight
+    // so the UI does not offer an approval that is guaranteed to 403.
+    const requiresSecretDefinitionAdmin =
+      proposal.kind === "secret" ||
+      (proposal.kind === "binding" &&
+        Boolean(proposal.secretProposalId) &&
+        proposal.secretProposalStatus === "pending");
+    if (requiresSecretDefinitionAdmin && !hasSecretDefinitionAdminAccess(req, req.params.companyId as string)) {
       return { ...proposal, viewerCanApprove: false, approveBlockReason: "Company admin access required" };
     }
     const decision = await bindingApprovalDecision(req, proposal);

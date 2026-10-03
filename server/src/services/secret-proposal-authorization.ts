@@ -8,6 +8,26 @@ type ResolvableSecretProposal = {
   targetId: string | null;
 };
 
+export function hasSecretDefinitionAdminAccess(
+  actor: AuthorizationActor,
+  companyId: string,
+): boolean {
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
+  const membership = actor.memberships?.find((item) => item.companyId === companyId);
+  return (
+    membership?.status === "active" &&
+    ["owner", "admin"].includes(String(membership?.membershipRole))
+  );
+}
+
+export function assertSecretDefinitionAdmin(
+  actor: AuthorizationActor,
+  companyId: string,
+): void {
+  if (hasSecretDefinitionAdminAccess(actor, companyId)) return;
+  throw forbidden("Company admin access required");
+}
+
 export async function assertCanResolveProposal(input: {
   db: Db;
   actor: AuthorizationActor;

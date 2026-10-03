@@ -235,7 +235,7 @@ describe("CommentThread", () => {
     });
   });
 
-  it("hides the reopen control and infers reopen for closed agent-assigned issues", async () => {
+  it("hides the reopen control and does not infer reopen for closed agent-assigned issues", async () => {
     const root = createRoot(container);
     const onAdd = vi.fn(async () => {});
 
@@ -274,7 +274,52 @@ describe("CommentThread", () => {
       submitButton?.click();
     });
 
-    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined);
+    // A plain completion note must not send reopen intent for terminal work.
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", undefined, undefined);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("infers reopen for blocked agent-assigned issues", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            issueStatus="blocked"
+            currentAssigneeValue="agent:agent-1"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please continue");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenCalledWith("Please continue", true, undefined);
 
     act(() => {
       root.unmount();
