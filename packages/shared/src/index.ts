@@ -350,6 +350,7 @@ export {
   SELF_SERVE_MCP_CANDIDATES,
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
+export * from "./active-hours.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
@@ -1269,9 +1270,11 @@ export type {
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
   GitWorktreeInProgressOperation,
+  HeartbeatActiveHours,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
+  HeartbeatTimerPolicy,
   ProviderTraceDebugRequest,
   ProviderTraceDirection,
   ProviderTraceDisposition,

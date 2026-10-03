@@ -743,6 +743,15 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  /**
+   * Optional wall-clock window for timer heartbeats. Omitted (or null) means
+   * timer wakes are not limited by clock time.
+   */
+  activeHours?: {
+    start: string;
+    end: string;
+    timezone: string;
+  } | null;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
   // openclaw_gateway adapter fields
