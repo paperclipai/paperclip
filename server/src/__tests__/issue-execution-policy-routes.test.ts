@@ -711,6 +711,119 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("round-trips monitor.externalRef unredacted through PATCH and the response body", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1006",
+      title: "External review monitor",
+      executionPolicy: null,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const externalRef = "https://github.test/example/example/pull/42";
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            scheduledBy: "assignee",
+            externalRef,
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const persistedPatch = mockIssueService.update.mock.calls[0]?.[1] as {
+      executionPolicy: { monitor: { externalRef: string | null } };
+    };
+    expect(persistedPatch.executionPolicy.monitor.externalRef).toBe(externalRef);
+    expect(res.body.executionPolicy.monitor.externalRef).toBe(externalRef);
+  });
+
+  it("omits monitor.externalRef from the issue.updated activity log while the PATCH response still carries it", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1006",
+      title: "External review monitor",
+      executionPolicy: null,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const externalRef = "https://github.test/example/example/pull/42";
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            scheduledBy: "assignee",
+            externalRef,
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    // The PATCH response (equivalent to a GET projection) still carries the real value.
+    expect(res.body.executionPolicy.monitor.externalRef).toBe(externalRef);
+
+    // But the issue.updated activity log entry must not leak it in plain text.
+    const updatedActivityCall = mockLogActivity.mock.calls.find(
+      (call) => (call[1] as { action?: string } | undefined)?.action === "issue.updated",
+    );
+    expect(updatedActivityCall).toBeDefined();
+    const details = (updatedActivityCall?.[1] as { details?: Record<string, unknown> })
+      .details;
+    const loggedPolicy = details?.executionPolicy as
+      | { monitor?: Record<string, unknown> }
+      | undefined;
+    expect(loggedPolicy?.monitor?.externalRef).toBeUndefined();
+  });
+
   it("allows board-authored in_review repair updates without a review path", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1186,7 +1299,7 @@ describe("issue execution policy routes", () => {
           monitor: {
             nextCheckAt: "2026-04-11T12:30:00.000Z",
             scheduledBy: "board",
-            externalRef: "https://example.test/deploy?token=secret",
+            externalRef: "https://github.test/example/example/pull/42",
           },
         },
       });
@@ -1196,7 +1309,9 @@ describe("issue execution policy routes", () => {
       executionPolicy: { monitor: { scheduledBy: string; externalRef: string | null } };
     };
     expect(createPayload.executionPolicy.monitor.scheduledBy).toBe("assignee");
-    expect(createPayload.executionPolicy.monitor.externalRef).toBe("[redacted]");
+    expect(createPayload.executionPolicy.monitor.externalRef).toBe(
+      "https://github.test/example/example/pull/42",
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

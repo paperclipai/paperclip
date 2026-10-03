@@ -74,7 +74,6 @@ const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_request
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
-export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
   if (typeof notes !== "string") return null;
@@ -88,15 +87,11 @@ function normalizeMonitorText(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function redactIssueMonitorExternalRef(value: string | null | undefined) {
-  return normalizeMonitorText(value) ? REDACTED_ISSUE_MONITOR_EXTERNAL_REF : null;
-}
-
 function monitorMetadataFromPolicy(monitor: IssueExecutionMonitorPolicy) {
   return {
     kind: monitor.kind ?? null,
     serviceName: normalizeMonitorText(monitor.serviceName),
-    externalRef: redactIssueMonitorExternalRef(monitor.externalRef),
+    externalRef: normalizeMonitorText(monitor.externalRef),
     timeoutAt: monitor.timeoutAt ?? null,
     maxAttempts: monitor.maxAttempts ?? null,
     recoveryPolicy: monitor.recoveryPolicy ?? null,
@@ -107,7 +102,7 @@ function monitorMetadataFromState(state: IssueExecutionMonitorState | null | und
   return {
     kind: state?.kind ?? null,
     serviceName: normalizeMonitorText(state?.serviceName),
-    externalRef: redactIssueMonitorExternalRef(state?.externalRef),
+    externalRef: normalizeMonitorText(state?.externalRef),
     timeoutAt: state?.timeoutAt ?? null,
     maxAttempts: state?.maxAttempts ?? null,
     recoveryPolicy: state?.recoveryPolicy ?? null,
@@ -391,7 +386,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       scheduledBy: parsed.data.monitor.scheduledBy,
       kind: parsed.data.monitor.kind ?? null,
       serviceName: normalizeMonitorText(parsed.data.monitor.serviceName),
-      externalRef: redactIssueMonitorExternalRef(parsed.data.monitor.externalRef),
+      externalRef: normalizeMonitorText(parsed.data.monitor.externalRef),
       timeoutAt: parsed.data.monitor.timeoutAt ?? null,
       maxAttempts: parsed.data.monitor.maxAttempts ?? null,
       recoveryPolicy: parsed.data.monitor.recoveryPolicy ?? null,

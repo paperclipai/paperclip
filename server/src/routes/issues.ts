@@ -305,7 +305,6 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
-  redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
@@ -2249,9 +2248,7 @@ function summarizeIssueMonitor(
     kind: policy?.monitor?.kind ?? state?.monitor?.kind ?? null,
     serviceName:
       policy?.monitor?.serviceName ?? state?.monitor?.serviceName ?? null,
-    externalRef: redactIssueMonitorExternalRef(
-      policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null,
-    ),
+    externalRef: policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null,
     timeoutAt: policy?.monitor?.timeoutAt ?? state?.monitor?.timeoutAt ?? null,
     maxAttempts:
       policy?.monitor?.maxAttempts ?? state?.monitor?.maxAttempts ?? null,
@@ -13623,6 +13620,32 @@ export function issueRoutes(
         }
         return true;
       };
+      const activityLogDetailsFromUpdateFields = (
+        fields: Record<string, unknown>,
+      ): Record<string, unknown> => {
+        const executionPolicy = fields.executionPolicy;
+        if (!executionPolicy || typeof executionPolicy !== "object") {
+          return fields;
+        }
+        const policy = executionPolicy as Record<string, unknown>;
+        const monitor = policy.monitor;
+        if (
+          !monitor ||
+          typeof monitor !== "object" ||
+          !("externalRef" in (monitor as Record<string, unknown>))
+        ) {
+          return fields;
+        }
+        const { externalRef: _externalRef, ...monitorWithoutExternalRef } =
+          monitor as Record<string, unknown>;
+        return {
+          ...fields,
+          executionPolicy: {
+            ...policy,
+            monitor: monitorWithoutExternalRef,
+          },
+        };
+      };
       const persistReviewTransitionActivity = async (
         tx: Parameters<typeof svc.update>[2],
         updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
@@ -13646,7 +13669,7 @@ export function issueRoutes(
             entityType: "issue",
             entityId: updated.id,
             details: {
-              ...updateFields,
+              ...activityLogDetailsFromUpdateFields(updateFields),
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
               changes,
@@ -14029,7 +14052,7 @@ export function issueRoutes(
           entityType: "issue",
           entityId: issue.id,
           details: {
-            ...updateFields,
+            ...activityLogDetailsFromUpdateFields(updateFields),
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
             changes: issueChanges,
