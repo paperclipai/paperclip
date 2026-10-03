@@ -401,7 +401,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.reason).toBe("issue_monitor_manual_check");
     expect(wakeup?.payload).toMatchObject({
       issueId,
       nextCheckAt: nextCheckAt.toISOString(),

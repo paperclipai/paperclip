@@ -149,7 +149,7 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : "Check now"}
+      {checkingNow ? "Checking…" : "Run check now (ignores schedule)"}
     </Button>
   );
 }

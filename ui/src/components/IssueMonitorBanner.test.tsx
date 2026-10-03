@@ -175,7 +175,7 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).toContain("Watching: vercel-deploy");
 
     const button = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Check now"),
+      b.textContent?.includes("Run check now (ignores schedule)"),
     );
     expect(button).toBeTruthy();
     flushSync(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));

@@ -2572,19 +2572,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
-  it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+  it.each(["issue_monitor_due", "issue_monitor_manual_check"] as const)(
+    "does not retry a lost %s monitor dispatch while another monitor wake remains scheduled",
+    async (wakeReason) => {
+      const { companyId, runId, issueId } = await seedRunFixture({
+        adapterType: "openclaw_gateway",
+        agentStatus: "idle",
+        processPid: null,
+        processGroupId: null,
+        contextSnapshot: {
+          wakeReason,
+        },
+      });
+      await db
+        .update(issues)
+        .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reapOrphanedRuns();
+
+      expect(result).toEqual({ reaped: 1, runIds: [runId] });
+      const retries = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.retryOfRunId, runId),
+          ),
+        );
+      expect(retries).toHaveLength(0);
+    },
+  );
+
+  it("retries a lost manual monitor check dispatch without a future wake", async () => {
     const { companyId, runId, issueId } = await seedRunFixture({
-      adapterType: "openclaw_gateway",
       agentStatus: "idle",
       processPid: null,
       processGroupId: null,
-      contextSnapshot: {
-        wakeReason: "issue_monitor_due",
-      },
+      contextSnapshot: { wakeReason: "issue_monitor_manual_check" },
     });
     await db
       .update(issues)
-      .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
+      .set({ monitorNextCheckAt: new Date("2020-03-19T00:00:00.000Z") })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
 
     const heartbeat = heartbeatService(db);
@@ -2600,7 +2631,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           eq(heartbeatRuns.retryOfRunId, runId),
         ),
       );
-    expect(retries).toHaveLength(0);
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+    });
   });
 
   async function withTempPaperclipHome<T>(
