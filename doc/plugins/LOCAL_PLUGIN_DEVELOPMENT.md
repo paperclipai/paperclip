@@ -179,7 +179,7 @@ You can, but you usually should not. The control-plane host is shared and may be
 
 ## Reload semantics, honestly
 
-Paperclip watches the on-disk plugin package after a local install. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`).
+Paperclip watches the on-disk plugin package after a local install when the server runs with Vite development middleware outside production. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`). Static and headless servers, and any server with `NODE_ENV=production`, do not watch plugin files by default. Set `PAPERCLIP_PLUGIN_DEV_WATCH=1` on the server to opt in to file watching in those modes.
 
 What that means in practice:
 
