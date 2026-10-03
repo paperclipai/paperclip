@@ -49861,8 +49861,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // recovery work and the database read must not consume assertion slack.
     const retryAt = new Date(String(deferred!.result?.retryAt)).getTime();
     const attemptedAt = transportAttempts.mock.results[0]!.value;
-    expect(retryAt).toBeGreaterThanOrEqual(attemptedAt + 30_000);
-    expect(retryAt).toBeLessThanOrEqual(recoveryFinishedAt + 30_000);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // A six-second CI delay made the former Date.now() + 25s check fail.
+      vi.setSystemTime(recoveryFinishedAt + 6_000);
+      expect(retryAt).toBeLessThan(Date.now() + 25_000);
+      expect(retryAt).toBeGreaterThanOrEqual(attemptedAt + 30_000);
+      expect(retryAt).toBeLessThanOrEqual(recoveryFinishedAt + 30_000);
+    } finally {
+      vi.useRealTimers();
+    }
 
     await service.processPendingDeliveries();
     expect(transportAttempts).toHaveBeenCalledTimes(1);
