@@ -492,7 +492,10 @@ describe("per-run issue-create budget", () => {
     expect(fake.inserted[0].entityId).not.toBe("99999999-9999-4999-8999-999999999999");
   });
 
-  it("records a refused create under its own rejected action", async () => {
+  it("writes nothing at all when it refuses, because the caller's transaction will roll back", async () => {
+    // The refusal row cannot be written here: the caller refuses by throwing, which
+    // rolls this transaction back and would take the row with it. The durable record
+    // is `recordRefusedIssueCreate`, covered against real SQL in the PostgreSQL suite.
     const fake = issueCreateDb({ create: ISSUE_CREATE_RUN_LIMIT });
 
     const decision = await observeIssueCreate(fake.tx as never, {
@@ -502,11 +505,9 @@ describe("per-run issue-create budget", () => {
     });
 
     expect(decision).toMatchObject({ allowed: false, count: ISSUE_CREATE_RUN_LIMIT + 1 });
-    expect(fake.inserted[0]).toMatchObject({
-      action: "issue.issue_create_cap_rejected",
-      entityType: "heartbeat_run",
-      entityId: RUN_ID,
-    });
+    expect(fake.inserted).toEqual([]);
+    // The tally was still read, so the refusal is a real decision and not a shortcut.
+    expect(fake.countedActions).toEqual(["issue.issue_create_observed"]);
   });
 
   it("counts nothing, and refuses nothing, when the run id cannot be resolved", async () => {

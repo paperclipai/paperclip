@@ -341,9 +341,11 @@ import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interact
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
+  IssueCreateBudgetExceededError,
   issueCreateLimitError,
   observeCrossIssueInfluence,
   observeIssueCreate,
+  recordRefusedIssueCreate,
   type RunWriteTransaction,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
@@ -3853,16 +3855,11 @@ export function issueRoutes(
       });
       if (!decision || decision.allowed) return;
 
-      const labels = await issueWriteDenialLabels(req, {
-        identifier: null,
-        assigneeAgentId: null,
-      });
       // Throwing rolls the create transaction back, which is what makes "a refusal
-      // mints nothing" true rather than merely intended.
-      const { error, details } = issueCreateLimitError(decision, {
-        actorLabel: labels.actorLabel,
-      });
-      throw tooManyRequests(error, details);
+      // mints nothing" true rather than merely intended. The 429 body and the audit
+      // row are both built by the catch below, once that rollback has happened — a
+      // refusal row written from in here would roll back with it.
+      throw new IssueCreateBudgetExceededError(decision, decision.sourceIssueId);
     };
   }
 
@@ -11928,6 +11925,31 @@ export function issueRoutes(
       try {
         issue = await svc.create(companyId, createInput);
       } catch (error) {
+        // The per-run create budget refused this one. `svc.create`'s transaction has
+        // now rolled back — no task was minted, and the charge went with it — so this
+        // is the first moment the refusal can be recorded durably.
+        if (error instanceof IssueCreateBudgetExceededError) {
+          await recordRefusedIssueCreate(db, {
+            companyId,
+            runId: req.actor.runId as string,
+            agentId: req.actor.agentId as string,
+            responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+            parentIssueId: createBody.parentId ?? null,
+            parentIssueIdentifier: createParent?.identifier ?? null,
+            title: typeof createBody.title === "string" ? createBody.title : null,
+            assigneeAgentId: createBody.assigneeAgentId ?? null,
+            sourceIssueId: error.sourceIssueId,
+            decision: error.decision,
+          });
+          const labels = await issueWriteDenialLabels(req, {
+            identifier: null,
+            assigneeAgentId: null,
+          });
+          const { error: message, details } = issueCreateLimitError(error.decision, {
+            actorLabel: labels.actorLabel,
+          });
+          throw tooManyRequests(message, details);
+        }
         // Concurrent onboarding creates can both pass the zero-count fast path;
         // the issues_onboarding_first_task_uq index rejects the loser here. Fail
         // closed: drop the privileged origin (and with it the agent-attributed

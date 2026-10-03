@@ -20,6 +20,7 @@ import {
   ISSUE_CREATE_RUN_LIMIT,
   observeCrossIssueInfluence,
   observeIssueCreate,
+  recordRefusedIssueCreate,
 } from "../services/cross-issue-influence-limit.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -201,14 +202,158 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.issue_create_observed"))
       .toHaveLength(ISSUE_CREATE_RUN_LIMIT);
+    // The observer records only the charge it takes. A refusal is recorded by the
+    // caller *after* its transaction unwinds — see the two tests below for why it
+    // cannot be written here — so none of these three attempts left one.
     expect(recorded.filter((row) => row.action === "issue.issue_create_cap_rejected"))
-      .toEqual([{
-        action: "issue.issue_create_cap_rejected",
-        entityType: "heartbeat_run",
-        entityId: runId,
-      }]);
+      .toEqual([]);
     // Nothing landed on the shared comment counter.
     expect(recorded.filter((row) => row.action.startsWith("issue.cross_issue_influence"))).toEqual([]);
+  });
+
+  // The charge has to vanish with the task when the create transaction rolls back,
+  // or a failed insert silently spends a slot. Only real SQL shows that; the unit
+  // fake has no rollback.
+  it("rolls the charge back with the transaction that was going to insert", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Rolled Back",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: randomUUID() },
+      responsibleUserId: "board-user",
+    });
+
+    const input = {
+      companyId,
+      runId,
+      agentId,
+      parentIssueId: null,
+      title: "Insert that fails",
+      now: ISSUE_CREATE_RUN_ENFORCE_AT,
+    };
+
+    await expect(db.transaction(async (tx) => {
+      await expect(observeIssueCreate(tx, input)).resolves.toMatchObject({
+        count: 1,
+        allowed: true,
+      });
+      throw new Error("the insert failed after the charge");
+    })).rejects.toThrow("the insert failed after the charge");
+
+    // Charged inside the aborted transaction, so the slot was never spent.
+    expect(await db.select().from(activityLog)).toEqual([]);
+    // And the next attempt is still attempt 1, not attempt 2.
+    await expect(charge(input)).resolves.toMatchObject({ count: 1, allowed: true });
+  });
+
+  // Greptile P2 on the in-transaction charge: a refusal throws, the throw rolls the
+  // transaction back, and a refusal row written inside it would roll back too —
+  // leaving operators nothing but server logs. It also cannot be written from a
+  // second connection while the first still holds the run row `FOR UPDATE`: the
+  // `activity_log.run_id` foreign key needs `FOR KEY SHARE` on that row, which
+  // conflicts, so the two would deadlock. Hence a separate recorder, called after.
+  it("records a refused create durably, after the create transaction has gone", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Refused",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: randomUUID() },
+      responsibleUserId: "board-user",
+    });
+    await db.insert(activityLog).values(
+      Array.from({ length: ISSUE_CREATE_RUN_LIMIT }, () => ({
+        companyId,
+        actorType: "agent" as const,
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.issue_create_observed",
+        entityType: "heartbeat_run",
+        entityId: runId,
+      })),
+    );
+
+    const input = {
+      companyId,
+      runId,
+      agentId,
+      parentIssueId: null,
+      title: "Throwaway probe 41",
+      now: ISSUE_CREATE_RUN_ENFORCE_AT,
+    };
+
+    // The route's shape: charge inside the transaction, refuse, let it unwind, then
+    // record the refusal on a connection the rollback cannot reach.
+    const decision = await db.transaction(async (tx) => {
+      const refused = await observeIssueCreate(tx, input);
+      expect(refused).toMatchObject({ allowed: false, count: ISSUE_CREATE_RUN_LIMIT + 1 });
+      return refused;
+    });
+    await recordRefusedIssueCreate(db, { ...input, decision: decision! });
+
+    const rejected = await db
+      .select({ action: activityLog.action, entityType: activityLog.entityType, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.runId, runId), eq(activityLog.action, "issue.issue_create_cap_rejected")));
+    expect(rejected).toEqual([{
+      action: "issue.issue_create_cap_rejected",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      details: expect.objectContaining({
+        title: "Throwaway probe 41",
+        cap: ISSUE_CREATE_RUN_LIMIT,
+        count: ISSUE_CREATE_RUN_LIMIT + 1,
+        allowed: false,
+      }),
+    }]);
+    // The refusal is not a charge: the observed tally is untouched.
+    const observed = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(and(eq(activityLog.runId, runId), eq(activityLog.action, "issue.issue_create_observed")));
+    expect(observed).toHaveLength(ISSUE_CREATE_RUN_LIMIT);
   });
 
   // Decomposition under your own epic is free. The predicate is `runScopeIsIssue`,

@@ -265,6 +265,104 @@ export async function observeCrossIssueInfluence(
   });
 }
 
+type IssueCreateLedgerInput = {
+  companyId: string;
+  runId: string;
+  agentId: string;
+  responsibleUserId?: string | null;
+  parentIssueId?: string | null;
+  parentIssueIdentifier?: string | null;
+  title?: string | null;
+  assigneeAgentId?: string | null;
+};
+
+/**
+ * One create-ledger row, used for both the charge and the refusal so the two cannot
+ * describe the same attempt differently.
+ *
+ * Keyed on the heartbeat run, not an issue: the charge is taken before the insert, so
+ * a refusal mints nothing and there is no issue id to name — and
+ * `activity_log.entity_id` is NOT NULL. The counter is per-run anyway, so
+ * `activity_log_entity_type_id_idx` yields a run's whole create ledger in one lookup.
+ */
+function issueCreateLedgerRow(input: IssueCreateLedgerInput & {
+  sourceIssueId: string | null;
+  decision: CrossIssueInfluenceDecision;
+  run?: { responsibleUserId: string | null } | null;
+}) {
+  return {
+    companyId: input.companyId,
+    actorType: "agent" as const,
+    actorId: input.agentId,
+    agentId: input.agentId,
+    runId: input.runId,
+    responsibleUserId:
+      input.responsibleUserId ?? input.run?.responsibleUserId ?? null,
+    action: input.decision.allowed
+      ? ISSUE_CREATE_ACTIVITY
+      : ISSUE_CREATE_REJECTED_ACTIVITY,
+    entityType: "heartbeat_run",
+    entityId: input.runId,
+    details: {
+      sourceIssueId: input.sourceIssueId,
+      parentIssueId: input.parentIssueId ?? null,
+      parentIssueIdentifier: input.parentIssueIdentifier ?? null,
+      title: input.title ?? null,
+      assigneeAgentId: input.assigneeAgentId ?? null,
+      count: input.decision.count,
+      cap: input.decision.cap,
+      mode: input.decision.mode,
+      enforceAt: input.decision.enforceAt,
+      allowed: input.decision.allowed,
+    },
+  };
+}
+
+/**
+ * Records a refused create, after the transaction that would have inserted the task
+ * has already rolled back.
+ *
+ * Separate from `observeIssueCreate` because the refusal has to outlive that
+ * rollback — see the comment at the insert there for why it can be neither inside the
+ * transaction nor concurrent with it. Best-effort: losing the audit row must not turn
+ * a clean 429 into a 500, so a failure here is logged and swallowed.
+ */
+export async function recordRefusedIssueCreate(
+  db: Db,
+  input: IssueCreateLedgerInput & {
+    decision: CrossIssueInfluenceDecision;
+    sourceIssueId?: string | null;
+  },
+): Promise<void> {
+  try {
+    await db.insert(activityLog).values(
+      issueCreateLedgerRow({ ...input, sourceIssueId: input.sourceIssueId ?? null }),
+    );
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        event: "issue_create_cap",
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
+      },
+      "issue create refusal could not be recorded",
+    );
+  }
+}
+
+/** Thrown by a create-budget guard so the caller can record the refusal and answer 429. */
+export class IssueCreateBudgetExceededError extends Error {
+  constructor(
+    readonly decision: CrossIssueInfluenceDecision,
+    readonly sourceIssueId: string | null,
+  ) {
+    super("Per-run task-creation budget exceeded");
+    this.name = "IssueCreateBudgetExceededError";
+  }
+}
+
 /** The transaction this observer must run in, so its row lock actually holds. */
 export type RunWriteTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -311,7 +409,7 @@ export async function observeIssueCreate(
     assigneeAgentId?: string | null;
     now?: Date;
   },
-): Promise<CrossIssueInfluenceDecision | null> {
+): Promise<(CrossIssueInfluenceDecision & { sourceIssueId: string | null }) | null> {
   // API-key callers control the run header, so a malformed value must never reach a
   // PostgreSQL uuid cast. Unlike the cross-issue guard this is not a denial — see (2).
   if (!isUuidLike(input.runId)) {
@@ -376,33 +474,18 @@ export async function observeIssueCreate(
     .then((rows) => Number(rows[0]?.count ?? 0));
   const decision = evaluateIssueCreateLimit({ priorCount, now: input.now });
 
-  await tx.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: "agent",
-    actorId: input.agentId,
-    agentId: input.agentId,
-    runId: input.runId,
-    responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
-    action: decision.allowed ? ISSUE_CREATE_ACTIVITY : ISSUE_CREATE_REJECTED_ACTIVITY,
-    // The charge is taken *before* the insert, so a refusal mints nothing — which
-    // means there is no issue id to key the row on, and `activity_log.entity_id` is
-    // NOT NULL. The counter is per-run anyway, so the run is the right entity: the
-    // entity-type/id index then yields a run's whole create ledger in one lookup.
-    entityType: "heartbeat_run",
-    entityId: input.runId,
-    details: {
-      sourceIssueId,
-      parentIssueId: input.parentIssueId ?? null,
-      parentIssueIdentifier: input.parentIssueIdentifier ?? null,
-      title: input.title ?? null,
-      assigneeAgentId: input.assigneeAgentId ?? null,
-      count: decision.count,
-      cap: decision.cap,
-      mode: decision.mode,
-      enforceAt: decision.enforceAt,
-      allowed: decision.allowed,
-    },
-  });
+  // Only the charge goes in the caller's transaction. A refusal must not: the caller
+  // refuses by throwing, the throw rolls this transaction back, and a refusal row
+  // written here would roll back with it — leaving nothing but a log line. It cannot
+  // be written from a second connection either, because `activity_log.run_id`
+  // references `heartbeat_runs` and that foreign key needs `FOR KEY SHARE` on the row
+  // this transaction still holds `FOR UPDATE`. So the caller records refusals through
+  // `recordRefusedIssueCreate` once its transaction is gone.
+  if (decision.allowed) {
+    await tx.insert(activityLog).values(
+      issueCreateLedgerRow({ ...input, sourceIssueId, decision, run }),
+    );
+  }
 
   const logContext = {
     event: "issue_create_cap",
@@ -423,7 +506,9 @@ export async function observeIssueCreate(
     logger.warn(logContext, "issue create cap exceeded");
   }
 
-   return decision;
+  // `sourceIssueId` rides along so a caller recording the refusal after its rollback
+  // describes the same attempt the charge would have, without re-reading the run row.
+  return { ...decision, sourceIssueId };
 }
 
 export function crossIssueInfluenceLimitError(

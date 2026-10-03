@@ -162,6 +162,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 const mockObserveIssueCreate = vi.hoisted(() =>
   vi.fn(async (): Promise<Record<string, unknown> | null> => null));
+const mockRecordRefusedIssueCreate = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 
@@ -208,6 +209,14 @@ function registerRouteMocks() {
   vi.doMock("../services/cross-issue-influence-limit.js", async () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
     observeIssueCreate: mockObserveIssueCreate,
+    recordRefusedIssueCreate: mockRecordRefusedIssueCreate,
+    // Real class: the route branches on `instanceof`, so a stub would be a different
+    // identity and the refusal would fall through to a 500 instead of a 429.
+    IssueCreateBudgetExceededError: (
+      await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
+      )
+    ).IssueCreateBudgetExceededError,
     crossIssueInfluenceLimitError: vi.fn(),
     // Real, so the 429 an agent reads after a refused create is the shipped copy
     // rather than whatever a stub happens to return.
@@ -614,6 +623,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
     mockObserveIssueCreate.mockReset();
     mockObserveIssueCreate.mockResolvedValue(null);
+    mockRecordRefusedIssueCreate.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockReset();
@@ -1425,6 +1435,19 @@ describe("agent issue mutation checkout ownership", () => {
     });
     expect(res.body.error).toContain("next heartbeat");
     expect(inserted).toBe(false);
+    // The refusal still has to leave a trace. It cannot be written inside the create
+    // transaction, because the throw that refuses rolls that transaction back, so the
+    // route records it once `create` has unwound.
+    expect(mockRecordRefusedIssueCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        title: "Throwaway probe 18",
+        decision: expect.objectContaining({ allowed: false, count: 41, cap: 40 }),
+      }),
+    );
   });
 
   it("does not charge board creates against any run budget", async () => {
