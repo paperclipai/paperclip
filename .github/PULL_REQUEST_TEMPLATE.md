@@ -92,6 +92,12 @@
 
 ## Checklist
 
+<!--
+  Author checklist below. Reviewers: also walk
+  doc/reviews/code-review-checklist.md before approve.
+  See doc/reviews/README.md for branch-protection / review expectations.
+-->
+
 - [ ] I have included a thinking path that traces from project context to this change
 - [ ] I have specified the model used (with version and capability details)
 - [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work
@@ -103,6 +109,8 @@
 - [ ] I have added or updated tests where applicable
 - [ ] I have updated relevant documentation to reflect my changes
 - [ ] I have considered and documented any risks above
+- [ ] For behaviour / schema / auth / data changes: I expect the reviewer to apply [`doc/reviews/code-review-checklist.md`](doc/reviews/code-review-checklist.md) (correctness, safety, tests, compatibility, observability, operability, performance, docs)
+- [ ] High-risk changes (auth, payments, migrations, external contracts): rollback plan is attached or linked in Risks
 - [ ] All Paperclip CI gates are green
 - [ ] Greptile is 5/5 with no open P2s, recommendations, or follow-ups
 - [ ] I will address all Greptile and reviewer comments before requesting merge
