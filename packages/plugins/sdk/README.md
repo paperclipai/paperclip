@@ -100,7 +100,7 @@ runWorker(plugin, import.meta.url);
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
-**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `attention`, `decisions`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 
@@ -324,6 +324,9 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `activity.read` |
 | | `costs.read` |
 | | `issues.orchestration.read` |
+| | `attention.read` |
+| | `decision.queues.read` |
+| | `decision.triage.manage` |
 | | `access.members.read` |
 | | `access.invites.read` |
 | | `authorization.grants.read` |
@@ -605,6 +608,56 @@ Required capabilities:
 | `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
 
 Plugin-originated mutations are logged with `actorType: "plugin"` and details fields `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
+
+## Attention and Decision Triage APIs
+
+A plugin can read the attention feed (the decision inbox) and triage decisions
+for the board user who uses the plugin. The plugin does not name the user. The
+host binds each call to the signed-in board user whose `getData` or
+`performAction` bridge call (or scoped API request) started the current
+invocation. Calls from jobs, event handlers, agent tools, and timers have no
+such user, and the host rejects them.
+
+On each call, the host makes sure that the user is an active human member of
+the company. It then applies the same authorization and per-source read checks
+as the web app's own routes. Thus a plugin sees and changes only what that user
+can see and change in the web app. Read calls accept viewer members. Write calls
+reject them. Timestamps in results are ISO 8601 strings.
+
+```ts
+ctx.data.register("decisions", async ({ companyId }) => {
+  const feed = await ctx.attention.list({ companyId, sort: "decide", limit: 50 });
+  const queues = await ctx.decisions.queues.list({ companyId });
+  const items = await ctx.decisions.queues.listItems({ companyId, key: "prs" });
+  return { feed, queues, items };
+});
+
+ctx.actions.register("triage", async ({ companyId, approvalId }) => {
+  const source = { companyId, sourceKind: "approval" as const, sourceId: approvalId };
+  await ctx.decisions.triage.get(source);
+  await ctx.decisions.retention.setKeep({ ...source, keep: true });
+  return ctx.decisions.triage.update({ ...source, decideBy: "this_week", snoozedUntil: null });
+});
+```
+
+`ctx.attention.list` with `all: true` requires a `queue` filter.
+
+In tests, pass the user to `harness.getData(key, params, { companyId, actor: { type: "user", userId } })`
+or `harness.performAction(...)` with the same options.
+
+`decideBy` is `"today"`, `"this_week"`, `"whenever"`, a `YYYY-MM-DD` date, or
+`null`. `snoozedUntil` is an ISO date-time or `null`. Omit a field to keep its
+current value.
+
+Triage and retention rows are attributed to the user. The activity log records
+the plugin as the actor (`actorType: "plugin"`) and the user as the initiating
+actor.
+
+| API | Capability |
+|-----|------------|
+| `ctx.attention.list` | `attention.read` |
+| `ctx.decisions.queues.list` / `listItems`, `ctx.decisions.triage.get` | `decision.queues.read` |
+| `ctx.decisions.triage.update`, `ctx.decisions.retention.setKeep` / `archive` / `revive` | `decision.triage.manage` |
 
 ## UI quick start
 

@@ -32,6 +32,13 @@ import type {
   ConnectionRequestResult,
   ConnectionsSearchResult,
   Approval,
+  AttentionFeed,
+  AttentionSortMode,
+  AttentionSourceKind,
+  DecisionQueue,
+  DecisionQueueItem,
+  DecisionTriage,
+  DecisionTriageDecideBy,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -1654,6 +1661,139 @@ export interface PluginApprovalsClient {
 }
 
 /**
+ * Options for `ctx.attention.list`. Mirrors the query of the web app's
+ * `GET /companies/:companyId/attention` route.
+ *
+ * The feed is the view of the board user who started the current invocation
+ * (their own dismissals). See {@link PluginDecisionsClient} for how the host
+ * finds that user.
+ */
+export interface PluginAttentionListInput {
+  companyId: string;
+  includeDismissed?: boolean;
+  archived?: boolean;
+  /** Return the full filtered snapshot in one response. Requires `queue`. */
+  all?: boolean;
+  activitySince?: string;
+  activityUntil?: string;
+  /** Decision queue key to filter by. */
+  queue?: string;
+  sort?: AttentionSortMode;
+  cursor?: string;
+  limit?: number;
+}
+
+/**
+ * `ctx.attention` — read the company attention feed (the decision inbox).
+ *
+ * Requires `attention.read`.
+ */
+export interface PluginAttentionClient {
+  list(input: PluginAttentionListInput): Promise<AttentionFeed>;
+}
+
+/** Identifies one attention source (the thing a decision is about). */
+export interface PluginDecisionSourceRef {
+  companyId: string;
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+}
+
+/** A decision queue as `ctx.decisions` returns it. Timestamps are ISO 8601 strings. */
+export type PluginDecisionQueue = Omit<DecisionQueue, "createdAt" | "updatedAt"> & {
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One item of a decision queue. Timestamps are ISO 8601 strings. */
+export type PluginDecisionQueueItem = Omit<DecisionQueueItem, "createdAt"> & {
+  createdAt: string;
+};
+
+/** The triage (decide-by, snooze) of one source. Timestamps are ISO 8601 strings. */
+export type PluginDecisionTriage = Omit<DecisionTriage, "snoozedUntil" | "createdAt" | "updatedAt"> & {
+  snoozedUntil: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * Retention state of one attention source, as returned by
+ * `ctx.decisions.retention.*`. Timestamps are ISO 8601 strings.
+ */
+export interface PluginDecisionRetentionState {
+  id: string;
+  companyId: string;
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  sourceActivityAt: string;
+  keep: boolean;
+  archivedAt: string | null;
+  archivedReason: string | null;
+  archivedByType: "agent" | "user" | "system" | null;
+  archivedByAgentId: string | null;
+  archivedByUserId: string | null;
+  archivedByRunId: string | null;
+  version: number;
+  archiveVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * `ctx.decisions` — read decision queues and triage, and triage decisions on
+ * behalf of the board user who started the current invocation.
+ *
+ * Requires `decision.queues.read` for `queues.list`, `queues.listItems`, and
+ * `triage.get`; `decision.triage.manage` for `triage.update` and the
+ * `retention` methods.
+ *
+ * The plugin does not name the user. The host binds every call to the signed-in
+ * board user who started the current host invocation: a `getData` or
+ * `performAction` bridge call from the plugin UI, or a scoped plugin API
+ * request. Calls from a job, an event handler, an agent tool, or a timer have no
+ * such user, and the host rejects them. The host re-verifies the user's active
+ * membership on each call and applies the same authorization and per-source
+ * read checks as the web app's decision-queue routes, so a plugin can see and
+ * change only what that user can see and change in the web app. Write methods
+ * reject viewer members. Triage and retention rows are attributed to the user;
+ * the activity log records the plugin as the actor and the user as the
+ * initiating actor.
+ */
+export interface PluginDecisionsClient {
+  queues: {
+    /** List the company's decision queues, with item counts visible to the user. */
+    list(input: { companyId: string }): Promise<PluginDecisionQueue[]>;
+    /** List the items in one queue that the user can read. */
+    listItems(input: { companyId: string; key: string }): Promise<PluginDecisionQueueItem[]>;
+  };
+  triage: {
+    /** Read the triage (decide-by, snooze) of one source. `null` when none is set. */
+    get(input: PluginDecisionSourceRef): Promise<PluginDecisionTriage | null>;
+    /**
+     * Set the decide-by bucket or date and/or the snooze of one source.
+     * `decideBy` is `"today"`, `"this_week"`, `"whenever"`, a `YYYY-MM-DD`
+     * date, or `null` to clear. `snoozedUntil` is an ISO date-time or `null`
+     * to clear. Omit a field to keep its current value.
+     */
+    update(
+      input: PluginDecisionSourceRef & {
+        decideBy?: DecisionTriageDecideBy | null;
+        snoozedUntil?: string | null;
+      },
+    ): Promise<PluginDecisionTriage>;
+  };
+  retention: {
+    /** Pin (`keep: true`) or unpin a source so the idle sweeper does not archive it. */
+    setKeep(input: PluginDecisionSourceRef & { keep: boolean }): Promise<PluginDecisionRetentionState>;
+    /** Archive a source. Idempotent: an archived source is returned unchanged. */
+    archive(input: PluginDecisionSourceRef): Promise<PluginDecisionRetentionState>;
+    /** Revive an archived source. Idempotent. */
+    revive(input: PluginDecisionSourceRef): Promise<PluginDecisionRetentionState>;
+  };
+}
+
+/**
  * `ctx.agents` — read and manage agents.
  *
  * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
@@ -2181,6 +2321,12 @@ export interface PluginContext {
 
   /** Read and decide company approvals. Requires `approvals.read` / `approvals.respond`. */
   approvals: PluginApprovalsClient;
+
+  /** Read the company attention feed. Requires `attention.read`. */
+  attention: PluginAttentionClient;
+
+  /** Read and triage decisions. Requires `decision.queues.read` / `decision.triage.manage`. */
+  decisions: PluginDecisionsClient;
 
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;

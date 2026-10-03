@@ -32,6 +32,7 @@ import type {
   IssueThreadInteraction,
   CreateIssueThreadInteractionInput,
   Approval,
+  AttentionFeed,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -58,6 +59,12 @@ import type {
   PluginIssueRelationSummary,
   PluginIssueSubtree,
   PluginIssueAttachmentContent,
+  PluginAttentionListInput,
+  PluginDecisionSourceRef,
+  PluginDecisionRetentionState,
+  PluginDecisionQueue,
+  PluginDecisionQueueItem,
+  PluginDecisionTriage,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
   PluginJobContext,
@@ -282,6 +289,13 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  /**
+   * The signed-in board user who started this invocation, when one did. The
+   * host sets it from its own authenticated request (a UI bridge call or a
+   * scoped plugin API request), never from worker input. Host methods that act
+   * for a user (attention and decision triage) use only this value.
+   */
+  actorUserId?: string;
 }
 
 /**
@@ -407,6 +421,8 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /** Authenticated actor context resolved by the host, never by caller params. */
+  actorContext?: PluginPerformActionActorContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
 }
@@ -2086,6 +2102,45 @@ export interface WorkerToHostMethods {
       decisionNote?: string | null;
     },
     result: { approval: Approval; applied: boolean },
+  ];
+
+  // Attention feed and decision triage. Every method acts for the board user
+  // who started the current invocation (`PluginInvocationScope.actorUserId`).
+  // The host rejects calls that have no such user.
+  "attention.list": [
+    params: PluginAttentionListInput,
+    result: AttentionFeed,
+  ];
+  "decisions.queues.list": [
+    params: { companyId: string },
+    result: PluginDecisionQueue[],
+  ];
+  "decisions.queues.listItems": [
+    params: { companyId: string; key: string },
+    result: PluginDecisionQueueItem[],
+  ];
+  "decisions.triage.get": [
+    params: PluginDecisionSourceRef,
+    result: PluginDecisionTriage | null,
+  ];
+  "decisions.triage.update": [
+    params: PluginDecisionSourceRef & {
+      decideBy?: string | null;
+      snoozedUntil?: string | null;
+    },
+    result: PluginDecisionTriage,
+  ];
+  "decisions.retention.setKeep": [
+    params: PluginDecisionSourceRef & { keep: boolean },
+    result: PluginDecisionRetentionState,
+  ];
+  "decisions.retention.archive": [
+    params: PluginDecisionSourceRef,
+    result: PluginDecisionRetentionState,
+  ];
+  "decisions.retention.revive": [
+    params: PluginDecisionSourceRef,
+    result: PluginDecisionRetentionState,
   ];
 
   // Agents (read)
