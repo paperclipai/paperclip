@@ -51,6 +51,14 @@ class FakeClock {
   }
 }
 
+// FakeClock.advance() fires timers synchronously, but the process-activity
+// monitor completes each poll only after its async sample resolves. One
+// immediate tick drains the pending poll continuations so the next advance
+// sees the freshly scheduled poll timers.
+async function flushMonitorWork(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 describe("resolveOpenCodeInactivityTimeout", () => {
   it("defaults to 30 minutes", () => {
     expect(DEFAULT_OPENCODE_OUTPUT_INACTIVITY_TIMEOUT_MS).toBe(30 * 60 * 1000);
@@ -269,7 +277,7 @@ describe("createOpenCodeOutputInactivityMonitor", () => {
     expect(fireCount).toBe(0);
   });
 
-  it("retry-storm stderr plus an idle process does NOT keep the run alive (composed production wiring)", () => {
+  it("retry-storm stderr plus an idle process does NOT keep the run alive (composed production wiring)", async () => {
     const clock = new FakeClock();
     let fireCount = 0;
     const inactivity = createOpenCodeOutputInactivityMonitor({
@@ -286,11 +294,15 @@ describe("createOpenCodeOutputInactivityMonitor", () => {
     // backoff sleeps — CPU ticks, IO bytes, and the child list stay
     // unchanged — so the activity monitor must never report progress and the
     // retry storm must still be bounded despite its stderr traffic.
+    let sampleCalls = 0;
     const activity = createOpenCodeProcessActivityMonitor({
       pid: 4242,
       processGroupId: 4242,
       intervalMs: 100,
-      sample: async () => ({ cpuTicks: 10, ioBytes: 100, processIds: "4242" }),
+      sample: async () => {
+        sampleCalls += 1;
+        return { cpuTicks: 10, ioBytes: 100, processIds: "4242" };
+      },
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
       clearTimer: (handle) => clock.clearTimer(handle),
       onActivity: () => inactivity.noteProcessActivity(),
@@ -299,10 +311,61 @@ describe("createOpenCodeOutputInactivityMonitor", () => {
     for (let i = 0; i < 48 && fireCount === 0; i += 1) {
       clock.advance(250);
       inactivity.noteOutputChunk("stderr", chunk);
+      // FakeClock.advance() runs timers synchronously, but each poll awaits
+      // its async sample before it can compare and schedule the next one —
+      // yield so the production pipeline actually executes between ticks.
+      await flushMonitorWork();
     }
     activity.stop();
     inactivity.stop();
+    // The idle snapshots were really sampled (polling ran through the yields)
+    // and the unchanged process state never reset the inactivity window.
+    expect(sampleCalls).toBeGreaterThan(0);
+    expect(inactivity.state().processActivityCount).toBe(0);
     expect(fireCount).toBe(1);
+  });
+
+  it("retry-storm stderr plus an ACTIVE process keeps the run alive (composed production wiring)", async () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const inactivity = createOpenCodeOutputInactivityMonitor({
+      timeoutMs: 1_000,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+    // The mirror case: a genuinely working tool execution changes CPU ticks
+    // between polls. Even with stderr traffic flying, those activity reports
+    // must keep resetting the inactivity window — a long silent-but-busy run
+    // is healthy, not doomed.
+    let sampleCalls = 0;
+    const activity = createOpenCodeProcessActivityMonitor({
+      pid: 4242,
+      processGroupId: 4242,
+      intervalMs: 100,
+      sample: async () => {
+        sampleCalls += 1;
+        return { cpuTicks: 10 * sampleCalls, ioBytes: 100, processIds: "4242" };
+      },
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onActivity: () => inactivity.noteProcessActivity(),
+    });
+    const chunk = "ERROR stream error, retrying in 2.0s\n";
+    for (let i = 0; i < 48; i += 1) {
+      clock.advance(250);
+      inactivity.noteOutputChunk("stderr", chunk);
+      await flushMonitorWork();
+    }
+    activity.stop();
+    inactivity.stop();
+    expect(sampleCalls).toBeGreaterThan(0);
+    expect(inactivity.state().processActivityCount).toBeGreaterThan(0);
+    // 48 * 250ms = 12s > timeoutMs — the run stayed alive the whole time.
+    expect(fireCount).toBe(0);
   });
 
   it("multiple JSONL events in one chunk all reset the timer", () => {

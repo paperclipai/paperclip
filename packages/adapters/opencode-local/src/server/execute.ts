@@ -877,17 +877,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         processActivityMonitor.current?.stop();
         monitor?.stop();
         if (sigkillTimer) {
-          // The run resolved before the SIGKILL grace ended — e.g. opencode
-          // exited promptly after SIGTERM while a detached tool subprocess in
-          // its process group ignored SIGTERM and closed its inherited stdio.
-          // Escalate to SIGKILL now if the group is still alive instead of
-          // canceling the forced shutdown and leaking the subprocess.
-          if (canSignalSpawnTarget(killTarget, executionTargetIsRemote) && isSpawnTargetAlive(killTarget)) {
-            const stillSent = signalOpenCodeChild(killTarget, "SIGKILL");
-            if (stillSent) monitorTerminationSignal = "SIGKILL";
+          // The run resolved during the SIGTERM grace — e.g. opencode exited
+          // promptly after SIGTERM while a detached tool subprocess in its
+          // process group ignored SIGTERM and closed its inherited stdio.
+          // When the group still exists, keep the scheduled SIGKILL so that
+          // subprocess receives the full promised grace window before the
+          // forced shutdown; cancel only when there is nothing left to
+          // signal, so the escalation cannot be lost and leak the group.
+          if (!canSignalSpawnTarget(killTarget, executionTargetIsRemote) || !isSpawnTargetAlive(killTarget)) {
+            clearTimeout(sigkillTimer);
+            sigkillTimer = null;
           }
-          clearTimeout(sigkillTimer);
-          sigkillTimer = null;
         }
         if (monitorLogPromise) {
           await monitorLogPromise;

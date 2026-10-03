@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -135,6 +136,83 @@ describe("OpenCode local skill injection", () => {
     expect(result.sessionParams).toMatchObject({ sessionId: "sess_keep" });
     expect(result.sessionDisplayId).toBe("sess_keep");
     expect(result.clearSession).toBe(false);
+  });
+
+  it("honors the remaining SIGTERM grace before SIGKILL when the group survives an early resolve", { timeout: 20_000 }, async () => {
+    if (process.platform === "win32") return;
+    // A real detached process group that ignores SIGTERM, mirroring a
+    // detached tool subprocess that survived its parent's SIGTERM and closed
+    // its inherited stdio.
+    const child = spawn("sh", ["-c", 'trap "" TERM; while :; do sleep 1; done'], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    const pgid = child.pid!;
+    const groupAlive = () => {
+      try {
+        process.kill(-pgid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    let groupWasAliveAfterSpawn = false;
+    await fs.writeFile(path.join(configHome, "fake-opencode-grace"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock
+      .mockReset()
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[4] as
+          | { onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void> }
+          | undefined;
+        await options?.onSpawn?.({ pid: pgid, processGroupId: pgid, startedAt: new Date().toISOString() });
+        groupWasAliveAfterSpawn = groupAlive();
+        // Stay silent past the 50ms inactivity window, then resolve while the
+        // SIGTERM grace is still running — opencode exiting promptly after
+        // SIGTERM is exactly the scenario the finally block must handle.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return probeResult({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "" });
+      });
+    try {
+      const result = await execute({
+        runId: "run-monitor-grace",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: "sess_grace", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: path.join(configHome, "fake-opencode-grace"),
+          cwd: configHome,
+          model: "openai/gpt-5",
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+          outputInactivityTimeoutMs: 50,
+        },
+        context: createPromptContextFixture(),
+        onLog: async () => {},
+      });
+      expect(groupWasAliveAfterSpawn).toBe(true);
+      expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
+      const monitorInfo = result.resultJson?.outputInactivityMonitor as
+        | { terminationSignal?: NodeJS.Signals | null }
+        | undefined;
+      expect(monitorInfo?.terminationSignal).toBe("SIGTERM");
+      // The run resolved well inside the 5s grace: the surviving group must
+      // still be alive right now — an immediate SIGKILL on resolve would have
+      // denied it the promised graceful window.
+      expect(groupAlive()).toBe(true);
+      // The scheduled SIGKILL must still fire once the grace elapses.
+      const exit = await exited;
+      expect(exit.signal).toBe("SIGKILL");
+    } finally {
+      if (groupAlive()) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }
+      await exited.catch(() => undefined);
+    }
   });
 
   it("injects runtime skills into the configured child HOME", async () => {
