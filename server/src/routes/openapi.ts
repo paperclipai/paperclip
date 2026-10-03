@@ -654,6 +654,65 @@ const cliAuthChallengeIdParamSchema = z.string().trim()
   .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/)
   .describe("CLI auth challenge UUID; malformed values return 400");
 
+// ─── Query parameter idioms for paged collections ────────────────────────────
+//
+// Declaring a parameter is not the same as declaring a RANGE. These routes
+// apply two different kinds of bound and only one of them is a true statement
+// in a published contract:
+//
+//   REJECTING  the handler answers 400 for an out-of-range value, so `minimum`
+//              and `maximum` describe a refusal a client can really observe.
+//   CLAMPING   the handler moves the value into range and answers 200, so a
+//              published range would advertise a 400 that does not exist. A
+//              client that trusted `maximum` would refuse its own request for
+//              a value the server accepts.
+//
+// So a clamped bound is deliberately left out of the schema and stated in the
+// operation description instead. `parametersFromSchema` emits only
+// `{name, in, required, schema}`, so the `.describe()` prose below is not in
+// the document yet; the operation description is the channel that is.
+//
+// Every query parameter here is `.optional()`. `required` is computed from the
+// schema, so a non-optional entry would publish a mandatory parameter — a
+// worse falsehood than the silence this change replaces.
+
+/** An integer whose out-of-range values are CLAMPED: type only, never a range. */
+const clampedIntQuery = (prose: string) =>
+  z.coerce.number().int().optional().describe(prose);
+
+/** A free-form string filter. */
+const stringQuery = (prose: string) => z.string().optional().describe(prose);
+
+/**
+ * A flag read as `value === "true" || value === "1"`.
+ *
+ * Deliberately NOT an enum: every other value, including a misspelling, is
+ * silently false rather than a 400, so an enum would publish a refusal the
+ * handler never performs.
+ */
+const looseBooleanFlagQuery = (prose: string) =>
+  z.string().optional().describe(prose);
+
+// The run log and the workspace-operation log are read through the same
+// byte-window helpers in `routes/agents.ts`, so they get one contract.
+const runLogWindowDescription =
+  "The log is read as a byte window, not a row page: `offset` is a byte " +
+  "offset and `limitBytes` is a byte count. `limitBytes` defaults to 256000 " +
+  "and is CLAMPED to the range 1-1048576; `offset` falls back to 0 when it " +
+  "cannot be parsed. Neither value is ever refused, so neither range is " +
+  "published as a schema constraint. Advance `offset` by the number of bytes " +
+  "already read to follow a growing log.";
+
+const runLogWindowQuerySchema = z.object({
+  offset: clampedIntQuery(
+    "Byte offset to start from. Default 0; an unparseable value also becomes 0. " +
+    "Never rejected.",
+  ),
+  limitBytes: clampedIntQuery(
+    "Maximum bytes to return. Default 256000, clamped to 1-1048576; never rejected.",
+  ),
+});
+
 const ErrorSchema = registry.register("Error", z.object({ error: z.string() }));
 
 const responses = {
@@ -1228,6 +1287,7 @@ function registerCurrentRoute(input: {
   path: string;
   tags: string[];
   summary: string;
+  description?: string;
   query?: z.ZodTypeAny;
   body?: z.ZodTypeAny;
   responses?: Record<string, OpenApiResponse>;
@@ -1246,6 +1306,7 @@ function registerCurrentRoute(input: {
     path: input.path,
     tags: input.tags,
     summary: input.summary,
+    ...(input.description ? { description: input.description } : {}),
     ...(request ? { request } : {}),
     responses: input.responses ?? {
       200: r.ok(),
@@ -3894,6 +3955,137 @@ registry.registerPath({
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
+// The filter keys the issue list and the blocked-issue count read in common.
+// Both handlers resolve them from `req.query` directly, so the two parameter
+// lists are kept in one place rather than restated.
+const issueFilterQueryShape = {
+  status: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe(
+      "Issue status. Repeat the parameter or pass a comma-separated list; " +
+      "entries are trimmed and blanks dropped.",
+    ),
+  assigneeAgentId: stringQuery(
+    "Agent UUID, or the literal `null` for unassigned issues. Any other " +
+    "non-empty value returns 422. An empty value is ignored.",
+  ),
+  participantAgentId: stringQuery("Agent UUID that participated in the issue."),
+  assigneeUserId: stringQuery(
+    "Board user id, or `me` for the authenticated board user. `me` returns " +
+    "403 for an agent actor.",
+  ),
+  projectId: stringQuery("Project id."),
+  workspaceId: stringQuery("Workspace id."),
+  executionWorkspaceId: stringQuery("Execution workspace id."),
+  parentId: stringQuery("Parent issue id. `parentIssueId` is an alias."),
+  parentIssueId: stringQuery("Alias of `parentId`; `parentId` wins when both are sent."),
+  descendantOf: stringQuery("Ancestor issue id; matches the whole subtree."),
+  createdFromIssueId: stringQuery("Issue id this issue was created from."),
+  labelId: stringQuery("Label id."),
+  originKind: stringQuery("Exact origin kind."),
+  originKindPrefix: stringQuery("Origin kind prefix."),
+  originId: stringQuery("Origin id."),
+  // ⛔ Accepted and INERT. Both handlers read this key into their filter object
+  // and no service reads it back, so the flag cannot change a response.
+  // Routine executions are included by DEFAULT; `excludeRoutineExecutions` is
+  // the only control. Declaring the key without this sentence would be the
+  // worse falsehood: a reader would infer that OMITTING it excludes them.
+  includeRoutineExecutions: looseBooleanFlagQuery(
+    "Accepted but has NO EFFECT. Routine executions are included by default. " +
+    "Use `excludeRoutineExecutions` to remove them.",
+  ),
+  excludeRoutineExecutions: looseBooleanFlagQuery(
+    "`true` or `1` excludes routine executions. Any other value is false. " +
+    "Ignored when `originKind` or `originId` is also sent, because those " +
+    "filters already select an origin.",
+  ),
+  includePluginOperations: looseBooleanFlagQuery(
+    "`true` or `1` includes plugin operations. Any other value is false.",
+  ),
+  hasPlanDocument: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .describe("Filter on the presence of a plan document. Any other value returns 400."),
+  q: stringQuery("Free-text search over the issue title and description."),
+} as const;
+
+// `limit` is 400 for a non-integer or a value <= 0, and then CLAMPED at
+// ISSUE_LIST_MAX_LIMIT, so `minimum` is a true statement here and `maximum` is
+// not. The clamp is in the operation description instead.
+const issueListQuerySchema = z.object({
+  ...issueFilterQueryShape,
+  view: z
+    .enum(["compact"])
+    .optional()
+    .describe("`compact` selects the board issue-list row contract. Any other value returns 400."),
+  attention: z
+    .enum(["blocked"])
+    .optional()
+    .describe("`blocked` restricts the list to blocked issues. Any other value returns 400."),
+  limit: z
+    .coerce.number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Maximum rows to return. A non-integer or a value below 1 returns 400."),
+  offset: z
+    .coerce.number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Rows to skip. A non-integer or a negative value returns 400."),
+  afterId: stringQuery(
+    "Keyset paging cursor: return rows after this issue UUID. Requires " +
+    "`sortField=id`, `sortDir=asc`, and `offset` either absent or 0; any other " +
+    "combination returns 422. An explicit `offset=0` is accepted.",
+  ),
+  sortField: z
+    .enum(["updated", "id"])
+    .optional()
+    .describe("Sort column. Any other value returns 400."),
+  sortDir: z
+    .enum(["asc", "desc"])
+    .optional()
+    .describe("Sort direction. Any other value returns 400."),
+  updatedSince: stringQuery(
+    "ISO 8601 timestamp; returns 400 when it cannot be parsed as a date.",
+  ),
+  touchedByUserId: stringQuery(
+    "Board user id, or `me` for the authenticated board user. `me` returns 403 for an agent actor.",
+  ),
+  inboxArchivedByUserId: stringQuery(
+    "Board user id, or `me` for the authenticated board user. `me` returns 403 for an agent actor.",
+  ),
+  unreadForUserId: stringQuery(
+    "Board user id, or `me` for the authenticated board user. `me` returns 403 for an agent actor.",
+  ),
+  includeBlockedBy: looseBooleanFlagQuery(
+    "`true` or `1` includes the blocking issues. Any other value is false.",
+  ),
+  includeBlockedInboxAttention: looseBooleanFlagQuery(
+    "`true` or `1` includes blocked inbox attention. Any other value is false.",
+  ),
+  includeLiveDescendantSummary: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .describe("Include a live descendant summary. Any other value returns 400."),
+});
+
+// ⛔ `limit` and `offset` are deliberately NOT declared here. This handler reads
+// both keys only to REFUSE them — `issues/count does not accept limit or
+// offset` is a 400 — so declaring them would publish paging support that does
+// not exist. Reading a key is not the same as honouring it.
+const issueCountQuerySchema = z.object({
+  ...issueFilterQueryShape,
+  attention: z
+    .enum(["blocked"])
+    .describe(
+      "Required. The route currently counts blocked issues only and returns " +
+      "400 when `attention` is absent or anything other than `blocked`.",
+    ),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/chats",
@@ -3910,10 +4102,29 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. " +
+    "The collection is paged with `limit`, `offset` and `afterId`. `limit` defaults to " +
+    "500 and is CLAMPED to 1000: a larger value returns the first 1000 rows with a 200, " +
+    "it is not refused, and the response does not report that rows were dropped. " +
+    "A caller that needs the whole collection must page with `offset` or `afterId` " +
+    "until a short page arrives. `afterId` is keyset paging and requires " +
+    "`sortField=id`, `sortDir=asc`, and `offset` either absent or 0; any other " +
+    "combination returns 422, so an explicit `offset=0` is accepted but paging " +
+    "by `offset` and by `afterId` together is not. `sortField=id` with " +
+    "`attention=blocked` also returns 422. " +
+    "`attention=blocked` selects a different query path, which honours `limit`, " +
+    "`offset`, `q` and the filter parameters but IGNORES `sortField`, `sortDir` " +
+    "and `updatedSince`, and treats `includeBlockedBy` and " +
+    "`includeBlockedInboxAttention` as always enabled. Those four are silently " +
+    "inert in that mode rather than refused. " +
+    "`includeRoutineExecutions` is accepted and has NO EFFECT in any mode: " +
+    "routine executions are included by default, and " +
+    "`excludeRoutineExecutions` is the only control. " +
+    "`excludeRoutineExecutions` is itself ignored when `originKind` or " +
+    "`originId` is also sent.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    query: issueListQuerySchema,
   },
   responses: {
     200: r.ok(),
@@ -4719,7 +4930,18 @@ registry.registerPath({
   path: "/api/routines/{id}/runs",
   tags: ["routines"],
   summary: "List runs for a routine",
-  request: { params: z.object({ id: z.string() }) },
+  description:
+    "`limit` defaults to 50 and is CLAMPED to the range 1-200 by the service. " +
+    "A larger, zero, negative or unparseable value is not refused, so the range " +
+    "is not published as a schema constraint.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      limit: clampedIntQuery(
+        "Maximum runs to return. Default 50, clamped to 1-200; never rejected.",
+      ),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -5374,7 +5596,22 @@ registry.registerPath({
   path: "/api/companies/{companyId}/activity",
   tags: ["activity"],
   summary: "List company activity",
-  request: { params: z.object({ companyId: z.string() }) },
+  description:
+    "`limit` defaults to 100 and is CLAMPED to the range 1-500. A larger or " +
+    "unparseable value is not refused, so the range is not published as a " +
+    "schema constraint. The collection has no offset or cursor parameter: " +
+    "`limit` selects the newest rows and there is no way to reach older ones.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: stringQuery("Restrict to activity for this agent."),
+      entityType: stringQuery("Restrict to activity on this entity type."),
+      entityId: stringQuery("Restrict to activity on this entity id."),
+      limit: clampedIntQuery(
+        "Maximum rows to return. Default 100, clamped to 1-500; never rejected.",
+      ),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -6811,7 +7048,24 @@ registry.registerPath({
   path: "/api/companies/{companyId}/heartbeat-runs",
   tags: ["runs"],
   summary: "List heartbeat runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
+  description:
+    "`limit` is CLAMPED to the range 1-1000 and an unparseable or zero value " +
+    "falls back to 200, so no value is refused and the range is not published " +
+    "as a schema constraint. The collection has no offset or cursor parameter: " +
+    "`limit` selects the newest runs and there is no way to reach older ones.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: stringQuery("Restrict to runs for this agent."),
+      limit: clampedIntQuery(
+        "Maximum runs to return. Clamped to 1-1000; an unparseable or zero " +
+        "value becomes 200. Never rejected.",
+      ),
+      summary: looseBooleanFlagQuery(
+        "`true` or `1` returns the summary projection. Any other value is false.",
+      ),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -6829,7 +7083,32 @@ registry.registerPath({
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
+  description:
+    "`limit` and `minCount` are both CLAMPED to a maximum of 50; a value of " +
+    "zero or below, or an unparseable one, falls back to the default rather " +
+    "than being refused, so neither range is published as a schema constraint. " +
+    "`minCount` pads the response with recent non-live runs up to that floor, " +
+    "so a non-zero `minCount` makes the result no longer purely live.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      limit: clampedIntQuery(
+        "Maximum runs to return. Default 50, clamped to a maximum of 50; a " +
+        "value of zero or below becomes 50. Never rejected.",
+      ),
+      minCount: clampedIntQuery(
+        "Padding floor of recent runs. Default 0, clamped to a maximum of 50; " +
+        "a value of zero or below becomes 0. Never rejected.",
+      ),
+      distinctTasks: z
+        .string()
+        .optional()
+        .describe(
+          "Exactly `true` collapses the result to one run per task. Any other " +
+          "value, including `1`, is false.",
+        ),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7167,7 +7446,24 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  description:
+    "Page the event stream by passing the highest `seq` already seen as " +
+    "`afterSeq`. `limit` defaults to 200 and is CLAMPED to the range 1-1000, " +
+    "so a larger value is not refused and the range is not published as a " +
+    "schema constraint. An unparseable `afterSeq` falls back to 0, which " +
+    "replays the run from the beginning rather than returning 400.",
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: z.object({
+      afterSeq: clampedIntQuery(
+        "Return events with a sequence number above this value. Default 0; an " +
+        "unparseable value also becomes 0. Never rejected.",
+      ),
+      limit: clampedIntQuery(
+        "Maximum events to return. Default 200, clamped to 1-1000; never rejected.",
+      ),
+    }),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -7176,7 +7472,11 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/log",
   tags: ["runs"],
   summary: "Get log for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  description: runLogWindowDescription,
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: runLogWindowQuerySchema,
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -7194,7 +7494,11 @@ registry.registerPath({
   path: "/api/workspace-operations/{operationId}/log",
   tags: ["runs"],
   summary: "Get log for a workspace operation",
-  request: { params: z.object({ operationId: z.string() }) },
+  description: runLogWindowDescription,
+  request: {
+    params: z.object({ operationId: z.string() }),
+    query: runLogWindowQuerySchema,
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -8750,7 +9054,27 @@ registry.registerPath({
   path: "/api/plugins/{pluginId}/logs",
   tags: ["plugins"],
   summary: "Get plugin logs",
-  request: { params: z.object({ pluginId: z.string() }) },
+  description:
+    "`limit` defaults to 25 and is CLAMPED to the range 1-500, so a larger or " +
+    "unparseable value is not refused and the range is not published as a " +
+    "schema constraint. `since` is also permissive: a value that cannot be " +
+    "parsed as a date is ignored rather than refused, so the response is the " +
+    "unfiltered newest page. There is no offset or cursor parameter.",
+  request: {
+    params: z.object({ pluginId: z.string() }),
+    query: z.object({
+      limit: clampedIntQuery(
+        "Maximum rows to return. Default 25, clamped to 1-500; never rejected.",
+      ),
+      level: stringQuery(
+        "Exact log level to match. An unknown level matches no rows rather than returning 400.",
+      ),
+      since: stringQuery(
+        "Return entries created at or after this timestamp. A value that " +
+        "cannot be parsed as a date is ignored, not refused.",
+      ),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -8823,8 +9147,27 @@ registry.registerPath({
   path: "/api/plugins/{pluginId}/jobs/{jobId}/runs",
   tags: ["plugins"],
   summary: "List runs for a plugin job",
-  request: { params: z.object({ pluginId: z.string(), jobId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "`limit` defaults to 25 and is the one limit on these run-list routes that " +
+    "is REJECTED rather than clamped: a value outside 1-500, or one that does " +
+    "not parse as a number, returns 400. The range below is therefore a real " +
+    "refusal a client can rely on. There is no offset or cursor parameter.",
+  request: {
+    params: z.object({ pluginId: z.string(), jobId: z.string() }),
+    query: z.object({
+      limit: z
+        .coerce.number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          "Maximum runs to return. Default 25. A value outside 1-500, or an " +
+          "unparseable one, returns 400.",
+        ),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -9605,11 +9948,6 @@ for (const route of [
     "/api/companies/{companyId}/search/extract",
     "Extract company search matches",
   ],
-  [
-    "get",
-    "/api/companies/{companyId}/issues/count",
-    "Count issues in a company",
-  ],
 ] as const) {
   registerCurrentRoute({
     method: route[0],
@@ -9618,6 +9956,22 @@ for (const route of [
     summary: route[2],
   });
 }
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/count",
+  tags: ["companies"],
+  summary: "Count blocked issues in a company",
+  description:
+    "Returns a single count. `attention=blocked` is required. The route is not " +
+    "paged: sending `limit` or `offset` returns 400, which is why neither is " +
+    "declared as a parameter. " +
+    "`includeRoutineExecutions` is accepted and has NO EFFECT: routine " +
+    "executions are included by default, and `excludeRoutineExecutions` is the " +
+    "only control. `excludeRoutineExecutions` is itself ignored when " +
+    "`originKind` or `originId` is also sent.",
+  query: issueCountQuerySchema,
+});
 
 registerCurrentRoute({
   method: "get",
@@ -10772,6 +11126,15 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/activity",
   tags: ["tool-access"],
   summary: "List tool connection activity",
+  description:
+    "`limit` defaults to 20 and is CLAMPED to the range 1-100 by the service, " +
+    "so a larger or unparseable value is not refused and the range is not " +
+    "published as a schema constraint. There is no offset or cursor parameter.",
+  query: z.object({
+    limit: clampedIntQuery(
+      "Maximum activity rows to return. Default 20, clamped to 1-100; never rejected.",
+    ),
+  }),
 });
 
 registerCurrentRoute({
