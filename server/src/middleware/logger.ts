@@ -1,6 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
 import pino from "pino";
-import type { Logger } from "pino";
+import type { Logger, TransportTargetOptions } from "pino";
 import { pinoHttp } from "pino-http";
+import { readConfigFile } from "../config-file.js";
+import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
@@ -18,27 +22,102 @@ const sharedOpts = {
   singleLine: true,
 };
 
-const isProduction = process.env.NODE_ENV === "production";
-export const logger = isProduction
-  ? pino({
-      level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
-      redact: [...HTTP_LOG_REDACT_PATHS],
-    })
-  : pino(
-      {
-        level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
-        redact: [...HTTP_LOG_REDACT_PATHS],
+export function resolveServerLogDir(): string {
+  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
+  if (envOverride) return resolveHomeAwarePath(envOverride);
+
+  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
+  if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
+
+  return resolveDefaultLogsDir();
+}
+
+export function resolveServerLogFilePath(): string {
+  return path.join(resolveServerLogDir(), "server.log");
+}
+
+export function isFileLoggingEnabled(): boolean {
+  if (process.env.PAPERCLIP_LOG_DIR?.trim()) return true;
+  const config = readConfigFile();
+  return config?.logging.mode === "file";
+}
+
+/**
+ * Create the log directory at 0700 and ensure the server log file ends up at 0600,
+ * even if Pino/sonic-boom creates it later with a umask-dependent default (typically
+ * 0644). Request bodies on 4xx/5xx responses can contain sensitive form fields, so
+ * group/other must never read. Safe to call at module init; exported so tests can
+ * exercise the same code path without importing the whole logger transport.
+ */
+export function ensureLogPathPermissions(dir: string, file: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+    if (!fs.existsSync(file)) {
+      fs.closeSync(fs.openSync(file, "a", 0o600));
+    }
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Non-fatal: continue even if the chmod fails (e.g., read-only mount or Windows ACLs).
+  }
+}
+
+function buildLogger(): Logger {
+  const isProduction = process.env.NODE_ENV === "production";
+  const consoleLevel =
+    process.env.PAPERCLIP_LOG_LEVEL?.trim() || (isProduction ? "info" : "debug");
+  const redact = [...HTTP_LOG_REDACT_PATHS];
+  const fileLogging = isFileLoggingEnabled();
+
+  const targets: TransportTargetOptions[] = [];
+
+  if (!isProduction) {
+    targets.push({
+      target: "pino-pretty",
+      options: {
+        ...sharedOpts,
+        ignore: "pid,hostname,req,res,responseTime",
+        colorize: true,
+        destination: 1,
       },
-      pino.transport({
-        target: "pino-pretty",
-        options: {
-          ...sharedOpts,
-          ignore: "pid,hostname,req,res,responseTime",
-          colorize: true,
-          destination: 1,
-        },
-      }),
-    );
+      level: consoleLevel,
+    });
+  }
+
+  if (fileLogging) {
+    const logDir = resolveServerLogDir();
+    const logFile = path.join(logDir, "server.log");
+    ensureLogPathPermissions(logDir, logFile);
+    if (isProduction) {
+      targets.unshift({
+        target: "pino/file",
+        options: { destination: 1 },
+        level: consoleLevel,
+      });
+    }
+    targets.push({
+      target: "pino-pretty",
+      options: {
+        ...sharedOpts,
+        colorize: false,
+        destination: logFile,
+        mkdir: true,
+      },
+      level: "debug",
+    });
+  }
+
+  if (targets.length === 0) {
+    return pino({ level: consoleLevel, redact });
+  }
+
+  return pino(
+    { level: "debug", redact },
+    pino.transport({ targets }),
+  );
+}
+
+export const logger = buildLogger();
 
 function requestClassificationUrl(req: {
   originalUrl?: unknown;

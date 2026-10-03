@@ -66,6 +66,26 @@ export function resolveDefaultLogsDir(input: {
   return path.resolve(resolvePaperclipInstanceRoot(input), "logs");
 }
 
+/** Canonical control-plane log file for file-mode instances: `<logDir>/server.log`. */
+export function resolveServerLogFilePath(input: {
+  logDir?: string;
+  homeDir?: string;
+  instanceId?: string;
+} = {}): string {
+  const logDir = input.logDir?.trim()
+    ? resolveHomeAwarePath(input.logDir)
+    : resolveDefaultLogsDir(input);
+  return path.resolve(logDir, "server.log");
+}
+
+/** Pre-`logs/` layout kept only for migration/doctor warnings. */
+export function resolveLegacyInstanceServerLogFilePath(input: {
+  homeDir?: string;
+  instanceId?: string;
+} = {}): string {
+  return path.resolve(resolvePaperclipInstanceRoot(input), "server.log");
+}
+
 export function resolveDefaultSecretsKeyFilePath(input: {
   homeDir?: string;
   instanceId?: string;
