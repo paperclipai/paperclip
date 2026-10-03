@@ -11317,30 +11317,44 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
+      // agentId + checkoutCompanyId guards in stampRunContextIssueId prevent a
+      // caller from stamping a run that belongs to a different agent or company.
+      // Set after the issueCompany fetch confirms the issue exists.
+      let checkoutCompanyId: string | undefined;
       // Stamps the issue ID into the heartbeat run's contextSnapshot so that
       // the cross-issue-influence check can recognise timer-triggered runs as
       // being scoped to this issue once they claim it.  Only writes when the
       // run has no existing issueId / taskId, so assignment-waked runs that
       // already carry an explicit source issue are left untouched.
       async function stampRunContextIssueId(): Promise<void> {
-        if (!checkoutRunId) return;
-        await db
-          .update(heartbeatRuns)
-          .set({
-            contextSnapshot: sql`case
-              when ${heartbeatRuns.contextSnapshot} is null
-                or (${heartbeatRuns.contextSnapshot}->>'issueId' is null
-                  and ${heartbeatRuns.contextSnapshot}->>'taskId' is null)
-              then jsonb_set(
-                coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
-                '{issueId}',
-                ${JSON.stringify(id)}::jsonb
-              )
-              else ${heartbeatRuns.contextSnapshot}
-            end`,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, checkoutRunId));
+        if (!checkoutRunId || !checkoutCompanyId) return;
+        try {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: sql`case
+                when ${heartbeatRuns.contextSnapshot} is null
+                  or (${heartbeatRuns.contextSnapshot}->>'issueId' is null
+                    and ${heartbeatRuns.contextSnapshot}->>'taskId' is null)
+                then jsonb_set(
+                  coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
+                  '{issueId}',
+                  ${JSON.stringify(id)}::jsonb
+                )
+                else ${heartbeatRuns.contextSnapshot}
+              end`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, checkoutRunId),
+                eq(heartbeatRuns.agentId, agentId),
+                eq(heartbeatRuns.companyId, checkoutCompanyId),
+              ),
+            );
+        } catch (err) {
+          logger.warn({ err, checkoutRunId }, "stampRunContextIssueId failed — checkout still succeeds");
+        }
       }
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -11348,6 +11362,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      checkoutCompanyId = issueCompany.companyId;
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });

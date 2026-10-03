@@ -275,7 +275,7 @@ describeEmbeddedPostgres(
         .post(`/api/issues/${issueId}/comments`)
         .send({ body: "Heartbeat write test comment" });
 
-      expect(commentRes.status).toBe(200);
+      expect(commentRes.status).toBe(201);
     });
   },
 );
