@@ -39,6 +39,7 @@
  */
 import { deriveRateCardCents } from "@paperclipai/shared";
 import postgres from "postgres";
+import { resolveMigrationConnection } from "./migration-runtime.js";
 
 interface CostEventRow {
   id: string;
@@ -121,10 +122,12 @@ export function resolveBackfill(row: {
 
 async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is required");
+  // Same resolution as `pnpm db:migrate`: DATABASE_URL when set, otherwise the
+  // embedded PostgreSQL instance for the active Paperclip config.
+  const resolved = await resolveMigrationConnection();
+  console.log(`Backfilling via ${resolved.source}`);
 
-  const sql = postgres(connectionString, { max: 1 });
+  const sql = postgres(resolved.connectionString, { max: 1 });
   try {
     const rows = (await sql`
       select id, model, occurred_at, cost_cents, input_tokens, cached_input_tokens,
@@ -205,6 +208,7 @@ async function main(): Promise<void> {
     console.log("Backfill complete.");
   } finally {
     await sql.end();
+    await resolved.stop();
   }
 }
 
