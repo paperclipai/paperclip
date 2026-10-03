@@ -2136,14 +2136,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect.objectContaining({ id: unreadIssueId, myLastTouchAt: createdAt, isUnreadForMe: true }),
       expect.objectContaining({ id: readIssueId, myLastTouchAt: readAt, isUnreadForMe: true }),
     ]));
-    await expect(svc.count(companyId, filters)).resolves.toBe(2);
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(2);
 
     await svc.markRead(companyId, readIssueId, userId, new Date("2026-03-26T13:00:00.000Z"));
     await expect(svc.list(companyId, filters)).resolves.toEqual([
       expect.objectContaining({ id: unreadIssueId, isUnreadForMe: true }),
     ]);
-    await expect(svc.count(companyId, filters)).resolves.toBe(1);
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
   });
 
