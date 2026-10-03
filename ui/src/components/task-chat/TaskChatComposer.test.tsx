@@ -317,6 +317,27 @@ describe("TaskChatComposer", () => {
     expect(editable().textContent).toBe("");
   });
 
+  it("settles a restored submission only once through StrictMode effect replay", async () => {
+    const key = "strict-restored-submission";
+    const attemptId = "aaf8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const submitted = "One text-only save interrupted by reload.";
+    const nextDraft = "A newer draft written while delivery was pending.";
+    saveDraft(key, `${submitted}\n\n${nextDraft}`);
+    saveDraftSubmission(key, {
+      attemptId, reviewed: false, nextDraftOffset: submitted.length + 2, submittedAttachmentIds: [],
+    });
+    render(
+      <StrictMode>
+        <TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={key}
+          confirmedSubmissionIds={new Set([attemptId])} />
+      </StrictMode>,
+    );
+    await flushAsync();
+    expect(editable().textContent).toBe(nextDraft);
+    expect(localStorage.getItem(key)).toBe(nextDraft);
+    expect(loadDraftSubmission(key)).toBeNull();
+  });
+
   it("automatically reconciles a restored submission by its server receipt, not its text", async () => {
     const key = "saved-receipt";
     const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
