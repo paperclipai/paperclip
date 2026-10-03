@@ -17,7 +17,18 @@ import {
   setOverridePaused,
 } from "../adapters/registry.js";
 
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
+vi.mock("@paperclipai/paperclip-runner/live", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+}));
+
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -330,6 +341,21 @@ describe("server adapter registry", () => {
       status: "fail",
       checks: [{ code: "paperclip_runner_acpx_agent_unavailable" }],
     });
+  });
+  it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
+    const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
+    const previous = process.env[key];
+    process.env[key] = JSON.stringify([{ agent: "cursor", model: "exact-model" }]);
+    try {
+      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+        companyId: "company-1", adapterType: "paperclip_runner",
+        config: { provider: "acpx", acpxAgent: "cursor", model: "exact-model" },
+      });
+      expect(result).toMatchObject({ status: "warn", checks: [{ code: "acpx_candidate_qualification_only" }] });
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
   });
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
     const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;

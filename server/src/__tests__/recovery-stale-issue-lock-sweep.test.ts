@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  completionContracts,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -12,6 +13,7 @@ import {
   issueRelations,
   issues,
   nativeRunFinalizations,
+  nativeRunResults,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -47,12 +49,14 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   afterEach(async () => {
     mockTelemetryClient.track.mockClear();
     await db.delete(nativeRunFinalizations);
+    await db.delete(nativeRunResults);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
-    await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(completionContracts);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -425,6 +429,80 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       executionRunId: issues.executionRunId,
     }).from(issues).where(eq(issues.id, issueId)))
       .resolves.toEqual([{ checkoutRunId: runningRunId, executionRunId: runningRunId }]);
+  });
+
+  async function seedPendingNativeResult(phase: string, options: { terminalIssue?: boolean; deferCoordinator?: boolean } = {}) {
+    const fixture = await seed();
+    const { companyId, agentId, runningRunId } = fixture;
+    const issueId = randomUUID();
+    const contractId = randomUUID();
+    const resultId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Workspace finalization fixture",
+      status: options.terminalIssue ? "done" : "in_progress", assigneeAgentId: agentId,
+      executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    await db.insert(completionContracts).values({
+      id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "fixture",
+      risk: "standard", completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
+      canonicalSha256: "fixture-contract", createdByActorType: "system", createdByActorId: "test",
+    });
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "native", nativeIssueId: issueId, nativePhase: phase,
+      processPid: 2_000_000_000, completionContractId: contractId,
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(nativeRunResults).values({
+      id: resultId, companyId, issueId, runId: runningRunId, completionContractId: contractId,
+      serverFingerprint: "fixture-result", schemaStatus: "accepted", resultJson: {}, canonicalSha256: "fixture-result",
+    });
+    const recordCoordinator = () => db.insert(nativeRunFinalizations).values({
+      runId: runningRunId, companyId, issueId, phase, resultId, attempt: 1,
+      nextAttemptAt: new Date(Date.now() + 30_000),
+      leaseOwner: "previous-controller", leaseExpiresAt: new Date(Date.now() - 30_000),
+    });
+    if (!options.deferCoordinator) await recordCoordinator();
+    return { ...fixture, issueId, recordCoordinator };
+  }
+
+  it.each(["observed", "workspace_finalizing", "ready_for_assessment", "arbitrating", "retryable_failure"])(
+    "preserves a completed native result in %s after its provider exits", async phase => {
+      const { runningRunId, issueId } = await seedPendingNativeResult(phase);
+      const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+      expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+      expect(await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running", errorCode: null }]);
+      expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)
+        .where(eq(issues.id, issueId))).toEqual([{ executionRunId: runningRunId }]);
+      expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks native finalization ownership when the coordinator appears after the liveness read", async () => {
+    const { runningRunId, recordCoordinator } = await seedPendingNativeResult("retryable_failure", { deferCoordinator: true });
+    const beforeOrphanedRunTerminalWrite = vi.fn(async () => { await recordCoordinator(); });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), beforeOrphanedRunTerminalWrite }).sweepStaleIssueLocks();
+    expect(beforeOrphanedRunTerminalWrite).toHaveBeenCalledOnce();
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running" }]);
+  });
+
+  it("still respects terminal issue authority while workspace finalization is pending", async () => {
+    const { runningRunId } = await seedPendingNativeResult("retryable_failure", { terminalIssue: true });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toContain(runningRunId);
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "succeeded" }]);
+  });
+
+  it("does not keep an orphan live after native finalization exhausts its retries", async () => {
+    const { runningRunId } = await seedPendingNativeResult("terminal_failure");
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toContain(runningRunId);
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "interrupted" }]);
   });
 
   it("preserves a process-less run while its in-process execution is still finalizing", async () => {

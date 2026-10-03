@@ -1,6 +1,10 @@
+import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import { redactCodexDiagnostic } from "./diagnostic-redaction.js";
+
+export { redactCodexDiagnostic } from "./diagnostic-redaction.js";
 
 export interface CodexRpcNotification {
   method: string;
@@ -30,6 +34,8 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  /** Runner-owned live capability projection; absent on native Codex transports. */
+  turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
     method: string,
     params: Record<string, unknown>,
@@ -194,6 +200,7 @@ class BoundedLineDecoder {
 }
 
 const SAFE_ENVIRONMENT_KEYS = [
+  "AGENT_HOME",
   "ALL_PROXY",
   "CODEX_HOME",
   "HOME",
@@ -237,40 +244,6 @@ export function sanitizedEnvironmentKeys(
   source: NodeJS.ProcessEnv = process.env,
 ): string[] {
   return Object.keys(createSanitizedCodexEnvironment(source)).sort();
-}
-
-export function redactCodexDiagnostic(message: string): string {
-  return message
-    .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [REDACTED]")
-    .replace(/Basic\s+([A-Za-z0-9+/=]+)/gi, (match, encoded: string) => {
-      try {
-        // Only redact an actual RFC 7617 credential. Treating every word after
-        // “Basic” as base64 corrupted ordinary question copy such as
-        // “Basic API” before it entered the Paperclip protocol.
-        const decoded = Buffer.from(encoded, "base64").toString("utf8");
-        return decoded.includes(":") ? "Basic [REDACTED]" : match;
-      } catch {
-        return match;
-      }
-    })
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@")
-    .replace(
-      /([?&](?:api[_-]?key|token|secret|password)=)[^&#\s]+/gi,
-      "$1[REDACTED]",
-    )
-    .replace(
-      /(["'](?:api[_-]?key|token|secret|password|authorization)["']\s*:\s*["'])[^"']+/gi,
-      "$1[REDACTED]",
-    )
-    .replace(
-      /(api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+/gi,
-      "$1=[REDACTED]",
-    )
-    .replace(
-      /(PAPERCLIP_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY)=[^\s]+/g,
-      "$1=[REDACTED]",
-    );
 }
 
 function proxyContainsCredentials(value: string): boolean {

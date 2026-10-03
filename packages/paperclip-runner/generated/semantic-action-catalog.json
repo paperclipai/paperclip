@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -198,6 +198,25 @@
         },
         "query": {
           "additionalProperties": true,
+          "type": "object"
+        },
+        "responseText": {
+          "additionalProperties": false,
+          "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. New live responses have a 1 GiB capture limit and a 4 GiB per-run capture budget. Existing larger assets remain readable in bounded pages. If a live response returns an artifact, continue on its content operation for a stable snapshot.",
+          "properties": {
+            "limitBytes": {
+              "default": 24576,
+              "maximum": 24576,
+              "minimum": 4,
+              "type": "integer"
+            },
+            "offsetBytes": {
+              "default": 0,
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
           "type": "object"
         }
       },
@@ -378,6 +397,53 @@
     "requiredClaims": [],
     "schema": "paperclip.semantic-action.v1",
     "title": "List document revisions",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Set a concise, descriptive title for the active task. When its titleNeedsGeneration is true, call this early with onlyIfProvisional: true to replace the initial prompt slice without overwriting a user's title. Use false only for an intentional rename. This changes no task status, ownership, or description.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "description": "Reuse this key on retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "onlyIfProvisional": {
+          "description": "True for automatic initial naming; preserves any title already chosen by a user or agent.",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Short title describing the requested outcome.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "title",
+        "onlyIfProvisional"
+      ],
+      "type": "object"
+    },
+    "operationId": "set_task_title",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Set task title",
     "version": 1
   },
   {

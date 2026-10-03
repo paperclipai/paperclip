@@ -14,7 +14,7 @@ const meta = {
   title: "Agents/Personas",
   component: AgentCharacter,
   args: { appearance, size: 256, state: "listening", label: "Chief of Staff" },
-  parameters: { docs: { description: { component: "Persistent cap-v1 identities. Avatars request on-demand PNGs from Paperclip; the hero alone loads ClipLab. Development Storybook uses PAPERCLIP_STORYBOOK_API_URL. Published Storybook packages PNGs from the same API renderer automatically during its build, including every preset and both densities; no running API is required." } } },
+  parameters: { docs: { description: { component: "Persistent cap-v1 identities. The hero alone loads ClipLab. Development Storybook renders capsule PNGs locally on demand; published Storybook packages the same PNGs during its build, including every preset and both densities. Neither needs a running API." } } },
   argTypes: {
     state: { control: "select", options: CHARACTER_STATES },
     size: { control: "select", options: AGENT_AVATAR_SIZES },

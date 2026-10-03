@@ -148,6 +148,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "url": std::env::var("PAPERCLIP_NATIVE_MCP_URL").ok(),
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
+                            "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -204,6 +206,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "goals"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
+            | "controls"
+            | "controls-wrong-ack"
+            | "controls-lazy"
+            | "controls-downgrade"
             | "turns"
             | "turns-wrong-turn"
             | "turns-wrong-cancel"
@@ -226,6 +232,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "permissions-interactive"
+            | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
             | "resolutions-projected-id"
@@ -387,7 +395,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start" && mode == "turns-permission" {
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-permission" | "permissions-interactive" | "permissions-wrong-ack"
+                    )
+                {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
@@ -398,6 +411,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "requestId":"permission-1",
                             "kind":"execute",
                             "title":"Run a command?",
+                            "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
                         }),
                     )?;
                     next_sequence += 1;
@@ -671,6 +685,9 @@ fn bootstrap_success(
     profile_digest: &str,
 ) -> Value {
     if command == "permission.resolve" {
+        if mode.starts_with("permissions-") {
+            return json!({"protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, "id": id, "ok":true, "result":{"resolved": mode != "permissions-wrong-ack"}});
+        }
         return json!({
             "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
             "id": id,
@@ -717,6 +734,7 @@ fn bootstrap_success(
                     "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
+                "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade")},
             })
         }
         "run.attach" => json!({
@@ -724,7 +742,12 @@ fn bootstrap_success(
             "catalogRevision": params.get("catalogRevision"),
         }),
         "turn.start" => json!({
+            "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-lazy"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-lazy")},
             "turnId": if mode == "turns-wrong-turn" { "wrong-turn" } else { params.get("turnId").and_then(Value::as_str).unwrap_or("missing") },
+        }),
+        "turn.steer" => json!({
+            "accepted": true, "turnId": params.get("turnId"), "controlId": params.get("controlId"),
+            "mode": if mode == "controls-wrong-ack" { json!("wrong") } else { params["mode"].clone() },
         }),
         "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
         "session.suspend" => json!({

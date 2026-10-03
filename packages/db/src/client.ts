@@ -5,7 +5,6 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
-import { withTransientWriteRetry } from "./transient-write-retry.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -255,15 +254,33 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   return driverOptions;
 }
 
+// A long advisory-lock transaction must not borrow the normal pool that its
+// work needs for progress writes. Keep connection configuration private to the
+// originating Db lifetime; callers receive neither URLs nor credentials.
+const dedicatedDbFactories = new WeakMap<object, () => Db>();
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
+  const factory = dedicatedDbFactories.get(db);
+  if (!factory) throw new Error("dedicated_connection_requires_create_db");
+  const dedicated = factory();
+  try { return await action(dedicated); }
+  finally { await dedicated.$client.end({ timeout: 1 }); }
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
-  // The registry keeps the real client (teardown must end the actual pool);
-  // drizzle gets the retrying face so a pooler-recycled socket replays the
-  // query instead of failing the request that happened to draw it.
-  return drizzlePg(withTransientWriteRetry(sql), { schema });
+  // A disconnect can lose the response after a statement has committed.
+  // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
+  // message cannot establish that replay is safe. Leave retries to callers
+  // that know the complete operation is idempotent.
+  const db = drizzlePg(sql, { schema });
+  dedicatedDbFactories.set(db, () => createDb(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }));
+  return db;
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {

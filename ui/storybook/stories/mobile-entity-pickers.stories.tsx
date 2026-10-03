@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { userEvent, within } from "storybook/test";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const assignees: InlineEntityOption[] = [
   { id: "agent-product", label: "Product Lead", searchText: "planning product" },
@@ -55,4 +57,23 @@ export const AssigneePicker: Story = {
 
 export const ProjectPicker: Story = {
   render: () => <OpenPicker kind="Project" options={projects} />,
+};
+
+export const SearchableSelectModal: Story = {
+  render: () => (
+    <div className="flex min-h-screen items-end p-4">
+      <SearchableSelect<string>
+        value=""
+        groups={[{ id: "projects", label: "Projects", options: projects.map((project) => ({ key: project.id, value: project.id, label: project.label })) }]}
+        onValueChange={() => undefined}
+        placeholder="Choose project"
+        mobileTitle="Select project"
+        searchPlaceholder="Search projects..."
+      />
+    </div>
+  ),
+  play: async () => {
+    const page = within(document.body);
+    await userEvent.click(await page.findByRole("combobox"));
+  },
 };

@@ -1,4 +1,5 @@
 import express from "express";
+import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -113,7 +114,9 @@ vi.mock("../services/instance-settings.js", async (importOriginal) => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
-  findActiveServerAdapter: vi.fn(() => mockAdapter),
+  findActiveServerAdapter: vi.fn((adapterType: string) => adapterType === "paperclip_runner"
+    ? { ...mockAdapter, supportsInstructionsBundle: true }
+    : mockAdapter),
   listAdapterModels: vi.fn(),
   detectAdapterModel: vi.fn(),
 }));
@@ -156,7 +159,9 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(() => mockAdapter),
-    findActiveServerAdapter: vi.fn(() => mockAdapter),
+    findActiveServerAdapter: vi.fn((adapterType: string) => adapterType === "paperclip_runner"
+      ? { ...mockAdapter, supportsInstructionsBundle: true }
+      : mockAdapter),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
   }));
@@ -1117,32 +1122,66 @@ describe.sequential("agent skill routes", () => {
     expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
   });
 
-  it("materializes the bundled CEO instruction set for default CEO agents", async () => {
+  it.each(["claude_local", "paperclip_runner"].flatMap((adapterType) =>
+    ["agents", "agent-hires"].map((route) => ({ adapterType, route })),
+  ))("materializes only the CEO entry file for $adapterType via $route", async ({ adapterType, route }) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableBetaSkills: false,
+      enableNativeRunner: true,
+    });
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
-      .post("/api/companies/company-1/agents")
+      .post(`/api/companies/company-1/${route}`)
       .send({
         name: "CEO",
         role: "ceo",
-        adapterType: "claude_local",
-        adapterConfig: {},
+        adapterType,
+        adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {},
       }));
 
-    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    const createdAgentId = expectResponseId(res.body.id);
-    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: createdAgentId,
-        role: "ceo",
-        adapterType: "claude_local",
-      }),
-      expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("You are the CEO."),
-        "HEARTBEAT.md": expect.stringContaining("CEO Heartbeat Checklist"),
-        "SOUL.md": expect.stringContaining("CEO Persona"),
-        "TOOLS.md": expect.stringContaining("# Tools"),
-      }),
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createdAgentId = expectResponseId(route === "agents" ? res.body.id : res.body.agent.id);
+    const entry = await readFile(new URL("../onboarding-assets/ceo/AGENTS.md", import.meta.url), "utf8");
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: createdAgentId, role: "ceo", adapterType }),
+      { "AGENTS.md": entry },
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+  });
+
+  it.each(["claude_local", "paperclip_runner"].flatMap((adapterType) =>
+    ["agents", "agent-hires"].map((route) => ({ adapterType, route })),
+  ))("preserves an explicit CEO instruction bundle for $adapterType via $route", async ({ adapterType, route }) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableBetaSkills: false,
+      enableNativeRunner: true,
+    });
+    const customFiles = {
+      "AGENTS.md": "You lead the bespoke research company. Read NOTES.md for its current focus.",
+      "NOTES.md": "Focus on the board's research questions.",
+    };
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post(`/api/companies/company-1/${route}`)
+      .send({
+        name: "Research Lead",
+        role: "ceo",
+        adapterType,
+        adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {},
+        instructionsBundle: { entryFile: "AGENTS.md", files: customFiles },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createdAgentId = expectResponseId(route === "agents" ? res.body.id : res.body.agent.id);
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: createdAgentId, role: "ceo", adapterType }),
+      customFiles,
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+    const returnedAgent = route === "agents" ? res.body : res.body.agent;
+    expect(returnedAgent.adapterConfig).toMatchObject({
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: `/tmp/${createdAgentId}/instructions/AGENTS.md`,
+    });
+    expect(returnedAgent.adapterConfig).not.toHaveProperty("promptTemplate");
   });
 
   it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {

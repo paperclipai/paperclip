@@ -1,5 +1,6 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { readApiJson } from "./response";
 
 const BASE = "/api";
 
@@ -42,7 +43,7 @@ function applyObservabilityHeaders(headers: Headers) {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestResponse(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
   if (!(body instanceof FormData) && !headers.has("Content-Type")) {
@@ -51,12 +52,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   applyObservabilityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, {
-    headers,
     credentials: "include",
     ...init,
+    headers,
   });
   if (!res.ok) {
-    const errorBody = await res.json().catch(() => null);
+    const errorBody = await readApiJson(res);
     const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, errorBody);
     if (recovery) return recovery;
     throw new ApiError(
@@ -65,8 +66,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       errorBody,
     );
   }
+  return res;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await requestResponse(path, init);
   if (res.status === 204) return undefined as T;
-  return res.json();
+  return readApiJson<T>(res);
 }
 
 // --- In-tab request coalescing for identical safe GETs -----------------------

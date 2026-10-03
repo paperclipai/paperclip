@@ -375,8 +375,15 @@ describe("adapter routes", () => {
       }),
     ]));
     const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
-    expect(acpxAgent).toBeUndefined();
-    expect(JSON.stringify(res.body)).toContain("ACPX Claude");
+    expect(acpxAgent).toMatchObject({
+      type: "select",
+      default: "claude",
+      meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      options: [
+        { value: "claude", label: "Claude" },
+        { value: "grok", label: "Grok Build" },
+      ],
+    });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 

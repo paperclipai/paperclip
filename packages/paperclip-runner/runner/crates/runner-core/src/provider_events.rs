@@ -195,9 +195,47 @@ pub fn project_acpx_state_event(
         AcpxProviderStateEvent::ToolResult(result) => {
             Ok(vec![project_acpx_tool_result(context, result)?])
         }
-        AcpxProviderStateEvent::PermissionRequest { .. } => Err(LocalRunnerError::invalid(
-            "ACPX permission request reached projection outside the pinned runner policy",
-        )),
+        AcpxProviderStateEvent::PermissionRequest {
+            request_id,
+            title,
+            details,
+            ..
+        } => {
+            validate_projection_identity(request_id, "permission request", SHORT_STABLE_ID_CHARS)?;
+            let choices = details
+                .get("choices")
+                .and_then(Value::as_array)
+                .filter(|choices| !choices.is_empty() && choices.len() <= 4)
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid("ACPX permission request omitted its choices")
+                })?;
+            let mut seen = std::collections::HashSet::new();
+            for choice in choices {
+                let key = choice.get("key").and_then(Value::as_str).unwrap_or("");
+                if !matches!(key, "accept" | "accept_for_session" | "decline" | "cancel")
+                    || !seen.insert(key)
+                    || choice
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .is_none_or(|label| label.is_empty() || label.len() > 500)
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX permission request contains invalid choices",
+                    ));
+                }
+            }
+            one(
+                "runtime_request.created",
+                EventPriority::P0,
+                json!({"request": {
+                    "schema":"paperclip.runtime_request.v2", "requestKind":"permission_approval",
+                    "requestId":request_id, "turnId":context.turn_id, "itemId":context.item_id,
+                    "type":"permission", "status":"pending", "prompt":title, "choices":choices,
+                    "details":details,
+                    "origin":{"adapter":"acpx-runtime-sidecar","provider":"acpx","method":"session/request_permission"},
+                }}),
+            )
+        }
         AcpxProviderStateEvent::InputRequest {
             request_id,
             question_set,
@@ -216,7 +254,7 @@ pub fn project_acpx_state_event(
                         .and_then(Value::as_str)
                 })
                 .map(|value| bounded_text(value, MAX_TEXT_CHARS))
-                .unwrap_or_else(|| "Codex needs your input".to_owned());
+                .unwrap_or_else(|| "Provider needs your input".to_owned());
             let origin = project_runtime_request_origin(origin.as_ref())?;
             one(
                 "runtime_request.created",
@@ -235,6 +273,60 @@ pub fn project_acpx_state_event(
                         "origin": origin,
                     },
                 }),
+            )
+        }
+        AcpxProviderStateEvent::RuntimeRequestEnded {
+            request_id,
+            question_set,
+            origin,
+            status,
+        } => {
+            let cancelled = matches!(
+                status,
+                AcpxTurnStatus::Cancelled | AcpxTurnStatus::Interrupted
+            );
+            let reason = match status {
+                AcpxTurnStatus::Completed => "turn_completed",
+                AcpxTurnStatus::Failed => "provider_process_lost",
+                _ => "explicit_cancellation",
+            };
+            let (request_id, request) = if let Some(question_set) = question_set {
+                let created = project_acpx_state_event(
+                    context,
+                    &AcpxProviderStateEvent::InputRequest {
+                        request_id: request_id.clone(),
+                        question_set: question_set.clone(),
+                        origin: origin.clone(),
+                    },
+                )?;
+                let request = created[0].payload["request"].clone();
+                (request["requestId"].clone(), Some(request))
+            } else {
+                validate_projection_identity(
+                    request_id,
+                    "permission request",
+                    SHORT_STABLE_ID_CHARS,
+                )?;
+                (json!(request_id), None)
+            };
+            let mut payload = json!({
+                "provider":"acpx", "requestId":request_id,
+                "requestKind": if request.is_some() {"runtime"} else {"permission_approval"},
+                "requestType": if request.is_some() {"input"} else {"permission"},
+                "turnId":context.turn_id, "itemId":context.item_id,
+                "reason":reason, "replayAllowed":false, "adapter":"acpx-runtime-sidecar",
+            });
+            if let Some(request) = request {
+                payload["request"] = request;
+            }
+            one(
+                if cancelled {
+                    "runtime_request.cancelled"
+                } else {
+                    "runtime_request.expired"
+                },
+                EventPriority::P0,
+                payload,
             )
         }
         AcpxProviderStateEvent::SemanticResult(result) => {
@@ -720,6 +812,25 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "warning"
+            if params.get("classification").and_then(Value::as_str)
+                == Some("unrelated_information") =>
+        {
+            push(
+                &mut events,
+                "harness.diagnostic",
+                EventPriority::P1,
+                json!({
+                    "code": "codex_unrelated_information",
+                    "classification": "unrelated_information",
+                    "providerMethod": params.get("providerMethod").and_then(Value::as_str).map(|value| bounded_text(value, 160)),
+                    "expectedThreadId": params.get("expectedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedThreadId": params.get("receivedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "expectedTurnId": params.get("expectedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedTurnId": params.get("receivedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                }),
+            )
+        }
         "error" | "warning" | "deprecationNotice" | "configWarning" => push(
             &mut events,
             "provider.notice.recorded",
@@ -1130,6 +1241,40 @@ fn normalize_acpx_status(
     )]
 }
 
+/// Matches the TypeScript ACP display-name parser. This is presentation metadata;
+/// semantic dispatch and the preclassified operation never derive authority from it.
+fn acpx_mcp_tool_identity(value: &str) -> Option<(&str, &str)> {
+    let has_line_terminator = |text: &str| text.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
+    if value
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mcp__"))
+    {
+        let rest = &value[5..];
+        if !has_line_terminator(rest) {
+            // The namespace is nonempty and the first eligible separator wins,
+            // including overlapping separators when the namespace starts with `_`.
+            for (index, _) in rest.char_indices().skip(1) {
+                if let Some(name) = rest[index..]
+                    .strip_prefix("__")
+                    .filter(|name| !name.is_empty())
+                {
+                    return Some((&rest[..index], name));
+                }
+            }
+        }
+    }
+    if value
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mcp."))
+    {
+        let (namespace, name) = value[4..].split_once('.')?;
+        if !namespace.is_empty() && !name.is_empty() && !has_line_terminator(name) {
+            return Some((namespace, name));
+        }
+    }
+    None
+}
+
 fn normalize_acpx_tool_call(
     payload: &Value,
     item_id: &str,
@@ -1138,8 +1283,9 @@ fn normalize_acpx_tool_call(
     let native_status = string(payload.get("status"));
     let status = provider_status(native_status, native_status == "completed");
     let terminal = status != "running";
-    let raw_title = string(payload.get("title"));
-    let title = bounded_text(raw_title, 240);
+    let raw_title = string(payload.get("title")).trim();
+    let mcp = acpx_mcp_tool_identity(raw_title);
+    let name = bounded_text(mcp.map_or(raw_title, |(_, name)| name), 240);
     let output = match payload.get("rawOutput").or_else(|| payload.get("output")) {
         Some(Value::String(value)) => value.clone(),
         Some(value) => serde_json::to_string(value).unwrap_or_default(),
@@ -1148,11 +1294,11 @@ fn normalize_acpx_tool_call(
     let mut normalized = json!({
         "schema": "paperclip.tool.execution.v1",
         "executionId": item_id,
-        "transport": "builtin",
+        "transport": if mcp.is_some() { "mcp" } else { "builtin" },
         "operation": operation,
-        "name": if title.is_empty() { Value::Null } else { Value::String(title) },
+        "name": if name.is_empty() { Value::Null } else { Value::String(name) },
         "target": safe_acpx_location(payload.pointer("/locations/0"), operation == "edit"),
-        "namespace": Value::Null,
+        "namespace": mcp.map(|(namespace, _)| bounded_text(namespace, 240)),
         "readOnly": matches!(operation, "read" | "search" | "list"),
         "status": status,
         "durationMs": Value::Null,
@@ -1293,6 +1439,68 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrelated_information_retains_only_bounded_run_log_diagnostics() {
+        let events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "message": "ignored unrelated provider information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": "x".repeat(300),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+                "accessToken": "not-for-the-log",
+                "planType": "private-account-data",
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "harness.diagnostic");
+        assert_eq!(events[0].priority, EventPriority::P1);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "code": "codex_unrelated_information",
+                "classification": "unrelated_information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": format!("{}…[truncated]", "x".repeat(244)),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+            })
+        );
+        let unicode_events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "expectedThreadId": "token=not-for-the-log",
+                "receivedThreadId": "😀".repeat(300),
+            }),
+        );
+        assert_eq!(
+            unicode_events[0].payload["expectedThreadId"],
+            "token=[REDACTED]"
+        );
+        assert_eq!(
+            unicode_events[0].payload["receivedThreadId"],
+            format!("{}…[truncated]", "😀".repeat(244))
+        );
+        assert_eq!(unicode_events[0].payload["receivedTurnId"], Value::Null);
+        // Authoritative errors must retain their failure meaning.
+        assert_eq!(
+            normalize_codex_notification(
+                "error",
+                &json!({
+                    "classification": "unrelated_information",
+                    "message": "Provider connection failed",
+                })
+            )[0]
+            .event_type,
+            "provider.notice.recorded"
+        );
+    }
 
     #[test]
     fn preserves_codex_notice_text_from_current_and_legacy_payloads() {

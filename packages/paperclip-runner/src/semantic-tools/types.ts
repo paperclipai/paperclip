@@ -18,6 +18,7 @@ export type CapabilitySemanticToolExposure = "always" | "optional";
 export type CapabilitySemanticOperationId =
   | "search_api"
   | "call_api"
+  | "set_task_title"
   | "get_task_context"
   | "get_task_history"
   | "list_documents"
@@ -33,6 +34,10 @@ export type CapabilitySemanticOperationId =
   | "request_review"
   | "list_agents"
   | "get_agent"
+  | "read_agent_instructions"
+  | "update_agent_instructions"
+  | "get_agent_instruction_history"
+  | "restore_agent_instructions"
   | "search_tasks"
   | "list_approvals"
   | "get_approval"

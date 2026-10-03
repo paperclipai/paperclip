@@ -230,6 +230,27 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(manager?.status).toBe("idle");
   }
 
+  it("warns after five silent minutes and escalates after fifteen without changing active work", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({ now, ageMs: 0 });
+    const summaryAt = (elapsedMs: number) => buildSummary(seeded.runId, new Date(now.getTime() + elapsedMs));
+    await expect(summaryAt(5 * 60_000 - 1)).resolves.toMatchObject({ level: "ok" });
+    await expect(summaryAt(5 * 60_000)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000 - 1)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000)).resolves.toMatchObject({ level: "critical" });
+    const { recovery, enqueueWakeup } = createRecovery();
+    await recovery.scanSilentActiveRuns({ now: new Date(now.getTime() + 35 * 60_000), companyId: seeded.companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("running");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expectNoReviewArtifacts(seeded);
+
+    // Fresh output clears the warning even on a long-running task.
+    await db.update(heartbeatRuns).set({ lastOutputAt: new Date(now.getTime() + 35 * 60_000) })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await expect(summaryAt(36 * 60_000)).resolves.toMatchObject({ level: "ok" });
+  });
+
   it.each(["stale_active_run_evaluation", "issue_productivity_review"])("keeps blocked and %s sources artifact-free", async (originKind) => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const blocked = await seedRunningRun({

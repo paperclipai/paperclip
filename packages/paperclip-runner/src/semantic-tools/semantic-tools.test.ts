@@ -94,7 +94,7 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(36);
+    expect(names).toHaveLength(41);
     expect(names).toContain("get_task_context");
     expect(names).toContain("finish_task");
     expect(names).not.toContain("checkout_task");
@@ -286,7 +286,7 @@ describe("Capability semantic catalog and authorization", () => {
     })).resolves.toMatchObject({ ok: false, denial: { code: "task_mode_denied" } });
   });
 
-  it("rejects protected inputs before mutation and redacts authorization records", async () => {
+  it("preserves credential payloads for execution while redacting authorization records", async () => {
     const claim = "governance:approvals:request";
     const adapter = await running([claim]);
     const dispatcher = new CapabilitySemanticDispatcher(adapter, {
@@ -305,8 +305,9 @@ describe("Capability semantic catalog and authorization", () => {
         payload: { authorization: secret },
       },
     });
-    expect(result).toMatchObject({ ok: false, denial: { code: "protected_data_denied" } });
-    expect(adapter.snapshot().revision).toBe(before);
+    expect(result).toMatchObject({ ok: true });
+    expect(adapter.snapshot().revision).toBeGreaterThan(before);
+    expect(adapter.snapshot().approvals).toEqual([expect.objectContaining({ payload: { authorization: secret } })]);
     const serialized = JSON.stringify(dispatcher.authorizationRecords());
     expect(serialized).not.toContain(secret);
     expect(serialized).toContain("[REDACTED]");

@@ -1,3 +1,4 @@
+import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
@@ -160,6 +161,15 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       },
       ["key"],
     ),
+  }),
+  descriptor({
+    operationId: "set_task_title",
+    title: "Set task title",
+    description: setTaskTitleAction.documentation.description,
+    effect: "write",
+    placement: "optional",
+    inputSchema: setTaskTitleAction.live.descriptor.inputSchema,
+    outputSchema: openObject,
   }),
   descriptor({
     operationId: "report_progress",

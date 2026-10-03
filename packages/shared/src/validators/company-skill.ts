@@ -15,6 +15,8 @@ export const companySkillFileInventoryEntrySchema = z.object({
 
 export const companySkillVersionFileInventoryEntrySchema = companySkillFileInventoryEntrySchema.extend({
   content: z.string(),
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
 });
 
 export const companySkillSchema = z.object({
@@ -377,6 +379,8 @@ export const companySkillCreateSchema = z.object({
 });
 
 export const companySkillFileDetailSchema = z.object({
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
   skillId: z.string().guid(),
   path: z.string().min(1),
   kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
@@ -389,6 +393,8 @@ export const companySkillFileDetailSchema = z.object({
 export const companySkillFileUpdateSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
 });
 
 export const companySkillFileDeleteSchema = z.object({

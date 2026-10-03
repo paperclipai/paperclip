@@ -199,6 +199,7 @@ export type {
   AttentionWorkspaceRef,
 } from "./types/attention.js";
 export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {
   DecisionQueue,
   DecisionQueueItem,
@@ -321,6 +322,7 @@ export {
   connectionMethodSupportsCatalogSetup,
   connectionMethodSupportsAutomaticOAuth,
   credentialConfigPath,
+  connectionCredentialConfigPath,
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   getAvailableConnectionMethod,
@@ -332,9 +334,17 @@ export {
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
+export {
+  connectionSetupStateForApp,
+  connectionSetupStateForMethod,
+  connectionSetupVerbForApp,
+  connectionSetupVerbForMethod,
+  type ConnectionSetupState,
+} from "./connection-setup-state.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./google-workspace-connectors.js";
 export * from "./github-connectors.js";
+export * from "./asana-connectors.js";
 export {
   BLOCKED_MCP_PROVIDERS,
   SELF_SERVE_MCP_CANDIDATES,
@@ -1944,6 +1954,8 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  setIssueTitleSchema,
+  type SetIssueTitle,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
@@ -1960,6 +1972,7 @@ export {
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
+  retryWorkspaceExportSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -2001,6 +2014,8 @@ export {
   requestItemVerdictsResultSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
+  resolveConfirmationFromCommentSchema,
+  type ResolveConfirmationFromComment,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
@@ -2066,6 +2081,7 @@ export {
   type CheckoutIssue,
   type AddIssueComment,
   type CreateIssueThreadInteraction,
+  type CreateIssueThreadInteractionInput,
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
@@ -2769,6 +2785,7 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 
 export * from "./agent-appearance.js";
 export * from "./ai-connections.js";
+export * from "./ai-connection-usage.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";
@@ -2782,5 +2799,20 @@ export * from "./slack-tools.js";
 
 export { MEMORY_CONNECTOR_IDS, isMemoryConnectorId, type MemoryConnectorId } from "./memory-connectors.js";
 export * from "./connection-routing.js";
+export * from "./connection-search.js";
 
-export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath } from "./workspace-restore.js";
+export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, isNativeWorkspaceExportRepairCause } from "./workspace-restore.js";
+
+
+export type { AgentInstructionErrorCode, AgentInstructionErrorDetails, AgentInstructionSource, AgentInstructionRevision, AgentInstructionSnapshot, AgentInstructionCommitReceipt, AgentInstructionHistory, AgentInstructionDiff } from "./types/agent.js";
+export { restoreAgentInstructionSchema } from "./validators/agent.js";
+
+export type { AgentInstructionCandidate } from "./types/agent.js";
+export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCandidate } from "./validators/agent.js";
+
+export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
+export * from "./browser-use.js";
+
+export * from "./types/skill-source.js";
+export * from "./validators/skill-source.js";
+export * from "./github-skill-repository.js";

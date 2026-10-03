@@ -157,7 +157,10 @@ function contentTypeForPath(filePath: string) {
 }
 
 function normalizeInstanceGeneralSettings(raw: unknown) {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  // Stored rows can carry retired keys (for example keyboardShortcuts) until
+  // the settings row is rewritten. Strip them instead of failing closed, or a
+  // stale key would reset the sharing preference to "prompt" on this path.
+  const parsed = instanceGeneralSettingsSchema.strip().safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
   return instanceGeneralSettingsSchema.parse({});
 }

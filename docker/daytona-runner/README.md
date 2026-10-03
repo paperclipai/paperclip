@@ -94,9 +94,16 @@ full Git SHA as `PAPERCLIP_RUNNER_SOURCE_REVISION`.
 Do not bake provider credentials, Paperclip bootstrap tickets, or Daytona
 preview tokens into this image. They remain per-run secret material.
 
+The provider-pack build pins the official Linux x64 Node 24.21.0 image by
+manifest digest. Its bundled Undici is 7.29.1, which fixes
+[GHSA-3wwx-pv8p-q78v](https://github.com/advisories/GHSA-3wwx-pv8p-q78v).
+Pi separately verifies its private Node executable and nested npm dependency;
+changing the outer interpreter does not replace either provider-owned pin.
+
 Provider CLI updates are manifest-only changes: repository CI owns the root
-lockfile. The image build resolves the complete workspace manifest graph before
-its frozen install, matching CI when a source commit precedes the lockfile bot.
+lockfile. Resolve the complete workspace manifest graph in the build context
+before invoking Docker, matching CI when a source commit precedes the lockfile
+bot. The trusted workflow supplies this resolved lockfile as an immutable artifact.
 The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
 package installation or lifecycle execution. Review and refresh that digest
 with source dependency changes; registry-time resolution drift fails closed.
@@ -105,6 +112,42 @@ verifies the downloaded artifact, then passes that artifact's SHA-256 as the
 `PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
 lock against this value before installation. The fixed Dockerfile default is
 for standalone builds; it must not replace a campaign's verified lock digest.
-Keep one latest stable CLI installation per provider; refresh exact runtime
-versions and qualification digests together, never install a private older copy
-or download dependencies when a task starts.
+Refresh the default from the clean tracked lockfile using the exact
+`pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile` command,
+and verify a second resolution preserves the digest. A lockfile left by a
+filtered or incremental install can retain stale importer patch identities.
+Refresh exact runtime versions and qualification digests together; do not
+download dependencies when a task starts.
+
+## Candidate ACP qualification assets
+
+Provider branches can build their pinned assets with
+`node packages/paperclip-runner/scripts/build-provider-pack.mjs /absolute/pack --candidate-providers=cursor`
+(or `copilot` or `pi`). The source revision must include the named provider's
+builder. Assets are installed at build time under `provider-assets/<provider>/<platform>-<architecture>`.
+The pack manifest binds each complete asset tree. Runtime admission separately
+checks the provider's source-owned closure pins and copies a verified launch snapshot.
+A pack with candidate assets does not qualify or enable that provider.
+
+For an isolated Linux x64 Daytona qualification image, pass
+`--build-arg PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=cursor` with the normal build arguments.
+Compute its content ID with the same selection:
+`pnpm --silent test:e2e:runner:image-id --candidate-providers=cursor`.
+Candidate assets and the default pack have distinct image identities. Never reuse
+the default image's content ID for a candidate build.
+Use each provider branch's recorded version and explicit model. Keep credentials
+out of images. Paid qualification requires bound provider and Daytona credentials,
+inspectable spend, and the shared $100 ceiling recorded in the capability report.
+
+The pack builder tests its copied Node interpreter after relocation. Use a
+standalone Node distribution if the host interpreter depends on a package manager's
+private shared libraries. Pi additionally pins its complete portable interpreter
+and npm dependency graph.
+Refresh exact runtime versions and qualification digests together; never download
+dependencies when a task starts. Grok's additive native ACP profile keeps its
+qualified 1.0.13 executable at the verified sandbox prerequisite path. It does not replace the
+legacy adapter's `grok` command on PATH.
+
+Native Grok is an image prerequisite at `/opt/paperclip/providers/grok/1.0.13/grok`.
+Its checksum-verified provisioning is separate from the provider pack, which ships
+only the built-in launcher. Public npm installation never downloads this binary.

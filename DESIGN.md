@@ -45,6 +45,16 @@ alignment in every step and conditional state, not just the first screen.
 
 ## Contextual feedback
 
+Task chat shows execution errors and waits only while they remain relevant.
+Completing or cancelling a task hides its old execution notices. A newer attempt by
+the same agent or an explicit successor supersedes earlier run notices; an
+unresolved execution hold remains visible. Historical turns keep their responses,
+files, questions and inspectable activity without a Worked/Stopped status label.
+Run history retains the full diagnostic record. Session reset boundaries remain
+in the conversation. Time passing or a new human comment alone does not resolve
+an error. Stored notices need run or recovery provenance before they can be hidden;
+child-task relays and other unrelated system updates stay visible.
+
 Do not show a toast for task or run state already visible on the current screen.
 This includes descendant runs represented by the open subtree. Show local action
 results in place; keep failures actionable inline. Notifications for other work
@@ -55,6 +65,15 @@ refresh state silently. Expected cancellation is neutral gray, not an error. The
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
+
+Confirmations whose source work is still syncing show “Preparing approval…” and
+disable acceptance until the server reports readiness. Refresh that state automatically;
+rejection and revision remain available. Live tool reviews keep their own approval flow.
+
+Pending questions, confirmations, and other task-thread inputs appear in a separate
+card directly above the ordinary composer. The composer stays available for new
+messages while the card is open. Dismissing a card leaves a pending indicator that
+can reopen it; resolving or skipping the input removes that indicator.
 
 ## Enforcement (what "compliant" means for the extraction run)
 
@@ -103,3 +122,5 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
 - **Reduced motion is honored at the token layer.** A `prefers-reduced-motion: reduce`
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
+
+Agent Chat keeps pending questions as compact “Unanswered question” entries at their original position in history. A newer user message dismisses the old question form without resolving it. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.

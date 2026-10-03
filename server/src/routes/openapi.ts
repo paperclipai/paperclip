@@ -12,7 +12,12 @@ import {
   localAiLoginStartSchema,
   emailEndpointSetupSchema,
   emailConnectionSchema,
+  emailAddressCheckSchema,
   emailSendSchema,
+  browserUseControlSchema,
+  browserUseSettingsSchema,
+  browserUseViewportSchema,
+  browserUseViewerSchema,
   slackToolCallSchema,
   slackSearchConfigSchema,
   // Agent
@@ -27,6 +32,8 @@ import {
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
+  restoreAgentInstructionSchema,
+  resolveAgentInstructionCandidateSchema,
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
@@ -43,6 +50,7 @@ import {
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
+  setIssueTitleSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
@@ -140,6 +148,10 @@ import {
   probeEnvironmentConfigSchema,
   startEnvironmentCustomImageSetupSessionSchema,
   // Company skills
+  skillSourceDiscoverySchema,
+  skillSourcePreviewSchema,
+  skillSourceCreateSchema,
+  skillSourceSelectionSchema,
   companySkillCreateSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
@@ -167,6 +179,7 @@ import {
   createIssueThreadInteractionSchema,
   createChildIssueSchema,
   acceptIssueThreadInteractionSchema,
+  resolveConfirmationFromCommentSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
@@ -206,6 +219,7 @@ import {
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
+  retryWorkspaceExportSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1313,7 +1327,20 @@ const BOARD_ONLY_PREFIXES = [
   "/api/instance/",
 ];
 
+const browserUseOperations = [
+  ["get", "/api/issues/{issueId}/browsers", "List authorized task browsers", undefined],
+  ["get", "/api/issues/{issueId}/browsers/{browserId}/viewer", "Get a private live browser viewer", undefined],
+  ["post", "/api/issues/{issueId}/browsers/{browserId}/presence", "Renew visible browser presence", undefined],
+  ["post", "/api/issues/{issueId}/browsers/{browserId}/control", "Control a task browser", browserUseControlSchema],
+  ["post", "/api/issues/{issueId}/browsers/{browserId}/viewport", "Set the browser viewport", browserUseViewportSchema],
+  ["post", "/api/issues/{issueId}/browsers/{browserId}/viewport/release", "Release viewport ownership", browserUseViewerSchema],
+  ["get", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/profiles", "List available browser profiles", undefined],
+  ["get", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Read browser credential settings", undefined],
+  ["put", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Update browser credential settings", browserUseSettingsSchema],
+] as const;
+
 const BOARD_ONLY_OPERATIONS = new Set([
+  ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -1322,6 +1349,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
   "PUT /api/companies/{companyId}/ai-connections/default",
   "GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
+  "GET /api/companies/{companyId}/ai-connections/{connectionId}/usage",
   "GET /api/companies/{companyId}/ai-connections/login/{sessionId}",
 
   "GET /api/companies/{companyId}/project-repositories",
@@ -1439,6 +1467,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/connection-intents/{interactionId}/setup-options",
   "POST /api/connection-intents/{interactionId}/phase",
   "POST /api/connection-intents/{interactionId}/complete",
+  "POST /api/agents/{id}/connection-intents/{interactionId}/adopt",
   "POST /api/connection-intents/{interactionId}/decline",
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
@@ -1481,8 +1510,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/action-requests/{id}/decline",
   "POST /api/companies/{companyId}/email/inspect",
   "POST /api/companies/{companyId}/email/inboxes",
+  "GET /api/companies/{companyId}/email/connections",
   "POST /api/companies/{companyId}/email/connections",
   "POST /api/companies/{companyId}/email/connections/{connectionId}/inspect",
+  "POST /api/companies/{companyId}/email/connections/{connectionId}/check-address",
   "POST /api/email/inboxes/{endpointId}/control",
   "POST /api/email/inboxes/{endpointId}/reconnect",
   "POST /api/companies/{companyId}/email/deliveries/{publicationId}/resolve",
@@ -2091,9 +2122,35 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+for (const [method, path, summary, body] of browserUseOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["Browser Use Cloud"],
+    ...(path.endsWith("/viewer") ? { query: browserUseViewerSchema.partial() } : {}),
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+
 // Explicit task-bound email. Board setup and agent actions share the same vaulted
 // connection, while automatic chat publication never applies to these endpoints.
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/email/connections/{connectionId}/check-address",
+  tags: ["Email"],
+  summary: "Check for an existing AgentMail address using a saved credential",
+  description: "Requires a board connection manager and enabled chat connectors. Read-only: does not create or reserve an inbox. A missing inbox returns unknown because AgentMail hides resources outside the credential scope; it is never proof of availability.",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), connectionId: z.string().uuid() }),
+    body: jsonBody(emailAddressCheckSchema),
+  },
+  responses: {
+    200: r.ok(z.object({ address: z.string(), status: z.enum(["taken", "unknown"]) })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound,
+    422: r.unprocessable, 429: { description: "AgentMail request limit reached; retry later" },
+    502: r.serverError,
+  },
+});
 for (const [method, path, summary, body, success] of [
+  ["get", "/api/companies/{companyId}/email/connections", "List accessible saved AgentMail API keys (metadata only)", undefined, 200],
   ["post", "/api/companies/{companyId}/email/connections", "Save AgentMail credential and access", emailConnectionSchema, 201],
   ["post", "/api/companies/{companyId}/email/connections/{connectionId}/inspect", "Inspect inboxes using a saved AgentMail credential", undefined, 200],
   ["get", "/api/companies/{companyId}/email/inboxes", "List authorized AgentMail inboxes", undefined, 200],
@@ -2107,7 +2164,7 @@ for (const [method, path, summary, body, success] of [
   ["post", "/api/companies/{companyId}/email/deliveries/{publicationId}/resolve", "Resolve uncertain email after checking the provider", z.object({ outcome: z.enum(["sent", "failed"]), providerMessageId: z.string().min(1).max(998).optional() }).strict(), 200],
 ] as const) {
   registry.registerPath({ method, path, tags: ["Email"], summary,
-    description: "Experimental AgentMail channel. Internal comments never send email. Agent sends require assigned inbox and task ownership, active run authority, and configured action policies. Preserve the same idempotencyKey and payload across retries. New conversations create an email child task; replies require conversationId and replyToMessageId. Reply-all is deliberate and never includes Bcc.",
+    description: "AgentMail email connection. Available without the experimental chat setting. Internal comments never send email. Agent sends require assigned inbox and task ownership, active run authority, and configured action policies. Preserve the same idempotencyKey and payload across retries. New conversations create an email child task; replies require conversationId and replyToMessageId. Reply-all is deliberate and never includes Bcc.",
     request: { params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(match => [match[1], z.string().uuid()]))), ...(body ? { body: jsonBody(body) } : {}) },
     responses: { [success]: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
   });
@@ -3453,8 +3510,8 @@ registry.registerPath({
   method: "get",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Get agent instructions file",
-  request: { params: z.object({ id: z.string() }) },
+  summary: "Get agent file content or download its original bytes",
+  request: { params: z.object({ id: z.string() }), query: z.object({ path: z.string(), download: z.enum(["true", "false"]).optional() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
@@ -3470,12 +3527,46 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+for (const operation of [
+  { suffix: "history", summary: "List immutable instruction revisions", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
+  { suffix: "revision/{revisionId}", summary: "Read exact instruction content at a revision", query: z.object({ path: z.string().optional() }) },
+  { suffix: "diff", summary: "Compare instruction revisions (exact common prefix, removed, added, suffix)", query: z.object({ path: z.string().optional(), from: z.string().uuid(), to: z.string().uuid() }) },
+]) {
+  registry.registerPath({ method: "get", path: `/api/agents/{id}/instructions-bundle/${operation.suffix}`, tags: ["agents"], summary: operation.summary,
+    request: { params: operation.suffix.includes("revisionId") ? z.object({ id: z.string(), revisionId: z.string().uuid() }) : z.object({ id: z.string() }), query: operation.query },
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound } });
+}
+registry.registerPath({ method: "post", path: "/api/agents/{id}/instructions-bundle/restore", tags: ["agents"], summary: "Restore a pre-upgrade instruction snapshot into current files with compare-and-swap",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(restoreAgentInstructionSchema) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict } });
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/instructions-bundle/candidates",
+  tags: ["agents"],
+  summary: "List preserved instruction edits and collection diagnostics",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/instructions-bundle/candidates/{runId}/resolve",
+  tags: ["agents"],
+  summary: "Explicitly save a preserved instruction edit with compare-and-swap",
+  request: {
+    params: z.object({ id: z.string(), runId: z.string().uuid() }),
+    body: jsonBody(resolveAgentInstructionCandidateSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
 registry.registerPath({
   method: "delete",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Delete agent instructions file",
-  request: { params: z.object({ id: z.string() }) },
+  summary: "Delete agent file with compare-and-swap for managed storage",
+  request: { params: z.object({ id: z.string() }), query: z.object({ path: z.string(), baseHash: z.string().regex(/^[a-f0-9]{64}$/).optional() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -3805,6 +3896,16 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/chats",
+  tags: ["issues"],
+  summary: "List the current board user's agent conversations",
+  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
@@ -3826,6 +3927,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "Create an issue",
+  description: "Title is optional when description contains the task prompt. The server seeds a provisional title from the first 120 characters of the whitespace-normalized prompt and asks the assigned agent to refine it early. Explicit titles are preserved.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createIssueSchema),
@@ -3845,6 +3947,16 @@ registry.registerPath({
   summary: "Get an issue",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/title",
+  tags: ["issues"],
+  summary: "Set a task title",
+  description: "Changes only the title. onlyIfProvisional preserves an explicit title, including concurrent user edits. Agent callers must own the task's active run. Allowed in Ask and Plan modes.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(setIssueTitleSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -7292,6 +7404,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/resolve-from-comment",
+  tags: ["issues"],
+  summary: "Record a user's conversational confirmation answer",
+  description: "An eligible active agent run resolves a confirmation on its own task using the latest user comment. Resolver permissions, target staleness and conversation reset boundaries remain enforced. Matching retries are idempotent. No new wake is scheduled.",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(resolveConfirmationFromCommentSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound,
+    409: { description: "Stale or conflicting decision" }, 422: { description: "Invalid answer evidence or selection" } },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/accept",
   tags: ["issues"],
   summary: "Accept an issue thread interaction",
@@ -9962,6 +10088,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/recovery-actions/retry-workspace-export",
+  tags: ["issues"],
+  summary: "Retry only workspace export for a repaired accepted native result",
+  body: retryWorkspaceExportSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/recovery-actions/resolve",
   tags: ["issues"],
   summary: "Resolve an issue recovery action",
@@ -10142,7 +10277,8 @@ registerCurrentRoute({
   method: "get",
   path: "/mcp/runtime-tools",
   tags: ["connection-intents"],
-  summary: "Inspect the heartbeat-bound runtime tools MCP endpoint",
+  summary: "Reject SSE discovery because the runtime tools endpoint supports POST only",
+  responses: { 405: { description: "SSE stream is not supported" }, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registerCurrentRoute({
@@ -10212,6 +10348,23 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/agents/{id}/connection-intents/{interactionId}/adopt",
+  tags: ["connection-intents", "agents"],
+  summary: "Validate and atomically adopt an AI connection for a legacy agent",
+  body: completeConnectionIntentSchema,
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/connection-intents/{interactionId}/decline",
   tags: ["connection-intents"],
   summary: "Decline an addressed connection request",
@@ -10222,9 +10375,18 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/usage",
+  tags: ["ai-connections"],
+  summary: "Probe the selected AI account’s provider usage limits on demand",
+  query: z.object({ grantId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/companies/{companyId}/ai-connections",
   tags: ["ai-connections"],
-  summary: "List available AI connections and personal defaults",
+  summary: "List available AI connections, personal defaults, and connection-manager access",
   query: z.object({ agentId: z.string().uuid().optional() }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
@@ -11427,4 +11589,30 @@ registerCurrentRoute({
   tags: ["ai-connections"], summary: "Check the local operator's subscription sign-in without saving a connection",
   body: localAiConnectionSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+for (const [method, path, summary] of [
+  ["get", "/api/companies/{companyId}/skill-sources", "List GitHub skill sources"],
+  ["get", "/api/companies/{companyId}/skill-sources/repositories", "Browse authorized GitHub repositories for skills"],
+  ["get", "/api/companies/{companyId}/skill-sources/{sourceId}", "Get a skill source and entries"],
+  ["post", "/api/companies/{companyId}/skill-sources/discover", "Discover and validate repository skills"],
+  ["post", "/api/companies/{companyId}/skill-sources/preview", "Preview an audited skill package file at an immutable commit"],
+  ["post", "/api/companies/{companyId}/skill-sources", "Import a GitHub skill source"],
+  ["patch", "/api/companies/{companyId}/skill-sources/{sourceId}", "Save skill source selection and connection"],
+  ["post", "/api/companies/{companyId}/skill-sources/{sourceId}/refresh", "Refresh installed source skills"],
+  ["delete", "/api/companies/{companyId}/skill-sources/{sourceId}", "Disconnect a skill source and retain installed skills"],
+] as const) registerCurrentRoute({
+  method, path, tags: ["skills"], summary,
+  ...(method === "patch" ? { body: skillSourceSelectionSchema }
+    : method === "post" && path.endsWith("/discover") ? { body: skillSourceDiscoverySchema }
+    : method === "post" && path.endsWith("/preview") ? { body: skillSourcePreviewSchema }
+    : method === "post" && path.endsWith("/skill-sources") ? { body: skillSourceCreateSchema } : {}),
+  responses: {
+    [method === "post" && path.endsWith("/skill-sources") ? 201 : 200]: path.endsWith("/discover") ? {
+      description: "JSON discovery by default. Accept: application/x-ndjson streams progress (phase, measured Git download percentages, and package/file counts), candidate metadata, then complete with discovery. An error event terminates a failed scan; partial candidates cannot be imported. Disconnecting cancels further provider reads.",
+      content: { "application/json": { schema: z.unknown() }, "application/x-ndjson": { schema: z.string() } },
+    } : r.ok(),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    404: r.notFound, 409: r.conflict, 422: r.unprocessable,
+  },
 });

@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { AdapterExecutionPhaseSink } from "./execution-phase.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
@@ -67,6 +68,7 @@ export interface AdapterRuntimeServiceReport {
 }
 
 export type AdapterExecutionErrorFamily =
+  | "configuration"
   | "transient_upstream"
   | "provider_quota"
   | "model_refusal"
@@ -195,13 +197,18 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  /** Synchronous, content-free diagnostic scope; never stop or collection authority. */
+  onExecutionPhase?: AdapterExecutionPhaseSink;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
   onCancellationReady?: () => Promise<void>;
-  /** Host-owned stop of this run's sandbox during setup. Resolves only after
+  /** Host-owned stop of this run's sandbox during setup or direct CLI execution. Resolves only after
    * provider termination is verified; never accepts an agent-selected lease. */
   stopRemoteStartup?: () => Promise<void>;
+  /** Host-owned collection after the final provider invocation is confirmed stopped,
+   * before remote workspace restore or disposal. Never call on an unverified timeout. */
+  onProviderStopped?: () => Promise<void>;
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;
@@ -209,6 +216,8 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /** Build bounded history only when an actual provider attempt starts fresh. */
+  getFreshSessionHandoff?: () => Promise<string | null>;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -459,6 +468,8 @@ export interface ServerAdapterModule {
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
+  /** Selected harness can resume its conversation with this run's tool bindings. */
+  supportsToolRefreshOnResume?: boolean | ((config: Record<string, unknown>) => boolean);
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;

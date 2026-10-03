@@ -612,6 +612,23 @@ describe.sequential("issue thread interaction routes", () => {
     );
   }, 10_000);
 
+  it("normalizes a canonical-only mixed question form at the HTTP boundary", async () => {
+    const questionSet = { schema: "paperclip.question_set.v1", questions: [
+      { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" },
+      { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+    ] };
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      payload: expect.objectContaining({ questionSet, questions: [
+        expect.objectContaining({ id: "repo", options: [{ id: "paperclip_text_answer", label: "Type an answer", freeText: true }] }),
+        expect.objectContaining({ id: "scope", options: questionSet.questions[1].options }),
+      ] }),
+    }), expect.anything());
+  });
+
   it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({
       status: "in_review",
@@ -822,6 +839,30 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_answered",
       }),
     );
+  });
+
+  it.each(["paperclip-id:chat-owner", "chat-owner", "paperclip-id:another-user"])("keeps chat response delivery limited to the exact owner: %s", async (userId) => {
+    const issue = createIssue({ conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: "paperclip-id:chat-owner" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-2", kind: "ask_user_questions", status: "pending",
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      addresseeUserId: "paperclip-id:chat-owner", continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [] },
+    });
+    const app = await createApp({ type: "board", userId, source: "cloud_tenant", companyIds: ["company-1"] });
+    const response = await request(app).post(`/api/issues/${ISSUE_ID}/interactions/interaction-2/respond`)
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+    if (userId === "paperclip-id:chat-owner") {
+      expect(response.status).toBe(200);
+      expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(expect.anything(), "interaction-2", expect.anything(), expect.objectContaining({ userId }));
+      expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith("interaction-2");
+    } else {
+      expect(response.status).toBe(403);
+      expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+      expect(mockQuestionResponseDeliveries.deliver).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    }
   });
 
   it("routes wake-on-accept question answers through the same causal delivery service", async () => {

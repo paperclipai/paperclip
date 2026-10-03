@@ -4,6 +4,7 @@ import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from 
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
+import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -27,11 +28,13 @@ export function dashboardService(db: Db) {
   const budgets = budgetService(db);
   return {
     summary: async (companyId: string) => {
-      const company = await db
+      // This lookup only reads the company row. Rebuild it after a transient
+      // disconnect; do not replay the later summary or budget workflows.
+      const company = await retryIdempotentDatabaseOperation(() => db
         .select()
         .from(companies)
         .where(eq(companies.id, companyId))
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null));
 
       if (!company) throw notFound("Company not found");
 
@@ -41,17 +44,17 @@ export function dashboardService(db: Db) {
         .where(eq(agents.companyId, companyId))
         .groupBy(agents.status);
 
-      const taskRows = await db
+      const taskRows = await retryIdempotentDatabaseOperation(() => db
         .select({ status: issues.status, count: sql<number>`count(*)` })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), executionIssueCondition()))
-        .groupBy(issues.status);
+        .groupBy(issues.status));
 
-      const pendingApprovals = await db
+      const pendingApprovals = await retryIdempotentDatabaseOperation(() => db
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
-        .then((rows) => Number(rows[0]?.count ?? 0));
+        .then((rows) => Number(rows[0]?.count ?? 0)));
 
       const agentCounts: Record<string, number> = {
         active: 0,
@@ -84,7 +87,7 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
-      const [{ monthSpend }] = await db
+      const [{ monthSpend }] = await retryIdempotentDatabaseOperation(() => db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
         })
@@ -94,7 +97,7 @@ export function dashboardService(db: Db) {
             eq(costEvents.companyId, companyId),
             gte(costEvents.occurredAt, monthStart),
           ),
-        );
+        ));
 
       const monthSpendCents = Number(monthSpend);
       // Per-day run breakdown. A run is "recovered" when its retry chain later

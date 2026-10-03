@@ -157,16 +157,8 @@ function ChatConnectionPurpose({ provider, onChat, onTools }: {
 }
 
 export function ChatEndpointSetup() {
-  const [params, setParams] = useSearchParams();
-  const navigate = useNavigate();
-  if (params.get("provider") === "github") {
-    if (params.get("purpose") === "chat" || params.get("resume")) return <GitHubChatSetup />;
-    return <ChatConnectionPurpose provider="github" onChat={() => {
-      const next = new URLSearchParams(params);
-      next.set("purpose", "chat");
-      setParams(next);
-    }} onTools={() => navigate(params.get("toolHref") || "/apps/connect?source=github")} />;
-  }
+  const [params] = useSearchParams();
+  if (params.get("provider") === "github") return <GitHubChatSetup />;
   return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
 }
 

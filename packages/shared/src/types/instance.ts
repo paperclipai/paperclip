@@ -30,7 +30,6 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
-  keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**

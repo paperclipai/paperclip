@@ -6,6 +6,7 @@ import {
   promises as fs,
 } from "node:fs";
 import os from "node:os";
+import { workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -19,6 +20,7 @@ import {
   type GitWorkspaceSnapshot,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
+  disposeGitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
   readReferencedSourceGitIgnoredPaths,
   resetLocalGitIndexToHead,
@@ -27,6 +29,8 @@ import {
 } from "./git-workspace-sync.js";
 import {
   captureDirectorySnapshot,
+  disposeDirectorySnapshot,
+  selectDirectorySnapshot,
   mergeDirectoryWithBaseline,
   type DirectorySnapshot,
 } from "./workspace-restore-merge.js";
@@ -568,6 +572,7 @@ export interface PreparedSandboxManagedRuntime {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
   } | null;
+  cleanupWorkspaceSnapshot(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -654,16 +659,22 @@ function buildWorkspaceTarExtractCommand(input: {
 // Named builder (C3): remove paths deleted in the host git worktree from the
 // sandbox workspace. Every path is shell-quoted; the caller supplies only
 // already-confined relative paths from the git snapshot.
-function buildRemoveDeletedPathsCommand(input: {
-  remoteDir: string;
-  deletedPaths: string[];
-}): string {
-  const quotedPaths = input.deletedPaths.map((entry) => shellQuote(entry)).join(" ");
-  return `cd ${shellQuote(input.remoteDir)} && rm -rf -- ${quotedPaths}`;
+function buildRemoveDeletedPathsCommand(input: { remoteDir: string; manifestPath: string }): string {
+  // NUL input plus bounded xargs batches preserve whitespace and never create
+  // one argument list for the full snapshot. Refuse symlink ancestors.
+  const remove = `for entry do
+    parent=$entry
+    while [ "\${parent#*/}" != "$parent" ]; do
+      parent=\${parent%/*}
+      if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then exit 42; fi
+    done
+    rm -rf -- "$entry" || exit
+  done`;
+  return `cd ${shellQuote(input.remoteDir)} && xargs -0 -r -n 64 sh -c ${shellQuote(remove)} sh < ${shellQuote(input.manifestPath)} && rm -f -- ${shellQuote(input.manifestPath)}`;
 }
 
 function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
-  return `${input.targetPath}${input.suffix}.${randomUUID()}`;
+  return path.join(path.dirname(input.targetPath), `${input.suffix}.${randomUUID()}`);
 }
 
 // The workspace stages under `<runtimeRootDir>/workspace-upload.tar` and, for a
@@ -825,32 +836,15 @@ export async function createTarballFromDirectory(input: {
   // entries avoids the self-entry entirely and is portable across GNU/BSD/busybox
   // tar (no GNU-only --no-overwrite-dir needed). --exclude still filters nested
   // matches and any named entry it matches.
-  const entries = (await fs.readdir(input.localDir)).sort((left, right) => left.localeCompare(right));
-  if (entries.length === 0) {
-    // A workspace can legitimately be empty (blank-workspace agent runs). Write a
-    // valid empty tar archive (1024-byte all-zero EOF marker) so extraction is a
-    // clean no-op rather than tar refusing to create an empty archive.
-    await fs.writeFile(input.archivePath, Buffer.alloc(1024));
-    return;
-  }
-  await execTar([
-    "-c",
-    // Prevent macOS bsdtar from embedding LIBARCHIVE.xattr.* PAX extended
-    // headers for extended attributes (e.g. com.apple.provenance). GNU tar on
-    // Linux does not recognise these proprietary headers and fails extraction
-    // with "This does not look like a tar archive". COPYFILE_DISABLE=1 (set in
-    // execTar) already suppresses AppleDouble ._* sidecar files; --no-xattrs
-    // additionally suppresses the inline PAX xattr entries.
-    "--no-xattrs",
-    ...(input.followSymlinks ? ["-h"] : []),
-    "-f",
-    input.archivePath,
-    "-C",
-    input.localDir,
-    ...excludeArgs,
-    "--",
-    ...entries,
-  ]);
+  await withTempDir("paperclip-tar-list-", async (directory) => {
+    const list = path.join(directory, "entries.nul");
+    const file = await fs.open(list, "wx", 0o600);
+    try {
+      for await (const entry of await fs.opendir(input.localDir)) await file.writeFile(`${entry.name}\0`);
+    } finally { await file.close(); }
+    await execTar(["-c", "--no-xattrs", ...(input.followSymlinks ? ["-h"] : []),
+      "-f", input.archivePath, "-C", input.localDir, ...excludeArgs, "--null", "-T", list]);
+  });
 }
 
 async function extractTarballToDirectory(input: {
@@ -861,18 +855,13 @@ async function extractTarballToDirectory(input: {
   await execTar(["-xf", input.archivePath, "-C", input.localDir]);
 }
 
-async function walkDirectory(root: string, relative = ""): Promise<string[]> {
-  const current = path.join(root, relative);
-  const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
-  const out: string[] = [];
-  for (const entry of entries) {
+async function* walkDirectory(root: string, relative = "", childrenFirst = false): AsyncGenerator<string> {
+  for await (const entry of await fs.opendir(path.join(root, relative))) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
-    out.push(nextRelative);
-    if (entry.isDirectory()) {
-      out.push(...(await walkDirectory(root, nextRelative)));
-    }
+    if (!childrenFirst) yield nextRelative;
+    if (entry.isDirectory()) yield* walkDirectory(root, nextRelative, childrenFirst);
+    if (childrenFirst) yield nextRelative;
   }
-  return out.sort((left, right) => right.length - left.length);
 }
 
 async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {
@@ -916,34 +905,87 @@ export async function mirrorDirectory(
   const shouldPreserveAbsent = (relative: string) =>
     [...preserveAbsent].some((candidate) => isRelativePathOrDescendant(relative, candidate));
 
-  const sourceEntries = new Set(await walkDirectory(sourceDir));
-  const targetEntries = await walkDirectory(targetDir);
-  for (const relative of targetEntries) {
+  for await (const relative of walkDirectory(targetDir, "", true)) {
     if (shouldPreserveAbsent(relative)) continue;
-    if (!sourceEntries.has(relative)) {
+    const sourceExists = await fs.lstat(path.join(sourceDir, relative)).then(() => true).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+      throw error;
+    });
+    if (!sourceExists) {
       await fs.rm(path.join(targetDir, relative), { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  const entries = (await walkDirectory(sourceDir)).sort((left, right) => left.localeCompare(right));
-  for (const relative of entries) {
+  for await (const relative of walkDirectory(sourceDir)) {
     await copyWorkspaceEntry(sourceDir, targetDir, relative);
   }
 }
 
-async function copySelectedWorkspaceEntries(input: {
+interface WorkspaceSourceRoot {
   sourceDir: string;
+  dev: number;
+  ino: number;
+}
+
+async function captureWorkspaceSourceRoot(localDir: string): Promise<WorkspaceSourceRoot> {
+  const sourceDir = await fs.realpath(localDir);
+  const stats = await fs.lstat(sourceDir);
+  if (!stats.isDirectory()) throw new Error("Workspace overlay root is not a directory");
+  return { sourceDir, dev: stats.dev, ino: stats.ino };
+}
+
+async function copySelectedWorkspaceEntries(input: {
+  sourceRoot: WorkspaceSourceRoot;
   targetDir: string;
-  relativePaths: string[];
+  relativePaths: WorkspacePaths;
+  ignoredPaths?: WorkspacePaths;
   exclude: string[];
 }): Promise<void> {
   await fs.mkdir(input.targetDir, { recursive: true });
-  for (const relative of input.relativePaths) {
-    if (shouldExcludePath(relative, input.exclude)) continue;
-    const sourceStats = await fs.lstat(path.join(input.sourceDir, relative)).catch(() => null);
-    if (!sourceStats) continue;
-    await copyWorkspaceEntry(input.sourceDir, input.targetDir, relative);
+  const { sourceDir, dev, ino } = input.sourceRoot;
+  const assertSourceRoot = async () => {
+    const current = await fs.lstat(sourceDir);
+    if (!current.isDirectory() || current.dev !== dev || current.ino !== ino) {
+      throw new Error("Workspace overlay root directory changed during staging");
+    }
+  };
+  await assertSourceRoot();
+  const ignored = workspacePathMatcher(input.ignoredPaths);
+  try {
+  for (const relative of workspacePaths(input.relativePaths)) {
+    if (shouldExcludePath(relative, input.exclude) || ignored.matches(relative)) continue;
+    const sourcePath = path.join(sourceDir, relative);
+    const parentSegments = path.relative(sourceDir, path.dirname(sourcePath)).split(path.sep).filter(Boolean);
+    const assertParentDirectory = async () => {
+      // Git selected this path before staging. A replaced ancestor must not
+      // redirect the copy through a symlink, even to another workspace folder.
+      // Inspect types instead of comparing realpath spelling: case-insensitive
+      // filesystems can resolve Git's indexed casing to a renamed directory.
+      let parentPath = sourceDir;
+      for (const segment of parentSegments) {
+        if (segment === "..") throw new Error(`Workspace overlay directory escapes its root: ${relative}`);
+        parentPath = path.join(parentPath, segment);
+        if (!(await fs.lstat(parentPath)).isDirectory()) {
+          throw new Error(`Workspace overlay ancestor is not a directory: ${relative}`);
+        }
+      }
+    };
+    // Include root-level entries, and do not treat a missing root as an
+    // ordinary source file that disappeared after the snapshot.
+    await assertSourceRoot();
+    try {
+      await assertParentDirectory();
+      await fs.lstat(sourcePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    await copyWorkspaceEntry(sourceDir, input.targetDir, relative);
+    // Do not upload the staged tree if an ancestor changed during the copy.
+    await assertSourceRoot();
+    await assertParentDirectory();
   }
+  } finally { ignored.close(); }
 }
 
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
@@ -971,17 +1013,13 @@ function createRemoteTarballFromDirectoryCommand(input: {
   archivePath: string;
   exclude?: string[];
 }): string {
-  // Match the local archive path: name top-level entries explicitly so tar
-  // does not include a "." self-entry that it later tries to chmod/utime.
+  const list = `${input.archivePath}.entries`;
   return [
     `mkdir -p ${shellQuote(path.posix.dirname(input.archivePath))}`,
     `cd ${shellQuote(input.remoteDir)}`,
-    "set -- *",
-    `if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi`,
-    `for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done`,
-    `if [ "$#" -eq 0 ]; then ` +
-      `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1; ` +
-      `else tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"; fi`,
+    `find . -mindepth 1 -maxdepth 1 -print0 > ${shellQuote(list)}`,
+    `tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} --null -T ${shellQuote(list)}`,
+    `rm -f -- ${shellQuote(list)}`,
   ].join(" && ");
 }
 
@@ -1064,6 +1102,8 @@ export async function prepareSandboxManagedRuntime(input: {
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
+  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
   /**
@@ -1132,36 +1172,47 @@ export async function prepareSandboxManagedRuntime(input: {
   const runStepSpan = <T>(name: string, work: () => Promise<T>): Promise<T> =>
     input.runtimeSpan ? input.runtimeSpan(name, work) : work();
 
+  // Resolve an existing workspace alias once, before reading its snapshot.
+  // All subsequent work uses that root, so retargeting the alias cannot select
+  // another repository. Staging also verifies the captured directory identity.
+  const workspaceRoot = syncWorkspace ? await captureWorkspaceSourceRoot(input.workspaceLocalDir) : null;
+  if (workspaceRoot) input = { ...input, workspaceLocalDir: workspaceRoot.sourceDir };
+
   // The git enumeration (`git status --ignored`, the HEAD diffs, `ls-files`).
   // It reads git's own bookkeeping to decide what to include/exclude, so it is
   // usually fast, but on a large working tree the `--ignored` walk is not free.
-  const gitSnapshot = syncWorkspace
+  const gitSnapshot = syncWorkspace && input.workspaceFileMode !== "all"
     ? input.workspaceGitSnapshot !== undefined
       ? input.workspaceGitSnapshot
       : await runStepSpan("snapshot.git", () =>
           readGitWorkspaceSnapshot(input.workspaceLocalDir),
         )
     : null;
+  let baselineSnapshot: DirectorySnapshot | null = null;
+  const cleanupWorkspaceSnapshot = async () => {
+    await disposeDirectorySnapshot(baselineSnapshot);
+    await disposeGitWorkspaceSnapshot(gitSnapshot);
+  };
+  try {
   // A selected subfolder has no cloneable Git snapshot, but its parent
   // repository's ignore rules still govern which files may leave the host.
   // Use the same bounded, path-relative resolver as referenced project trees.
-  const directoryIgnore = syncWorkspace && !gitSnapshot
+  const directoryIgnore = syncWorkspace && !gitSnapshot && input.workspaceFileMode !== "all"
     ? await resolveReferencedSourceIgnore(input.workspaceLocalDir)
     : null;
   if (directoryIgnore?.kind === "failed") {
     throw new Error(`Workspace ignore scan failed: ${directoryIgnore.reason}`);
   }
-  const gitIgnoredExcludes = gitSnapshot?.ignoredPaths
-    ?? (directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined);
+  const gitIgnoredExcludes = directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined;
   const workspaceArchiveExclude = mergeExcludes(
-    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
-    [...GIT_ARCHIVE_EXCLUDES],
+    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
   const restoreExclude = mergeExcludes(
-    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
-    [...GIT_ARCHIVE_EXCLUDES],
+    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
     input.preserveAbsentOnRestore,
     input.workspaceExclude,
@@ -1173,11 +1224,13 @@ export async function prepareSandboxManagedRuntime(input: {
   // `lstat`s every entry and SHA-256-hashes every file's bytes. This is the
   // dominant cost in the pre-`pack` window — it reads the content of every
   // non-excluded file, serially — so it earns its own span.
-  const baselineSnapshot = syncWorkspace
+  baselineSnapshot = syncWorkspace
     ? (input.workspaceBaseline ??
       (await runStepSpan("snapshot.baseline", () =>
         captureDirectorySnapshot(input.workspaceLocalDir, {
           exclude: restoreExclude,
+          ignoredPaths: gitSnapshot?.ignoredPaths,
+          diskBacked: true,
         }),
       )))
     : null;
@@ -1404,9 +1457,10 @@ export async function prepareSandboxManagedRuntime(input: {
                 : input.workspaceLocalDir;
               if (gitSnapshot) {
                 await copySelectedWorkspaceEntries({
-                  sourceDir: input.workspaceLocalDir,
+                  sourceRoot: workspaceRoot!,
                   targetDir: workspaceArchiveDir,
                   relativePaths: gitSnapshot.overlayPaths,
+                  ignoredPaths: gitSnapshot.ignoredPaths,
                   exclude: workspaceArchiveExclude,
                 });
               }
@@ -1441,13 +1495,12 @@ export async function prepareSandboxManagedRuntime(input: {
               }),
             });
             // 3. Optional remove-deleted-paths command runs LAST, after both extracts.
-            if (gitSnapshot && gitSnapshot.deletedPaths.length > 0) {
-              workspacePostUploadCommands.push({
-                command: buildRemoveDeletedPathsCommand({
-                  remoteDir: workspaceRemoteDir,
-                  deletedPaths: gitSnapshot.deletedPaths,
-                }),
-              });
+            if (gitSnapshot && (isPathManifest(gitSnapshot.deletedPaths) ? gitSnapshot.deletedPaths.count : gitSnapshot.deletedPaths.length) > 0) {
+              const deletedManifest = path.join(tempDir, "deleted.nul");
+              const remoteDeletedManifest = path.posix.join(runtimeRootDir, "deleted.nul");
+              await writeWorkspacePaths(gitSnapshot.deletedPaths, deletedManifest);
+              workspaceFiles.push({ sourcePath: deletedManifest, targetPath: remoteDeletedManifest, kind: "file", access: "rw", writablePath: runtimeRootDir });
+              workspacePostUploadCommands.push({ command: buildRemoveDeletedPathsCommand({ remoteDir: workspaceRemoteDir, manifestPath: remoteDeletedManifest }) });
             }
             workspaceUploadBytes += (await fs.stat(workspaceTarPath)).size;
           });
@@ -1650,7 +1703,9 @@ export async function prepareSandboxManagedRuntime(input: {
       syncWorkspace && baselineSnapshot
         ? { baseline: baselineSnapshot, gitSnapshot }
         : null,
+    cleanupWorkspaceSnapshot,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+      try {
       const restoreSink = onProgress ?? input.onProgress;
 
       // Build the ordered outbound restore task list. Each task runs one
@@ -1685,7 +1740,6 @@ export async function prepareSandboxManagedRuntime(input: {
                 throw new Error("Project repository escaped its workspace");
               }
               const nestedExclude = mergeExcludes(
-                repository.snapshot.ignoredPaths,
                 baselineSnapshot!.exclude.flatMap((entry) =>
                   entry.startsWith(prefix) ? [entry.slice(prefix.length)]
                     : entry.startsWith("*/") ? [entry] : []),
@@ -1698,17 +1752,11 @@ export async function prepareSandboxManagedRuntime(input: {
                 workspaceInboundMode: "adopt_remote",
                 workspaceGitSnapshot: repository.snapshot,
                 workspaceExclude: nestedExclude,
-                workspaceBaseline: {
-                  exclude: mergeExcludes(
-                    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
-                    [...GIT_ARCHIVE_EXCLUDES],
-                    [".paperclip-runtime"],
-                    nestedExclude,
-                  ),
-                  entries: new Map([...baselineSnapshot!.entries]
-                    .filter(([entry]) => entry.startsWith(prefix))
-                    .map(([entry, value]) => [entry.slice(prefix.length), value])),
-                },
+                workspaceBaseline: await selectDirectorySnapshot(baselineSnapshot!, {
+                  prefix,
+                  exclude: mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [...GIT_ARCHIVE_EXCLUDES], [".paperclip-runtime"], nestedExclude),
+                  ignoredPaths: repository.snapshot.ignoredPaths,
+                }),
                 onRuntimeProgress: input.onRuntimeProgress,
               });
               await nested.restoreWorkspace(restoreSink);
@@ -1869,12 +1917,12 @@ export async function prepareSandboxManagedRuntime(input: {
                   });
                 }
                 const gitHeadToIntegrate = importedHead;
+                const mergeBaseline = repositories.length === 0 ? baselineSnapshot! : await selectDirectorySnapshot(baselineSnapshot!, {
+                  omit: repositories.map((repo) => repo.path), exclude: workspaceRestoreExclude, ignoredPaths: gitSnapshot?.ignoredPaths,
+                });
+                try {
                 await mergeDirectoryWithBaseline({
-                  baseline: repositories.length === 0 ? baselineSnapshot! : {
-                    exclude: workspaceRestoreExclude,
-                    entries: new Map([...baselineSnapshot!.entries].filter(([entry]) =>
-                      !repositories.some((repo) => entry === repo.path || entry.startsWith(`${repo.path}/`)))),
-                  },
+                  baseline: mergeBaseline,
                   sourceDir: extractedDir,
                   targetDir: input.workspaceLocalDir,
                   beforeApply: gitHeadToIntegrate
@@ -1894,6 +1942,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       }
                     : undefined,
                 });
+                } finally { if (mergeBaseline !== baselineSnapshot) await disposeDirectorySnapshot(mergeBaseline); }
               } finally {
                 await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing workspace");
                 if (importedRef) {
@@ -1945,6 +1994,8 @@ export async function prepareSandboxManagedRuntime(input: {
           throw result.reason;
         }
       }
+      } finally { await cleanupWorkspaceSnapshot(); }
     },
   };
+  } catch (error) { await cleanupWorkspaceSnapshot(); throw error; }
 }

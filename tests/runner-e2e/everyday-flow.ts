@@ -1,4 +1,6 @@
+import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
 import { expect, type Page } from "@playwright/test";
+import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
@@ -131,8 +133,7 @@ export async function runEverydayFlow(input: Input) {
     caseId: execution.task.id,
     prompt: execution.task.buildPrompt(nonce),
     fixtureConfiguration: {
-      apiToolsEnabled:
-        process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED === "true",
+      apiToolsEnabled: runnerApiToolsEnabled(fixtures.company.id),
       aiConnection: fixtures.aiConnection,
     },
     checks: [],
@@ -161,7 +162,8 @@ export async function runEverydayFlow(input: Input) {
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
-  const decliningConnection = caseId === "connection-decline" || nativeProviderCase;
+  const agentmailSetup = caseId === "agentmail-setup";
+  const decliningConnection = caseId === "connection-decline" || nativeProviderCase || agentmailSetup;
   const declining = decliningConnection || caseId === "service-decline";
   let decisionId: string | undefined;
   let decisionResolvedAt: string | undefined;
@@ -549,6 +551,7 @@ export async function runEverydayFlow(input: Input) {
       "everyday-decisions.ts",
       "aggregator-fixture.ts",
       "connection-routing-evidence.ts",
+      "agentmail-setup-evidence.ts",
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-artifact.py",
@@ -650,6 +653,7 @@ export async function runEverydayFlow(input: Input) {
       const state = await api.get<{connections:Row[]}>(`/api/companies/${fixtures.company.id}/tools/connections`);
       initialConnections = state.connections.map(c=>c.id);
     }
+    if (agentmailSetup) await api.patch("/api/instance/settings/experimental", { enableChatConnectors: true });
     if (decliningConnection) {
       const state = await api.get<{ connections: Row[] }>(
         `/api/companies/${fixtures.company.id}/tools/connections`,
@@ -952,7 +956,7 @@ export async function runEverydayFlow(input: Input) {
         interactions.interactions,
         review
           ? { kind: "tool", connectionId: review.connectionId }
-          : { kind: "connection", serviceSlug: nativeProviderCase ? "jira" : "notion" },
+          : { kind: "connection", serviceSlug: agentmailSetup ? "agentmail" : nativeProviderCase ? "jira" : "notion" },
       );
       await expect(
         page.getByRole("button", {
@@ -971,8 +975,28 @@ export async function runEverydayFlow(input: Input) {
         true,
         review
           ? "Tool approval belongs to the installed page service."
-          : `New connection request is for ${nativeProviderCase ? "Jira" : "Notion"}, without an external-provider question.`,
+          : `New connection request is for ${agentmailSetup ? "AgentMail" : nativeProviderCase ? "Jira" : "Notion"}, without an external-provider question.`,
       );
+      if (agentmailSetup) {
+        // Reload proves the card is durable, rather than a transient model UI.
+        await page.reload();
+        const form = page.getByTestId("agentmail-inline-setup");
+        await expect(form).toBeVisible();
+        const card = page.getByTestId("connection-intent-focus-target").filter({ has: form });
+        const rows = await api.get<Parameters<typeof gradeAgentmailSetup>[0]["interactions"]>(`/api/issues/${parent!.id}/interactions`);
+        const checks = gradeAgentmailSetup({
+          // This harness boots a dedicated local_trusted instance.
+          interactions: rows, agentId: fixtures.agent.id, userId: "local-board",
+          visible: await form.isVisible(),
+          inputTypes: await card.locator("input").evaluateAll(inputs => inputs.map(input => input.getAttribute("type") ?? "text")),
+          keyLink: await form.getByRole("link", { name: "Get an AgentMail API key" }).getAttribute("href"),
+          accessSelectorCount: await card.locator('[role="radiogroup"], [role="combobox"], select').count(),
+          dialogCount: await page.getByRole("dialog").count(),
+        });
+        ev.checks.push(...checks);
+        await input.capture("agentmail-inline-key", "AgentMail API-key card after reload", "agentmail-inline-key.png");
+        if (checks.some(result => !result.passed)) throw new Error("AgentMail inline setup evidence failed");
+      }
       if (review)
         check(
           "no-call-before-approval",

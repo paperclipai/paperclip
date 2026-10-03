@@ -128,14 +128,18 @@ async function seedValidWorktreeSource(
   const issueId = randomUUID();
   const userId = options.userId ?? "user-existing";
   const now = new Date();
-  await db.insert(authUsers).values({
-    id: userId,
-    email: userId === "local-board" ? "local@paperclip.local" : "existing@paperclip.ing",
-    name: userId === "local-board" ? "Board" : "Existing User",
-    emailVerified: true,
-    createdAt: now,
-    updatedAt: now,
-  });
+  // This fixture also seeds a database before the latest migration. Use the
+  // historical columns explicitly so current ORM defaults do not require new
+  // columns that the worktree migration is supposed to add.
+  await db.$client`
+    INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+    VALUES (
+      ${userId},
+      ${userId === "local-board" ? "Board" : "Existing User"},
+      ${userId === "local-board" ? "local@paperclip.local" : "existing@paperclip.ing"},
+      true, ${now.toISOString()}, ${now.toISOString()}
+    )
+  `;
   if (options.includeCredentialAccount !== false) {
     await db.insert(authAccounts).values({
       id: "credential-existing",

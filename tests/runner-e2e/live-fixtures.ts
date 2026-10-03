@@ -1,6 +1,8 @@
 import path from "node:path";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
+import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import type { RunnerApi } from "./api.js";
 import type {
   CredentialName,
@@ -133,7 +135,7 @@ export async function setupLiveFixtures(input: {
       return api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: 0,
+        budgetMonthlyCents: execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS : 0,
       });
     },
     async teardown() {
@@ -150,6 +152,7 @@ export async function setupLiveFixtures(input: {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
       for (const credentialName of execution.requiredCredentials) {
+        if (credentialName === "GROK_AUTH_JSON") continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
@@ -171,11 +174,29 @@ export async function setupLiveFixtures(input: {
     },
   });
 
+  const grokSubscription = execution.profile.credential === "GROK_AUTH_JSON";
+  if (grokSubscription) {
+    registry.register<() => Promise<void>>({
+      id: "subscription-login",
+      dependencies: ["company"],
+      async setup(resolved) {
+        const raw = input.credentials.GROK_AUTH_JSON;
+        if (!raw) throw new Error("Missing credential GROK_AUTH_JSON");
+        return stageGrokSubscriptionFixture({
+          raw, companyId: value<CompanyRecord>(resolved, "company").id,
+          environment: process.env,
+        });
+      },
+      async teardown(remove) { await remove(); },
+    });
+  }
+
   registry.register<EnvironmentRecord>({
     id: "environment",
     dependencies: [
       "company",
       "secrets",
+      ...(grokSubscription ? ["subscription-login"] : []),
       ...(execution.environment.id === "daytona" ? ["sandbox-provider"] : []),
     ],
     async setup(resolved) {
@@ -252,6 +273,7 @@ export async function setupLiveFixtures(input: {
       "company",
       "secrets",
       "environment",
+      ...(grokSubscription ? ["subscription-login"] : []),
       ...(managedHiring ? ["ai-connection"] : []),
     ],
     async setup(resolved) {
@@ -285,7 +307,8 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.environment.configurationKey === "warm-reuse-v1") {
+  if (execution.environment.configurationKey === "warm-reuse-v1"
+    || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",
       dependencies: ["company", "environment"],
@@ -295,9 +318,9 @@ export async function setupLiveFixtures(input: {
         return api.post<ProjectRecord>(
           `/api/companies/${company.id}/projects`,
           {
-            name: `Runner E2E warm project ${input.executionNonce}`,
+            name: `Runner E2E workspace project ${input.executionNonce}`,
             description:
-              "Ephemeral project anchoring a reusable Daytona execution workspace",
+              "Ephemeral project anchoring the fixture execution workspace and file copy-back",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "shared_workspace",

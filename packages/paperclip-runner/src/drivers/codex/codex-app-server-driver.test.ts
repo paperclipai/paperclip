@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -326,6 +327,31 @@ function makeDriver(
   });
 }
 
+it("refreshes authorized tools on resume without replacing the provider thread", async () => {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const original = await makeDriver([first], { conversationMode: "prepared", dynamicTools: [] }).openSession({
+    runId: "run-connect", normalizedSessionId: "normalized-connect", workingDirectory: TEST_WORKING_DIRECTORY,
+  });
+  const snapshot = await original.snapshot();
+  await original.close({ reason: "waiting for connection" });
+  const githubTool = { name: "github_search", description: "Search authorized repositories", inputSchema: { type: "object" } };
+  const handler = vi.fn(async () => ({ repositories: ["paperclip"] }));
+  const resumedDriver = makeDriver([second], { conversationMode: "prepared", dynamicTools: [githubTool], dynamicToolHandler: handler });
+  expect((await resumedDriver.descriptor()).capabilities.toolRefreshOnResume).toBe(true);
+  const recovery = await resumedDriver.recoverSession(snapshot);
+  expect(recovery.recovered).toBe(true);
+  await recovery.session!.startTurn({ message: { role: "user", text: "Continue with GitHub connected" } });
+  expect(second.calls.some(call => call.method === "thread/start")).toBe(false);
+  expect(second.calls.find(call => call.method === "thread/resume")?.params).toMatchObject({ threadId: "thread-1", dynamicTools: expect.arrayContaining([githubTool]) });
+  const result = await second.invoke({ id: "rpc-github", method: "item/tool/call", params: {
+    threadId: "thread-1", turnId: "turn-1", callId: "github-call", tool: "github_search", arguments: { query: "paperclip" },
+  } });
+  expect(result).toMatchObject({ success: true });
+  expect(handler).toHaveBeenCalledWith(expect.objectContaining({ tool: "github_search", threadId: "thread-1" }));
+  await recovery.session?.close({ reason: "test done" });
+});
+
 async function collectUntilTerminal(
   events: AsyncIterable<PrpEvent>,
 ): Promise<PrpEvent[]> {
@@ -571,7 +597,7 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it("places Paperclip runtime instructions in Codex's system channel and enables only selected skill instructions", async () => {
+  it("adds Paperclip developer instructions without replacing the Codex base and enables selected skills", async () => {
     const transport = new FakeCodexTransport();
     const baseInstructions = [
       "You are running as a Paperclip agent.",
@@ -591,12 +617,13 @@ describe("Codex app-server Codex driver", () => {
 
     const threadStart = transport.calls.find((call) => call.method === "thread/start");
     expect(threadStart?.params).toMatchObject({
-      baseInstructions,
+      developerInstructions: baseInstructions,
       config: {
         "skills.include_instructions": true,
         include_apps_instructions: false,
       },
     });
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
     expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(baseInstructions);
   });
 
@@ -1436,6 +1463,18 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("sends the selected reasoning effort with the Codex turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({
+      runId: "run-effort",
+      normalizedSessionId: "session-effort",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue" } });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ effort: "ultra" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("fails closed when the installed app-server does not confirm plan mode", async () => {
     const transport = new FakeCodexTransport();
     transport.confirmCollaborationMode = false;
@@ -1484,6 +1523,38 @@ describe("Codex app-server Codex driver", () => {
         workingDirectory: "/",
       }),
     ).rejects.toThrow("cannot be a filesystem root");
+  });
+
+  it("uses negotiated ACP controls through the Codex transport facade", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ ...controls }) });
+    const session = await makeDriver([transport], {
+      driverIdentity: { kind: "acpx_runtime", displayName: "Pi ACP", version: "test" },
+      capabilities: { steering: false },
+    }).openSession({ runId: "run-pi", normalizedSessionId: "session-pi", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, message: { role: "user", text: "Change" } })).rejects.toThrow("not negotiated");
+      controls = { steering: true, queuedFollowUp: true };
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const input = { turnId, correlationId: "queued-1", mode: "follow_up" as const, message: { role: "user" as const, text: "Then validate" } };
+      await session.steer?.(input);
+      expect(transport.calls.find(call => call.method === "turn/steer")?.params).toMatchObject({ expectedTurnId: turnId, mode: "follow_up", correlationId: "queued-1" });
+      await expect(session.steer?.(input)).rejects.toThrow("already acknowledged");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(1);
+    } finally { await session.close({ reason: "verified" }); }
+  });
+
+  it("keeps native follow-up disabled for the Codex app-server driver", async () => {
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ steering: true, queuedFollowUp: true }) });
+    const session = await makeDriver([transport]).openSession({ runId: "run-codex", normalizedSessionId: "session-codex", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: false });
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, mode: "follow_up", message: { role: "user", text: "Queue" } })).rejects.toThrow("not negotiated");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(0);
+    } finally { await session.close({ reason: "verified" }); }
   });
 
   it("steers and interrupts an active turn without replacing the session", async () => {
@@ -2912,6 +2983,29 @@ describe("Codex app-server Codex driver", () => {
         arguments: {},
       }),
     );
+  });
+
+  it.each(["unknown", "validation"])("preserves the dynamic tool outcome boundary (%s)", async (outcome) => {
+    const transport = new FakeCodexTransport();
+    const error = outcome === "unknown"
+      ? new SemanticToolOutcomeUnknownError("write may have committed")
+      : new Error("invalid instruction input");
+    const handler = vi.fn(async () => { throw error; });
+    const session = await makeDriver([transport], {
+      dynamicTools: [{ name: "update_agent_instructions", description: "Write instructions.", inputSchema: { type: "object" } }],
+      dynamicToolHandler: handler,
+    }).openSession({ runId: "run-uncertain-write", normalizedSessionId: "session-uncertain-write", workingDirectory: TEST_WORKING_DIRECTORY });
+    await session.startTurn({ message: { role: "user", text: "Update instructions." } });
+    const response = transport.invoke({ id: "rpc-write", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "uncertain-write", tool: "update_agent_instructions", arguments: {},
+    } });
+    if (outcome === "unknown") await expect(response).rejects.toBe(error);
+    else await expect(response).resolves.toMatchObject({ success: false });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const completions = events.filter((event) => event.eventType === "item.completed" && event.itemId === "uncertain-write");
+    expect(completions).toHaveLength(outcome === "unknown" ? 0 : 1);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when an agent message changes a tool-committed result", async () => {

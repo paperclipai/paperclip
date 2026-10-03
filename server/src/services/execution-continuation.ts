@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -14,6 +15,14 @@ import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
+import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
+
+export class StaleExecutionContinuationError extends Error {
+  constructor(readonly code: "continuation_task_ownership_changed") {
+    super(code);
+    this.name = "StaleExecutionContinuationError";
+  }
+}
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -37,6 +46,33 @@ export function continuationOriginCommentIds(context: unknown): string[] {
       ].filter((v): v is string => typeof v === "string" && v.length > 0),
     ),
   ];
+}
+
+/**
+ * Return the comment IDs explicitly represented in a delivered continuation.
+ * An absent list is intentionally different from an empty list: historical or
+ * third-party snapshots cannot prove what the provider received.
+ */
+export function deliveredContinuationCommentIds(context: unknown): {
+  known: boolean;
+  ids: Set<string>;
+} {
+  const c = object(context);
+  const wake = object(c.paperclipWake);
+  const continuation = object(c.executionContinuation);
+  const ids = new Set<string>();
+  let known = false;
+  const collect = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    known = true;
+    for (const item of value) {
+      const id = typeof item === "string" ? item : string(object(item).id);
+      if (id) ids.add(id);
+    }
+  };
+  collect(wake.comments);
+  collect(continuation.messages);
+  return { known, ids };
 }
 
 /** Keep service/tool results and generated summaries out of human authority. */
@@ -125,9 +161,13 @@ export async function buildExecutionContinuation(input: {
   if (
     !issue ||
     issue.assigneeAgentId !== input.agentId ||
-    ["done", "cancelled"].includes(issue.status)
+    issue.status === "cancelled" ||
+    (issue.status === "done" && !await isCompletedOnboardingHandoffWake(db, {
+      companyId, issueId, agentId: input.agentId,
+      reason: string(input.context.wakeReason), contextSnapshot: input.context,
+    }))
   )
-    throw new Error("continuation_task_ownership_changed");
+    throw new StaleExecutionContinuationError("continuation_task_ownership_changed");
   const rows = await db
     .select()
     .from(issueComments)
@@ -268,6 +308,12 @@ export async function buildExecutionContinuation(input: {
     (row) =>
       row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
+  const hashObjectiveSource = (value: string) => createHash("sha256").update(value.trim()).digest("hex");
+  const objectiveSource = latestRequest
+    ? { kind: "comment" as const, id: latestRequest.id, revision: latestRequest.updatedAt }
+    : issue.description !== null && issue.description !== undefined
+      ? { kind: "description" as const, id: issue.id, revision: hashObjectiveSource(issue.description) }
+      : { kind: "title" as const, id: issue.id, revision: hashObjectiveSource(issue.title) };
   const priorRuns = await db
     .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode, retryOfRunId: heartbeatRuns.retryOfRunId })
     .from(heartbeatRuns)
@@ -384,6 +430,7 @@ export async function buildExecutionContinuation(input: {
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
+    objectiveSource,
     messages,
     humanResponses: interactions.flatMap(row => {
       const response = projectHumanInteractionResponse(row);

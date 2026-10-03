@@ -3,18 +3,15 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueThreadInteractions } from "@paperclipai/db";
 import type {
-  AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
-  AskUserQuestionsQuestionOption,
-  PaperclipQuestionSetPayload,
   RespondIssueThreadInteraction,
 } from "@paperclipai/shared";
 
+import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
+
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import {
-  parsePaperclipQuestionResponse,
   parsePaperclipQuestionSet,
-  type PaperclipQuestionResponse,
   type PaperclipQuestionSet,
 } from "../../vendor/paperclip-runner/index.js";
 import { logger } from "../../middleware/logger.js";
@@ -24,10 +21,10 @@ import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
 import type { NativeRunStoreBinding } from "./native-run-coordinator-store.js";
 
+import { parseQuestionInteractionAnswers, parseSavedQuestionInteractionAnswers } from "../question-interaction-answers.js";
+
 const QUESTION_KEY_PREFIX = "paperclip-runner-question:";
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
-const TEXT_ANSWER_OPTION_ID = "paperclip_text_answer";
-const CUSTOM_ANSWER_OPTION_ID = "paperclip_custom_answer";
 export const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
 
 type QueueCommand = (
@@ -83,100 +80,15 @@ function requestIdForInteraction(
     : requestId;
 }
 
-function uniqueSyntheticOptionId(existing: readonly string[], preferred: string): string {
-  const ids = new Set(existing);
-  if (!ids.has(preferred)) return preferred;
-  for (let suffix = 2; suffix < 10_000; suffix += 1) {
-    const candidate = `${preferred}_${suffix}`;
-    if (!ids.has(candidate)) return candidate;
-  }
-  throw new Error("native_question_synthetic_option_exhausted");
-}
-
 function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestId: string) {
   return {
-    version: 1 as const,
-    ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
-    ...(questionSet.submitLabel ? { submitLabel: questionSet.submitLabel.slice(0, 120) } : {}),
-    questions: questionSet.questions.map((question) => {
-      const canonicalOptions = question.options ?? [];
-      const options: AskUserQuestionsQuestionOption[] = canonicalOptions.map((option) => ({
-        id: option.id,
-        label: option.label,
-        ...(option.description ? { description: option.description } : {}),
-      }));
-      if (question.answerMode === "text") {
-        options.push({
-          id: uniqueSyntheticOptionId([], TEXT_ANSWER_OPTION_ID),
-          label: question.header ?? "Type an answer",
-          ...(question.textValidation?.inputType
-            ? { description: `Expected ${question.textValidation.inputType} input` }
-            : {}),
-          freeText: true,
-        });
-      } else if (question.customAnswer?.enabled) {
-        options.push({
-          id: uniqueSyntheticOptionId(canonicalOptions.map((option) => option.id), CUSTOM_ANSWER_OPTION_ID),
-          label: question.customAnswer.label ?? "Other",
-          ...(question.customAnswer.placeholder ? { description: question.customAnswer.placeholder } : {}),
-          freeText: true,
-        });
-      }
-      return {
-        id: question.id,
-        prompt: question.prompt,
-        ...((question.helpText || question.header)
-          ? { helpText: question.helpText ?? question.header }
-          : {}),
-        selectionMode: question.answerMode === "multi_select" ? "multi" as const : "single" as const,
-        required: question.required,
-        allowOther: question.answerMode === "text" || question.customAnswer?.enabled === true,
-        options,
-      };
-    }),
-    questionSet: questionSet as PaperclipQuestionSetPayload,
+    ...questionSetToAskUserQuestionsPayload(questionSet),
     runtimeRequestId,
-    // A generic task comment cannot satisfy this provider request. Keep the
-    // card actionable until a validated answer or an explicit terminal action.
+    // A generic task comment cannot satisfy this provider request.
     supersedeOnUserComment: false,
   };
 }
 
-function canonicalResponse(
-  questionSet: PaperclipQuestionSetPayload,
-  answers: readonly AskUserQuestionsAnswer[],
-): PaperclipQuestionResponse {
-  const answerByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer]));
-  const response: PaperclipQuestionResponse = {
-    schema: "paperclip.question_response.v1",
-    answers: {},
-  };
-  for (const question of questionSet.questions) {
-    const answer = answerByQuestionId.get(question.id);
-    if (!answer) continue;
-    if (question.answerMode === "text") {
-      response.answers[question.id] = {
-        ...(answer.otherText !== undefined && answer.otherText !== null
-          ? { text: answer.otherText }
-          : {}),
-      };
-    } else {
-      const customOptionId = question.customAnswer?.enabled
-        ? uniqueSyntheticOptionId(
-            (question.options ?? []).map((option) => option.id),
-            CUSTOM_ANSWER_OPTION_ID,
-          )
-        : null;
-      response.answers[question.id] = {
-        selectedOptionIds: answer.optionIds.filter((optionId) => optionId !== customOptionId),
-        ...(answer.otherText !== undefined && answer.otherText !== null
-          ? { customText: answer.otherText }
-          : {}),
-      };
-    }
-  }
-  return parsePaperclipQuestionResponse(questionSet, response);
-}
 
 async function authorizedNativeRun(
   db: Pick<Db | DbTransaction, "select">,
@@ -200,7 +112,7 @@ async function authorizedNativeRun(
   return run ? { ...run, requestId } : null;
 }
 
-/** Materialize a canonical runtime input request as the existing task-thread card. */
+/** Materialize questions; permission requests use the privileged runtime card. */
 export async function projectNativeRuntimeRequest(input: {
   db: Db;
   binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId" | "normalizedSessionId" | "runnerSourceInstanceId">;
@@ -218,12 +130,41 @@ export async function projectNativeRuntimeRequest(input: {
   if (
     !request
     || request.schema !== "paperclip.runtime_request.v2"
-    || request.requestKind !== "runtime"
-    || request.type !== "input"
     || request.status !== "pending"
     || typeof request.requestId !== "string"
     || !REQUEST_ID_PATTERN.test(request.requestId)
   ) {
+    throw new Error("native_runtime_request_invalid");
+  }
+  if (request.requestKind === "permission_approval" && request.type === "permission") {
+    const choices = Array.isArray(request.choices) ? request.choices.map(record) : [];
+    const supported = new Set(["accept", "accept_for_session", "decline", "cancel"]);
+    if (
+      typeof request.turnId !== "string"
+      || request.turnId !== input.event.turnId
+      || (request.itemId != null && typeof request.itemId !== "string")
+      || (request.itemId ?? null) !== (input.event.itemId ?? null)
+      || typeof request.prompt !== "string"
+      || !request.prompt.trim()
+      || request.prompt.length > 4000
+      || choices.length === 0
+      || choices.length > 4
+      || choices.some((choice) => !choice
+        || typeof choice.key !== "string" || !supported.has(choice.key)
+        || typeof choice.label !== "string" || !choice.label.trim() || choice.label.length > 500)
+      || new Set(choices.map((choice) => choice?.key)).size !== choices.length
+      || (request.details !== undefined && !record(request.details))
+    ) {
+      throw new Error("native_runtime_permission_invalid");
+    }
+    // The committed run event itself feeds TaskChatProtocolCard. Its decisions
+    // go through the instance-admin runtime-request route and the exact pending
+    // turn, not the human-only question-response delivery path. Returning here
+    // allows the durable coordinator to acknowledge the event without creating
+    // a second, less-privileged interaction or changing any offered choices.
+    return null;
+  }
+  if (request.requestKind !== "runtime" || request.type !== "input") {
     throw new Error("native_runtime_request_invalid");
   }
   const questionSet = parsePaperclipQuestionSet(request.input);
@@ -283,13 +224,13 @@ export async function projectNativeRuntimeRequest(input: {
 }
 
 /** Validate untrusted board input before the existing interaction service persists it. */
-export function validateNativeQuestionResponseInput(
+export async function validateNativeQuestionResponseInput(
   interaction: AskUserQuestionsInteraction,
   input: RespondIssueThreadInteraction,
-): void {
+): Promise<void> {
   if (!requestIdForInteraction(interaction) || !interaction.payload.questionSet) return;
   try {
-    canonicalResponse(interaction.payload.questionSet, input.answers);
+    await parseQuestionInteractionAnswers(interaction.payload.questionSet, input.answers, interaction.payload.questions);
   } catch (error) {
     throw unprocessable(
       error instanceof Error ? error.message : "Invalid native question response",
@@ -307,8 +248,11 @@ export async function deliverNativeQuestionResponse(
     return "not_native";
   }
   const run = await authorizedNativeRun(db, interaction);
-  if (!run) return "not_native";
-  const response = canonicalResponse(interaction.payload.questionSet, interaction.result.answers);
+  // A historical question can be answered after its provider turn has ended.
+  // Fall through to durable fresh-wake delivery instead of waiting forever for
+  // a command target that cannot return for this terminal run.
+  if (!run || ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) return "not_native";
+  const response = parseSavedQuestionInteractionAnswers(interaction.payload.questionSet, interaction.result.answers, interaction.payload.questions);
   const target = activeTargets.get(run.id);
   if (
     !target
