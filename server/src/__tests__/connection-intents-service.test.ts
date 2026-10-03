@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import httpRequest from "supertest";
+import { createRuntimeToolsToken } from "../runtime-tools-token.js";
+import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
+import { errorHandler } from "../middleware/error-handler.js";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -170,6 +175,51 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }
     return false;
   }
+
+  it("refuses read-only runtime connection requests without creating interactions", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = (run!.contextSnapshot as { issueId: string }).issueId;
+    await db.update(issues).set({ workMode: "read_only" }).where(eq(issues.id, issueId));
+    const interactions = () => db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.companyId, claims.company_id));
+    const before = await interactions();
+    try {
+      await expect(connectionIntentService(db).request(claims, "notion"))
+        .rejects.toMatchObject({ status: 403, details: { code: "issue_write_read_only_run" } });
+      expect(await interactions()).toEqual(before);
+      const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
+      try {
+        const capability = createRuntimeToolsToken({ agentId: claims.sub, companyId: claims.company_id,
+          runId, responsibleUserId: claims.responsible_user_id });
+        expect(capability).not.toBeNull();
+        const app = express();
+        app.use(express.json(), runtimeConnectionIntentRoutes(db), errorHandler);
+        const rest = await httpRequest(app).post("/runtime-tools/connections/request")
+          .set("Authorization", `Bearer ${capability!.token}`).send({ service: "notion" });
+        expect(rest.status).toBe(403);
+        expect(rest.body.details.code).toBe("issue_write_read_only_run");
+        const mcp = await httpRequest(app).post("/mcp/runtime-tools")
+          .set("Authorization", `Bearer ${capability!.token}`).send({ jsonrpc: "2.0", id: 1,
+            method: "tools/call", params: { name: "connection_request", arguments: { service: "notion" } } });
+        expect(mcp.status).toBe(403);
+        expect(mcp.body.details.code).toBe("issue_write_read_only_run");
+        expect(await interactions()).toEqual(before);
+        const search = await httpRequest(app).post("/runtime-tools/connections/search")
+          .set("Authorization", `Bearer ${capability!.token}`).send({ query: "notion" });
+        expect(search.status).toBe(200);
+        expect(await interactions()).toEqual(before);
+      } finally {
+        if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+        else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+      }
+      const result = await connectionIntentService(db).search(claims, "notion");
+      expect(result.results).toEqual([expect.objectContaining({ service: "notion" })]);
+      expect(await interactions()).toEqual(before);
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+  });
 
   it("searches first-party definitions without leaking run identity", async () => {
     const result = await connectionIntentService(db).search(claims, "notion");
