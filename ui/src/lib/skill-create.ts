@@ -3,12 +3,9 @@ import type {
   CompanySkillDetail,
   CompanySkillSharingScope,
 } from "@paperclipai/shared";
+import { UI_ACCENT_COLORS } from "./colors";
 
-export const SKILL_CREATE_ACCENTS = [
-  "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444",
-  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#22c55e",
-  "#3b82f6", "#a855f7",
-];
+export const SKILL_CREATE_ACCENTS = UI_ACCENT_COLORS;
 
 export type SkillCreateDraft = {
   name: string;

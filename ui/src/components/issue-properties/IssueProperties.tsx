@@ -64,6 +64,7 @@ import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
+import { UI_ACCENT_COLORS } from "../../lib/colors";
 import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -127,6 +128,10 @@ import {
   TaskDetailSubtasksPanel,
   type TaskDetailRelationItem,
 } from "../task-detail/TaskDetailRelationsPanel";
+
+function randomIssueLabelColor() {
+  return UI_ACCENT_COLORS[Math.floor(Math.random() * UI_ACCENT_COLORS.length)]!;
+}
 
 function splitMiddleTruncation(value: string): { prefix: string; suffix: string } | null {
   const splitAt = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
@@ -386,7 +391,7 @@ export function IssueProperties({
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
-  const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [newLabelColor, setNewLabelColor] = useState<string>(randomIssueLabelColor);
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
@@ -485,6 +490,7 @@ export function IssueProperties({
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
+      setNewLabelColor(randomIssueLabelColor());
     },
   });
 
