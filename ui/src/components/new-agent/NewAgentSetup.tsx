@@ -9,7 +9,7 @@ import {
   setupEfforts,
   setupProviderKeys,
 } from "@/lib/agent-setup-fields";
-import { testAgentSetup } from "@/lib/test-agent-setup";
+import { describeSetupFailure, testAgentSetup } from "@/lib/test-agent-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { useEffect, useRef, useState } from "react";
@@ -749,19 +749,7 @@ function Setup({
                       localEnvironment={environment?.driver === "local"}
                       onBack={() => navigate("/agents/all")}
                       testConnection={runTest}
-                      testError={
-                        error ??
-                        (
-                          result?.checks.find(
-                            (check) => check.level === "error",
-                          ) ??
-                          result?.checks.find(
-                            (check) =>
-                              check.code.includes("hello_probe") &&
-                              check.level === "warn",
-                          )
-                        )?.message
-                      }
+                      testError={error ?? describeSetupFailure(result?.checks)}
                       onConnected={(next) => {
                         setConnection(next);
                         resetTest();
