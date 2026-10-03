@@ -7306,6 +7306,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await heartbeat.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
   });
 
+  it("wakes the new assignee once a reassigning run's process exits", async () => {
+    const actualProcess = await vi.importActual<typeof import("../adapters/process/execute.js")>("../adapters/process/execute.js");
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
+      runtimeMode: "legacy", adapterType: "claude_local", agentStatus: "idle", runStatus: "queued",
+    });
+    await db.update(agents).set({ adapterConfig: {
+      command: process.execPath, args: ["-e", "console.log('ready');setInterval(() => {}, 1000)"], graceSec: 1,
+    } }).where(eq(agents.id, agentId));
+    const newAgentId = randomUUID();
+    await db.insert(agents).values({ id: newAgentId, companyId, name: "Reviewer", role: "engineer",
+      status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) =>
+      actualProcess.execute(input as Parameters<typeof actualProcess.execute>[0])) as typeof mockAdapterExecute);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const owned = await waitForValue(async () => runningProcesses.get(runId));
+    expect(owned).toBeTruthy();
+
+    // The old assignee's own PATCH stops its run. Its process is still alive
+    // waiting for that response, so the new assignee's wake is parked.
+    mockTerminateLocalService.mockResolvedValueOnce(undefined);
+    await heartbeat.cancelRun(runId, "Cancelled before issue reassignment", {
+      errorCode: "issue_reassigned", resultJson: { reassignmentStopConfirmed: true },
+    });
+    await db.update(issues).set({ assigneeAgentId: newAgentId }).where(eq(issues.id, issueId));
+    // An older wake from a third agent is parked behind the same execution.
+    const mentionedAgentId = randomUUID();
+    await db.insert(agents).values({ id: mentionedAgentId, companyId, name: "Mentioned", role: "engineer",
+      status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(agentWakeupRequests).values({ companyId, agentId: mentionedAgentId, source: "automation",
+      reason: "issue_comment_mentioned", status: "deferred_issue_execution", requestedAt: new Date(Date.now() - 60_000),
+      requestedByActorType: "agent", requestedByActorId: agentId, payload: { issueId } });
+    const [handoff] = await db.insert(issueComments).values({
+      companyId, issueId, authorAgentId: agentId, createdByRunId: runId, body: "Over to you",
+    }).returning();
+    await heartbeat.wakeup(newAgentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId, commentId: handoff!.id, mutation: "update" },
+      requestedByActorType: "agent", requestedByActorId: agentId,
+      contextSnapshot: { issueId, taskId: issueId, commentId: handoff!.id, wakeCommentId: handoff!.id, source: "issue.update" },
+    });
+    const parked = () => db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, newAgentId));
+    expect(await parked()).toMatchObject([{ status: "deferred_issue_execution",
+      payload: { executionWait: { reason: "execution_recovery", recoveryActionId: null } } }]);
+    expect((await heartbeat.getRun(runId))?.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, cause: "execution_owner_active" });
+
+    process.kill(owned!.child.pid!, "SIGTERM");
+    await heartbeat.drainActiveRunExecutions();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+
+    const [wake] = await parked();
+    expect(wake).toMatchObject({ status: expect.not.stringMatching(/^deferred_issue_execution$/), runId: expect.any(String) });
+    expect((await heartbeat.getRun(wake!.runId!))).toMatchObject({ agentId: newAgentId,
+      contextSnapshot: expect.objectContaining({ issueId, wakeCommentIds: [handoff!.id] }) });
+  });
+
   it("retries durable queue interruption after a promotion failure on a fresh service", async () => {
     const { companyId, agentId, issueId, runId } = await seedRunFixture({
       runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "cancelled",
