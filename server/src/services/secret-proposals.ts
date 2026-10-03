@@ -1,4 +1,5 @@
-import { withAgentAppearance } from "@paperclipai/shared";
+import { isDeepStrictEqual } from "node:util";
+import { envBindingSchema, withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -12,12 +13,17 @@ import {
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
-import type { SecretProvider } from "@paperclipai/shared";
+import type { EnvBinding, SecretProvider } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
-import { normalizeSecretKey, secretService } from "./secrets.js";
+import {
+  canonicalizeBinding,
+  type CanonicalEnvBinding,
+  normalizeSecretKey,
+  secretService,
+} from "./secrets.js";
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
@@ -76,6 +82,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+// A stored binding is the canonical (defaulted) form of a binding, so comparing a proposed binding
+// against it with JSON.stringify reports a conflict for every semantically identical rebinding.
+// Compare the canonical shape on both sides instead: the comparison is then key-order independent
+// and a rebinding that the agent already carries is a no-op instead of a 409.
+export function bindingAlreadyApplied(existing: unknown, proposed: CanonicalEnvBinding): boolean {
+  const parsed = envBindingSchema.safeParse(existing);
+  if (!parsed.success) return false;
+  return isDeepStrictEqual(canonicalizeBinding(parsed.data as EnvBinding), proposed);
 }
 
 export function createSecretProposalsService(db: Db) {
@@ -676,7 +692,7 @@ export function createSecretProposalsService(db: Db) {
     if (secret.scope === "user" && !userSecretDefinition) {
       throw conflict("Binding proposal user secret definition is not active");
     }
-    const binding = userSecretDefinition
+    const binding = canonicalizeBinding((userSecretDefinition
       ? {
           type: "user_secret_ref",
           key: userSecretDefinition.key,
@@ -684,20 +700,47 @@ export function createSecretProposalsService(db: Db) {
           required: true,
           allowMissingOverride: false,
         }
-      : { type: "secret_ref", secretId: secret.id, version: "latest" };
+      : { type: "secret_ref", secretId: secret.id, version: "latest" }) as EnvBinding);
+    let alreadyApplied = false;
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
-        throw conflict(`Agent config path already exists: ${proposal.configPath}`);
+      if (existing !== undefined && !bindingAlreadyApplied(existing, binding)) {
+        throw conflict(`Agent config path already exists: ${proposal.configPath}`, {
+          code: "agent_config_path_conflict",
+          configPath: proposal.configPath,
+        });
       }
+      alreadyApplied = existing !== undefined;
       adapterConfig.env = { ...env, [key]: binding };
     } else {
       const existing = adapterConfig[proposal.configPath];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
-        throw conflict(`Agent config path already exists: ${proposal.configPath}`);
+      if (existing !== undefined && !bindingAlreadyApplied(existing, binding)) {
+        throw conflict(`Agent config path already exists: ${proposal.configPath}`, {
+          code: "agent_config_path_conflict",
+          configPath: proposal.configPath,
+        });
       }
+      alreadyApplied = existing !== undefined;
       adapterConfig[proposal.configPath] = binding;
+    }
+    // The target already carries exactly this binding, so the approval changes nothing. Writing
+    // adapterConfig anyway would still reach syncAgentSecretBindings, which replaces every binding
+    // row of the target with a fresh primary key. A low-trust run and an active static lease hold
+    // those ids (allowedBindingIds, context.bindingId), so the rotation revokes access that the
+    // approval never granted and never took away. An approval that changes nothing therefore writes
+    // nothing, which is the guarantee the previous 409 gave.
+    if (alreadyApplied) {
+      await logActivity(txDb, {
+        companyId: proposal.companyId,
+        actorType: "user",
+        actorId: resolvedByUserId,
+        action: "agent.binding.noop",
+        entityType: "agent",
+        entityId: target.id,
+        details: { adapterConfig: false, proposalId: proposal.id, configPath: proposal.configPath },
+      });
+      return;
     }
     const updated = await agentSvc.update(target.id, { adapterConfig }, {
       recordRevision: { createdByUserId: resolvedByUserId, source: "patch" },

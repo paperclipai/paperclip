@@ -20,6 +20,7 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
+  secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -61,6 +62,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     await db.delete(issueComments);
     await db.delete(companySecretProposals);
     await db.delete(issueThreadInteractions);
+    await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
@@ -219,6 +221,29 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     app.use("/api", secretRoutes(db, { heartbeat: options?.heartbeat, issues: options?.issues }));
     app.use(errorHandler);
     return app;
+  }
+
+  async function proposeLiveSecretBinding(
+    fixture: Awaited<ReturnType<typeof seedRun>>,
+    input: { secretId: string; configPath: string },
+  ) {
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: input.secretId,
+        configPath: input.configPath,
+        justification: "Bind an approved secret to an agent config path",
+      });
+    expect(proposed.status).toBe(201);
+    return proposed;
+  }
+
+  async function readStoredEnvBinding(agentId: string, envKey: string): Promise<unknown> {
+    // jsonb does not preserve key order, so a stored binding is only comparable on semantics.
+    const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const env = (row?.adapterConfig as Record<string, unknown> | null)?.env;
+    return (env as Record<string, unknown> | null | undefined)?.[envKey];
   }
 
   it("requires company admin access to reject secret proposals", async () => {
@@ -521,6 +546,239 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         configPath: "env.SEQUENTIAL_TOKEN",
       }),
     ]);
+  });
+
+  it("applies an identical rebinding as a no-op instead of rejecting it as a conflict", async () => {
+    const fixture = await seedRun();
+    const boardApp = createBoardApp(fixture);
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/rebind/idempotent",
+      key: "REBIND_IDEMPOTENT",
+      provider: "local_encrypted",
+      value: "rebind-idempotent-secret",
+    });
+
+    const first = await proposeLiveSecretBinding(fixture, {
+      secretId: liveSecret.id,
+      configPath: "env.REBIND_IDEMPOTENT",
+    });
+    const firstApproved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${first.body.id}/approve`)
+      .send({});
+    expect(firstApproved.status).toBe(200);
+
+    // The stored form is the canonical (defaulted) five-key binding, while the proposal carries the
+    // three-key shape. Both describe the same binding, so a second proposal must not read as a conflict.
+    const stored = await readStoredEnvBinding(fixture.agentId, "REBIND_IDEMPOTENT");
+    expect(stored).toEqual({
+      type: "secret_ref",
+      secretId: liveSecret.id,
+      version: "latest",
+      projectionClass: "unclassified",
+      projectionAllowlistKey: null,
+    });
+
+    const second = await proposeLiveSecretBinding(fixture, {
+      secretId: liveSecret.id,
+      configPath: "env.REBIND_IDEMPOTENT",
+    });
+    const secondApproved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${second.body.id}/approve`)
+      .send({});
+
+    expect(secondApproved.status).toBe(200);
+    expect(secondApproved.body).toMatchObject({
+      status: "approved",
+      appliedBindingConfigPath: "env.REBIND_IDEMPOTENT",
+    });
+    expect(await readStoredEnvBinding(fixture.agentId, "REBIND_IDEMPOTENT")).toEqual(stored);
+    expect(await db.select().from(companySecretBindings)
+      .where(eq(companySecretBindings.configPath, "env.REBIND_IDEMPOTENT"))).toHaveLength(1);
+  });
+
+  it("keeps the binding ids a low-trust run holds when an identical rebinding is approved", async () => {
+    const fixture = await seedRun();
+    const boardApp = createBoardApp(fixture);
+    const secrets = secretService(db);
+    const liveSecret = await secrets.create(fixture.companyId, {
+      name: "dev/rebind/id-stable",
+      key: "REBIND_ID_STABLE",
+      provider: "local_encrypted",
+      value: "rebind-id-stable-secret",
+    });
+    const definition = await secrets.createUserSecretDefinition(fixture.companyId, {
+      key: "personal_token",
+      name: "Personal token",
+      provider: "local_encrypted",
+    });
+    await secrets.createCurrentUserSecretValue(fixture.companyId, "user-1", {
+      definitionId: definition.id,
+      value: "personal-token-secret",
+    });
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        env: { REBIND_ID_STABLE: { type: "secret_ref", secretId: liveSecret.id, version: "latest" } },
+        "access.personal_source": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+        "access.personal_alias": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+      },
+    });
+
+    const bindingIds = async () => (await db.select({ id: companySecretBindings.id })
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, fixture.agentId))
+      .orderBy(companySecretBindings.configPath)).map((row) => row.id);
+    const declarationIds = async () => (await db.select({ id: userSecretDeclarations.id })
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.targetId, fixture.agentId))
+      .orderBy(userSecretDeclarations.configPath)).map((row) => row.id);
+    const beforeBindingIds = await bindingIds();
+    const beforeDeclarationIds = await declarationIds();
+    expect(beforeBindingIds).toHaveLength(1);
+    expect(beforeDeclarationIds).toHaveLength(2);
+
+    // A low-trust run only receives the secret while its allowlist holds the current binding ids.
+    const agentEnv = {
+      REBIND_ID_STABLE: { type: "secret_ref" as const, secretId: liveSecret.id, version: "latest" as const },
+    };
+    const resolveAsLowTrustRun = () => secrets.resolveEnvBindings(fixture.companyId, agentEnv, {
+      consumerType: "agent",
+      consumerId: fixture.agentId,
+      actorType: "agent",
+      actorId: fixture.agentId,
+      allowedBindingIds: [...beforeBindingIds, ...beforeDeclarationIds],
+    });
+    expect((await resolveAsLowTrustRun()).env.REBIND_ID_STABLE).toBe("rebind-id-stable-secret");
+
+    // Re-approving those same bindings must write nothing: a write reaches syncAgentSecretBindings,
+    // which deletes every binding row of the target and inserts new ones with fresh primary keys,
+    // and those ids are exactly what the run above was granted.
+    const proposals = [
+      await proposeLiveSecretBinding(fixture, {
+        secretId: liveSecret.id,
+        configPath: "env.REBIND_ID_STABLE",
+      }),
+      await request(createAgentApp(fixture))
+        .post("/api/agents/me/secret-proposals")
+        .send({
+          kind: "binding",
+          sourceConfigPath: "access.personal_alias",
+          configPath: "access.personal_alias",
+          justification: "Re-bind an already bound personal credential",
+        }),
+    ];
+    expect(proposals[1].status).toBe(201);
+    for (const proposal of proposals) {
+      const approved = await request(boardApp)
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+        .send({});
+      expect(approved.status).toBe(200);
+    }
+
+    expect(await bindingIds()).toEqual(beforeBindingIds);
+    expect(await declarationIds()).toEqual(beforeDeclarationIds);
+    expect((await resolveAsLowTrustRun()).env.REBIND_ID_STABLE).toBe("rebind-id-stable-secret");
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(
+      eq(activityLog.entityId, fixture.agentId),
+      eq(activityLog.action, "agent.updated"),
+    ))).toEqual([]);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(
+      eq(activityLog.entityId, fixture.agentId),
+      eq(activityLog.action, "agent.binding.noop"),
+    ))).toHaveLength(2);
+  });
+
+  it("still rejects a rebinding that points at a different secret on the same config path", async () => {
+    const fixture = await seedRun();
+    const boardApp = createBoardApp(fixture);
+    const firstSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/rebind/first-secret",
+      key: "REBIND_FIRST",
+      provider: "local_encrypted",
+      value: "rebind-first-secret",
+    });
+    const secondSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/rebind/second-secret",
+      key: "REBIND_SECOND",
+      provider: "local_encrypted",
+      value: "rebind-second-secret",
+    });
+    const first = await proposeLiveSecretBinding(fixture, {
+      secretId: firstSecret.id,
+      configPath: "env.REBIND_SECOND",
+    });
+    expect((await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${first.body.id}/approve`)
+      .send({})).status).toBe(200);
+
+    const conflicting = await proposeLiveSecretBinding(fixture, {
+      secretId: secondSecret.id,
+      configPath: "env.REBIND_SECOND",
+    });
+    const rejected = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${conflicting.body.id}/approve`)
+      .send({});
+
+    expect(rejected.status).toBe(409);
+    expect(rejected.body).toMatchObject({
+      error: "Agent config path already exists: env.REBIND_SECOND",
+      code: "agent_config_path_conflict",
+    });
+    expect(await readStoredEnvBinding(fixture.agentId, "REBIND_SECOND")).toMatchObject({
+      secretId: firstSecret.id,
+    });
+    expect(await db.select().from(companySecretProposals)
+      .where(eq(companySecretProposals.id, conflicting.body.id)))
+      .toEqual([expect.objectContaining({ status: "pending" })]);
+  });
+
+  it("still rejects a rebinding that changes the binding type on the same config path", async () => {
+    const fixture = await seedRun();
+    const boardApp = createBoardApp(fixture);
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/rebind/type-change",
+      key: "REBIND_TYPE_CHANGE",
+      provider: "local_encrypted",
+      value: "rebind-type-secret",
+    });
+    await db.update(agents)
+      .set({
+        adapterConfig: {
+          env: {
+            REBIND_TYPE_CHANGE: { type: "user_secret_ref", key: "other.user.key" },
+          },
+        },
+      })
+      .where(eq(agents.id, fixture.agentId));
+
+    const proposal = await proposeLiveSecretBinding(fixture, {
+      secretId: liveSecret.id,
+      configPath: "env.REBIND_TYPE_CHANGE",
+    });
+    const rejected = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(rejected.status).toBe(409);
+    expect(rejected.body).toMatchObject({
+      error: "Agent config path already exists: env.REBIND_TYPE_CHANGE",
+      code: "agent_config_path_conflict",
+    });
+    expect(await readStoredEnvBinding(fixture.agentId, "REBIND_TYPE_CHANGE")).toMatchObject({
+      type: "user_secret_ref",
+      key: "other.user.key",
+    });
   });
 
   it("proposes and approves a binding by resolving the proposer's own sourceConfigPath", async () => {
