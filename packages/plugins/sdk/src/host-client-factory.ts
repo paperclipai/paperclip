@@ -253,10 +253,11 @@ export interface HostServices {
     getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
   };
 
-  /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
+  /** Provides `approvals.list`, `approvals.get`, `approvals.listComments`, `approvals.decide`. */
   approvals: {
     list(params: WorkerToHostMethods["approvals.list"][0]): Promise<WorkerToHostMethods["approvals.list"][1]>;
     get(params: WorkerToHostMethods["approvals.get"][0]): Promise<WorkerToHostMethods["approvals.get"][1]>;
+    listComments(params: WorkerToHostMethods["approvals.listComments"][0]): Promise<WorkerToHostMethods["approvals.listComments"][1]>;
     decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
@@ -476,6 +477,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Approvals
   "approvals.list": "approvals.read",
   "approvals.get": "approvals.read",
+  "approvals.listComments": "approvals.read",
   "approvals.decide": "approvals.respond",
 
   // Issue Documents
@@ -950,6 +952,9 @@ export function createHostClientHandlers(
     }),
     "approvals.get": gated("approvals.get", async (params) => {
       return services.approvals.get(params);
+    }),
+    "approvals.listComments": gated("approvals.listComments", async (params) => {
+      return services.approvals.listComments(params);
     }),
     "approvals.decide": gated("approvals.decide", async (params) => {
       return services.approvals.decide(params);

@@ -8,6 +8,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvalComments,
   approvals,
   assets,
   companies,
@@ -112,6 +113,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(issueAttachments);
     await db.delete(assets);
+    await db.delete(approvalComments);
     await db.delete(approvals);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -1115,6 +1117,26 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
     expect(result.applied).toBe(false);
     expect(result.interaction).toMatchObject({ id: interactionId, status: "rejected" });
+  });
+
+  it("approvals.listComments returns the approval's comments oldest first and nothing across companies", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const { companyId: otherCompanyId } = await seedCompanyAndAgent();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "approved", payload: { title: "Ship it" },
+    });
+    const userId = randomUUID();
+    await db.insert(approvalComments).values([
+      { approvalId, companyId, authorUserId: userId, body: "second", createdAt: new Date("2026-10-01T10:05:00Z") },
+      { approvalId, companyId, authorUserId: userId, body: "first", createdAt: new Date("2026-10-01T10:00:00Z") },
+    ]);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const rows = await services.approvals.listComments({ approvalId, companyId });
+    expect(rows.map((row) => row.body)).toEqual(["first", "second"]);
+    expect(rows[0]?.authorUserId).toBe(userId);
+    expect(await services.approvals.listComments({ approvalId, companyId: otherCompanyId })).toEqual([]);
+    expect(await services.approvals.listComments({ approvalId: randomUUID(), companyId })).toEqual([]);
   });
 
   it("approvals.decide fails closed when actorUserId is omitted", async () => {
