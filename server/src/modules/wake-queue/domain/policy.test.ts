@@ -281,6 +281,7 @@ const baseReleaseRecoveryFacts: ReleaseRecoveryFacts = {
   reviewParticipant: {
     applies: false,
     isExecutionReviewParticipantRecoveryRun: false,
+    isConfigurationIncompleteFailedRun: false,
   },
   immediate: {
     applies: false,
@@ -432,6 +433,32 @@ describe("decideReleaseRecovery", () => {
         },
       },
       expected: { kind: "blocked", notice: "execution_review_participant" },
+    },
+    {
+      name: "blocked: review-participant recovery applies and the run failed on incomplete configuration",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          ...baseReleaseRecoveryFacts.reviewParticipant,
+          applies: true,
+          isConfigurationIncompleteFailedRun: true,
+        },
+      },
+      expected: { kind: "blocked", notice: "configuration_incomplete" },
+    },
+    {
+      name: "blocked: incomplete configuration takes precedence over other review-participant recovery blocks",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          ...baseReleaseRecoveryFacts.reviewParticipant,
+          applies: true,
+          isExecutionReviewParticipantRecoveryRun: true,
+          isConfigurationIncompleteFailedRun: true,
+        },
+        shared: { ...baseReleaseRecoveryFacts.shared, recoveryAgentPresent: false, recoveryAgentInvokable: false },
+      },
+      expected: { kind: "blocked", notice: "configuration_incomplete" },
     },
     {
       name: "queue_review_participant_recovery: review-participant recovery applies and no suppression or block condition fires",

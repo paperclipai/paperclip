@@ -45,7 +45,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
@@ -59,6 +59,35 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+async function resolveReasoningEffort(
+  raw: unknown,
+  model: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<string> {
+  const effort = asString(raw, "").trim();
+  const allowed = grokLocalReasoningEffortsForModel(model);
+  if (!effort || allowed.includes(effort)) return effort;
+
+  const tiers = ["minimal", "none", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const tierIndex = tiers.indexOf(effort);
+  const resolvedEffort = tierIndex < 0
+    ? ""
+    : tierIndex < tiers.indexOf(allowed[0])
+      ? allowed[0]
+      : allowed[allowed.length - 1];
+  await onLog(
+    "stdout",
+    `[paperclip] reasoning effort ${JSON.stringify(effort)} is not valid for model ${model}; ${
+      resolvedEffort ? `using ${JSON.stringify(resolvedEffort)}` : "omitting --reasoning-effort"
+    }.\n`,
+  );
+  return resolvedEffort;
+}
+
+function isGrokCliUsageRejection(text: string): boolean {
+  return /^\s*(?:error:\s*)?(?:--[\w/-]+:\s*)?(?:unknown effort level|unknown option|unknown flag|unrecognized argument|unexpected argument|invalid value)\b/im.test(text);
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
@@ -268,7 +297,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   // every unattended run (the first tool call died with "User cancelled the
   // execution for tool ..."). --always-approve alone is the unattended policy.
   const permissionMode = asString(config.permissionMode, "").trim();
-  const reasoningEffort = asString(config.reasoningEffort, "").trim();
+  const reasoningEffort = await resolveReasoningEffort(config.reasoningEffort, model, onLog);
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
   const disableWebSearch = asBoolean(config.disableWebSearch, true);
@@ -676,6 +705,9 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         signal: attempt.proc.signal,
         timedOut: attempt.proc.timedOut,
         errorMessage: attempt.proc.timedOut ? `Timed out after ${timeoutSec}s` : failed ? fallbackErrorMessage : null,
+        ...(failed && (isGrokCliUsageRejection(fallbackErrorMessage) || isGrokCliUsageRejection(attempt.proc.stderr))
+          ? { errorCode: "configuration_incomplete" }
+          : {}),
         usage: {
           inputTokens: attempt.parsed.inputTokens,
           outputTokens: attempt.parsed.outputTokens,

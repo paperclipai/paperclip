@@ -698,6 +698,47 @@ describe("releaseIssueExecution", () => {
     expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
   });
 
+  it.each([null, "provider_unavailable", "configuration_incomplete", "model_not_found"])(
+    "requests a conversation retry only for retryable review-participant failures (%s)", async (errorCode) => {
+      const run: RunSnapshot = {
+        ...RUN,
+        conversationContinuation: true,
+        errorCode,
+        contextSnapshot: { wakeReason: "execution_review_requested" },
+      };
+      const issue: IssueSnapshot = {
+        ...ISSUE,
+        status: "in_review",
+        executionState: {
+          status: "pending",
+          currentParticipant: { type: "agent", agentId: RUN.agentId },
+        },
+      };
+      const transaction = createFakeTransaction();
+      const releaseIssueExecution = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, run),
+        recovery: createFakeRecovery(),
+      });
+
+      const result = await releaseIssueExecution({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+      const configurationIncomplete = errorCode === "configuration_incomplete" || errorCode === "model_not_found";
+      const conversationRetries = result.postCommitEffects.filter((effect) => effect.kind === "conversation_retry_requested");
+      expect(conversationRetries).toEqual(configurationIncomplete ? [] : [{
+        kind: "conversation_retry_requested",
+        companyId: RUN.companyId,
+        runId: RUN.id,
+        reviewParticipant: true,
+      }]);
+      if (configurationIncomplete) {
+        expect(result.outcome).toMatchObject({ kind: "blocked", noticeKind: "configuration_incomplete" });
+      } else {
+        expect(result.outcome.kind).toBe("released");
+      }
+      expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    },
+  );
+
   it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {
     const transaction = createFakeTransaction();
     const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });

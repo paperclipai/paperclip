@@ -193,6 +193,119 @@ describe("grok_local execute", () => {
     expect(args[args.indexOf("--reasoning-effort") + 1]).toBe("xhigh");
   });
 
+  it.each([
+    ["max", "grok-4.7", "xhigh"],
+    ["ultra", "grok-4.6", "xhigh"],
+    ["max", "grok-build", "high"],
+    ["ultra", "grok-4.5", "high"],
+    ["xhigh", "grok-build", "high"],
+    ["minimal", "grok-4.7", "low"],
+    ["none", "grok-build", "low"],
+  ])("clamps %s effort for %s to %s at launch", async (rawEffort, model, resolvedEffort) => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("effort-clamp", root);
+    ctx.config = { cwd: root, model, reasoningEffort: ` ${rawEffort} ` };
+    ctx.onLog = vi.fn(async () => {});
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(ctx);
+
+    const args = runProcessMock.mock.calls[0][3] as string[];
+    expect(args[args.indexOf("--reasoning-effort") + 1]).toBe(resolvedEffort);
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stdout",
+      `[paperclip] reasoning effort "${rawEffort}" is not valid for model ${model}; using "${resolvedEffort}".\n`,
+    );
+  });
+
+  it("passes through low effort without an effort log", async () => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("effort-pass-through", root);
+    ctx.config = { cwd: root, model: "grok-4.7", reasoningEffort: " low " };
+    ctx.onLog = vi.fn(async () => {});
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(ctx);
+
+    const args = runProcessMock.mock.calls[0][3] as string[];
+    expect(args[args.indexOf("--reasoning-effort") + 1]).toBe("low");
+    expect(ctx.onLog).not.toHaveBeenCalledWith("stdout", expect.stringContaining("reasoning effort"));
+  });
+
+  it("omits an unrecognized effort and logs the dropped value", async () => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("effort-drop", root);
+    ctx.config = { cwd: root, model: "grok-4.7", reasoningEffort: "turbo" };
+    ctx.onLog = vi.fn(async () => {});
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(ctx);
+
+    expect(runProcessMock.mock.calls[0][3]).not.toContain("--reasoning-effort");
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stdout",
+      '[paperclip] reasoning effort "turbo" is not valid for model grok-4.7; omitting --reasoning-effort.\n',
+    );
+  });
+
+  it.each([
+    "--effort/--reasoning-effort: unknown effort level 'max'; use one of: xhigh, high, medium, low",
+    "error: unknown option '--turbo'",
+    "unknown flag: --turbo",
+    "unrecognized argument '--turbo'",
+    "invalid value for --model: missing-model",
+    "error: invalid value 'bogus' for '--permission-mode <mode>'",
+    "--permission-mode: invalid value: bogus",
+    "unexpected argument '--nope'",
+    "Grok failed to start\nerror: unknown option '--turbo'",
+  ])("marks a failed CLI usage rejection as configuration incomplete: %s", async (stderr) => {
+    const ctx = await makeCtx("cli-usage-rejection", await makeTempRoot());
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), exitCode: 1, stdout: "", stderr });
+
+    const result = await execute(ctx);
+
+    expect(result.errorCode).toBe("configuration_incomplete");
+  });
+
+  it("classifies a CLI usage rejection from the parsed error message", async () => {
+    const ctx = await makeCtx("parsed-cli-usage-rejection", await makeTempRoot());
+    runProcessMock.mockResolvedValue({
+      ...makeSuccessfulRunResult(),
+      exitCode: 1,
+      stdout: JSON.stringify({ type: "error", message: "unknown option '--turbo'" }),
+      stderr: "",
+    });
+
+    expect((await execute(ctx)).errorCode).toBe("configuration_incomplete");
+  });
+
+  it.each([
+    "network error",
+    "network error while reporting unknown option '--turbo'",
+    "network error while reporting invalid value 'bogus' for '--permission-mode <mode>'",
+    "network error while reporting --permission-mode: invalid value: bogus",
+    "network error while reporting unexpected argument '--nope'",
+  ])(
+    "leaves unrelated failures retryable: %s", async (stderr) => {
+      const ctx = await makeCtx("transient-failure", await makeTempRoot());
+      runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), exitCode: 1, stdout: "", stderr });
+
+      expect((await execute(ctx)).errorCode).toBeUndefined();
+    },
+  );
+
+  it.each([
+    "unknown option '--turbo'",
+    "error: invalid value 'bogus' for '--permission-mode <mode>'",
+    "--permission-mode: invalid value: bogus",
+    "unexpected argument '--nope'",
+  ])("does not mark a successful launch as configuration incomplete: %s", async (stderr) => {
+    const ctx = await makeCtx("successful-cli-launch", await makeTempRoot());
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stderr });
+
+    expect((await execute(ctx)).errorCode).toBeUndefined();
+  });
+
   beforeEach(() => {
     mocks.state.isRemote = false;
     mocks.state.prepareRuntimeResult = null;
