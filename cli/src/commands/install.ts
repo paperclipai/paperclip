@@ -53,6 +53,9 @@ export async function runCommandWithDiagnostics(
   }
 }
 
+// The payload needs every workspace package the CLI installs: the server's dependency closure plus
+// the CLI's own runtime @paperclipai dependencies. The CLI is packed with plain `npm pack`, which
+// does not rewrite `workspace:` ranges, so each of these must be staged as a local tarball.
 export function resolveGitInstallWorkspacePackages(checkoutPath: string): ReleasePackageEntry[] {
   const manifestPath = path.join(checkoutPath, "scripts", "release-package-manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ReleasePackageEntry[];
@@ -61,6 +64,17 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
   const visited = new Set<string>();
   const ordered: ReleasePackageEntry[] = [];
 
+  const runtimeWorkspaceDependencies = (packageJson: Record<string, unknown>): string[] =>
+    (["dependencies", "optionalDependencies", "peerDependencies"] as const).flatMap((section) => {
+      const dependencies = packageJson[section];
+      if (!dependencies || typeof dependencies !== "object") return [];
+      // Only workspace ranges need a local tarball. A registry range (for example a published optional
+      // dependency a fork declares) installs from the registry and may not be in the release manifest.
+      return Object.entries(dependencies as Record<string, unknown>)
+        .filter(([dependencyName, range]) => dependencyName.startsWith("@paperclipai/") && typeof range === "string" && range.startsWith("workspace:"))
+        .map(([dependencyName]) => dependencyName);
+    });
+
   const visit = (packageName: string): void => {
     if (visited.has(packageName)) return;
     if (visiting.has(packageName)) throw new Error(`Circular workspace dependency while staging ${packageName}.`);
@@ -68,20 +82,40 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
     if (!entry) throw new Error(`Git install cannot stage workspace dependency ${packageName}; it is missing from scripts/release-package-manifest.json.`);
     visiting.add(packageName);
     const packageJson = JSON.parse(fs.readFileSync(path.join(checkoutPath, entry.dir, "package.json"), "utf8")) as Record<string, unknown>;
-    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
-      const dependencies = packageJson[section];
-      if (!dependencies || typeof dependencies !== "object") continue;
-      for (const dependencyName of Object.keys(dependencies)) {
-        if (dependencyName.startsWith("@paperclipai/")) visit(dependencyName);
-      }
-    }
+    for (const dependencyName of runtimeWorkspaceDependencies(packageJson)) visit(dependencyName);
     visiting.delete(packageName);
     visited.add(packageName);
     ordered.push(entry);
   };
 
   visit("@paperclipai/server");
+  const cliPackageJson = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as Record<string, unknown>;
+  for (const dependencyName of runtimeWorkspaceDependencies(cliPackageJson)) visit(dependencyName);
   return ordered;
+}
+
+// Workspace packages carry independent versions in source (plugin-sdk is 1.0.0), but packing rewrites
+// workspace:* to the dependency's own version. release.sh unifies them with release-package-map.mjs
+// set-version, but that script validates every public package in the repo. Rewrite only the packages
+// this install packs, so an unrelated fork package cannot stop the install.
+export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspacePackages: ReleasePackageEntry[], version: string): void {
+  const stagedNames = new Set(workspacePackages.map((entry) => entry.name));
+  const packageDirs = [...workspacePackages.map((entry) => entry.dir), "cli"];
+  for (const packageDir of packageDirs) {
+    const packageJsonPath = path.join(checkoutPath, packageDir, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
+    packageJson.version = version;
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] as const) {
+      const dependencies = packageJson[section];
+      if (!dependencies || typeof dependencies !== "object") continue;
+      for (const [dependencyName, range] of Object.entries(dependencies as Record<string, unknown>)) {
+        if (stagedNames.has(dependencyName) && typeof range === "string" && range.startsWith("workspace:")) {
+          (dependencies as Record<string, unknown>)[dependencyName] = version;
+        }
+      }
+    }
+    fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  }
 }
 
 export function assertSupportedNodeVersion(): void {
@@ -242,6 +276,9 @@ function gitBuildEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
+// Mirrors the skills copy in scripts/release.sh (Step 2/7).
+const GIT_INSTALL_SKILLS_PACKAGE_DIRS = ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"];
+
 export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths()): Promise<{ payloadPath: string; reused: boolean; version: string }> {
   const identifier = sha.slice(0, 12);
   const payloadPath = payloadPathFor(paths, "git", identifier);
@@ -278,8 +315,16 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // Stage the non-built publish artifacts the way release.sh does. Bundled packages go through
+    // prepare-bundled-package, which copies `files` without running prepack, so nothing else creates them.
+    await runCommand("bash", ["scripts/prepare-server-ui-dist.sh"], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
+    for (const packageDir of GIT_INSTALL_SKILLS_PACKAGE_DIRS) {
+      fs.rmSync(path.join(checkoutPath, packageDir, "skills"), { recursive: true, force: true });
+      fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, packageDir, "skills"), { recursive: true });
+    }
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
@@ -287,7 +332,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot, "--ignore-scripts"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
