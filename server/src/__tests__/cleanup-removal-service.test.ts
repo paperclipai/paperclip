@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -277,6 +277,109 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.id).toBe(companyId);
     await expect(db.select().from(routines).where(eq(routines.id, routineId))).resolves.toHaveLength(0);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("deletes managed files only when explicitly requested", async () => {
+    const { companyId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {
+      deleteFiles: true,
+    });
+
+    expect(removeManagedFiles).toHaveBeenCalledWith(companyId);
+    expect(removed?.fileCleanup).toBe("succeeded");
+  });
+
+  it("drains archived company runs before deleting managed files", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const order: string[] = [];
+    const drainActiveRunExecutions = vi.fn(async () => {
+      order.push("global-drain");
+    });
+    const waitForRunExecutionDrain = vi.fn(async () => {
+      order.push("drain");
+    });
+    const removeManagedFiles = vi.fn(async () => {
+      order.push("cleanup");
+    });
+
+    const removed = await companyService(db, {
+      drainActiveRunExecutions,
+      removeManagedFiles,
+      waitForRunExecutionDrain,
+    }).remove(companyId, { deleteFiles: true });
+
+    expect(drainActiveRunExecutions).toHaveBeenCalledOnce();
+    expect(waitForRunExecutionDrain).toHaveBeenCalledWith(runId);
+    expect(order).toEqual(["global-drain", "drain", "cleanup"]);
+    expect(removed?.fileCleanup).toBe("succeeded");
+  });
+
+  it("requires the company to be archived before deleting managed files", async () => {
+    const { companyId } = await seedFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Archive the company");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(1);
+  });
+
+  it("rejects managed-file deletion while archived company runs are active", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Wait for company runs");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+  });
+
+  it("rejects managed-file deletion while an archived company retry is scheduled", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Wait for company runs");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+  });
+
+  it("does not delete managed files by default", async () => {
+    const { companyId } = await seedFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId);
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    expect(removed?.fileCleanup).toBe("not_requested");
+  });
+
+  it("reports cleanup failure after completing database deletion", async () => {
+    const { companyId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const removeManagedFiles = vi.fn().mockRejectedValue(new Error("permission denied"));
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {
+      deleteFiles: true,
+    });
+
+    expect(removed?.fileCleanup).toBe("failed");
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 });
