@@ -4623,6 +4623,19 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
+      const retiredAuthorities: (typeof core.store.state)[] = [];
+      const store = core.store as typeof core.store & {
+        commit(candidate: typeof core.store.state): void;
+      };
+      const commit = store.commit.bind(store);
+      vi.spyOn(store, "commit").mockImplementation((candidate) => {
+        // The authenticated successor can activate before the attach observer.
+        // Capture the old journal at its actual durable retirement boundary.
+        const retired = candidate.identity.runId !== store.state.identity.runId
+          ? structuredClone(store.state) : null;
+        commit(candidate);
+        if (retired) retiredAuthorities.push(retired);
+      });
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
         (identity, template) => {
@@ -4663,6 +4676,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         );
         expect(rotations).toHaveLength(0);
         expect(core.store.state.identity).toEqual(oldIdentity);
+        expect(retiredAuthorities).toHaveLength(0);
         expect((await readRunner()).runId).toBe(oldIdentity.runId);
         const read = await within(
           "read under unchanged authority",
@@ -4696,7 +4710,9 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        expect(retiredAuthorities).toHaveLength(1);
+        const retired = retiredAuthorities[0]!;
+        expect(retired.identity).toEqual(oldIdentity);
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;

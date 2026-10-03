@@ -234,15 +234,46 @@ describe("legacy continuation persisted authority", () => {
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("skipped");
     expect(await f.runs()).toHaveLength(1);
   });
-  it("honors pause and changed ownership without spending a repair attempt", async () => {
+  it("escalates a paused owner without invoking it or spending a repair attempt", async () => {
     const f = await fixture();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
-    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("skipped");
-    expect(await f.actions()).toHaveLength(0);
-    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("escalated");
+    expect(await f.actions()).toEqual([expect.objectContaining({ ownerType: "board", ownerAgentId: null,
+      wakePolicy: { type: "board_escalation", reason: "stranded_assigned_issue", preservesSourceAssignee: true } })]);
+    expect(await f.runs()).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect(await db.select().from(issues).where(eq(issues.id, f.issueId))).toEqual([
+      expect.objectContaining({ status: "blocked", assigneeAgentId: f.agentId }),
+    ]);
+  });
+  it("honors changed ownership without spending a repair attempt", async () => {
+    const f = await fixture();
     await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("skipped");
+    expect(await f.actions()).toHaveLength(0);
     expect(await f.runs()).toHaveLength(1);
+  });
+  it("hands an existing successful repair to the board if the owner becomes unavailable", async () => {
+    const f = await fixture();
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    const repair = (await f.runs()).find(run => run.id !== f.runId)!;
+    await f.finish(repair);
+    const [prior] = await f.actions();
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.agentId));
+    expect(await f.createRecovery().reconcileLegacyContinuation(repair.id)).toBe("escalated");
+    expect(await f.actions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: prior.id, status: "cancelled", evidence: prior.evidence,
+        attemptCount: prior.attemptCount, wakePolicy: prior.wakePolicy }),
+      expect.objectContaining({ status: "active", ownerType: "board", ownerAgentId: null,
+        wakePolicy: { type: "board_escalation", reason: "stranded_assigned_issue", preservesSourceAssignee: true } }),
+    ]));
+    expect(await f.actions()).toHaveLength(2);
+    const runs = await f.runs();
+    expect(runs).toHaveLength(2);
+    expect(await f.createRecovery().reconcileLegacyContinuation(repair.id)).toBe("skipped");
+    expect(await f.runs()).toEqual(runs);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(wakes).toEqual([expect.objectContaining({ id: repair.wakeupRequestId, status: "completed" })]);
   });
   it("the delayed sweep ignores old diagnostic labels and uses the same repair path", async () => {
     const f = await fixture();
