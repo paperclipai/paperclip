@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -30,7 +30,7 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -995,15 +995,48 @@ export function projectService(
       return cleared;
     },
 
-    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+    remove: async (
+      id: string,
+      removeOptions: { deleteFiles?: boolean; deletionClaimToken?: string | null } = {},
+    ) => {
       const result = await db.transaction(async (tx) => {
+        const [project] = await tx
+          .select()
+          .from(projects)
+          .where(eq(projects.id, id))
+          .for("update");
+        if (!project) return { row: null, workspaceCwds: [] as string[] };
+        if (removeOptions.deletionClaimToken) {
+          if (
+            project.status !== "deleting" ||
+            project.deletionClaimToken !== removeOptions.deletionClaimToken ||
+            !project.deletionClaimExpiresAt ||
+            project.deletionClaimExpiresAt.getTime() <= Date.now()
+          ) {
+            throw conflict("Project deletion claim expired. Retry the deletion.");
+          }
+        }
         const workspaceRows = removeOptions.deleteFiles
           ? await tx
               .select({ cwd: projectWorkspaces.cwd })
               .from(projectWorkspaces)
               .where(eq(projectWorkspaces.projectId, id))
           : [];
-        const rows = await tx.delete(projects).where(eq(projects.id, id)).returning();
+        const rows = await tx
+          .delete(projects)
+          .where(
+            removeOptions.deletionClaimToken
+              ? and(
+                  eq(projects.id, id),
+                  eq(projects.deletionClaimToken, removeOptions.deletionClaimToken),
+                  gt(projects.deletionClaimExpiresAt, new Date()),
+                )
+              : eq(projects.id, id),
+          )
+          .returning();
+        if (rows.length === 0 && removeOptions.deletionClaimToken) {
+          throw conflict("Project deletion claim expired. Retry the deletion.");
+        }
         return {
           row: rows[0] ?? null,
           workspaceCwds: workspaceRows
