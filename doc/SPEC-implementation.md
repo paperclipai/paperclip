@@ -622,6 +622,20 @@ rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
+Agent-authored issue creation is counted separately. A run may attempt at most 40 issue creates,
+on its own counter and its own rollout; a create whose parent is the run's source issue is not
+counted, so decomposition under an epic the run owns is unbounded. The create counter is keyed on
+the heartbeat run rather than an issue, because the charge is taken before the insert — a refused
+create mints no issue to key it on. A create the server cannot attribute to a persisted run is
+logged and allowed rather than refused: creation was never gated here, so refusing it would deny a
+write the agent is entitled to make instead of bounding one. Issue document upserts
+(`PUT /issues/:id/documents/:key`) are deliberately **not** counted by either cap. They are fenced
+to the issue's assignee, so there is no cross-agent blast radius; a PUT is idempotent per key, so N
+writes produce N revisions of one object rather than N board objects; and an agent whose run cannot
+comment is told to record its findings in a document, which makes the document path the evidence
+channel of last resort rather than an amplification vector. Document revisions are observed
+log-only so the decision can be revisited from data.
+
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
 records the write-policy reason, and spoof attempts fail with an audited 422.

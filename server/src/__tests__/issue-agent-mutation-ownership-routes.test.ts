@@ -160,6 +160,8 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockObserveIssueCreate = vi.hoisted(() =>
+  vi.fn(async (): Promise<Record<string, unknown> | null> => null));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -200,9 +202,17 @@ function registerRouteMocks() {
     logActivity: mockLogActivity,
   }));
 
-  vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+  vi.doMock("../services/cross-issue-influence-limit.js", async () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    observeIssueCreate: mockObserveIssueCreate,
     crossIssueInfluenceLimitError: vi.fn(),
+    // Real, so the 429 an agent reads after a refused create is the shipped copy
+    // rather than whatever a stub happens to return.
+    issueCreateLimitError: (
+      await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
+      )
+    ).issueCreateLimitError,
     crossIssueInfluenceRunContextError: () => new HttpError(
       403,
       "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
@@ -599,6 +609,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockLogActivity.mockClear();
     mockObserveCrossIssueInfluence.mockReset();
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
+    mockObserveIssueCreate.mockReset();
+    mockObserveIssueCreate.mockResolvedValue(null);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockReset();
@@ -1353,6 +1365,62 @@ describe("agent issue mutation checkout ownership", () => {
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );
+  });
+
+  it("charges an agent create against the run's own create budget", async () => {
+    const app = await createApp(ownerActor(), createRunContextDb({ issueId }));
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Stage 3 — implement the gate" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveIssueCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        parentIssueId: null,
+        title: "Stage 3 — implement the gate",
+      }),
+    );
+  });
+
+  it("refuses a create past the per-run budget without minting an issue", async () => {
+    // The whole reason the charge is taken before the insert: a refused create must
+    // leave no board row behind. One observed run minted 18 tasks in under six minutes.
+    mockObserveIssueCreate.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 41,
+      cap: 40,
+      enforceAt: "2026-10-17T00:00:00.000Z",
+    });
+    const app = await createApp(ownerActor(), createRunContextDb({ issueId }));
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Throwaway probe 18" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(429);
+    expect(res.body.details).toMatchObject({
+      code: "issue_create_cap_exceeded",
+      cap: 40,
+      count: 41,
+      mode: "enforce",
+    });
+    expect(res.body.error).toContain("next heartbeat");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("does not charge board creates against any run budget", async () => {
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Board-created task" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveIssueCreate).not.toHaveBeenCalled();
   });
 
   it("authorizes child creation through the shared visible-issue write path", async () => {

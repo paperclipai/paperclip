@@ -30,6 +30,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_responsible_user_unavailable",
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
+  "issue_create_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
 ] as const;
@@ -241,6 +242,38 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Consolidate what is left into one comment on your own task, or end the run and ` +
           `continue on the next heartbeat — the budget resets per run.`,
+      };
+    }
+
+    case "issue_create_cap_exceeded": {
+      // A separate budget from the one above, on purpose: creates
+      // are the highest-amplification write an agent has, and coupling them to the
+      // comment budget would refuse a correct planning run halfway through
+      // decomposing its epic. The copy has to say the budgets are separate, or an
+      // agent reading it goes auditing the boundary that did not fire.
+      const cap = context.cap ?? 40;
+      const attempt = context.count ?? null;
+      return {
+        code,
+        status: 429,
+        // Still a rate backstop, not a wall — creation stays an open write path.
+        tone: "cap",
+        // No parentheses: surfaces render the boundary inside their own parens.
+        boundary: `Per-run task-creation cap of ${cap} creates`,
+        title: "This run has spent its task-creation budget",
+        description:
+          `A single heartbeat run may create at most ${cap} tasks` +
+          `${attempt !== null ? `; this was attempt ${attempt}` : ""}. Creation is the ` +
+          `highest-amplification write there is — every new task can wake an agent that ` +
+          `creates more — so it has its own budget, separate from the cross-issue ` +
+          `comment and update cap, which this refusal does not touch. It is a rate ` +
+          `backstop, not a permission decision, so ${actor} is still allowed to create ` +
+          `tasks. Child tasks under the task this run is working on are not counted.`,
+        whoCanAct: `${actor} on its next heartbeat run, or the board directly.`,
+        sanctionedPath:
+          `Fold the remaining work into tasks you have already created, or end the run ` +
+          `and continue on the next heartbeat — the budget resets per run. Decomposing ` +
+          `your own task into children is always free.`,
       };
     }
 

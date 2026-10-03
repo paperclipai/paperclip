@@ -10,6 +10,9 @@ import type { IssueWriteDenialCode, IssueWriteDenialContext } from "@paperclipai
  */
 const DENIAL_ACTIVITY_CODES: Record<string, IssueWriteDenialCode> = {
   "issue.cross_issue_influence_cap_rejected": "cross_issue_influence_cap_exceeded",
+  // Keyed on the heartbeat run rather than an issue — a refused create has no issue to
+  // hang off — so this one reads on the run's activity, not a task timeline.
+  "issue.issue_create_cap_rejected": "issue_create_cap_exceeded",
   "issue.attribution_spoof_rejected": "issue_write_attribution_spoof_rejected",
 };
 

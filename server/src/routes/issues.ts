@@ -331,7 +331,9 @@ import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interact
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
+  issueCreateLimitError,
   observeCrossIssueInfluence,
+  observeIssueCreate,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
@@ -3914,6 +3916,52 @@ export function issueRoutes(
         issueIdentifier: labels.issueIdentifier,
       }),
     );
+    return false;
+  }
+
+  /**
+   * Charge one agent-authored issue create against the run's own create budget.
+   *
+   * Called before `svc.create`, so a refusal mints no board row — that is the entire
+   * point of charging pre-insert. Returns false once it has written the 429.
+   */
+  async function assertIssueCreateWithinRunCap(
+    req: Request,
+    res: Response,
+    input: {
+      companyId: string;
+      parentIssueId: string | null;
+      parentIssueIdentifier?: string | null;
+      title?: unknown;
+      assigneeAgentId?: string | null;
+    },
+  ) {
+    // Board and user creates are unaffected — same early-out as the cross-issue cap.
+    if (req.actor.type !== "agent") return true;
+    // No run to charge it to. Deliberately not a 403: creates were never gated here
+    // before this counter, so refusing one an agent is entitled to make would be a
+    // regression rather than containment. `observeIssueCreate` logs the gap.
+    if (!req.actor.agentId || !req.actor.runId) return true;
+
+    const decision = await observeIssueCreate(db, {
+      companyId: input.companyId,
+      runId: req.actor.runId,
+      agentId: req.actor.agentId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+      parentIssueId: input.parentIssueId,
+      parentIssueIdentifier: input.parentIssueIdentifier ?? null,
+      title: typeof input.title === "string" ? input.title : null,
+      assigneeAgentId: input.assigneeAgentId ?? null,
+    });
+    if (!decision || decision.allowed) return true;
+
+    const labels = await issueWriteDenialLabels(req, {
+      identifier: null,
+      assigneeAgentId: null,
+    });
+    res
+      .status(429)
+      .json(issueCreateLimitError(decision, { actorLabel: labels.actorLabel }));
     return false;
   }
 
@@ -11746,6 +11794,20 @@ export function issueRoutes(
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
+      // Last gate before anything is minted: the per-run create budget. It sits after
+      // the authorization and shape checks so a 404 on a bad parent does not spend a
+      // slot, and before `svc.create` so a refusal leaves no board row behind.
+      if (
+        !(await assertIssueCreateWithinRunCap(req, res, {
+          companyId,
+          parentIssueId:
+            typeof effectiveParentId === "string" ? effectiveParentId : null,
+          parentIssueIdentifier: createParent?.identifier ?? null,
+          title: rawCreateBody.title,
+          assigneeAgentId: normalizedAssigneeAgentId ?? null,
+        }))
+      )
+        return;
       const actor = getActorInfo(req);
       const runWorkspaceInheritanceSourceIssueId =
         hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)

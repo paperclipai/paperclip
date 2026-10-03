@@ -80,6 +80,31 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).not.toContain("attempt");
   });
 
+  it("names the create budget, not the cross-issue one, when a create is refused", () => {
+    // The two budgets are deliberately separate, so an agent that read
+    // "20 cross-issue writes" after a refused create would audit the wrong boundary.
+    const copy = describeIssueWriteDenial("issue_create_cap_exceeded", {
+      cap: 40,
+      count: 41,
+      actorLabel: "Senior Engineer",
+    });
+    expect(copy.status).toBe(429);
+    expect(copy.tone).toBe("cap");
+    expect(copy.boundary).toContain("40");
+    expect(copy.boundary).not.toContain("cross-issue");
+    expect(copy.description).toContain("attempt 41");
+    expect(copy.description).toContain("still allowed");
+    // A separate budget is only legible if the copy says the other one is untouched.
+    expect(copy.description).toContain("comment");
+    expect(copy.sanctionedPath).toContain("next heartbeat");
+  });
+
+  it("defaults the create cap to the shipped limit when context omits it", () => {
+    const copy = describeIssueWriteDenial("issue_create_cap_exceeded");
+    expect(copy.boundary).toContain("40");
+    expect(copy.description).not.toContain("attempt");
+  });
+
   it("gives the run-context denial a copy-pasteable fix", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
