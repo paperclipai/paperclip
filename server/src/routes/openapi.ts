@@ -4095,6 +4095,23 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/watchdog/ack",
+  tags: ["issues"],
+  summary: "Re-acknowledge a task-watchdog run's stopped fingerprint",
+  description:
+    "Rebinds the calling task-watchdog run to the current stopped fingerprint of the watched subtree (only while the subtree is still stopped), recovering from a stale-fingerprint 409.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
