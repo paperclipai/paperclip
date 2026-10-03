@@ -419,6 +419,10 @@ This starts the UI and API at `http://localhost:3100`. An embedded PostgreSQL da
 
 Source development also builds the native Paperclip Runner when enabled (the self-hosted default). Install a Rust toolchain, or set `PAPERCLIP_RUNNER_BINARY` to a compatible prebuilt runner.
 
+**Or deploy on Railway:** One-click deploy with Postgres, persistent storage, and a browser-based setup flow. Access Paperclip from anywhere.
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/paperclip) 
+
 <br/>
 
 ## FAQ
