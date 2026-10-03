@@ -159,27 +159,57 @@ describe("OpenCode local skill injection", () => {
         await options?.onSpawn?.({ pid: 999_999, processGroupId: null, startedAt: new Date().toISOString() });
         return probeResult({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "" });
       });
-    let diagnosticLoggedAt = 0;
-    const result = await execute({
-      runId: "run-monitor-diagnostic",
-      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
-      runtime: { sessionId: "sess_diag", sessionParams: null, sessionDisplayId: null, taskKey: null },
-      config: {
-        command: commandPath, cwd: configHome, model: "openai/gpt-5",
-        env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
-        outputInactivityTimeoutMs: 50,
-      },
-      context: createPromptContextFixture(),
-      onLog: async (_stream, chunk) => {
-        const line = String(chunk);
-        if (line.includes("adapter.invoke") && line.includes("no opencode activity")) {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-          diagnosticLoggedAt = Date.now();
+    // The mocked spawn reports an unowned pid. The local termination path
+    // would otherwise issue a real process.kill against it — on a host where
+    // that pid belongs to an unrelated process, this test could terminate it.
+    // Intercept every kill aimed at the fake pid: signal-0 probes report the
+    // deterministic "no such process" the targetless mock implies, while real
+    // signals are recorded and dropped; everything else passes through to the
+    // original process.kill.
+    const mockedPid = 999_999;
+    const mockedPidSignals: string[] = [];
+    const realKill = process.kill.bind(process);
+    const killSpy = vi
+      .spyOn(process, "kill")
+      .mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+        if (pid !== mockedPid) return realKill(pid, signal);
+        if (signal === 0 || signal === undefined) {
+          const err = new Error("ESRCH") as NodeJS.ErrnoException;
+          err.code = "ESRCH";
+          throw err;
         }
-      },
-    });
+        mockedPidSignals.push(String(signal));
+        return true;
+      }) as typeof process.kill);
+    let diagnosticLoggedAt = 0;
+    let result: Awaited<ReturnType<typeof execute>>;
+    try {
+      result = await execute({
+        runId: "run-monitor-diagnostic",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: "sess_diag", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath, cwd: configHome, model: "openai/gpt-5",
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+          outputInactivityTimeoutMs: 50,
+        },
+        context: createPromptContextFixture(),
+        onLog: async (_stream, chunk) => {
+          const line = String(chunk);
+          if (line.includes("adapter.invoke") && line.includes("no opencode activity")) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            diagnosticLoggedAt = Date.now();
+          }
+        },
+      });
+    } finally {
+      killSpy.mockRestore();
+    }
     const resolvedAt = Date.now();
     expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
+    // The monitor must still go through the termination path for the reported
+    // pid (SIGTERM first), even though the mock never provided a live target.
+    expect(mockedPidSignals).toContain("SIGTERM");
     expect(diagnosticLoggedAt).toBeGreaterThan(0);
     // The run must not finalize while either queued diagnostic write is still
     // in flight — awaiting only the latest one would orphan the earlier one.
