@@ -240,6 +240,19 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    // request_board_approval cards filed by agents must always link to at least one issue.
+    // Without a link, stall-recovery's pending-card gate is blind to the card and can evict
+    // the task it is meant to protect. Other approval types (approve_ceo_strategy, hire_agent,
+    // budget_override_required) have documented agent-facing call shapes that omit issueIds, so
+    // the guard is scoped to this type only.
+    if (approvalInput.type === "request_board_approval" && actor.actorType === "agent" && uniqueIssueIds.length === 0) {
+      res.status(400).json({
+        error:
+          "Agent-filed approvals must include at least one issueId. " +
+          "Pass issueIds: [\"<issueId>\"] to link this approval to the relevant task.",
+      });
+      return;
+    }
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
@@ -270,6 +283,25 @@ export function approvalRoutes(
       entityId: approval.id,
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
+
+    for (const issueId of uniqueIssueIds) {
+      try {
+        const existing = await issuesSvc.getById(issueId);
+        if (!existing || existing.status === "done" || existing.status === "cancelled" || existing.status === "blocked") {
+          continue;
+        }
+        await issuesSvc.update(issueId, {
+          status: "blocked",
+          unblockDescriptor: { owner: "board", action: "Decide pending approval card" },
+          companyGuard: companyId,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId, approvalId: approval.id },
+          "failed to auto-block linked issue for approval card",
+        );
+      }
+    }
 
     res.status(201).json(redactApprovalPayload(approval));
   });
