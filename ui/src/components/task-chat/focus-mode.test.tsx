@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskChatTurn } from "./TaskChatTurn";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
+import { i18n } from "@/i18n";
+import en from "@/i18n/locales/en.json";
+import fr from "@/i18n/locales/fr.json";
 import {
   readTaskChatViewMode,
   saveTaskChatViewMode,
@@ -56,8 +59,9 @@ const TURN: TaskChatTurnItem = {
 let container: HTMLDivElement;
 let root: Root;
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
+  await i18n.changeLanguage("en");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -98,12 +102,10 @@ const renderedChildIds = () =>
   Array.from(container.querySelectorAll("[data-child-id]")).map((node) =>
     node.getAttribute("data-child-id"),
   );
-const toggleButton = (label: string) =>
-  Array.from(
-    container.querySelectorAll<HTMLButtonElement>(
-      '[data-testid="task-chat-view-mode-toggle"] button',
-    ),
-  ).find((button) => button.textContent === label)!;
+const toggleButton = (mode: TaskChatViewMode) =>
+  container.querySelector<HTMLButtonElement>(
+    `[data-testid="task-chat-view-mode-toggle"] button[data-view-mode="${mode}"]`,
+  )!;
 const foldButton = () =>
   container.querySelector<HTMLButtonElement>(
     '[data-testid="task-chat-focus-fold"] > button',
@@ -134,8 +136,8 @@ describe("task chat view mode storage", () => {
 describe("Focus view", () => {
   it("keeps the full timeline by default", () => {
     act(() => root.render(<Harness />));
-    expect(toggleButton("Full view").getAttribute("aria-pressed")).toBe("true");
-    expect(toggleButton("Focus view").getAttribute("aria-pressed")).toBe("false");
+    expect(toggleButton("full").getAttribute("aria-pressed")).toBe("true");
+    expect(toggleButton("focus").getAttribute("aria-pressed")).toBe("false");
     expect(foldButton()).toBeNull();
     expect(renderedChildIds()).toEqual(["tool-1", "tool-2", "request-1"]);
   });
@@ -159,16 +161,18 @@ describe("Focus view", () => {
 
   it("toggles to Focus view and persists the choice", () => {
     act(() => root.render(<Harness />));
-    act(() => toggleButton("Focus view").click());
+    act(() => toggleButton("focus").click());
 
     expect(localStorage.getItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY)).toBe("focus");
-    expect(toggleButton("Focus view").getAttribute("aria-pressed")).toBe("true");
-    expect(foldButton()?.textContent).toBe("2 steps — expand");
+    expect(toggleButton("focus").getAttribute("aria-pressed")).toBe("true");
+    expect(foldButton()?.textContent).toBe(
+      `${en.taskChat.focus.expand} (steps: 2)`,
+    );
 
     act(() => root.unmount());
     root = createRoot(container);
     act(() => root.render(<Harness />));
-    expect(toggleButton("Focus view").getAttribute("aria-pressed")).toBe("true");
+    expect(toggleButton("focus").getAttribute("aria-pressed")).toBe("true");
     expect(foldButton()).not.toBeNull();
   });
 
@@ -187,11 +191,28 @@ describe("Focus view", () => {
 
     act(() => foldButton()!.click());
     expect(foldButton()?.getAttribute("aria-expanded")).toBe("true");
-    expect(foldButton()?.textContent).toBe("2 steps — collapse");
+    expect(foldButton()?.textContent).toBe(
+      `${en.taskChat.focus.collapse} (steps: 2)`,
+    );
     expect(renderedChildIds()).toEqual(["tool-1", "tool-2", "request-1"]);
 
     act(() => foldButton()!.click());
     expect(foldButton()?.getAttribute("aria-expanded")).toBe("false");
     expect(renderedChildIds()).toEqual(["request-1"]);
+  });
+
+  it("renders the validated French labels", async () => {
+    await act(async () => {
+      await i18n.changeLanguage("fr");
+    });
+    act(() => root.render(<Harness initialMode="focus" />));
+
+    const group = container.querySelector('[data-testid="task-chat-view-mode-toggle"]');
+    expect(group?.getAttribute("aria-label")).toBe(fr.taskChat.focus.viewGroup);
+    expect(toggleButton("full").textContent).toBe("Toute l'activité");
+    expect(toggleButton("focus").textContent).toBe("Vue focus");
+    expect(foldButton()?.textContent).toBe(
+      "Activité masquée, cliquer pour déplier (étapes : 2)",
+    );
   });
 });

@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export type TaskChatViewMode = "full" | "focus";
@@ -58,9 +59,9 @@ export function isTaskChatFocusPersistentRow(row: {
   );
 }
 
-const VIEW_MODE_OPTIONS: { mode: TaskChatViewMode; label: string }[] = [
-  { mode: "full", label: "Full view" },
-  { mode: "focus", label: "Focus view" },
+const VIEW_MODE_OPTIONS: { mode: TaskChatViewMode; labelKey: string }[] = [
+  { mode: "full", labelKey: "taskChat.focus.fullView" },
+  { mode: "focus", labelKey: "taskChat.focus.focusView" },
 ];
 
 export function TaskChatViewModeToggle({
@@ -70,10 +71,11 @@ export function TaskChatViewModeToggle({
   mode: TaskChatViewMode;
   onChange: (mode: TaskChatViewMode) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="group"
-      aria-label="Thread view"
+      aria-label={t("taskChat.focus.viewGroup")}
       className="flex items-center justify-end gap-1 text-xs text-muted-foreground"
       data-testid="task-chat-view-mode-toggle"
     >
@@ -82,13 +84,14 @@ export function TaskChatViewModeToggle({
           key={option.mode}
           type="button"
           aria-pressed={mode === option.mode}
+          data-view-mode={option.mode}
           className={cn(
             "rounded-sm px-2 py-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             mode === option.mode && "bg-muted text-foreground",
           )}
           onClick={() => onChange(option.mode)}
         >
-          {option.label}
+          {t(option.labelKey)}
         </button>
       ))}
     </div>
@@ -106,6 +109,7 @@ export function TaskChatFocusFold({
   stepCount: number;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const focus = useTaskChatFocusMode();
   const [open, setOpen] = useState(false);
   if (!focus || stepCount === 0) return <>{children}</>;
@@ -121,7 +125,11 @@ export function TaskChatFocusFold({
           aria-hidden="true"
           className={cn("size-3 transition-transform", open && "rotate-90")}
         />
-        {stepCount} {stepCount === 1 ? "step" : "steps"} — {open ? "collapse" : "expand"}
+        {open ? t("taskChat.focus.collapse") : t("taskChat.focus.expand")}
+        <span className="sr-only">
+          {" "}
+          {t("taskChat.focus.stepCount", { count: stepCount })}
+        </span>
       </button>
       {open ? children : null}
     </div>

@@ -5,5 +5,15 @@
       "description": "Commencez par créer une entreprise.",
       "newCompany": "Nouvelle entreprise"
     }
+  },
+  "taskChat": {
+    "focus": {
+      "viewGroup": "Affichage du fil",
+      "fullView": "Toute l'activité",
+      "focusView": "Vue focus",
+      "expand": "Activité masquée, cliquer pour déplier",
+      "collapse": "Masquer l'activité",
+      "stepCount": "(étapes : {{count}})"
+    }
   }
 }
