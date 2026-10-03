@@ -16,6 +16,7 @@
  *   --checkpoints      filesystem checkpoints
  *   --yolo             bypass dangerous-command approval prompts (agents have no TTY)
  *   --source           session source tag for filtering
+ *   --format           text (default) or stream-json (JSONL events, implies quiet)
  */
 
 import fs from "node:fs/promises";
@@ -28,6 +29,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 
 import {
+  appendWithCap,
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
@@ -47,6 +49,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  TOOL_OUTPUT_PREFIX,
 } from "../shared/constants.js";
 
 import {
@@ -212,6 +215,118 @@ export function buildPrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Prompt echo suppression
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-quiet `hermes chat -q <prompt>` prints the query straight back to stdout
+ * as "<label> <prompt>" before the agent starts (hermes_cli/cli_single_query.py
+ * `_run_single_query_mode`). A Paperclip prompt is tens of KB of agent
+ * instructions plus the wake payload, and the UI renders unrecognized stdout as
+ * assistant text — so without this the whole instruction bundle lands in the
+ * chat and in the parsed response.
+ *
+ * Hermes prints through Rich, which re-wraps the text (sometimes mid-token) and
+ * eats `[...]` spans as console markup, so the echo is not a substring of what
+ * we sent. Dropping bracket spans and whitespace from both sides makes them
+ * identical again, which keeps this a verified match rather than a guess.
+ */
+function normalizeForEchoMatch(text: string): string {
+  return text.replace(/\[[^\]]*\]/g, "").replace(/[[\]\s]+/g, "");
+}
+
+/** Shorter prompts echo harmlessly; matching them is not worth the risk. */
+const MIN_PROMPT_ECHO_CHARS = 200;
+
+/** Longest localized "Query:" label we accept in front of the echo. */
+const MAX_PROMPT_ECHO_LABEL_CHARS = 40;
+
+export interface PromptEchoFilter {
+  /** Filter one raw stdout chunk. Returns the text to keep. */
+  (chunk: string): string;
+  /** Release any held partial line. Call once the child has exited. */
+  flush(): string;
+}
+
+/** Quiet runs carry no echo, so the filter would only add risk. */
+export const PASS_THROUGH_ECHO_FILTER: PromptEchoFilter = Object.assign(
+  (chunk: string) => chunk,
+  { flush: () => "" },
+);
+
+/**
+ * Offset of the prompt inside the first echo line, which also carries the
+ * localized label. Returns -1 when this line cannot be the start of the echo.
+ */
+function promptOffsetInFirstLine(line: string, target: string): number {
+  const limit = Math.min(MAX_PROMPT_ECHO_LABEL_CHARS, line.length);
+  for (let offset = 0; offset <= limit; offset++) {
+    const rest = line.slice(offset);
+    if (rest && target.startsWith(rest)) return offset;
+  }
+  return -1;
+}
+
+/**
+ * Build a stdout filter that drops the prompt echo and passes everything else
+ * through untouched.
+ *
+ * Hermes writes the echo as whole lines and ends it with a newline, so the
+ * filter decides one complete line at a time and holds an unterminated tail
+ * until its newline arrives. Deciding on lines rather than on chunks is what
+ * makes it correct for any split: a pipe can break stdout anywhere, including
+ * inside the echo and between the echo and the first line of the answer.
+ *
+ * The filter stops at the first line that does not continue the prompt, and
+ * every exit path re-emits the text it was holding. A failed match therefore
+ * leaks the echo; it never swallows the answer. `flush()` covers the case where
+ * the child exits while a partial line is still held.
+ */
+export function createPromptEchoFilter(prompt: string): PromptEchoFilter {
+  const target = normalizeForEchoMatch(prompt);
+  let looking = target.length >= MIN_PROMPT_ECHO_CHARS;
+  let matched = 0;
+  let held = "";
+
+  /** Give up matching and return the held text from `from` onward. */
+  const release = (from: number): string => {
+    looking = false;
+    const rest = held.slice(from);
+    held = "";
+    return rest;
+  };
+
+  const filter = (chunk: string): string => {
+    if (!looking) return chunk;
+    held += chunk;
+
+    let consumed = 0; // raw chars of `held` confirmed to be echo
+    let newline: number;
+    while ((newline = held.indexOf("\n", consumed)) !== -1) {
+      const line = normalizeForEchoMatch(held.slice(consumed, newline + 1));
+      if (line) {
+        // Nothing is confirmed until the first line matches, so a mismatch
+        // there has to give back the whole buffer, blank lines included.
+        const offset = matched === 0 ? promptOffsetInFirstLine(line, target) : 0;
+        const rest = offset < 0 ? line : line.slice(offset);
+        if (offset < 0 || !target.startsWith(rest, matched)) {
+          return release(matched === 0 ? 0 : consumed);
+        }
+        matched += rest.length;
+      }
+      consumed = newline + 1;
+      if (matched >= target.length) return release(consumed);
+    }
+
+    held = held.slice(consumed);
+    return "";
+  };
+
+  filter.flush = () => (looking ? release(0) : "");
+  return filter;
+}
+
+// ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
 
@@ -228,12 +343,196 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
-interface ParsedOutput {
+export interface ParsedOutput {
   sessionId?: string;
   response?: string;
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// stream-json output
+// ---------------------------------------------------------------------------
+
+/**
+ * `hermes chat -q … --format stream-json` writes one JSON event per stdout
+ * line (hermes_cli/stream_json.py `StreamJsonEmitter`): a `system`/`init`
+ * record, then `text` deltas and `tool_use`/`tool_result` pairs, then one
+ * terminal `result` envelope carrying the session id, the final text and the
+ * token counts. It forces quiet mode, so there is no banner and no prompt echo
+ * — the filter above and the regexes below are both skipped for this branch.
+ *
+ * Opt in with `outputFormat: "stream-json"` in the adapter config. Unset, every
+ * line here is inert and the text path runs exactly as before.
+ */
+
+/** Longest rendered tool input kept in a transcript line. */
+const MAX_TOOL_DETAIL_CHARS = 200;
+
+/** A stdout consumer shaped like the echo filter, plus the state it parsed. */
+export interface StreamJsonConsumer extends PromptEchoFilter {
+  /** Accumulated so far; final once the child has exited. */
+  readonly parsed: ParsedOutput;
+}
+
+function eventNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Parallel same-name calls would collide on a name-only key, so prefer the id. */
+function toolKey(event: Record<string, unknown>): string {
+  const id = event.tool_call_id;
+  if (typeof id === "string" && id) return id;
+  return typeof event.name === "string" && event.name ? event.name : "unknown";
+}
+
+/**
+ * Build a stdout consumer for `--format stream-json`.
+ *
+ * It returns the text to show in the Paperclip transcript — the answer's `text`
+ * deltas verbatim, and one `┊` line per completed tool so the UI renders the
+ * same tool card it already builds for text-mode output (src/ui/parse-stdout.ts).
+ * The structured fields land in `parsed`.
+ *
+ * Events arrive over a pipe, which can split anywhere, so this holds an
+ * unterminated tail until its newline arrives — the same line-at-a-time
+ * discipline the echo filter uses. A line that is not JSON is passed through
+ * untouched rather than dropped: unexpected stdout is worth seeing, and this
+ * must never swallow an answer.
+ */
+export function createStreamJsonConsumer(): StreamJsonConsumer {
+  const parsed: ParsedOutput = {};
+  // Queued per key, not stored singly: the captured events carry no
+  // `tool_call_id`, so two live calls to the same tool share a key and the
+  // second start would otherwise overwrite the first one's input. Oldest start
+  // pairs with the next completion.
+  const toolInput = new Map<string, string[]>();
+  let held = "";
+  let sawTextDelta = false;
+  /** Whether the transcript is at a fresh line; a tool card has to start one. */
+  let atLineStart = true;
+
+  const render = (event: Record<string, unknown>): string => {
+    switch (event.type) {
+      case "system":
+        // `init` is written before credentials load, so a run that dies early
+        // still reports the session it would have used.
+        if (typeof event.session_id === "string" && event.session_id) {
+          parsed.sessionId = event.session_id;
+        }
+        return "";
+
+      case "text":
+        if (typeof event.text !== "string" || !event.text) return "";
+        sawTextDelta = true;
+        return event.text;
+
+      case "tool_use":
+        // Held, not rendered: the card is emitted from `tool_result`, the event
+        // that knows the outcome. parse-stdout.ts drops text-mode start lines
+        // for the same reason.
+        if (event.input !== undefined) {
+          const key = toolKey(event);
+          const queued = toolInput.get(key) ?? [];
+          queued.push(JSON.stringify(event.input).slice(0, MAX_TOOL_DETAIL_CHARS));
+          toolInput.set(key, queued);
+        }
+        return "";
+
+      case "tool_result": {
+        const key = toolKey(event);
+        const queued = toolInput.get(key);
+        const detail = queued?.shift() ?? "";
+        if (queued && queued.length === 0) toolInput.delete(key);
+        const name = typeof event.name === "string" && event.name ? event.name : "tool";
+        const seconds = (eventNumber(event.duration_ms) / 1000).toFixed(1);
+        // `[error]` goes before the duration because that is where
+        // parseToolCompletionLine looks for it.
+        const failed = event.is_error === true ? " [error]" : "";
+        // A delta rarely ends on a newline, and the card is only read as a card
+        // when `┊` opens the line — so break the line first when one is open.
+        const start = atLineStart ? "" : "\n";
+        return `${start}  ${TOOL_OUTPUT_PREFIX} ${name} ${detail}${failed}  ${seconds}s\n`;
+      }
+
+      case "result": {
+        if (typeof event.session_id === "string" && event.session_id) {
+          parsed.sessionId = event.session_id;
+        }
+        if (typeof event.text === "string") parsed.response = event.text;
+        const tokens = event.tokens;
+        if (tokens && typeof tokens === "object") {
+          const counts = tokens as Record<string, unknown>;
+          // UsageSummary has no cache-write field, and writing the cache is
+          // billed as input, so it is counted as input here. claude-local maps
+          // cacheCreationInputTokens the same way (src/server/parse.ts). Leaving
+          // it out would under-report a cold run by most of its real input.
+          parsed.usage = {
+            inputTokens: eventNumber(counts.input) + eventNumber(counts.cache_write),
+            outputTokens: eventNumber(counts.output),
+            cachedInputTokens: eventNumber(counts.cache_read),
+          };
+        }
+        // Hermes tracks `estimated_cost_usd` on its run result but does not
+        // copy it into this envelope yet (stream_json.py `emit_result` forwards
+        // only the token counts), so cost stays undefined against today's CLI
+        // and starts working the moment that field ships. Reading the name
+        // Hermes already uses keeps this a forward reference, not a guess.
+        const cost = event.estimated_cost_usd;
+        if (typeof cost === "number" && Number.isFinite(cost)) parsed.costUsd = cost;
+        if (typeof event.error === "string" && event.error) {
+          parsed.errorMessage = event.error;
+        }
+        // A provider that answers without streaming emits no `text` deltas;
+        // without this the transcript would be empty even though the answer is
+        // right here in the envelope.
+        return !sawTextDelta && parsed.response ? `${parsed.response}\n` : "";
+      }
+
+      default:
+        return "";
+    }
+  };
+
+  /** Record where the transcript now sits, so the next tool card can open a line. */
+  const emit = (piece: string): string => {
+    if (piece) atLineStart = piece.endsWith("\n");
+    return piece;
+  };
+
+  const consumeLine = (raw: string): string => {
+    if (!raw.trim()) return "";
+    let event: unknown;
+    try {
+      event = JSON.parse(raw);
+    } catch {
+      return emit(raw);
+    }
+    if (!event || typeof event !== "object" || Array.isArray(event)) return emit(raw);
+    return emit(render(event as Record<string, unknown>));
+  };
+
+  const consume = (chunk: string): string => {
+    held += chunk;
+    let out = "";
+    let consumed = 0;
+    let newline: number;
+    while ((newline = held.indexOf("\n", consumed)) !== -1) {
+      out += consumeLine(held.slice(consumed, newline + 1));
+      consumed = newline + 1;
+    }
+    held = held.slice(consumed);
+    return out;
+  };
+
+  consume.flush = (): string => {
+    const rest = held;
+    held = "";
+    return rest ? consumeLine(rest) : "";
+  };
+
+  return Object.assign(consume, { parsed });
 }
 
 // ---------------------------------------------------------------------------
@@ -314,18 +613,25 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     result.costUsd = parseFloat(costMatch[1]);
   }
 
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
-    const errorLines = stderr
-      .split("\n")
-      .filter((line) => /error|exception|traceback|failed/i.test(line))
-      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
-    if (errorLines.length > 0) {
-      result.errorMessage = errorLines.slice(0, 5).join("\n");
-    }
-  }
+  const stderrError = extractStderrError(stderr);
+  if (stderrError) result.errorMessage = stderrError;
 
   return result;
+}
+
+/**
+ * Pull the error lines out of stderr. A Hermes crash reports itself here
+ * whichever output format is in use, so both parse paths need it: stream-json
+ * only learns about a failure that happened before the `result` envelope by
+ * reading stderr.
+ */
+function extractStderrError(stderr: string): string | undefined {
+  if (!stderr.trim()) return undefined;
+  const errorLines = stderr
+    .split("\n")
+    .filter((line) => /error|exception|traceback|failed/i.test(line))
+    .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
+  return errorLines.length > 0 ? errorLines.slice(0, 5).join("\n") : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +744,9 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Opt-in JSONL events instead of human-formatted text. Unset — the default —
+  // leaves the text path below untouched.
+  const useStreamJson = cfgString(config.outputFormat) === "stream-json";
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
@@ -481,6 +790,12 @@ export async function execute(
   if (extraArgs?.length) {
     args.push(...extraArgs);
   }
+
+  // Last, so it wins: argparse keeps the final `--format`, and the parse path
+  // below is already committed to events. A `--format` in extraArgs must not be
+  // able to leave the CLI writing text while this reads it as JSON.
+  // `stream-json` forces quiet mode on the Hermes side.
+  if (useStreamJson) args.push("--format", "stream-json");
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
@@ -533,8 +848,31 @@ export async function execute(
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
-  // Wrap onLog to reclassify benign stderr lines as stdout.
+  // Wrap onLog to reclassify benign stderr lines as stdout, and to drop the
+  // query echo non-quiet mode writes before the agent starts. The echo has to
+  // go here rather than after the run: runChildProcess streams every chunk
+  // through onLog, so this is the one place that sees both the live UI
+  // transcript and (via childStdout) the text the response is parsed from.
+  // -Q suppresses the echo at the source, so only a non-quiet run needs the
+  // filter. Running it on a quiet run could only ever discard a real answer
+  // that happens to open by quoting the prompt back.
+  //
+  // stream-json carries no echo at all, so that branch swaps the filter for the
+  // event consumer instead. Both are `(chunk) => text-to-show` with a `flush()`,
+  // which is why only the one assignment below changes.
+  const streamJson = useStreamJson ? createStreamJsonConsumer() : null;
+  const stripPromptEcho = useQuiet || streamJson
+    ? PASS_THROUGH_ECHO_FILTER
+    : createPromptEchoFilter(prompt);
+  const filterStdout: PromptEchoFilter = streamJson ?? stripPromptEcho;
+  let childStdout = "";
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout") {
+      const kept = filterStdout(chunk);
+      if (!kept) return;
+      childStdout = appendWithCap(childStdout, kept);
+      return ctx.onLog("stdout", kept);
+    }
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
@@ -563,8 +901,25 @@ export async function execute(
     onSpawn: ctx.onSpawn,
   });
 
+  // The child can exit while the filter still holds an unterminated line.
+  // Release it so a partial echo leaks rather than hiding a partial answer.
+  const heldByFilter = filterStdout.flush();
+  if (heldByFilter) {
+    childStdout = appendWithCap(childStdout, heldByFilter);
+    await ctx.onLog("stdout", heldByFilter);
+  }
+
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  // The events already carry everything the text path scrapes out with
+  // regexes, so parseHermesOutput is skipped entirely when they are in use.
+  const parsed = streamJson
+    ? streamJson.parsed
+    : parseHermesOutput(childStdout, result.stderr || "");
+  if (streamJson && !parsed.errorMessage) {
+    // No `result` envelope, or one without an error: a crash that happened
+    // before Hermes could report it still shows up on stderr.
+    parsed.errorMessage = extractStderrError(result.stderr || "");
+  }
 
   await ctx.onLog(
     "stdout",
