@@ -1,3 +1,4 @@
+import "./browser-compat";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { MINIMAL_VIEWPORTS } from "storybook/viewport";

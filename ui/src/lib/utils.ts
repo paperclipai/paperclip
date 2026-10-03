@@ -33,8 +33,8 @@ export function asFiniteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatCents(cents: number, currency = "USD"): string {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
@@ -170,13 +170,13 @@ function coerceBillingType(value: unknown): BillingType | null {
   return null;
 }
 
-function readRunCostUsd(payload: Record<string, unknown> | null): number {
-  if (!payload) return 0;
-  for (const key of ["costUsd", "cost_usd", "total_cost_usd"] as const) {
+function readRunCostUsd(payload: Record<string, unknown> | null): number | null {
+  if (!payload) return null;
+  for (const key of ["cacheAdjustedCostUsd", "costUsd", "cost_usd", "total_cost_usd"] as const) {
     const value = payload[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   }
-  return 0;
+  return null;
 }
 
 export function visibleRunCostUsd(
@@ -185,7 +185,7 @@ export function visibleRunCostUsd(
 ): number {
   const billingType = coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
   if (billingType === "subscription_included") return 0;
-  return readRunCostUsd(usage) || readRunCostUsd(result);
+  return readRunCostUsd(usage) ?? readRunCostUsd(result) ?? 0;
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {

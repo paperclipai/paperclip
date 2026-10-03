@@ -1,3 +1,4 @@
+import { centsToUsd, usdToCents } from "@paperclipai/shared";
 import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
@@ -31,12 +32,16 @@ function statusTone(status: BudgetPolicySummary["status"]) {
 export function BudgetPolicyCard({
   summary,
   onSave,
+  onUnpricedUsagePolicyChange,
+  onReservationChange,
   isSaving,
   compact = false,
   variant = "card",
 }: {
   summary: BudgetPolicySummary;
   onSave?: (amountCents: number) => void;
+  onReservationChange?: (cents: string) => void;
+  onUnpricedUsagePolicyChange?: (policy: "block" | "allow") => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
@@ -46,6 +51,19 @@ export function BudgetPolicyCard({
   useEffect(() => {
     setDraftBudget(centsInputValue(summary.amount));
   }, [summary.amount]);
+
+  const [reservation, setReservation] = useState(centsToUsd(summary.reservationCents ?? 0));
+  useEffect(() => setReservation(centsToUsd(summary.reservationCents ?? 0)), [summary.reservationCents]);
+  let reservationCents: string | null = null;
+  try { if (!reservation.trim().startsWith("-")) reservationCents = usdToCents(reservation.trim()); } catch { /* Shown as invalid input below. */ }
+  const reservationSection = onReservationChange ? <div className="space-y-2">
+    <label className="text-sm">Reserve per run (USD)
+      <Input aria-label="Reserve per run (USD)" value={reservation} onChange={event => setReservation(event.target.value)} inputMode="decimal" />
+    </label>
+    <p className="text-xs text-muted-foreground">An estimate held before each run starts. Zero disables the estimate. Actual provider charges may exceed it.</p>
+    <Button variant="outline" disabled={isSaving || reservationCents === null || reservationCents === (summary.reservationCents ?? "0.0000000")}
+      onClick={() => { if (reservationCents !== null) onReservationChange(reservationCents); }}>Update reservation</Button>
+  </div> : null;
 
   const parsedDraft = parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
@@ -95,6 +113,17 @@ export function BudgetPolicyCard({
 
   const progressSection = (
     <div className="space-y-2">
+      {summary.pendingRunCount > 0 && <p className="text-sm text-destructive">{summary.pendingRunCount} completed runs await accounting.</p>}
+      {summary.unpricedEventCount > 0 && (
+        <p className="text-sm text-destructive">{summary.unpricedEventCount} usage events are unpriced. Known spend excludes their unknown cost.</p>
+      )}
+      {onUnpricedUsagePolicyChange && (
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={summary.unpricedUsagePolicy !== "allow"} disabled={isSaving}
+            onChange={(event) => onUnpricedUsagePolicyChange(event.target.checked ? "block" : "allow")} />
+          Block new work when usage has no reliable price
+        </label>
+      )}
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Remaining</span>
         <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
@@ -125,8 +154,8 @@ export function BudgetPolicyCard({
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
-          ? "Execution is paused for this project until the budget is raised or the incident is dismissed."
-          : "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed."}
+          ? "Execution is paused for this project until the budget block is resolved."
+          : "Heartbeats are paused for this scope until the budget block is resolved."}
       </div>
     </div>
   ) : null;
@@ -186,6 +215,7 @@ export function BudgetPolicyCard({
         {progressSection}
         {pausedPane}
         {saveSection}
+        {reservationSection}
         {parsedDraft === null ? (
           <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
         ) : null}
@@ -215,6 +245,7 @@ export function BudgetPolicyCard({
         {progressSection}
         {pausedPane}
         {saveSection}
+        {reservationSection}
         {parsedDraft === null ? (
           <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
         ) : null}

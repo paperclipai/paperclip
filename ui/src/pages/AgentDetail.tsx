@@ -381,7 +381,7 @@ function runMetrics(run: HeartbeatRun) {
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    totalTokens: input + cached + output,
     provider,
     model,
   };

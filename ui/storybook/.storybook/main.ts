@@ -16,6 +16,9 @@ const paperclipInstanceOrigin = (() => {
 })();
 
 const config: StorybookConfig = {
+  // Allow LAN names, tailnet names and other aliases for this review server.
+  // Storybook forwards this to Vite and its websocket origin validation.
+  core: { allowedHosts: true },
   stories: ["../stories/**/*.stories.@(ts|tsx|mdx)"],
   staticDirs: ["../../public", "../public"],
   addons: ["@storybook/addon-docs", "@storybook/addon-a11y"],

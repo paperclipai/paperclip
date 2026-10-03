@@ -128,6 +128,19 @@ and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
 use the same sidebar, picker, landing page, and existing chat surface when the
 Agent Chat experimental setting is enabled.
 
+The dev server listens on all network interfaces and accepts any hostname.
+From another computer, open `http://<this-machine-hostname>:6006/` using its
+local network name, `.local` name, LAN/Tailscale IP or another DNS alias that
+resolves to this machine. No hostname allowlist or additional environment
+variable is needed. Storybook's `core.allowedHosts: true` applies to the manager,
+Vite preview and live-reload websocket connections.
+
+Use **Product → Costs → Overview** to review the shared Costs page in its
+default streamlined layout, including reported, estimated and partially
+estimated agent costs, subscription runs, and project-attributed run costs.
+The illustrative data stays in Storybook. The legacy standalone route uses the
+same page; its heading, breadcrumbs and Budgets tab are covered by UI tests.
+
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
 next question. Reduced-motion mode advances without animation.
