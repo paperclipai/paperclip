@@ -77,6 +77,12 @@ Custom processes, HTTP endpoints, and external adapter packages extend the roste
 
 <br/>
 
+## Launch video
+
+<a href="doc/assets/paperclip-launch.mp4"><img src="doc/assets/paperclip-launch.jpg" width="560" alt="Paperclip launch video"></a>
+
+A 22-second 16:9 launch video with sound ([captions](doc/assets/paperclip-launch.srt)). Click the poster to play.
+
 ## Paperclip is right for you if
 
 - ✅ You want to build **autonomous AI organizations**
