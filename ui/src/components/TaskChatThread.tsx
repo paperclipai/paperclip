@@ -5,7 +5,7 @@ import {
 } from "@/lib/issue-detail-performance";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
-import type { ActivityEvent, TaskBrowser } from "@paperclipai/shared";
+import type { ActivityEvent, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
@@ -633,6 +633,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     queuedCommentQueue && queuedCommentQueue.entries.length > 0
       ? queuedCommentQueue
       : null;
+  const emptyQueuedCommentQueue = useMemo<IssueQueuedCommentQueue>(
+    () => ({
+      issueId: issueId ?? "",
+      queueId: null,
+      state: null,
+      targetRunId: null,
+      revision: "empty",
+      protocol: "paperclip_runner_v1",
+      steeringDisposition: "temporarily_unavailable",
+      entries: [],
+    }),
+    [issueId],
+  );
   const queuedCommentIds = useMemo(
     () =>
       new Set(
@@ -3092,9 +3105,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="relative isolate flex flex-col"
                   data-testid="task-chat-composer-stack"
                 >
-                  {queuedMessageQueue && !composerPause ? (
+                  {!composerPause ? (
                     <TaskChatQueuedMessages
-                      queue={queuedMessageQueue}
+                      key={issueId}
+                      queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
                       onEdit={beginQueuedEdit}
                       onReorder={async (orderedCommentIds, revision) => {
                         if (!onReorderQueuedComments)
@@ -3110,7 +3124,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         await onSteerQueuedComment(commentId, revision);
                       }}
                       onInterrupt={
-                        onInterruptQueued && queuedMessageQueue.queueId
+                        onInterruptQueued && queuedMessageQueue?.queueId
                           ? async () => {
                               await onInterruptQueued(
                                 queuedMessageQueue.targetRunId,

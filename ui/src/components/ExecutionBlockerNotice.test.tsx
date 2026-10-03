@@ -106,6 +106,21 @@ describe("stopped task recovery notice", () => {
     expect(agentsApi.retryFailedRun).toHaveBeenCalledWith("agent", "failed-run", "company");
     expect(onRetried).toHaveBeenCalledOnce();
   });
+
+  it.each(["native_continuation_requires_reconciliation", "uncertain_external_action"])("offers Retry for a server-admitted native failure: %s", async cause => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "failed-run", agentId: "agent", cause,
+        canRetry: true,
+        nextAction: "Automatic recovery stopped. Try again or send a new message to continue.",
+      }} />
+    </QueryClientProvider>));
+    const button = container.querySelector<HTMLButtonElement>("button");
+    expect(button?.textContent).toBe("Retry");
+    vi.mocked(agentsApi.retryFailedRun).mockResolvedValue({} as never);
+    await act(async () => button!.click());
+    expect(agentsApi.retryFailedRun).toHaveBeenCalledWith("agent", "failed-run", "company");
+  });
   it("shows a failed Retry in the same container and allows another attempt", async () => {
     vi.mocked(agentsApi.retryFailedRun).mockRejectedValue(new Error("Environment cleanup is still running."));
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());

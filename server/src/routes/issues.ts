@@ -7064,6 +7064,8 @@ export function issueRoutes(
     queueId: string;
     targetRunId?: string;
     allowStoppedTarget?: boolean;
+    /** Steering must allow PRP event ingestion to update the run before ACK. */
+    lockRun?: boolean;
   }) {
     const [currentIssue] = await input.tx
       .select()
@@ -7145,8 +7147,8 @@ export function issueRoutes(
       state === "deferred"
         ? (input.targetRunId ?? input.issue.executionRunId ?? null)
         : null;
-    const activeRun = activeRunId
-      ? await input.tx
+    const activeRunQuery = activeRunId
+      ? input.tx
           .select()
           .from(heartbeatRuns)
           .where(
@@ -7156,9 +7158,11 @@ export function issueRoutes(
               input.allowStoppedTarget ? undefined : eq(heartbeatRuns.status, "running"),
             ),
           )
-          .for("update")
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
+          .$dynamic()
+      : null;
+    const activeRun = activeRunQuery
+      ? await (input.lockRun === false ? activeRunQuery : activeRunQuery.for("update"))
+          .limit(1).then(rows => rows[0] ?? null)
       : null;
     if (input.targetRunId) {
       const runContext = readObject(activeRun?.contextSnapshot);
@@ -15577,7 +15581,6 @@ export function issueRoutes(
                       eq(heartbeatRuns.agentId, retryWake.agentId),
                     ),
                   )
-                  .for("update")
                   .limit(1)
                   .then((rows) => rows[0] ?? null)
               : null;
@@ -15615,6 +15618,7 @@ export function issueRoutes(
             actor,
             queueId: req.body.queueId,
             targetRunId: req.body.targetRunId,
+            lockRun: false,
           });
           if (!locked.activeRun) {
             throw conflict("The queued message targets a stale run", {
@@ -15680,6 +15684,13 @@ export function issueRoutes(
                 ? () => reconcileSteeredIdentity(db, steeringIdentity)
                 : undefined,
             }));
+          // PRP ingestion allocates event sequences on this row. Locking it
+          // while awaiting the provider prevents its durable ACK from arriving.
+          // Re-read under lock after ACK so concurrent run receipts are retained.
+          const [acknowledgedRun] = await tx.select().from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, locked.activeRun.id)).for("update");
+          if (!acknowledgedRun) throw conflict("The steering run is no longer available");
+          const acknowledgedResult = readObject(acknowledgedRun.resultJson);
           if (steeringIdentity)
             await acceptSteeredIdentity(tx, steeringIdentity);
           acknowledgedTurnId = acknowledgement.turnId;
@@ -15711,9 +15722,9 @@ export function issueRoutes(
             .update(heartbeatRuns)
             .set({
               resultJson: {
-                ...runResult,
+                ...acknowledgedResult,
                 queuedSteeringAcknowledgements: {
-                  ...acknowledgements,
+                  ...readObject(acknowledgedResult.queuedSteeringAcknowledgements),
                   [commentId]: {
                     status: "acknowledged",
                     queueId: req.body.queueId,

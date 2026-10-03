@@ -9,6 +9,8 @@ export interface ExecutionBlocker {
   runError?: string | null;
   /** Candidate only: admission must still verify termination and all gates. */
   canContinue?: boolean;
+  /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
+  canRetry?: boolean;
   savedMessageCount?: number;
 }
 

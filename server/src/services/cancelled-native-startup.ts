@@ -3,9 +3,22 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinaliza
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { canContinueCancelledRun } from "./run-cancellation.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
+
+/** Candidate for explicit user Retry only, never automatic replay after Stop. */
+export async function canRetryStoppedRun(db: Db, run: Run): Promise<boolean> {
+  if (run.errorCode === "native_session_cleanup_quarantined") return false;
+  if (["failed", "timed_out"].includes(run.status) || canContinueCancelledRun(run)) return true;
+  if (run.status !== "cancelled" || !run.finishedAt || run.processPid || run.processGroupId ||
+      run.processStartedAt || run.sessionIdAfter) return false;
+  const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+  ));
+  return isCancelledNativeStartup(db, run, coordinator);
+}
 
 /** Caller holds the coordinator and run locks when using this proof to admit
  * work. Attempt zero is a durable never-claimed receipt: every native executor

@@ -3675,6 +3675,28 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
+  it.each(["steer", "interrupt"] as const)("preserves inline %s errors after the optimistic last row clears", async action => {
+    let rejectDelivery!: (error: Error) => void;
+    const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
+    const actionQueue = { ...queue, protocol: action === "interrupt" ? "legacy" as const : queue.protocol };
+    const props = { comments: [queuedComment], onAdd: async () => {}, queuedCommentQueue: actionQueue,
+      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery };
+    render(<TaskChatThread {...props} />);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-queued-prp-1"]`)!.click();
+    });
+    render(<TaskChatThread {...props} queuedCommentQueue={null} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => {
+      rejectDelivery(new Error("Connection lost"));
+      await delivery.catch(() => undefined);
+    });
+    await act(async () => { render(<TaskChatThread {...props} />); });
+    expect(container.textContent).toContain(action === "steer"
+      ? "Couldn’t steer. Message is still queued." : "Couldn’t interrupt. Message is still queued.");
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
   it.each(["run-1", null])("keeps legacy queued delivery available with target %s", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     render(

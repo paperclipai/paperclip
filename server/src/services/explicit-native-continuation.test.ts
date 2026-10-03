@@ -1075,6 +1075,78 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(coordinator.attempt).toBe(3);
     expect(coordinator.failureDetail?.replacementDenied).toBe("explicit_user_continuation");
   });
+
+  it.each(["ready", "live_process", "pause", "delivered", "mixed_authors", "last_delivered", "operator_stop"])(
+    "automatically delivers an unconsumed native message sent before the failed run stopped, respecting %s", async gate => {
+    const f = await seed();
+    await db.update(issueComments).set({ createdAt: new Date("2026-09-11T09:59:00Z") }).where(eq(issueComments.id, f.commentId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    let queuedIds = [f.commentId];
+    let expectedIds = queuedIds;
+    if (["mixed_authors", "last_delivered"].includes(gate)) {
+      const secondId = randomUUID();
+      await db.insert(issueComments).values({ id: secondId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "second-author", body: "Also preserve the existing work.",
+        createdAt: new Date("2026-09-11T09:59:01Z") });
+      queuedIds = [f.commentId, secondId];
+      expectedIds = gate === "last_delivered" ? [f.commentId] : queuedIds;
+      if (gate === "last_delivered") await db.update(heartbeatRuns).set({
+        contextSnapshot: { issueId: f.issueId, wakeCommentIds: [secondId] },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
+    if (gate === "live_process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (gate === "operator_stop") await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (gate === "delivered") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId,
+      wakeCommentIds: queuedIds } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (gate === "pause") {
+      const holdId = randomUUID();
+      await db.insert(issueTreeHolds).values({ id: holdId, companyId: f.companyId, rootIssueId: f.issueId, mode: "pause", status: "active" });
+      await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId, issueId: f.issueId, depth: 0, issueTitle: "Deploy", issueStatus: "blocked" });
+    }
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", status: "deferred_issue_execution", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", updatedAt: new Date(0),
+      payload: { issueId: f.issueId, commentId: queuedIds.at(-1), executionWait: { reason: "execution_recovery" },
+        _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: queuedIds, wakeCommentId: queuedIds.at(-1) } },
+    });
+    const service = heartbeatService(db);
+    await service.resumeExecutionWaitComments();
+    await service.resumeExecutionWaitComments();
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    if (!["ready", "mixed_authors", "last_delivered"].includes(gate)) {
+      expect(receipt.status).toBe("deferred_issue_execution");
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      return;
+    }
+    expect(receipt.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: expectedIds,
+      explicitUserContinuation: { previousRunId: f.sourceRunId, commentId: expectedIds.at(-1) } });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(prior.status).toBe("failed");
+  });
+
+  it.each(["native", "before_selection"])("offers and admits an exact Retry for native preparation cancelled before provider startup: %s", async phase => {
+    const f = await seedCancelledStartup();
+    if (phase === "before_selection") {
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: null, nativeIssueId: null,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        resultJson: { startupCancellation: { beforeNativeSelection: true }, startupPreparationSettledAt: new Date().toISOString() },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(blocker).toMatchObject({ runId: f.sourceRunId, canRetry: true });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const service = heartbeatService(db);
+    const successor = await service.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",
+      failedRunId: f.sourceRunId, requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId } });
+    expect(successor).toMatchObject({ status: "queued", retryOfRunId: f.sourceRunId });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
   it.each(["failed", "succeeded_result", "rejected_result", "still_committing", "controller", "successor", "live_process"])(
     "requires a fully committed failed result and verified stop for a new turn (%s)", async scenario => {
       const f = await seed(), contractId = randomUUID(), resultId = randomUUID();

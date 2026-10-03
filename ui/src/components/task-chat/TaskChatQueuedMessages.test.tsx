@@ -138,7 +138,7 @@ describe("TaskChatQueuedMessages", () => {
     expect(next?.map((entry) => entry.position)).toEqual([0, 1]);
   });
 
-  it("promotes only the selected steering row immediately", async () => {
+  it("removes the selected steering row before the provider acknowledges it", async () => {
     const acknowledgement = deferred<void>();
     const props = render({
       onSteer: vi.fn().mockReturnValue(acknowledgement.promise),
@@ -157,6 +157,7 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
     ).toBeNull();
+    expect(container.textContent).toContain("Steering queued message.");
     expect(
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-2"]',
@@ -164,9 +165,41 @@ describe("TaskChatQueuedMessages", () => {
     ).not.toBeNull();
 
     await act(async () => {
+      render({ ...props, queue: { ...queue, entries: [...queue.entries] } });
+    });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+
+    await act(async () => {
       acknowledgement.resolve();
       await acknowledgement.promise;
     });
+  });
+
+  it("clears the entire interrupt queue immediately and restores it inline on failure", async () => {
+    let rejectInterrupt!: (error: Error) => void;
+    const interrupted = new Promise<void>((_, reject) => { rejectInterrupt = reject; });
+    const props = render({ queue: { ...queue, protocol: "legacy", steeringDisposition: "unsupported" },
+      onInterrupt: vi.fn().mockReturnValue(interrupted) });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click();
+    });
+    expect(props.onInterrupt).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => { rejectInterrupt(new Error("Connection lost")); await interrupted.catch(() => undefined); });
+    expect(container.querySelectorAll('[data-testid^="task-chat-queued-message-"]')).toHaveLength(2);
+    expect(container.textContent).toContain("Couldn’t interrupt. Message is still queued.");
+  });
+
+  it("does not restore a message discarded elsewhere while steering was pending", async () => {
+    let rejectSteer!: (error: Error) => void;
+    const delivery = new Promise<void>((_, reject) => { rejectSteer = reject; });
+    const props = render({ onSteer: vi.fn().mockReturnValue(delivery) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')!.click(); });
+    await act(async () => { render({ ...props, queue: { ...queue, revision: "rev-2", entries: [queue.entries[1]] } }); });
+    await act(async () => { rejectSteer(new Error("Queue changed")); await delivery.catch(() => undefined); });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn’t steer.");
   });
 
   it("keeps a row queued when steering fails and announces the retryable state", async () => {
@@ -344,9 +377,6 @@ describe("TaskChatQueuedMessages", () => {
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
-    ).not.toBeNull();
-    expect(container.textContent).toContain(
-      "Queued messages will be sent when the previous run has stopped.",
-    );
+    ).toBeNull();
   });
 });

@@ -1702,12 +1702,18 @@ Confirmed project creation appears as a durable card in the shared task transcri
 
 ### User continuation after execution recovery stops
 
-An authenticated user message or an exact failed-run Retry can start a fresh
+An authenticated user message, a validated undelivered native message queue, or an exact failed-run Retry can start a fresh
 native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
 action outcomes; do not replay tool calls or reset the failed incident's automatic
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
+The task recovery notice offers Retry for eligible failures and verified native
+startup cancellations, with failed attempts explained inline. Preparing native
+turns keep the Steer label. Steer and Interrupt immediately move the submitted
+messages from the composer queue into the conversation while delivery proceeds.
+Provider acknowledgement remains authoritative; failed delivery restores the
+latest queue with an inline error. Neither action produces a toast.
 
 ### Managed AI authentication
 
