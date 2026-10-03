@@ -2122,8 +2122,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       updatedAt: createdAt,
     })));
     await svc.markRead(companyId, readIssueId, userId, readAt);
+    const commentByIssueId = new Map<string, string>();
     for (const issueId of [unreadIssueId, readIssueId, otherAssigneeIssueId]) {
-      await svc.addComment(issueId, "Worker update", { agentId }, { createdAt: commentAt });
+      const comment = await svc.addComment(issueId, "Worker update", { agentId }, { createdAt: commentAt });
+      commentByIssueId.set(issueId, comment.id);
     }
 
     const filters = { touchedByUserId: userId, unreadForUserId: userId };
@@ -2143,6 +2145,31 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect.objectContaining({ id: unreadIssueId, isUnreadForMe: true }),
     ]);
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
+
+    const liveCommentAt = new Date("2026-03-26T14:00:00.000Z");
+    await svc.addComment(readIssueId, "Another worker update", { agentId }, { createdAt: liveCommentAt });
+    await expect(svc.tombstoneComment(commentByIssueId.get(unreadIssueId)!, {
+      actorType: "agent",
+      agentId,
+    })).resolves.toEqual(expect.objectContaining({ deletedAt: expect.any(Date) }));
+
+    await expect(svc.list(companyId, filters)).resolves.toEqual([
+      expect.objectContaining({ id: readIssueId, isUnreadForMe: true }),
+    ]);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: unreadIssueId, lastExternalCommentAt: null, isUnreadForMe: false }),
+      expect.objectContaining({ id: readIssueId, lastExternalCommentAt: liveCommentAt, isUnreadForMe: true }),
+    ]));
+
+    const replyAt = new Date("2026-03-26T15:00:00.000Z");
+    const reply = await svc.addComment(readIssueId, "I have seen the update", { userId }, { createdAt: replyAt });
+    await svc.tombstoneComment(reply.id, { actorType: "user", userId });
+    await expect(svc.list(companyId, filters)).resolves.toEqual([]);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(0);
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: readIssueId, myLastTouchAt: replyAt, lastExternalCommentAt: liveCommentAt, isUnreadForMe: false }),
+    ]));
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {
