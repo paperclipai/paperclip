@@ -265,6 +265,8 @@ export function toolAccessRoutes(
     vercelConnectClient?: VercelConnectClient | null;
     paperclipCloudConnector?: PaperclipCloudConnector | null;
     connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
+    /** See `oauthCallbackAppOrigin` in the server config. */
+    oauthCallbackAppOrigin?: string | null;
   } = {},
 ) {
   const router = Router();
@@ -457,6 +459,46 @@ export function toolAccessRoutes(
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Providers cannot redirect into a private network, so some deployments put
+   * a public address in front of this callback alone. The board session cookie
+   * is host-only, so it never reaches that address and the callback arrives
+   * with no actor. Hand the whole callback back to the origin the user browses
+   * the app on: their session lives there, and every check below then runs
+   * against a real session exactly as it does in a single-origin deployment.
+   *
+   * Completing the exchange here instead would make the OAuth state a bearer
+   * token for whoever it names, so a consent URL handed to another user would
+   * link that user's provider account to the flow's starter. Relaying keeps
+   * that closed: the authorizing browser arrives at the app origin as itself
+   * and fails the state's subject and session binding.
+   */
+  function relayOAuthCallbackToAppOrigin(req: Request, res: Response): boolean {
+    const appOrigin = options.oauthCallbackAppOrigin;
+    if (!appOrigin || req.actor.type === "board") return false;
+    // A callback that already arrived on the app origin has no session to
+    // recover; relaying it again would only bounce the browser in a loop.
+    const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+    const requestHost = (forwardedHost || req.header("host")?.trim())?.toLowerCase();
+    if (!requestHost || requestHost === new URL(appOrigin).host.toLowerCase()) return false;
+    // Same fixed path `oauthRedirectUri` advertises. Never derived from the
+    // request, so the relay cannot be steered anywhere but this callback on
+    // the configured origin.
+    const target = new URL("/api/tools/oauth/callback", appOrigin);
+    // Only the parameters the callback itself reads. Provider-authored
+    // `error_description`/`error_uri` are dropped here for the same reason
+    // they are never read below (PAP-17108).
+    for (const name of ["state", "code", "error", "iss"]) {
+      const value = req.query[name];
+      if (typeof value === "string") target.searchParams.set(name, value);
+    }
+    // The authorization code now travels one more hop in a URL. Keep it out of
+    // the Referer of whatever the app origin serves next.
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.redirect(303, target.toString());
+    return true;
   }
 
   async function oauthAppPath(
@@ -1330,6 +1372,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.get("/tools/oauth/callback", async (req, res) => {
+    if (relayOAuthCallbackToAppOrigin(req, res)) return;
     assertBoard(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const code = typeof req.query.code === "string" ? req.query.code : null;

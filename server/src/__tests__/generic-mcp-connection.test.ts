@@ -314,6 +314,7 @@ function createRouteApp(
     deploymentExposure: "public" | "private";
     remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
+    oauthCallbackAppOrigin?: string | null;
   },
   requestLogger?: express.RequestHandler,
 ) {
@@ -321,9 +322,17 @@ function createRouteApp(
   app.use(express.json());
   if (requestLogger) app.use(requestLogger);
   app.use((req, _res, next) => {
+    // `x-test-no-session` models a request arriving on an origin the host-only
+    // board session cookie cannot reach. `x-test-user` models a different
+    // signed-in user arriving on the origin that does have the cookie.
+    if (req.get("x-test-no-session")) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
     req.actor = {
       type: "board",
-      userId: "board-user",
+      userId: req.get("x-test-user") || "board-user",
       userName: "Board User",
       userEmail: null,
       isInstanceAdmin: true,
@@ -1096,6 +1105,152 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         status: "active",
       }),
     ]);
+  });
+
+  describe("OAuth callback on a separate public origin", () => {
+    // Providers cannot redirect into a private network, so the callback is
+    // published on PUBLIC_BASE_URL while the user browses the app on
+    // APP_ORIGIN. The session cookie is host-only, so it reaches only the
+    // second of those.
+    const APP_ORIGIN = "https://app.fixture.test";
+
+    async function startPersonalFlow(app: express.Express, companyId: string, fixture: ReturnType<typeof installMcpOAuthFixture>) {
+      const response = await request(app)
+        .post(`/api/companies/${companyId}/tools/apps/connect`)
+        .send({ link: MCP_URL, name: "Split origin personal", grantKind: "user" });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      const startUrl = response.body.auth.startUrl as string;
+      return {
+        connectionId: response.body.connectionId as string,
+        state: new URL(startUrl).searchParams.get("state")!,
+        code: fixture.issueAuthorizationCode(startUrl),
+      };
+    }
+
+    function activeGrants(connectionId: string) {
+      return db
+        .select()
+        .from(connectionGrants)
+        .where(and(eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.status, "active")));
+    }
+
+    it("hands a session-less callback back to the app origin with the provider query intact", async () => {
+      const fixture = installMcpOAuthFixture({ auth: "oauth" });
+      const company = await createCompany(db);
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+      const app = createRouteApp(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        oauthCallbackAppOrigin: APP_ORIGIN,
+      });
+      const flow = await startPersonalFlow(app, company.id, fixture);
+
+      const callback = await request(app)
+        .get("/api/tools/oauth/callback")
+        .set("x-test-no-session", "1")
+        .set("Accept", "text/html")
+        .query({
+          state: flow.state,
+          code: flow.code,
+          iss: ISSUER,
+          // Provider-authored strings the callback never reads (PAP-17108).
+          error_description: "<script>alert(1)</script>",
+          error_uri: "https://provider.example/oops",
+        })
+        .expect(303);
+
+      const location = new URL(callback.headers.location);
+      expect(location.origin).toBe(APP_ORIGIN);
+      expect(location.pathname).toBe("/api/tools/oauth/callback");
+      expect(location.searchParams.get("state")).toBe(flow.state);
+      expect(location.searchParams.get("code")).toBe(flow.code);
+      expect(location.searchParams.get("iss")).toBe(ISSUER);
+      expect(location.searchParams.get("error_description")).toBeNull();
+      expect(location.searchParams.get("error_uri")).toBeNull();
+      // The code now travels one more hop in a URL.
+      expect(callback.headers["referrer-policy"]).toBe("no-referrer");
+      // Nothing is completed on the origin without the session: the code is
+      // not exchanged and the single-use state survives for the relayed hop.
+      expect(fixture.requestsTo("/token")).toHaveLength(0);
+      const [stateRow] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.state, flow.state));
+      expect(stateRow).toBeTruthy();
+    });
+
+    it("rejects a session-less callback when no app origin is configured", async () => {
+      const fixture = installMcpOAuthFixture({ auth: "oauth" });
+      const company = await createCompany(db);
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+      const app = createRouteApp(db, { deploymentMode: "authenticated", deploymentExposure: "private" });
+      const flow = await startPersonalFlow(app, company.id, fixture);
+
+      await request(app)
+        .get("/api/tools/oauth/callback")
+        .set("x-test-no-session", "1")
+        .set("Accept", "text/html")
+        .query({ state: flow.state, code: flow.code, iss: ISSUER })
+        .expect(403);
+
+      expect(fixture.requestsTo("/token")).toHaveLength(0);
+    });
+
+    it("does not relay a callback that already arrived on the app origin", async () => {
+      const fixture = installMcpOAuthFixture({ auth: "oauth" });
+      const company = await createCompany(db);
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+      const app = createRouteApp(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        oauthCallbackAppOrigin: APP_ORIGIN,
+      });
+      const flow = await startPersonalFlow(app, company.id, fixture);
+
+      // A signed-out browser on the app origin has nowhere left to be sent.
+      await request(app)
+        .get("/api/tools/oauth/callback")
+        .set("x-test-no-session", "1")
+        .set("x-forwarded-host", new URL(APP_ORIGIN).host)
+        .set("Accept", "text/html")
+        .query({ state: flow.state, code: flow.code, iss: ISSUER })
+        .expect(403);
+    });
+
+    it("completes the relayed callback for the user who started the flow, and only them", async () => {
+      const fixture = installMcpOAuthFixture({ auth: "oauth" });
+      const company = await createCompany(db);
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+      const app = createRouteApp(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        oauthCallbackAppOrigin: APP_ORIGIN,
+      });
+      const flow = await startPersonalFlow(app, company.id, fixture);
+      // What the browser does next: the same callback, on the app origin,
+      // where its session cookie applies.
+      const followRelay = (userId?: string) => {
+        const relayed = request(app)
+          .get("/api/tools/oauth/callback")
+          .set("x-forwarded-host", new URL(APP_ORIGIN).host)
+          .set("Accept", "text/html")
+          .query({ state: flow.state, code: flow.code, iss: ISSUER });
+        return userId ? relayed.set("x-test-user", userId) : relayed;
+      };
+
+      // The account-linking case: someone handed this consent URL to another
+      // user, so the browser that follows the relay carries *their* session.
+      // The state's subject rejects it, and the browser lands on recovery
+      // rather than on a connected app.
+      const hijack = await followRelay("other-user").expect(303);
+      expect(hijack.headers.location).not.toContain("success=1");
+      expect(fixture.requestsTo("/token")).toHaveLength(0);
+      expect(await activeGrants(flow.connectionId)).toEqual([]);
+
+      await followRelay().expect(303);
+
+      expect(fixture.requestsTo("/token")).toHaveLength(1);
+      expect(await activeGrants(flow.connectionId)).toEqual([
+        expect.objectContaining({ kind: "user", subjectUserId: "board-user" }),
+      ]);
+    });
   });
 
   it("does not let another user take over an archived personal URL connection", async () => {

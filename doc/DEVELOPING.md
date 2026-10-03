@@ -1557,6 +1557,31 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## OAuth Callbacks on a Separate Origin
+
+Some deployments keep the app on a private network and publish a separate
+public address for OAuth provider callbacks alone, because a provider cannot
+redirect into a private network. The board session cookie is host-only, so it
+never reaches that public address and the callback arrives with no session.
+
+Name the origin the user actually browses the app on:
+
+```sh
+PAPERCLIP_OAUTH_CALLBACK_APP_ORIGIN=https://paperclip.internal.example
+```
+
+A callback that arrives without a board session is then handed back to that
+origin with the provider's query untouched, and the browser re-requests it
+where its session cookie applies. Every check runs against a real session, so
+the flow behaves exactly as it does in a single-origin deployment: the state's
+subject and session binding still decide whether it completes.
+
+The server must also advertise the public callback address as its redirect
+URI (`PAPERCLIP_AUTH_PUBLIC_BASE_URL` or `PAPERCLIP_PUBLIC_URL`), and the
+browser finishing the flow must be able to reach the app origin.
+
+Unset, nothing changes: a session-less callback is rejected.
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.
