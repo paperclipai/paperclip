@@ -11,19 +11,19 @@ export interface AdapterDefaults {
 
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:latest",
     envKeys: ["ANTHROPIC_API_KEY"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["claude", "--version"],
   },
   codex_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:v1",
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:latest",
     envKeys: ["OPENAI_API_KEY"],
     allowFqdns: ["api.openai.com"],
     probeCommand: ["codex", "--version"],
   },
   gemini_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:v1",
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:latest",
     envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
@@ -35,13 +35,13 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     probeCommand: ["cursor-agent", "--version"],
   },
   opencode_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:latest",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
     allowFqdns: ["api.anthropic.com", "api.openai.com", "openrouter.ai"],
     probeCommand: ["opencode", "--version"],
   },
   pi_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:v1",
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:latest",
     envKeys: ["ANTHROPIC_API_KEY"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["pi", "--version"],

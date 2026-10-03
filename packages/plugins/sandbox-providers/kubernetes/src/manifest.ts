@@ -55,6 +55,11 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Glob patterns of allowed `target.imageOverride` values. Empty list = no override permitted.",
           },
+          preloadedImages: {
+            type: "boolean",
+            description:
+              "Air-gapped/offline clusters only: when true, always use imagePullPolicy IfNotPresent, even for floating tags like :latest, because preloaded nodes have no registry path at pod-start time.",
+          },
           imagePullSecrets: {
             type: "array",
             items: { type: "string" },
