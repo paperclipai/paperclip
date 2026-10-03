@@ -4697,15 +4697,47 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
-        const attachedEvent = retired.committedEvents.find(
+        // The reconnect path races the redelivery of the held run.attached
+        // event against the identity rotation: under CI load the commit can
+        // land either before the rotation snapshot is taken or shortly
+        // after it (5 flakes, runs 36185759201/36277109525/36371740327/
+        // 36394008534/36400586052, all reading the event as missing from
+        // the rotation snapshot). Wait for the event to land in either
+        // durable record, then assert event ownership against that record
+        // instead of assuming one ordering.
+        let retiredRecord: typeof retired = retired;
+        await vi.waitFor(() => {
+          if (
+            retired.committedEvents.some(
+              (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+            )
+          ) {
+            retiredRecord = retired;
+            return;
+          }
+          const live = cores[cores.length - 1]!.store.state;
+          expect(
+            live.committedEvents.some(
+              (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+            ),
+          ).toBe(true);
+          retiredRecord = live;
+        }, { timeout: 10_000 });
+        const attachedIndex = retiredRecord.committedEvents.findIndex(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-        )!;
-        expect(attachedEvent.logicalEffectCount).toBe(1);
-        expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
-          attachedEvent.sourceSeq,
         );
+        const attachedEvent = retiredRecord.committedEvents[attachedIndex]!;
+        expect(attachedEvent.logicalEffectCount).toBe(1);
+        expect(attachedEvent.envelope.runId).toBe(oldIdentity.runId);
+        if (retiredRecord === retired) {
+          expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
+            attachedEvent.sourceSeq,
+          );
+        }
         expect(
-          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
+          retiredRecord.committedEvents
+            .slice(attachedIndex - 3, attachedIndex + 1)
+            .map((entry) => entry.eventType),
         ).toEqual([
           "session.resumed",
           "session.capabilities.updated",
