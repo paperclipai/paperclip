@@ -8879,6 +8879,13 @@ export function buildPaperclipTaskMarkdown(input: {
         "Skill test mode directive:",
         "You are testing a pinned skill revision. Make no durable changes outside this issue. Do not push, publish, send external messages, or mutate other issues. Write your final output as issue document `output`, then finish by marking this issue done.",
       );
+    } else if (issue.workMode === "read_only") {
+      lines.push(
+        `- Work mode: ${quoteTaskScalar("read_only")}`,
+        "",
+        "Read-only run directive:",
+        "This run belongs to the read-only class: it may read the whole board and report, but every mutating API call is refused by the server with HTTP 403 and code `issue_write_read_only_run` before the route runs. Do not post comments, change status, create or update tasks, start wakes, or write outside your own workspace. Read what you need with GET endpoints, then deliver the answer as your run result — the platform posts it to this task for you. If the work genuinely needs a board write, name the exact change and ask the owner to move the task back to standard work mode.",
+      );
     } else if (acceptedPlanContinuation) {
       lines.push(
         "",
