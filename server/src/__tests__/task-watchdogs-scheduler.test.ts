@@ -799,4 +799,148 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 0, triggered: 0 });
   });
+
+  it("keeps a stop reviewed by another build's fingerprint schema version reviewed", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-XVER", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    const [triggeredWatchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.issueId, sourceId));
+
+    // A second server build on the same instance database writes its own review state
+    // to this row: it uses another fingerprint schema version with incompatible fields.
+    // Its snapshot must reach the classifier as stored, otherwise the classifier reads
+    // the reviewed stop as "never reviewed" and triggers a wake for an unchanged subtree.
+    const foreignFingerprint = "task_watchdog_stop:foreign-schema-v1";
+    const foreignSnapshot = {
+      version: 1,
+      fingerprint: foreignFingerprint,
+      leaves: [
+        {
+          issueId: sourceId,
+          identifier: "WDOG-XVER",
+          title: "Watched issue",
+          status: "done",
+          assignees: [],
+          blockers: [],
+          waits: [],
+        },
+      ],
+    };
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, triggeredWatchdog!.watchdogIssueId!));
+    await db
+      .update(issueWatchdogs)
+      .set({
+        lastObservedFingerprint: foreignFingerprint,
+        lastObservedStopSnapshot: foreignSnapshot,
+        lastReviewedFingerprint: foreignFingerprint,
+        lastReviewedStopSnapshot: foreignSnapshot,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+
+    const afterForeignReview = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterForeignReview).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [watchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+    expect(watchdog?.triggerCount).toBe(1);
+    // The review state of the other build is left alone inside the grace window.
+    expect(watchdog?.lastReviewedFingerprint).toBe(foreignFingerprint);
+    expect(watchdog?.lastReviewedStopSnapshot).toEqual(foreignSnapshot);
+  });
+
+  it("stops suppressing a changed stopped subtree once the other build's grace window has passed", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-XVER-TAKEOVER", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    const [triggeredWatchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.issueId, sourceId));
+    // The watchdog issue is not in a review disposition, so the review path cannot
+    // rewrite this row: only the classifier decides whether the stopped subtree is
+    // verified again. The grace window is therefore the only way out of a stale foreign
+    // verdict, and that is what this test checks.
+
+    // A second server build on the same instance database reviews the stop with its own
+    // fingerprint schema version and then keeps writing the row.
+    const foreignFingerprint = "task_watchdog_stop:foreign-schema-v1";
+    const foreignSnapshot = {
+      version: 1,
+      fingerprint: foreignFingerprint,
+      leaves: [
+        {
+          issueId: sourceId,
+          identifier: "WDOG-XVER-TAKEOVER",
+          title: "Watched issue",
+          status: "done",
+          assignees: [],
+          blockers: [],
+          waits: [],
+        },
+      ],
+    };
+    await db
+      .update(issueWatchdogs)
+      .set({
+        lastObservedFingerprint: foreignFingerprint,
+        lastObservedStopSnapshot: foreignSnapshot,
+        lastReviewedFingerprint: foreignFingerprint,
+        lastReviewedStopSnapshot: foreignSnapshot,
+        lastCompletedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+
+    // The stopped subtree changes while that build still owns the row. Inside its grace
+    // window the foreign review wins, so this build stays quiet.
+    await seedIssue(companyId, {
+      parentId: sourceId,
+      identifier: "WDOG-XVER-TAKEOVER-CHILD",
+      status: "in_progress",
+    });
+
+    const insideGraceWindow = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(insideGraceWindow).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+
+    // The other build is gone: nothing wrote the row for longer than the grace window.
+    // Its verdict must expire, and the changed subtree must be verified again. The
+    // old behavior returned "already_reviewed" forever and kept the subtree suppressed.
+    const writtenBeforeGraceWindow = new Date(Date.now() - 7 * 60 * 60 * 1000);
+    await db
+      .update(issueWatchdogs)
+      .set({ lastCompletedAt: writtenBeforeGraceWindow, updatedAt: writtenBeforeGraceWindow })
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+
+    const afterGraceWindow = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterGraceWindow).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [watchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+    // The expired foreign verdict no longer silences this build: the changed subtree was
+    // handed to the watchdog agent a second time.
+    expect(watchdog?.triggerCount).toBe(2);
+  });
 });
