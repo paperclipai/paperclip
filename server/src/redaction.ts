@@ -989,6 +989,102 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
+/**
+ * Non-secret `adapterConfig` keys an agent actor without a configuration-read
+ * grant may still see about a peer agent.
+ *
+ * Why this exists: the control plane asserts the invariant "one agent = one
+ * profile = one process = one port" from the adapter endpoint fields, but those
+ * live in `adapterConfig`. Blanking the whole object for agents outside the
+ * `agent_config:read` ladder made the invariant unauditable from an agent run.
+ * These are endpoint/topology fields, not credentials: the same values are
+ * already returned to any board reader and to the agent itself. `url` is the
+ * OpenClaw gateway address, which is where that adapter keeps its host and port.
+ *
+ * This is a whitelist. Anything not named here stays out of the projection, so
+ * adding a key to `adapterConfig` never widens this surface implicitly.
+ */
+export const AGENT_ADAPTER_CONFIG_AUDIT_FIELDS = [
+  "apiBaseUrl",
+  "paperclipApiUrl",
+  "sessionKeyStrategy",
+  "timeoutSec",
+  "adapterType",
+  "url",
+] as const;
+
+const URL_USERINFO_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/?#@]*@/i;
+const AUTHORITY_USERINFO_RE = /^[^/?#@]*@/;
+
+/**
+ * Reduce an allowlisted string value to its credential-free endpoint text.
+ *
+ * A URL is the one allowlisted shape that carries a credential in-band, and the
+ * value-level scanner only knows the credential names it was taught. So this
+ * strips both credential carriers by text, before anything else:
+ * - a query string or fragment is cut off at its first `?` or `#`, because a
+ *   parameter can carry a credential under a name the scanner does not treat as
+ *   secret-shaped (`?sig=`, `?X-Amz-Signature=`), and the scanner does not look
+ *   inside URL query parameters at all;
+ * - a value whose authority holds userinfo (`scheme://user:pass@host`, or the
+ *   scheme-less `user:pass@host`) is blanked whole, because the username and the
+ *   password cannot be told apart from the endpoint.
+ *
+ * The cut is textual on purpose. Agent create/update accept endpoint values
+ * without URL validation, so a value such as `https://host:bad?sig=…` can be
+ * stored. Parsing that throws, and a parse-failure fallback that returned the
+ * original value would hand the credential to a peer agent. Nothing is returned
+ * here before the query string and the fragment are gone.
+ *
+ * The result keeps scheme, host, port and path: the parts the "one agent = one
+ * profile = one process = one port" audit reads. It still passes through
+ * {@link redactSensitiveText} afterwards.
+ */
+function projectAuditEndpointValue(value: string): string {
+  const queryStart = value.search(/[?#]/);
+  const endpoint = queryStart === -1 ? value : value.slice(0, queryStart);
+  if (URL_USERINFO_RE.test(endpoint) || AUTHORITY_USERINFO_RE.test(endpoint)) {
+    return REDACTED_EVENT_VALUE;
+  }
+  return endpoint;
+}
+
+/**
+ * Project an adapter config down to {@link AGENT_ADAPTER_CONFIG_AUDIT_FIELDS}.
+ *
+ * Fail-closed choices, in order:
+ * - only the allowlisted keys are copied, never the rest of the object;
+ * - only scalar values are copied, so a nested object cannot smuggle a
+ *   credential through a child key the allowlist never inspected;
+ * - every string goes through {@link projectAuditEndpointValue}: the query string
+ *   and the fragment are cut off and a value carrying userinfo is blanked,
+ *   because the endpoint fields are the one allowlisted shape that can carry a
+ *   credential in-band and the value scanner does not catch URL userinfo or
+ *   unrecognised query parameters. No parse step can hand the original value
+ *   back, so a malformed endpoint (`https://host:bad?sig=…`) loses its query too;
+ * - the result runs through `redactAgentAdapterConfig`, i.e. the same redaction
+ *   path the full (board) view uses, so `env` bindings and secret-shaped values
+ *   stay redacted exactly as before.
+ */
+export function projectAgentAdapterConfigForAudit(
+  adapterConfig: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!isPlainObject(adapterConfig)) return {};
+  const projected: Record<string, unknown> = {};
+  for (const field of AGENT_ADAPTER_CONFIG_AUDIT_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(adapterConfig, field)) continue;
+    const value = adapterConfig[field];
+    if (typeof value === "string") {
+      projected[field] = projectAuditEndpointValue(value);
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      projected[field] = value;
+    }
+  }
+  return redactAgentAdapterConfig(projected);
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(

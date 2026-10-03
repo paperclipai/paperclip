@@ -17,6 +17,7 @@ import {
   PRP_V1_EVENT_TYPES,
   PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
+  projectAgentAdapterConfigForAudit,
   redactAgentAdapterConfig,
   redactEventPayload,
   redactSensitiveText,
@@ -820,6 +821,144 @@ second-line\" status=401`,
       API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
       AUTH_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
     });
+  });
+
+  it("projects a peer adapter config down to the non-secret audit allowlist", () => {
+    const apiKeyCanary = "adapter-api-key-must-not-leak";
+    const envCanary = "adapter-env-value-must-not-leak";
+
+    const result = projectAgentAdapterConfigForAudit({
+      apiBaseUrl: "https://gateway.internal.example",
+      paperclipApiUrl: "https://paperclip.internal.example",
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "hermes_gateway",
+      url: "wss://openclaw-gateway.internal.example:8443/gateway",
+      command: "pnpm agent:run",
+      model: "some-model",
+      apiKey: apiKeyCanary,
+      env: {
+        PAPERCLIP_API_KEY: envCanary,
+        AUTH_TOKEN: { type: "plain", value: envCanary },
+      },
+    });
+
+    expect(result).toEqual({
+      apiBaseUrl: "https://gateway.internal.example",
+      paperclipApiUrl: "https://paperclip.internal.example",
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "hermes_gateway",
+      url: "wss://openclaw-gateway.internal.example:8443/gateway",
+    });
+    expect(Object.keys(result).sort()).toEqual([
+      "adapterType",
+      "apiBaseUrl",
+      "paperclipApiUrl",
+      "sessionKeyStrategy",
+      "timeoutSec",
+      "url",
+    ]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(apiKeyCanary);
+    expect(serialized).not.toContain(envCanary);
+
+    // Re-projecting is a no-op: the projection already carries the same
+    // redaction the full (board) adapter config view applies.
+    expect(projectAgentAdapterConfigForAudit(result)).toEqual(result);
+  });
+
+  it("drops non-scalar and off-allowlist values and blanks URL userinfo", () => {
+    const result = projectAgentAdapterConfigForAudit({
+      apiBaseUrl: "https://user:pass@gateway.internal.example:8080/api",
+      paperclipApiUrl: { nested: "value" },
+      timeoutSec: [600],
+      sessionKeyStrategy: { mode: "issue" },
+      adapterType: undefined,
+    });
+
+    // Only the endpoint field survived, and it lost its in-band credential.
+    expect(result).toEqual({ apiBaseUrl: REDACTED_EVENT_VALUE });
+  });
+
+  it("strips URL query strings and fragments from allowlisted endpoint fields", () => {
+    const queryCanary = "query-credential-must-not-leak";
+    const fragmentCanary = "fragment-credential-must-not-leak";
+
+    const result = projectAgentAdapterConfigForAudit({
+      // A signed endpoint URL: the credential sits in the query string under a
+      // name the value scanner does not treat as secret-shaped.
+      apiBaseUrl: `https://gateway.internal.example:8443/api?sig=${queryCanary}&x=1`,
+      // Same shape on the OpenClaw gateway address, plus a fragment.
+      url: `wss://openclaw-gateway.internal.example:8443/gateway#token=${fragmentCanary}`,
+      paperclipApiUrl: "https://paperclip.internal.example",
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "openclaw_gateway",
+    });
+
+    expect(result).toEqual({
+      apiBaseUrl: "https://gateway.internal.example:8443/api",
+      url: "wss://openclaw-gateway.internal.example:8443/gateway",
+      paperclipApiUrl: "https://paperclip.internal.example",
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "openclaw_gateway",
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(queryCanary);
+    expect(serialized).not.toContain(fragmentCanary);
+    expect(serialized).not.toContain("sig=");
+    expect(serialized).not.toContain("token=");
+  });
+
+  it("keeps credentials out of an endpoint value that cannot be parsed as a URL", () => {
+    const queryCanary = "malformed-query-credential-must-not-leak";
+    const userinfoCanary = "malformed-userinfo-credential-must-not-leak";
+
+    const result = projectAgentAdapterConfigForAudit({
+      // `:bad` is not a port, so `new URL` rejects the whole value. A
+      // parse-failure fallback that returned the value as stored would have
+      // shipped the query credential with it.
+      apiBaseUrl: `https://gateway.internal.example:bad?sig=${queryCanary}`,
+      // Not absolute at all, so no absolute-URL branch applies and the value
+      // text is all there is to sanitise.
+      url: `openclaw-gateway.internal.example:8443/gateway?sig=${queryCanary}`,
+      // Scheme-less userinfo: the credential sits in the authority, not in a
+      // query parameter.
+      paperclipApiUrl: `user:${userinfoCanary}@gateway.internal.example:8443`,
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "openclaw_gateway",
+    });
+
+    expect(result).toEqual({
+      apiBaseUrl: "https://gateway.internal.example:bad",
+      url: "openclaw-gateway.internal.example:8443/gateway",
+      paperclipApiUrl: REDACTED_EVENT_VALUE,
+      sessionKeyStrategy: "issue",
+      timeoutSec: 600,
+      adapterType: "openclaw_gateway",
+    });
+
+    // The invariant every projected string must hold, whatever the input shape:
+    // no query, no fragment, no userinfo.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(queryCanary);
+    expect(serialized).not.toContain(userinfoCanary);
+    for (const value of Object.values(result)) {
+      if (typeof value !== "string" || value === REDACTED_EVENT_VALUE) continue;
+      expect(value).not.toMatch(/[?#]/);
+      expect(value).not.toMatch(/^[^/?#@]*@/);
+    }
+  });
+
+  it("returns an empty projection for a missing or non-object adapter config", () => {
+    expect(projectAgentAdapterConfigForAudit(null)).toEqual({});
+    expect(projectAgentAdapterConfigForAudit(undefined)).toEqual({});
+    expect(
+      projectAgentAdapterConfigForAudit([] as unknown as Record<string, unknown>),
+    ).toEqual({});
   });
 
   it("redacts adapter configs that have no env block", () => {
