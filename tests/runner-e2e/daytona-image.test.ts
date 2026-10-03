@@ -200,6 +200,7 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
+      "packages/paperclip-runner/scripts/lib/generated-content.mjs",
       "packages/paperclip-runner/runner/crates",
       "packages/paperclip-runner/src",
     ]) {

@@ -39,6 +39,7 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [
   "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
   "packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs",
   "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
+  "packages/paperclip-runner/scripts/lib/generated-content.mjs",
   "packages/paperclip-runner/src",
   "packages/paperclip-runner/styles.css",
   "packages/paperclip-runner/tsconfig.json",
