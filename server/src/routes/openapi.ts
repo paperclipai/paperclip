@@ -428,6 +428,36 @@ function applyNumberChecks(
 }
 
 function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
+  const jsonSchema = zodToOpenApiSchemaShape(schema);
+  const description = readSchemaDescription(schema);
+  if (description && jsonSchema.description === undefined) {
+    jsonSchema.description = description;
+  }
+  return jsonSchema;
+}
+
+/**
+ * Read `.describe()` off a schema and off the wrappers around it. Zod 4 keeps
+ * the description in a global registry keyed by the schema instance, not on
+ * `_def`, so the registry is the only place it exists. The registry entry sits
+ * on the exact schema `.describe()` was called on, while `unwrapSchema` hands
+ * the converter the inner schema, so the wrapper chain has to be walked.
+ */
+function readSchemaDescription(schema: z.ZodTypeAny): string | null {
+  let current: z.ZodTypeAny = schema;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const description = z.globalRegistry?.get(current)?.description;
+    if (typeof description === "string" && description.trim()) {
+      return description;
+    }
+    const unwrapped = unwrapSchema(current);
+    if (unwrapped === current) return null;
+    current = unwrapped;
+  }
+  return null;
+}
+
+function zodToOpenApiSchemaShape(schema: z.ZodTypeAny): JsonSchema {
   const unwrapped = unwrapSchema(schema);
   const def = zodDef(unwrapped);
   const typeName = def.type;

@@ -4520,6 +4520,10 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function readFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function parseNativeSessionGoalControl(
   value: unknown,
 ): NativeSessionGoalControl | null {
@@ -8134,6 +8138,18 @@ export async function buildPaperclipWakePayload(input: {
   const executionAlreadyReconciled =
     recoveryAction?.status === "resolved" &&
     Boolean(recoveryEvidence.executionReconciliation);
+  // The monitor note is written by the agent that armed the checkpoint and is
+  // meant to be read by the agent that wakes on it. It travels in the wake
+  // snapshot (written next to nextCheckAt/monitorAttemptCount when the
+  // checkpoint fires), so expose it here instead of leaving it unread.
+  const monitorNotes = readNonEmptyString(input.contextSnapshot.monitorNotes);
+  const monitorWake = monitorNotes
+    ? {
+        notes: monitorNotes,
+        nextCheckAt: readNonEmptyString(input.contextSnapshot.nextCheckAt),
+        attemptCount: readFiniteNumber(input.contextSnapshot.monitorAttemptCount),
+      }
+    : null;
   const originalAssigneeId =
     recoveryAction?.returnOwnerAgentId ??
     recoveryAction?.previousOwnerAgentId ??
@@ -8194,6 +8210,7 @@ export async function buildPaperclipWakePayload(input: {
             ),
           }
         : null,
+    monitor: monitorWake,
     issue: issueSummary
       ? {
           id: issueSummary.id,

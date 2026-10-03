@@ -802,10 +802,17 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
+type PaperclipWakeMonitor = {
+  notes: string;
+  nextCheckAt: string | null;
+  attemptCount: number | null;
+};
+
 type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
+  monitor: PaperclipWakeMonitor | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
   externalChatExecutionBound: boolean;
@@ -873,6 +880,21 @@ function normalizePaperclipWakeRecovery(
     nextAction: asString(recovery.nextAction, "").trim() || null,
     routingFallbackReason:
       asString(recovery.routingFallbackReason, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeMonitor(value: unknown): PaperclipWakeMonitor | null {
+  const monitor = parseObject(value);
+  // Keep the note exactly as the writer wrote it. Only the emptiness test
+  // trims: a note can carry indentation, a trailing tab, or a code block, and
+  // the field description promises the prompt renders it verbatim.
+  const notes = asString(monitor.notes, "");
+  if (!notes.trim()) return null;
+  return {
+    notes,
+    nextCheckAt: asString(monitor.nextCheckAt, "").trim() || null,
+    attemptCount:
+      typeof monitor.attemptCount === "number" ? monitor.attemptCount : null,
   };
 }
 
@@ -1771,6 +1793,7 @@ export function normalizePaperclipWakePayload(
   );
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const recovery = normalizePaperclipWakeRecovery(payload.recovery);
+  const monitor = normalizePaperclipWakeMonitor(payload.monitor);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
@@ -1852,6 +1875,7 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
+    !monitor &&
     !issue
   ) {
     return null;
@@ -1861,6 +1885,7 @@ export function normalizePaperclipWakePayload(
     reason: asString(payload.reason, "").trim() || null,
     executionContinuation: parseObject(payload.executionContinuation).version === 1 ? payload.executionContinuation as ExecutionContinuationEnvelope : null,
     recovery,
+    monitor,
     issue,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     externalChatExecutionBound: payload.externalChatExecutionBound === true,
@@ -2313,6 +2338,7 @@ function renderPaperclipWakePromptBody(
     normalized.requestedCount > 0;
   const executionStage = normalized.executionStage;
   const recovery = normalized.recovery;
+  const monitor = normalized.monitor;
   const recoveryScoped = Boolean(
     recovery || normalized.reason === "source_scoped_recovery_action",
   );
@@ -2582,6 +2608,19 @@ function renderPaperclipWakePromptBody(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  // The issue monitor note is written by the agent that armed the checkpoint
+  // and is the field's only consumer, so it belongs in the prompt of the wake
+  // it fires. Render it verbatim and name the field, so the writer of a note
+  // can see in a later wake that the text was delivered.
+  if (monitor) {
+    lines.push(
+      "",
+      `- monitor note (executionPolicy.monitor.notes${monitor.nextCheckAt ? `, checkpoint ${monitor.nextCheckAt}` : ""}${monitor.attemptCount === null ? "" : `, attempt ${monitor.attemptCount}`}):`,
+      ...monitor.notes
+        .split("\n")
+        .map((noteLine) => (noteLine.trim() ? `  ${noteLine}` : "")),
+    );
   }
   const issueDescription = normalized.issue?.description ?? null;
   // Resume deltas skip the description: the session already received the brief

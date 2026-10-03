@@ -73,6 +73,83 @@ describe("agent session wake messages", () => {
     expect(renderPaperclipWakePrompt(wakePayload)).toContain("hello");
   });
 
+  it("carries the monitor note from the wake snapshot into the wake prompt", async () => {
+    // Shape copied from the monitor dispatch path, which writes the issue
+    // monitor note next to nextCheckAt/monitorAttemptCount into contextSnapshot
+    // when the checkpoint fires.
+    const note = "Check /healthz first; the marker is GREEN-MONITOR-259.";
+    const wakePayload = await buildPaperclipWakePayload({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: async () => [],
+          }),
+        }),
+      } as never,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        issueId: "issue-1",
+        source: "issue.monitor",
+        nextCheckAt: "2026-09-29T20:00:00.000Z",
+        monitorAttemptCount: 2,
+        monitorNotes: note,
+      },
+      issueSummary: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Watch the deploy marker",
+        description: "Long-running checkpoint.",
+        status: "in_progress",
+        priority: "high",
+        workMode: "standard",
+      },
+    });
+
+    expect(wakePayload?.monitor).toEqual({
+      notes: note,
+      nextCheckAt: "2026-09-29T20:00:00.000Z",
+      attemptCount: 2,
+    });
+    const prompt = renderPaperclipWakePrompt(wakePayload);
+    expect(prompt).toContain(note);
+    expect(prompt).toContain("executionPolicy.monitor.notes");
+  });
+
+  it("leaves the monitor block empty when the wake snapshot carries no note", async () => {
+    const wakePayload = await buildPaperclipWakePayload({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: async () => [],
+          }),
+        }),
+      } as never,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        issueId: "issue-1",
+        nextCheckAt: "2026-09-29T20:00:00.000Z",
+        monitorAttemptCount: 2,
+        monitorNotes: null,
+      },
+      issueSummary: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Watch the deploy marker",
+        description: "Long-running checkpoint.",
+        status: "in_progress",
+        priority: "high",
+        workMode: "standard",
+      },
+    });
+
+    expect(wakePayload?.monitor).toBeNull();
+    expect(renderPaperclipWakePrompt(wakePayload)).not.toContain(
+      "executionPolicy.monitor.notes",
+    );
+  });
+
   it("leaves a normal context-only wake without a renderable payload", async () => {
     await expect(
       buildPaperclipWakePayload({

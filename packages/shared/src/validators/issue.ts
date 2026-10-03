@@ -390,7 +390,15 @@ export const issueExecutionStageSchema = z.object({
 
 export const issueExecutionMonitorPolicySchema = z.object({
   nextCheckAt: z.string().datetime(),
-  notes: z.string().max(500).optional().nullable().default(null),
+  notes: z
+    .string()
+    .max(500)
+    .describe(
+      "Free note for the agent that wakes on this checkpoint. It is not a label: the text is rendered verbatim into the wake prompt of every monitor wake (and of a manual monitor check), so the waking agent reads it. A note that stays in the issue description is also read; this field is the one that travels with the fire.",
+    )
+    .optional()
+    .nullable()
+    .default(null),
   scheduledBy: z
     .enum(ISSUE_MONITOR_SCHEDULED_BY)
     .optional()
