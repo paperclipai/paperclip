@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import type { IssueExecutionPolicy, IssueExecutionState, LowTrustReviewPresetPolicy, TrustAuthorizationPolicy } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
@@ -2083,5 +2083,123 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+describe("stripMonitorFromExecutionPolicy", () => {
+  const monitor = {
+    nextCheckAt: "2026-04-11T12:30:00.000Z",
+    notes: "Check deployment",
+    scheduledBy: "assignee" as const,
+  };
+
+  const reviewPreset: LowTrustReviewPresetPolicy = {
+    id: "low_trust_review",
+    version: 1,
+    rawOutputDisposition: "quarantine",
+  };
+
+  const authorizationPolicy: TrustAuthorizationPolicy = {
+    trustPreset: "low_trust_review",
+    trustBoundary: { mode: "low_trust_review", allowedToolClasses: ["tests.local"] },
+    protectedAgent: { blockAssignment: true },
+    assignmentPolicy: { mode: "protected" },
+  };
+
+  function policyWithEverything(): IssueExecutionPolicy {
+    return {
+      mode: "normal",
+      commentRequired: true,
+      stages: reviewOnlyPolicy().stages,
+      monitor,
+      reviewPreset,
+      authorizationPolicy,
+      maxReviewRounds: 3,
+    };
+  }
+
+  it("returns null for a null policy", () => {
+    expect(stripMonitorFromExecutionPolicy(null)).toBeNull();
+  });
+
+  it("returns the policy unchanged when it has no monitor", () => {
+    const policy = policyWithEverything();
+    delete policy.monitor;
+    expect(stripMonitorFromExecutionPolicy(policy)).toBe(policy);
+  });
+
+  it("removes the monitor and keeps every other key", () => {
+    const result = stripMonitorFromExecutionPolicy(policyWithEverything());
+    expect(result).not.toBeNull();
+    expect(Object.keys(result!).sort()).toEqual([
+      "authorizationPolicy",
+      "commentRequired",
+      "maxReviewRounds",
+      "mode",
+      "reviewPreset",
+      "stages",
+    ]);
+  });
+
+  it("keeps maxReviewRounds, reviewPreset and authorizationPolicy", () => {
+    const result = stripMonitorFromExecutionPolicy(policyWithEverything());
+    expect(result).toMatchObject({
+      mode: "normal",
+      commentRequired: true,
+      maxReviewRounds: 3,
+      reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" },
+      authorizationPolicy: { trustPreset: "low_trust_review" },
+    });
+    expect(result!.stages).toHaveLength(1);
+  });
+
+  it("does not mutate the policy it is given", () => {
+    const policy = policyWithEverything();
+    stripMonitorFromExecutionPolicy(policy);
+    expect(policy.monitor).toEqual(monitor);
+  });
+
+  it("returns null when the monitor was the only content", () => {
+    expect(
+      stripMonitorFromExecutionPolicy({
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps a stages-less policy that still carries a review preset", () => {
+    const result = stripMonitorFromExecutionPolicy({
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor,
+      reviewPreset,
+    });
+    expect(result).toMatchObject({ stages: [], reviewPreset: { id: "low_trust_review" } });
+  });
+
+  it("keeps a stages-less policy that still carries an authorization policy", () => {
+    const result = stripMonitorFromExecutionPolicy({
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor,
+      authorizationPolicy,
+    });
+    expect(result).toMatchObject({ stages: [], authorizationPolicy: { trustPreset: "low_trust_review" } });
+  });
+
+  it("keeps a stages-less policy that still carries a review-round limit", () => {
+    const result = stripMonitorFromExecutionPolicy({
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor,
+      maxReviewRounds: 3,
+    });
+    expect(result).toMatchObject({ stages: [], maxReviewRounds: 3 });
   });
 });
