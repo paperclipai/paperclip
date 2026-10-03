@@ -685,6 +685,9 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
   }, schema);
 }
 
+export const ISSUE_TITLE_MAX_LENGTH = 240;
+export const issueTitleSchema = z.string().trim().min(1).max(ISSUE_TITLE_MAX_LENGTH);
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -704,7 +707,7 @@ const createIssueBaseSchema = z.object({
     .optional()
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
-  title: z.string().min(1),
+  title: issueTitleSchema,
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),

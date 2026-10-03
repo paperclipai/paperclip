@@ -416,6 +416,8 @@ export {
 } from "./document-annotation.js";
 
 export {
+  ISSUE_TITLE_MAX_LENGTH,
+  issueTitleSchema,
   createIssueSchema,
   setIssueTitleSchema,
   type SetIssueTitle,

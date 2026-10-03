@@ -90,6 +90,20 @@ describe("issue validators", () => {
     expect(parsed.description).toBe("Line 1\n\nLine 2");
   });
 
+  it("rejects create and update titles over 240 characters", () => {
+    const tooLong = "x".repeat(241);
+
+    expect(createIssueSchema.safeParse({ title: tooLong }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ title: tooLong }).success).toBe(false);
+    expect(createIssueSchema.safeParse({ title: "x".repeat(240) }).success).toBe(true);
+    expect(createIssueSchema.safeParse({ title: "字".repeat(3000) }).success).toBe(false);
+  });
+
+  it("trims issue titles and rejects blank ones", () => {
+    expect(createIssueSchema.parse({ title: "  Follow up PR  " }).title).toBe("Follow up PR");
+    expect(createIssueSchema.safeParse({ title: "   " }).success).toBe(false);
+  });
+
   it("accepts null and omitted optional multiline issue fields", () => {
     expect(
       createIssueSchema.parse({ title: "Follow up PR", description: null })
