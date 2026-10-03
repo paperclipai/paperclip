@@ -98,9 +98,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(JSON.stringify(envelope)).not.toContain("Unrelated");
   });
 
-  it.each(["retryOfRunId", "previousRunId", "interruptedRunId"])("rejects explicit %s history from another task", async (key) => {
+  it.each(["retryOfRunId", "previousRunId"])("rejects explicit %s history from another task", async (key) => {
     const f = await fixture();
     await expect(f.build({ [key]: f.producerRunId })).rejects.toThrow("continuation_source_context_missing");
+  });
+
+  it("degrades a stale interruptedRunId hint from another task and keeps producer attribution", async () => {
+    // interruptedRunId is a best-effort hint, not explicit user history: when
+    // it names another task's run the wake continues without that resume
+    // source, and an interaction wake falls back to its producer.
+    const f = await fixture();
+    const envelope = await f.build({ interruptedRunId: f.producerRunId });
+    expect(envelope.trigger.sourceRunId).toBe(f.producerRunId);
+    expect(envelope.completedWork).toBeNull();
+    expect(envelope).not.toHaveProperty("interruptedRunId");
   });
 
   it("retains the explicit user continuation authorization requirement", async () => {
