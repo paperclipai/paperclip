@@ -446,9 +446,20 @@ async function commandIsResolvable(
   return (await findCommandOnPath(trimmed)) !== null;
 }
 
-async function resolveCodexAcpCommand(config: Record<string, unknown>): Promise<string> {
+export async function resolveCodexAcpCommand(config: Record<string, unknown>): Promise<string> {
   const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   if (configured) return configured;
+  // Published adapters bundle a patched ACP. Prefer its file over an ancestor .bin
+  // so a server-level dependency cannot replace the network policy at turn start.
+  const bundledCommand = path.join(
+    packageRootDir,
+    "node_modules",
+    "@agentclientprotocol",
+    "codex-acp",
+    "dist",
+    "index.js",
+  );
+  if (await pathExists(bundledCommand)) return bundledCommand;
   return (
     (await findAncestorBin(packageRootDir, "codex-acp")) ??
     (await findCommandOnPath("codex-acp")) ??

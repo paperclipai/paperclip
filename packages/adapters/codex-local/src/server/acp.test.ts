@@ -27,6 +27,7 @@ import {
   createCodexAcpExecutor,
   nodeVersionMeetsCodexAcpMinimum,
   resolveCodexAcpBillingIdentity,
+  resolveCodexAcpCommand,
   resolveCodexExecutionEngine,
   resolveCodexExecutionEngineForRun,
   testCodexAcpEnvironment,
@@ -289,6 +290,17 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("codex_local ACP lane", () => {
+  it("runs the packaged ACP executable before an ancestor install", async () => {
+    const packaged = path.resolve(
+      import.meta.dirname,
+      "../..",
+      "node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+    );
+    await expect(fs.stat(packaged)).resolves.toBeDefined();
+    await expect(resolveCodexAcpCommand({})).resolves.toBe(packaged);
+    await expect(resolveCodexAcpCommand({ agentCommand: "custom-acp" })).resolves.toBe("custom-acp");
+  });
+
   it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-default-");
     const commandPath = path.join(root, "bin", "codex-acp");
