@@ -36,6 +36,7 @@ subscription quota exhaustion merely because ACP labels them `limit`.
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `inheritHostMcpServers` | boolean | No | CLI engine, local target only. Keep the host's own MCP servers (user/project scope from `claude mcp add`, claude.ai connectors, and plugin servers) available alongside Paperclip-managed servers by omitting `--strict-mcp-config` (default: `false`). Board-only: agent-authenticated updates cannot set it |
 
 ## Default model
 
@@ -95,6 +96,19 @@ On-call checklist if you see this in production:
 - Confirm `errorCode` is `claude_poisoned_previous_message_id` in the run row — that means the guards fired correctly and the issue auto-recovers on the next heartbeat.
 - If the same issue still loops after one heartbeat, check that `agentTaskSessions` for that `(agentId, taskKey)` was cleared. If not, the adapter return value was lost (e.g. a malformed run finalization) — escalate; do **not** manually edit the row, file a child issue with the run id.
 - For remote execution targets (sandbox/SSH), the poisoned JSONL is on the remote and the adapter only logs the cleanup intent. The fresh-session retry still succeeds because it uses a new session id, and the server-side `clearSession: true` is authoritative regardless of remote disk state.
+
+## MCP Servers
+
+When Paperclip attaches managed MCP servers to a run (its own project tools, connection tools, or connectors), it writes a per-run `--mcp-config` and, by default, also passes `--strict-mcp-config` so the agent sees only those servers. Claude Code then drops every other MCP source: user- and project-scope servers from `claude mcp add`, claude.ai connectors (for example Gmail, Google Drive, Notion, Slack), and plugin-provided servers. This keeps runs isolated from whatever is registered on the host, but agents that rely on those tools will report that they lack access rather than fail.
+
+Set `inheritHostMcpServers: true` to omit `--strict-mcp-config`. Claude Code then merges Paperclip's config with the host's own MCP sources: servers registered at user and project scope (for example an Atlassian or Figma server added with `claude mcp add`), claude.ai connectors, and plugin servers. Repository commands that depend on those tools keep working under Paperclip, and the run's `init` event lists them next to the Paperclip-managed servers. Host servers run with the host's own credentials, so enable this only for agents you trust with them.
+
+Scope and limits:
+
+- **CLI engine only.** The ACP engine passes Paperclip-managed servers to the ACP agent over the protocol and does not use `--strict-mcp-config`; the flag has no effect there. The UI shows the toggle only when the engine is set to Claude CLI.
+- **Local execution target only.** A managed remote run (sandbox or SSH) uses a separate remote Claude config whose seed excludes host MCP server settings, so the host's servers are not available there even with the flag on.
+- **No managed servers, no strict flag.** When a run attaches no Paperclip-managed servers, the adapter passes neither `--mcp-config` nor `--strict-mcp-config`, and host servers load as usual. The flag only matters when managed servers are present.
+- **Board-only.** Because host servers carry host credentials, only a board user can set this flag. Agent-authenticated configuration updates that include it are rejected with 403, and so are agent-authenticated configuration rollbacks to a revision that would change it.
 
 ## Skills Injection
 

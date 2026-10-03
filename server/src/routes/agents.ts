@@ -2900,12 +2900,45 @@ export function agentRoutes(
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
   }
 
+  // Host MCP inheritance exposes MCP servers that run with the host's own
+  // credentials. Only a board user may turn it on; an agent-authenticated
+  // caller must not be able to grant it to itself or to a peer.
+  function assertNoAgentHostMcpInheritanceMutation(
+    req: Request,
+    adapterConfig: Record<string, unknown> | null | undefined,
+    path = "adapterConfig",
+  ) {
+    if (req.actor.type !== "agent" || !adapterConfig) return;
+    if (adapterConfig.inheritHostMcpServers === undefined) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify host MCP inheritance (${path}.inheritHostMcpServers)`,
+    );
+  }
+
+  // Rollback re-applies a stored snapshot rather than a caller-supplied patch,
+  // so the presence check above does not apply. An agent may roll back only
+  // when the effective host MCP inheritance setting does not change.
+  function assertNoAgentHostMcpInheritanceTransition(
+    req: Request,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    if (req.actor.type !== "agent") return;
+    const previous = previousAdapterConfig?.inheritHostMcpServers === true;
+    const next = nextAdapterConfig?.inheritHostMcpServers === true;
+    if (previous === next) return;
+    throw forbidden(
+      "Agent-authenticated callers cannot roll back to a revision that changes host MCP inheritance (adapterConfig.inheritHostMcpServers)",
+    );
+  }
+
   function assertNoAgentAdapterConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown>,
     path = "adapterConfig",
   ) {
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
+    assertNoAgentHostMcpInheritanceMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
@@ -4369,6 +4402,11 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertNoAgentHostMcpInheritanceTransition(
+      req,
+      rollbackAdapterConfig,
+      asRecord(existing.adapterConfig),
+    );
     assertExternalInstructionsAdmin(req, existing);
     assertExternalInstructionsAdmin(req, {
       ...existing,
