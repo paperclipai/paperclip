@@ -4,6 +4,7 @@ import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
   ensurePathInEnv,
+  buildLocalAgentProcessEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
@@ -160,12 +161,11 @@ export async function discoverOpenCodeModels(
   }
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(
-    ensurePathInEnv({
-      ...process.env,
+    ensurePathInEnv(buildLocalAgentProcessEnv(process.env, {
       ...env,
       ...(resolvedHome ? { HOME: resolvedHome } : {}),
       OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-    }),
+    })),
   );
 
   const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;

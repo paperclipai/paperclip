@@ -102,21 +102,22 @@ function pruneExpiredDiscoveryCache(now: number) {
 
 export async function discoverPiModels(input: {
   command?: unknown;
+  args?: unknown;
   cwd?: unknown;
   env?: unknown;
 } = {}): Promise<AdapterModel[]> {
   const command = resolvePiCommand(input.command);
+  const args = normalizeArgs(input.args);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const runtimeEnv = normalizeEnv({ ...process.env, ...env });
 
   const result = await runChildProcess(
     `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
-    ["--list-models"],
+    [...args, "--list-models"],
     {
       cwd,
-      env: runtimeEnv,
+      env,
       timeoutSec: 20,
       graceSec: 3,
       onLog: async () => {},
@@ -145,6 +146,10 @@ function normalizeEnv(input: unknown): Record<string, string> {
     if (typeof value === "string") env[key] = value;
   }
   return env;
+}
+
+function normalizeArgs(input: unknown): string[] {
+  return Array.isArray(input) ? input.filter((value): value is string => typeof value === "string") : [];
 }
 
 export async function discoverPiModelsCached(input: {

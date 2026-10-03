@@ -10,6 +10,7 @@ import {
   asString,
   asStringArray,
   ensurePathInEnv,
+  buildLocalAgentProcessEnv,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -121,7 +122,7 @@ export async function testEnvironment(
   if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv(buildLocalAgentProcessEnv(process.env, env));
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,
