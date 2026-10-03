@@ -9,7 +9,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Kubernetes Sandbox (alpha)",
   description:
-    "Built on kubernetes-sigs/agent-sandbox (v1alpha1). ALPHA — expect breaking changes as the upstream CRD evolves. Falls back to stable batch/v1 Job mode for clusters without agent-sandbox installed. First-party Paperclip sandbox-provider plugin for Kubernetes.",
+    "Built on kubernetes-sigs/agent-sandbox (v1alpha1). ALPHA — expect breaking changes as the upstream CRD evolves. First-party Paperclip sandbox-provider plugin for Kubernetes.",
   author: "Paperclip",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
@@ -20,9 +20,10 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       driverKey: "kubernetes",
       kind: "sandbox_provider",
+      supportsLoginPty: true,
       displayName: "Kubernetes",
       description:
-        "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
+        "Dispatches agent runs in per-tenant Kubernetes namespaces. The sandbox-cr backend uses kubernetes-sigs/agent-sandbox for multi-command exec and managed login PTY.",
       configSchema: {
         type: "object",
         properties: {
@@ -76,6 +77,11 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["standard", "cilium"],
             description: "Network policy mode. `cilium` enables FQDN-based egress filtering via CiliumNetworkPolicy.",
           },
+          paperclipServerPodSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description: "Labels on the Paperclip API pod accepting agent callbacks on port 3100 (default: app=paperclip-server).",
+          },
           runtimeClassName: {
             type: "string",
             description:
@@ -104,9 +110,9 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           backend: {
             type: "string",
-            enum: ["sandbox-cr", "job"],
+            enum: ["sandbox-cr"],
             description:
-              "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
+              "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed); job is incompatible with the advertised login PTY capability",
           },
         },
         anyOf: [
