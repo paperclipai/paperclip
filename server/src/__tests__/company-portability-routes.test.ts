@@ -472,6 +472,33 @@ describe.sequential("company portability routes", () => {
     );
   });
 
+  it.sequential("returns 413 instead of an unhandled 500 when the export bundle cannot serialize", async () => {
+    // A bundle past V8's max string length throws RangeError inside
+    // JSON.stringify; a toJSON hook reproduces that failure deterministically.
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue({
+      ...createExportResult(),
+      toJSON() {
+        throw new RangeError("Invalid string length");
+      },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: [companyId],
+      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+      source: "session",
+    });
+
+    for (const path of [`/api/companies/${companyId}/export`, `/api/companies/${companyId}/exports`]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(413);
+      expect(res.body.details?.code).toBe("export_too_large");
+      expect(res.body.error).toContain("export exceeds the maximum serializable response size");
+    }
+  });
+
   it.sequential("allows board users to export through legacy and CEO-safe bundle routes", async () => {
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
     const app = await createApp({
