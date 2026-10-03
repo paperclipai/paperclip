@@ -26,6 +26,8 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   requiresExecutionReconciliation,
+  aiConnectionBindingSchema,
+  bindingQuotaFallback,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@paperclipai/shared";
@@ -2558,6 +2560,30 @@ export function recoveryService(
     return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
   }
 
+  // Provider-quota failover: switch to the binding's configured fallback account
+  // immediately instead of waiting out the primary's quota window. Single hop —
+  // a run that already failed over does not fail over again.
+  async function shouldFailoverProviderQuota(
+    agentId: string,
+    latestRun: LatestIssueRun,
+  ): Promise<boolean> {
+    if (
+      parseObject(latestRun?.contextSnapshot).aiConnectionQuotaFailover === true
+    )
+      return false;
+    const agent = (
+      await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .limit(1)
+    )[0];
+    const raw = agent?.runtimeConfig?.aiConnection;
+    if (!raw) return false;
+    const parsed = aiConnectionBindingSchema.safeParse(raw);
+    return parsed.success && Boolean(bindingQuotaFallback(parsed.data));
+  }
+
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2581,7 +2607,13 @@ export function recoveryService(
     if (existing) return existing;
 
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const failover = await shouldFailoverProviderQuota(
+      input.agentId,
+      input.latestRun,
+    );
+    const retryAt = failover
+      ? now
+      : readProviderQuotaRetryAt(input.latestRun, now);
     return db.transaction(async (tx) => {
       const wakeup = await tx
         .insert(agentWakeupRequests)
@@ -2597,6 +2629,7 @@ export function recoveryService(
               retryOfRunId: input.latestRun?.id ?? null,
               retryReason: "provider_quota_recovery",
               providerQuotaRetryNotBefore: retryAt.toISOString(),
+              ...(failover ? { aiConnectionQuotaFailover: true } : {}),
             },
             "normal_model",
           ),
@@ -2628,6 +2661,7 @@ export function recoveryService(
               wakeReason: "provider_quota_recovery",
               retryReason: "provider_quota_recovery",
               providerQuotaRetryNotBefore: retryAt.toISOString(),
+              ...(failover ? { aiConnectionQuotaFailover: true } : {}),
             },
             "normal_model",
           ),

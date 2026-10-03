@@ -37,6 +37,19 @@ export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
+// Optional company-shared account a binding falls over to when its primary
+// connection reports a provider quota limit. Same shape as a shared binding's
+// account reference; resolved exactly like one when a quota retry switches to it.
+export const aiConnectionQuotaFallbackSchema = z
+  .object({
+    ...requirement,
+    connectionId: z.string().uuid(),
+    grantId: z.string().uuid(),
+  })
+  .strict();
+export type AiConnectionQuotaFallback = z.infer<
+  typeof aiConnectionQuotaFallbackSchema
+>;
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
     provider: aiProviderSchema,
@@ -44,6 +57,7 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
     // responsible user's provider default determines the actual run method.
     method: aiAuthMethodSchema,
     mode: z.literal("responsible_user"),
+    quotaFallback: aiConnectionQuotaFallbackSchema.optional(),
   }).strict(),
   z
     .object({
@@ -51,6 +65,7 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
       mode: z.literal("shared"),
       connectionId: z.string().uuid(),
       grantId: z.string().uuid(),
+      quotaFallback: aiConnectionQuotaFallbackSchema.optional(),
     })
     .strict(),
   z
@@ -63,6 +78,31 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
     })
     .strict(),
 ]);
+
+// Derive the `shared` binding that a quota fallback resolves as when a retry
+// switches onto it. Keeping this next to the schema means callers never hand
+// select() an ad-hoc shape.
+export function quotaFallbackBinding(
+  fallback: AiConnectionQuotaFallback,
+): Extract<AiConnectionBinding, { mode: "shared" }> {
+  return {
+    mode: "shared",
+    provider: fallback.provider,
+    method: fallback.method,
+    connectionId: fallback.connectionId,
+    grantId: fallback.grantId,
+  };
+}
+
+// Read a binding's provider-quota fallback, if it declares one. Only the
+// responsible_user and shared binding modes can carry one.
+export function bindingQuotaFallback(
+  binding: AiConnectionBinding,
+): AiConnectionQuotaFallback | undefined {
+  return binding.mode === "responsible_user" || binding.mode === "shared"
+    ? binding.quotaFallback
+    : undefined;
+}
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object(requirement).strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
