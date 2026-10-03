@@ -5552,6 +5552,21 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   };
 }
 
+// Prompt-caching adapters report most of the re-fed context as cached input, so
+// the raw input ceiling has to count fresh and cached input tokens together.
+export function computeRawInputTokenRotationReason(
+  usage: UsageTotals | null,
+  maxRawInputTokens: number,
+): string | null {
+  if (maxRawInputTokens <= 0 || !usage) return null;
+  const contextTokens = usage.inputTokens + usage.cachedInputTokens;
+  if (contextTokens < maxRawInputTokens) return null;
+  return (
+    `session raw input reached ${formatCount(contextTokens)} tokens ` +
+    `(threshold ${formatCount(maxRawInputTokens)})`
+  );
+}
+
 function deriveNormalizedUsageDelta(
   current: UsageTotals | null,
   previous: UsageTotals | null,
@@ -12232,16 +12247,14 @@ export function heartbeatService(
         : 0;
 
     let reason: string | null = null;
+    const rawInputReason = computeRawInputTokenRotationReason(
+      latestRawUsage,
+      policy.maxRawInputTokens,
+    );
     if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
       reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+    } else if (rawInputReason) {
+      reason = rawInputReason;
     } else if (
       policy.maxSessionAgeHours > 0 &&
       sessionAgeHours >= policy.maxSessionAgeHours

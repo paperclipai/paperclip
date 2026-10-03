@@ -22,6 +22,7 @@ import {
   mergeCoalescedContextSnapshot,
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
+  computeRawInputTokenRotationReason,
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
@@ -3205,5 +3206,42 @@ describe("reconcileReusedExecutionWorkspaceProjectWorkspaceId", () => {
     expect(
       reconcileReusedExecutionWorkspaceProjectWorkspaceId(undefined, "resolved-workspace"),
     ).toBe("resolved-workspace");
+  });
+});
+
+describe("computeRawInputTokenRotationReason", () => {
+  const usage = (inputTokens: number, cachedInputTokens: number) => ({
+    inputTokens,
+    cachedInputTokens,
+    outputTokens: 0,
+  });
+
+  it("rotates when low fresh input and high cached input together reach the threshold", () => {
+    expect(computeRawInputTokenRotationReason(usage(7_500, 344_500), 300_000)).toBe(
+      "session raw input reached 352,000 tokens (threshold 300,000)",
+    );
+  });
+
+  it("does not rotate when fresh plus cached input stays below the threshold", () => {
+    expect(computeRawInputTokenRotationReason(usage(7_500, 200_000), 300_000)).toBeNull();
+  });
+
+  it("rotates when the sum is exactly at the threshold", () => {
+    expect(computeRawInputTokenRotationReason(usage(100_000, 200_000), 300_000)).not.toBeNull();
+  });
+
+  it("stays disabled when the threshold is 0", () => {
+    expect(computeRawInputTokenRotationReason(usage(7_500, 5_000_000), 0)).toBeNull();
+  });
+
+  it("does nothing without usage data", () => {
+    expect(computeRawInputTokenRotationReason(null, 300_000)).toBeNull();
+  });
+
+  it("keeps the previous result for adapters that report no cached input", () => {
+    expect(computeRawInputTokenRotationReason(usage(299_999, 0), 300_000)).toBeNull();
+    expect(computeRawInputTokenRotationReason(usage(300_000, 0), 300_000)).toBe(
+      "session raw input reached 300,000 tokens (threshold 300,000)",
+    );
   });
 });
