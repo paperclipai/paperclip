@@ -55,6 +55,9 @@ describe("buildLocalAdapterTestProbeEnv", () => {
         AWS_ACCESS_KEY_ID: "aws-key",
         AWS_SECRET_ACCESS_KEY: "aws-secret",
         AWS_REGION: "us-east-1",
+        AWS_ROLE_ARN: "arn:aws:iam::111122223333:role/paperclip",
+        AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+        AWS_ROLE_SESSION_NAME: "paperclip-test",
         CLAUDE_CONFIG_DIR: "/managed/config",
       },
       trustedEnv: { PATH: dir },
@@ -66,6 +69,11 @@ describe("buildLocalAdapterTestProbeEnv", () => {
     expect(built.env.AWS_ACCESS_KEY_ID).toBe("aws-key");
     expect(built.env.AWS_SECRET_ACCESS_KEY).toBe("aws-secret");
     expect(built.env.AWS_REGION).toBe("us-east-1");
+    expect(built.env.AWS_ROLE_ARN).toBe("arn:aws:iam::111122223333:role/paperclip");
+    expect(built.env.AWS_WEB_IDENTITY_TOKEN_FILE).toBe(
+      "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+    );
+    expect(built.env.AWS_ROLE_SESSION_NAME).toBe("paperclip-test");
     expect(built.env.CLAUDE_CONFIG_DIR).toBe("/managed/config");
   });
 
