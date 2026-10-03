@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -282,6 +283,8 @@ export async function admitExplicitNativeContinuation(input: {
     });
   }
   const authorization = { actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
+    ...(comment ? { commentUpdatedAt: comment.updatedAt.toISOString(),
+      commentBodyHash: createHash("sha256").update(comment.body).digest("hex") } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
@@ -318,4 +321,92 @@ export async function admitExplicitNativeContinuation(input: {
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },
   });
   return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
+}
+
+/** Re-admit a bounded automatic retry without lending it its parent's receipt.
+ * The caller holds the task lock and creates the successor in this transaction.
+ * Only unchanged user messages are renewable; Retry/Interrupt intents keep their
+ * separate one-run contracts. The scheduler still owns retry and cleanup policy.
+ */
+export async function admitExplicitContinuationRetry(input: {
+  db: Db; companyId: string; issueId: string; agentId: string;
+  parentRunId: string; successorRunId: string; now: Date;
+}): Promise<{ previousRunId: string; commentId: string } | null> {
+  const { db, companyId, issueId, agentId } = input;
+  const [task] = await db.select().from(issues).where(and(
+    eq(issues.companyId, companyId), eq(issues.id, issueId),
+  )).for("update");
+  const [parent] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.parentRunId),
+    eq(heartbeatRuns.agentId, agentId),
+  )).for("update");
+  if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
+      ["done", "cancelled"].includes(task.status) || !parent ||
+      !["failed", "timed_out"].includes(parent.status) || !parent.finishedAt ||
+      parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
+      (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
+      adapterExecutionControls.has(parent.id) ||
+      await getExecutionBlocker(db, companyId, issueId)) return null;
+  const context = parent.contextSnapshot;
+  const explicit = context.explicitUserContinuation as Record<string, unknown> | undefined;
+  if (!explicit || !z.string().guid().safeParse(explicit.previousRunId).success ||
+      !z.string().guid().safeParse(explicit.commentId).success || explicit.failedRunId) return null;
+  const commentId = explicit.commentId as string;
+  const [comment] = await db.select().from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    eq(issueComments.id, commentId), eq(issueComments.authorType, "user"),
+    isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+  ));
+  if (!comment?.authorUserId || !comment.body.trim()) return null;
+  const receipts = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${parent.id}`,
+  ));
+  const receipt = receipts.find(row => {
+    const auth = row.evidence.explicitUserContinuation as Record<string, unknown> | undefined;
+    return auth && auth.previousRunId === explicit.previousRunId && auth.commentId === commentId &&
+      auth.actorId === comment.authorUserId && !auth.failedRunId && !auth.queuedCommentInterruptId &&
+      auth.commentUpdatedAt === comment.updatedAt.toISOString() &&
+      auth.commentBodyHash === createHash("sha256").update(comment.body).digest("hex");
+  });
+  if (!receipt) return null;
+  const [superseding] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId),
+    or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+    ne(heartbeatRuns.id, parent.id), ne(heartbeatRuns.id, input.successorRunId),
+    or(eq(heartbeatRuns.retryOfRunId, parent.id),
+      // Keep PostgreSQL's timestamp precision: Date would round the parent
+      // down and mistake an older run in the same millisecond for a successor.
+      sql`${heartbeatRuns.createdAt} > (select source.created_at from heartbeat_runs source
+        where source.company_id = ${companyId} and source.id = ${parent.id})`,
+      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])),
+  )).limit(1);
+  if (superseding) return null;
+  // Reuse dispatch's complete source/actor/receipt validation on the parent.
+  // It proves only the parent; the new receipt below authorizes the successor.
+  try {
+    await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: parent.id,
+      context, summary: null, exposeLowTrustRaw: false });
+  } catch (error) {
+    if (error instanceof Error && ["continuation_user_authorization_missing",
+      "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) return null;
+    throw error;
+  }
+  const continuation = { previousRunId: parent.id, commentId };
+  await db.insert(issueRecoveryActions).values({
+    companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+    cause: "explicit_user_continuation_retry", fingerprint: input.successorRunId,
+    status: "resolved", outcome: "retry_authorized", resolvedAt: input.now,
+    nextAction: "The bounded retry has its own authorization for the unchanged user message.",
+    evidence: { explicitUserContinuation: {
+      ...continuation, actorId: comment.authorUserId, runId: input.successorRunId,
+      commentUpdatedAt: comment.updatedAt.toISOString(),
+      commentBodyHash: createHash("sha256").update(comment.body).digest("hex"),
+      recordedAt: input.now.toISOString(), automaticRetry: {
+        sourceRunId: parent.id, sourceAuthorizationId: receipt.id,
+      },
+    } },
+  });
+  return continuation;
 }
