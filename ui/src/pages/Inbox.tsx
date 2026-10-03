@@ -3004,7 +3004,7 @@ function StreamlinedInbox() {
                       <div
                         key={`sel-${key}`}
                         data-inbox-item
-                        className="relative"
+                        className="inbox-render-row relative"
                         onClick={() => setSelectedIndex(navIdx)}
                         onMouseEnter={() => setSelectedIndexFromPointer(navIdx)}
                       >
@@ -3201,7 +3201,7 @@ function StreamlinedInbox() {
                           <div
                             key={`sel-issue:${child.id}`}
                             data-inbox-item
-                            className="relative"
+                            className="inbox-render-row relative"
                             onClick={() => {
                               if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
                             }}

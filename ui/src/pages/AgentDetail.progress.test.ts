@@ -6,6 +6,7 @@ import {
   AGENT_DETAIL_TABS,
   DISCARD_AGENT_CONFIG_CHANGES_MESSAGE,
   agentConfigHistoryRestoreDelta,
+  agentHeartbeatRunListOptions,
   buildHeartbeatProgressLogLine,
   confirmAgentConfigNavigation,
   heartbeatProgressLogLineKey,
@@ -59,6 +60,13 @@ describe("agent detail tabs", () => {
       "https://paperclip.test/agents/eng/secrets",
     );
     expect(history.go).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent heartbeat history", () => {
+  it("requests full run rows while paginating history", () => {
+    expect(agentHeartbeatRunListOptions(25)).toEqual({ offset: 25 });
+    expect(agentHeartbeatRunListOptions(25)).not.toHaveProperty("summary");
   });
 });
 

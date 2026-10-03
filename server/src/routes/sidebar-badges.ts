@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { inboxDismissals, joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
+import { issueService } from "../services/issues.js";
 import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
 import { assertCompanyAccess } from "./authz.js";
 
@@ -27,6 +28,7 @@ export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
   const access = accessService(db);
+  const issues = issueService(db);
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -77,13 +79,24 @@ export function sidebarBadgeRoutes(db: Db) {
         : new Map<string, number>();
 
     // Company health alerts belong in All, not the personal inbox badge.
-    const badges = await svc.get(companyId, {
-      currentUserId: req.actor.type === "board"
-        ? req.actor.userId ?? null
-        : req.actor.onBehalfOfUserId ?? null,
-      dismissals: dismissedAtByKey,
-      joinRequests: visibleJoinRequests,
-    });
+    const [badges, unreadTouchedIssues] = await Promise.all([
+      svc.get(companyId, {
+        currentUserId: req.actor.type === "board"
+          ? req.actor.userId ?? null
+          : req.actor.onBehalfOfUserId ?? null,
+        dismissals: dismissedAtByKey,
+        joinRequests: visibleJoinRequests,
+      }),
+      req.actor.type === "board" && req.actor.userId
+        ? issues.countUnreadTouchedByUser(
+          companyId,
+          req.actor.userId,
+          "backlog,todo,in_progress,in_review,blocked,done",
+        )
+        : Promise.resolve(0),
+    ]);
+    badges.mineIssues = unreadTouchedIssues;
+    badges.inbox += unreadTouchedIssues;
 
     res.json(badges);
   });
