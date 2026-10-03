@@ -196,6 +196,58 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(result.errorMessage).toBeUndefined();
   });
 
+  // The echo has to be streamed while the child is running, because execute()
+  // flushes the filter once it exits. Replaying stdout after execute() returns
+  // would hit a filter that has already stopped, and would pass either way.
+  // https://github.com/paperclipai/paperclip/pull/14845#discussion_r4156807288
+  async function runEchoingStdout(quiet: boolean) {
+    vi.mocked(serverUtils.runChildProcess).mockImplementationOnce(
+      async (_runId: any, _cmd: any, args: any, opts: any) => {
+        const echoed = args[args.indexOf("-q") + 1] as string;
+        // Hermes prints the query back before the agent says anything.
+        await opts.onLog("stdout", `Query: ${echoed}\n`);
+        await opts.onLog("stdout", "the real answer\n");
+        return {
+          exitCode: 0, signal: null, timedOut: false,
+          stdout: "", stderr: "", pid: null, startedAt: null,
+        };
+      },
+    );
+
+    const { ctx } = makeCtx({ quiet });
+    await execute(ctx as any);
+
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    const prompt = args[args.indexOf("-q") + 1];
+    const logged = vi.mocked(ctx.onLog).mock.calls as unknown as [
+      string,
+      string,
+    ][];
+    const streamed = logged
+      .filter((c) => c[0] === "stdout")
+      .map((c) => c[1])
+      .join("");
+    return { args, prompt, streamed };
+  }
+
+  it("keeps the echo out of the transcript on a non-quiet run", async () => {
+    const { args, prompt, streamed } = await runEchoingStdout(false);
+    expect(args).not.toContain("-Q");
+    expect(prompt.length).toBeGreaterThan(200); // or the filter declines to act
+    expect(streamed).not.toContain(prompt);
+    expect(streamed).toContain("the real answer");
+  });
+
+  // A quiet run passes -Q and prints no echo, so filtering it could only ever
+  // discard a real answer that opens by quoting the prompt back.
+  it("never filters stdout when quiet mode is on", async () => {
+    const { args, prompt, streamed } = await runEchoingStdout(true);
+    expect(args).toContain("-Q");
+    expect(prompt.length).toBeGreaterThan(200);
+    expect(streamed).toContain(prompt);
+    expect(streamed).toContain("the real answer");
+  });
+
   it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
     process.env.PAPERCLIP_API_KEY = "parent-process-key";
