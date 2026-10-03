@@ -17,7 +17,7 @@ import { WorktreeBanner } from "@/components/WorktreeBanner";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { queryKeys } from "@/lib/queryKeys";
-import { buildProjectWorkspaceSummaries } from "@/lib/project-workspaces-tab";
+import { buildProjectWorkspaceSummaries, type ProjectWorkspaceSummary } from "@/lib/project-workspaces-tab";
 import {
   storybookAgents,
   storybookAuthSession,
@@ -219,6 +219,83 @@ function WorkspacesMatrix() {
           summaries={[]}
         />
       </div>
+    </div>
+  );
+}
+
+const targetProvenanceConfiguredSummary: ProjectWorkspaceSummary = {
+  key: "execution:target-demo-configured",
+  kind: "execution_workspace",
+  workspaceId: "target-demo-configured",
+  workspaceName: "PAP-11916-target-provenance",
+  cwd: "/worktrees/PAP-11916-target-provenance",
+  branchName: "PAP-11916-target-provenance",
+  lastUpdatedAt: new Date("2026-06-25T01:00:00.000Z"),
+  projectWorkspaceId: "workspace-board-ui",
+  executionWorkspaceId: "target-demo-configured",
+  executionWorkspaceStatus: "active",
+  serviceCount: 1,
+  runningServiceCount: 1,
+  primaryServiceUrl: "http://localhost:3100",
+  primaryServiceUrlRunning: true,
+  hasRuntimeConfig: true,
+  linkedIssueCount: 0,
+  issues: [],
+  target: {
+    // SCP-style remote demonstrates the redactRemote() fix: opaque provider
+    // references keep their identity instead of collapsing to a generic string.
+    kind: "repository",
+    authoritativePath: "git@github.com:paperclipai/paperclip.git",
+    checkoutRoot: "/worktrees/PAP-11916-target-provenance",
+    deliveryMethod: "repository checkout",
+    fingerprint: "sha256:4f21a9c8",
+    lastAttestation: "run-4821",
+    configurationIncomplete: false,
+    repairHref: "/execution-workspaces/target-demo-configured/configuration",
+  },
+};
+
+const targetProvenanceWarningSummary: ProjectWorkspaceSummary = {
+  key: "project:target-demo-warning",
+  kind: "project_workspace",
+  workspaceId: "target-demo-warning",
+  workspaceName: "paperclip-app (primary)",
+  cwd: "/srv/paperclip/project",
+  branchName: null,
+  lastUpdatedAt: new Date("2026-06-24T18:00:00.000Z"),
+  projectWorkspaceId: "target-demo-warning",
+  executionWorkspaceId: null,
+  executionWorkspaceStatus: null,
+  serviceCount: 0,
+  runningServiceCount: 0,
+  primaryServiceUrl: null,
+  primaryServiceUrlRunning: false,
+  hasRuntimeConfig: false,
+  linkedIssueCount: 0,
+  issues: [],
+  target: {
+    kind: "unconfigured",
+    authoritativePath: null,
+    checkoutRoot: "/srv/paperclip/project",
+    deliveryMethod: "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete: true,
+    repairHref: "/projects/paperclip-app/workspaces/target-demo-warning",
+  },
+};
+
+function TargetProvenanceCard({ summary }: { summary: ProjectWorkspaceSummary }) {
+  return (
+    <div className="max-w-xl">
+      <ProjectWorkspaceSummaryCard
+        projectRef={boardProject.urlKey}
+        summary={summary}
+        runtimeActionKey={null}
+        runtimeActionPending={false}
+        onRuntimeAction={() => undefined}
+        onCloseWorkspace={() => undefined}
+      />
     </div>
   );
 }
@@ -514,3 +591,23 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const SurfaceMatrix: Story = {};
+
+export const WorkspaceTargetProvenanceConfigured: Story = {
+  render: () => (
+    <StorybookData>
+      <div className="bg-background p-6">
+        <TargetProvenanceCard summary={targetProvenanceConfiguredSummary} />
+      </div>
+    </StorybookData>
+  ),
+};
+
+export const WorkspaceTargetProvenanceWarning: Story = {
+  render: () => (
+    <StorybookData>
+      <div className="bg-background p-6">
+        <TargetProvenanceCard summary={targetProvenanceWarningSummary} />
+      </div>
+    </StorybookData>
+  ),
+};
