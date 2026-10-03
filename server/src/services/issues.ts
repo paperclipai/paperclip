@@ -11378,12 +11378,52 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
+      // agentId + checkoutCompanyId guards in stampRunContextIssueId prevent a
+      // caller from stamping a run that belongs to a different agent or company.
+      // Set after the issueCompany fetch confirms the issue exists.
+      let checkoutCompanyId: string | undefined;
+      // Stamps the issue ID into the heartbeat run's contextSnapshot so that
+      // the cross-issue-influence check can recognise timer-triggered runs as
+      // being scoped to this issue once they claim it.  Only writes when the
+      // run has no existing issueId / taskId, so assignment-waked runs that
+      // already carry an explicit source issue are left untouched.
+      async function stampRunContextIssueId(): Promise<void> {
+        if (!checkoutRunId || !checkoutCompanyId) return;
+        try {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: sql`case
+                when ${heartbeatRuns.contextSnapshot} is null
+                  or (${heartbeatRuns.contextSnapshot}->>'issueId' is null
+                    and ${heartbeatRuns.contextSnapshot}->>'taskId' is null)
+                then jsonb_set(
+                  coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
+                  '{issueId}',
+                  ${JSON.stringify(id)}::jsonb
+                )
+                else ${heartbeatRuns.contextSnapshot}
+              end`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, checkoutRunId),
+                eq(heartbeatRuns.agentId, agentId),
+                eq(heartbeatRuns.companyId, checkoutCompanyId),
+              ),
+            );
+        } catch (err) {
+          logger.warn({ err, checkoutRunId }, "stampRunContextIssueId failed — checkout still succeeds");
+        }
+      }
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      checkoutCompanyId = issueCompany.companyId;
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
@@ -11479,6 +11519,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        await stampRunContextIssueId();
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -11526,7 +11567,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          await stampRunContextIssueId();
+          return adopted;
+        }
       }
 
       if (
@@ -11543,6 +11587,7 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (staleAdoption.adopted) {
+          await stampRunContextIssueId();
           const row = await db
             .select()
             .from(issues)
@@ -11597,6 +11642,7 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
+            await stampRunContextIssueId();
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
           }
@@ -11609,6 +11655,7 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
+        await stampRunContextIssueId();
         const row = await db
           .select()
           .from(issues)
