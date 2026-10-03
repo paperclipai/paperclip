@@ -1012,9 +1012,6 @@ importers:
       open:
         specifier: ^11.0.4
         version: 11.0.4
-      opencode-ai:
-        specifier: 1.18.32
-        version: 1.18.32
       pino:
         specifier: ^10.0.0
         version: 10.3.1
