@@ -40,6 +40,29 @@ export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
 }
 
+/**
+ * Render the command executed by the SSH managed-runtime path.
+ *
+ * Environment values are intentionally not accepted here. They travel through
+ * runSshCommand's framed stdin prefix, never through the local or remote argv.
+ */
+export function buildSshRunnerRemoteCommand(input: {
+  command: string;
+  args: readonly string[];
+  cwd: string;
+}): string {
+  const { command, args, cwd } = input;
+  const inlineScript = (command === "sh" || command === "bash")
+      && (args[0] === "-c" || args[0] === "-lc")
+      && typeof args[1] === "string"
+    ? args[1]
+    : null;
+  const commandScript = inlineScript != null
+    ? inlineScript
+    : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+  return `cd ${shellQuote(cwd)} && ${commandScript}`;
+}
+
 export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
@@ -54,26 +77,15 @@ export function createSshCommandManagedRuntimeRunner(input: {
   return {
     execute: async (commandInput): Promise<RunProcessResult> => {
       const startedAt = new Date().toISOString();
-      const command = commandInput.command.trim();
-      const args = commandInput.args ?? [];
-      const cwd = commandInput.cwd?.trim() || defaultCwd;
-      const envEntries = Object.entries(commandInput.env ?? {})
-        .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
-      const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
+      const remoteCommand = buildSshRunnerRemoteCommand({
+        command: commandInput.command.trim(),
+        args: commandInput.args ?? [],
+        cwd: commandInput.cwd?.trim() || defaultCwd,
+      });
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env: commandInput.env,
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
@@ -151,12 +163,53 @@ interface LocalGitWorkspaceSnapshot {
   deletedPaths: string[];
 }
 
+const SSH_ENV_STDIN_HEADER = "PAPERCLIP_SSH_ENV_V1";
+const SSH_ENV_STDIN_END = "PAPERCLIP_SSH_ENV_END";
+
 export function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function isReservedSshEnvKey(value: string) {
+  return value === SSH_ENV_STDIN_END || value.startsWith("__paperclip_env_");
+}
+
+function assertValidSshEnvKey(key: string) {
+  if (!isValidShellEnvKey(key) || isReservedSshEnvKey(key)) {
+    throw new Error(`Invalid SSH environment variable key: ${key}`);
+  }
+}
+
+function sshEnvStdinPrefix(entries: Array<[string, string]>): string | undefined {
+  if (entries.length === 0) return undefined;
+  return [
+    SSH_ENV_STDIN_HEADER,
+    ...entries.map(([key, value]) => `${key}\t${Buffer.from(value, "utf8").toString("base64")}`),
+    SSH_ENV_STDIN_END,
+    "",
+  ].join("\n");
+}
+
+function sshEnvReaderScript(hasEnv: boolean): string {
+  if (!hasEnv) return "";
+  return [
+    `if ! IFS= read -r __paperclip_env_header || [ "$__paperclip_env_header" != ${shellQuote(SSH_ENV_STDIN_HEADER)} ]; then exit 1; fi`,
+    "__paperclip_env_complete=0",
+    `while IFS="$(printf '\\t')" read -r __paperclip_env_key __paperclip_env_value; do`,
+    `  if [ "$__paperclip_env_key" = ${shellQuote(SSH_ENV_STDIN_END)} ]; then __paperclip_env_complete=1; break; fi;`,
+    // Command substitution strips trailing newlines. Append a non-newline
+    // sentinel inside the substitution and remove exactly that sentinel.
+    "  if __paperclip_env_decoded=$(if printf '%s' \"$__paperclip_env_value\" | base64 -d 2>/dev/null; then :; else printf '%s' \"$__paperclip_env_value\" | base64 -D 2>/dev/null; fi; __paperclip_env_status=$?; printf '\\001'; exit \"$__paperclip_env_status\"); then :; else exit 1; fi;",
+    "  __paperclip_env_decoded=\"${__paperclip_env_decoded%?}\";",
+    "  export \"$__paperclip_env_key=$__paperclip_env_decoded\";",
+    "done",
+    '[ "$__paperclip_env_complete" = 1 ] || exit 1',
+    "unset __paperclip_env_header __paperclip_env_complete __paperclip_env_key __paperclip_env_value __paperclip_env_decoded __paperclip_env_status",
+  ].join("\n");
 }
 
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
@@ -1189,6 +1242,36 @@ export function buildKnownHostsEntry(input: {
   return `[${input.host}]:${input.port} ${input.publicKey.trim()}`;
 }
 
+export function buildSshRunCommandTarget(input: {
+  remoteCommand: string;
+  env?: Record<string, string | undefined>;
+}): { remoteArgument: string; stdinPrefix?: string } {
+  const envEntries = Object.entries(input.env ?? {})
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  for (const [key] of envEntries) {
+    assertValidSshEnvKey(key);
+  }
+
+  // Login profiles still run before caller-owned variables are installed, so
+  // the caller's identity values retain their previous precedence. The framed
+  // stdin reader consumes only its prefix; remaining bytes stay on stdin for
+  // the payload process after exec.
+  const remoteScript = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    envEntries.length > 0
+      ? `${sshEnvReaderScript(true)} && exec sh -c ${shellQuote(input.remoteCommand)}`
+      : `exec sh -c ${shellQuote(input.remoteCommand)}`,
+  ].join(" && ");
+
+  return {
+    remoteArgument: `sh -c ${shellQuote(remoteScript)}`,
+    stdinPrefix: sshEnvStdinPrefix(envEntries),
+  };
+}
+
 export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
@@ -1204,46 +1287,24 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    const envEntries = Object.entries(options.env ?? {})
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-    for (const [key] of envEntries) {
-      if (!isValidShellEnvKey(key)) {
-        throw new Error(`Invalid SSH environment variable key: ${key}`);
-      }
-    }
-
-    // Mirror buildSshSpawnTarget: source the login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
-    // profile re-exports. The SSH target is an operator-configured host, not a
-    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
-    // through a login profile; a non-login SSH command would miss that PATH.
-    // Source `/etc/profile` first so a host that exposes the PATH through
-    // `/etc/profile.d` scripts still resolves node and the agent CLI.
-    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
-    // .bash_profile typically sources .bashrc itself; only source .bashrc
-    // directly when no .bash_profile exists, so a host that adds nvm in
-    // .bashrc still resolves node without a double-run of the setup.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
-      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-      envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
-    ].join(" && ");
+    const target = buildSshRunCommandTarget({
+      remoteCommand,
+      env: options.env,
+    });
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      target.remoteArgument,
     );
 
-    return options.stdin != null
+    const stdin = target.stdinPrefix != null
+      ? `${target.stdinPrefix}${options.stdin ?? ""}`
+      : options.stdin;
+    return stdin != null
       ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
+          stdin,
           timeout: options.timeoutMs ?? 15_000,
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         })
@@ -1264,21 +1325,20 @@ export async function buildSshSpawnTarget(input: {
 }): Promise<{
   command: string;
   args: string[];
+  stdinPrefix?: string;
   cleanup: () => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid SSH environment variable key: ${key}`);
-    }
+    assertValidSshEnvKey(key);
   }
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const envEntries = Object.entries(input.env)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
-  // Source the login profiles first, then run `env KEY=VAL cmd` so
-  // user-supplied identity overrides win over anything a profile re-exports.
+  // Source the login profiles first, then install the caller environment from
+  // the framed stdin prefix so user-supplied identity overrides win over
+  // anything a profile re-exports without rendering values into argv.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
   // image, so it can expose `node` or an agent CLI only through a login
   // profile; a non-login SSH command would miss that PATH. Source
@@ -1294,8 +1354,8 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
-    envArgs.length > 0
-      ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
+    envEntries.length > 0
+      ? `${sshEnvReaderScript(true)} && exec ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
@@ -1309,6 +1369,7 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
+    stdinPrefix: sshEnvStdinPrefix(envEntries),
     cleanup: auth.cleanup,
   };
 }

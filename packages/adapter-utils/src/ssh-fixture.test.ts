@@ -19,6 +19,7 @@ import {
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { runChildProcess } from "./server-utils.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 let sshEnvLabUnsupportedReason: string | null = null;
@@ -481,10 +482,11 @@ describe("ssh env-lab fixture", () => {
     // nvm in .bashrc still resolves node under a non-login SSH command.
     expect(remoteScript).toContain(".bashrc");
     // The last ssh argument wraps the script as `sh -c '...'`, so the inner
-    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
+    // quotes are escaped. Assert the command still runs after the stdin reader.
     expect(remoteScript).toContain("cd ");
     expect(remoteScript).toContain("/srv/paperclip/workspace");
-    expect(remoteScript).toContain("exec env ");
+    expect(remoteScript).toContain("PAPERCLIP_SSH_ENV_V1");
+    expect(remoteScript).not.toContain("exec env ");
     expect(remoteScript).toContain("node");
     expect(remoteScript).toContain("--version");
     await target.cleanup();
@@ -511,6 +513,56 @@ describe("ssh env-lab fixture", () => {
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
+
+  it("preserves environment, payload stdin, and exit status through runSshCommand", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH run-command stdin environment test");
+    if (!started) return;
+
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const payload = "run-command-payload\n";
+    await expect(runSshCommand(
+      config,
+      'printf "%s:" "$PAPERCLIP_TEST_VALUE"; cat; exit 23',
+      {
+        env: { PAPERCLIP_TEST_VALUE: "run-command-env" },
+        stdin: payload,
+        timeoutMs: SSH_FIXTURE_TEST_TIMEOUT_MS,
+      },
+    )).rejects.toMatchObject({
+      code: 23,
+      stdout: `run-command-env:${payload}`,
+    });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("preserves environment, payload stdin, and exit status through the spawn path", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH spawn stdin environment test");
+    if (!started) return;
+
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const payload = "spawn-payload\n";
+    const result = await runChildProcess(
+      "ssh-spawn-stdin-environment-test",
+      "sh",
+      ["-c", 'printf "%s:" "$PAPERCLIP_TEST_VALUE"; cat; exit 24'],
+      {
+        cwd: started.workspaceDir,
+        env: { PAPERCLIP_TEST_VALUE: "spawn-env" },
+        stdin: payload,
+        timeoutSec: 30,
+        graceSec: 1,
+        onLog: async () => {},
+        remoteExecution: { ...config, remoteCwd: started.workspaceDir },
+      },
+    );
+
+    expect(result.exitCode).toBe(24);
+    expect(result.signal).toBeNull();
+    expect(result.stdout).toBe(`spawn-env:${payload}`);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("syncs a local directory into the remote fixture workspace", async () => {
     const rootDir = await createFixtureRootDir();
