@@ -58,9 +58,18 @@ The agent request is built as:
 ## Timeouts
 
 - `timeoutSec` controls adapter-level request budget
-- `waitTimeoutMs` controls `agent.wait.timeoutMs`
+- `runBudgetMs` is the total run budget (legacy alias: `waitTimeoutMs`). It is sent as `agent.timeout` in **seconds** and bounds the adapter's wait loop.
+- `waitWindowMs` controls each `agent.wait.timeoutMs` (default `60000`), capped to the run budget left, so no observation outlives `runBudgetMs`
+- `maxWaitCalls` caps `agent.wait` calls per run (default `60`)
 
-If `agent.wait` returns `timeout`, adapter returns `openclaw_gateway_wait_timeout`.
+Once the gateway accepts a run, the adapter emits an `openclaw.run.accepted` run event and never re-sends `agent` for that execution:
+
+- An observation timeout from `agent.wait` (no `endedAt`, `stopReason`, settled `livenessState`, or `hard_timeout`/`gateway_draining` phase) means the run is still working; the adapter waits again on the same run.
+- A terminal timeout returns `openclaw_gateway_wait_timeout`.
+- Running out of budget or `maxWaitCalls` returns `openclaw_gateway_wait_budget_exhausted`, naming the run, which may still be running.
+- A lost connection is re-established (up to 12 times, backoff 1s to 30s) and `agent.wait` resumes on the same run; beyond that the adapter returns `openclaw_gateway_observation_lost`.
+
+`resultJson.openclawDispatch` records the accepted run id, its source (`acceptance` or `idempotency_key_fallback`), and the number of wait calls.
 
 ## Log Format
 
