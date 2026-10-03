@@ -1545,3 +1545,16 @@ use the same activity projection. Board-owned repairs stay actionable until a
 verified native retry actually starts. Once an explicit board retry is running,
 its live activity takes precedence over the prior owner and exhausted budget.
 Resolved and cancelled actions remain resolved.
+
+### Concurrent refresh of a reused Git worktree
+
+Within one server process, realization and persisted restore serialize the
+unstarted-worktree refresh by the canonical worktree path. The gate covers the
+HEAD, task-commit and clean-tree checks through `git reset --hard`. A waiter
+rechecks the tree after the preceding refresh finishes. Different worktrees
+can refresh independently. Success and failure both release the gate.
+
+This gate does not remove Git lock files or grant execution ownership. Dirty
+worktrees, task commits and attached operator-owned branches retain their
+existing protection. Other server processes and external Git writers still
+use Git's native locks; their failures remain visible.

@@ -2533,6 +2533,8 @@ async function resolveAuthoritativeBaseRef(
 // files). This pulls an idle worktree forward to the freshest `origin/master`
 // after a long planning phase without ever destroying in-progress work. Only
 // remote-tracking bases are eligible; local-only bases keep warn-only drift.
+const worktreeBaseRefreshes = new Map<string, Promise<void>>();
+
 async function refreshUnstartedWorktreeToBase(input: {
   repoRoot: string;
   worktreePath: string;
@@ -2545,56 +2547,71 @@ async function refreshUnstartedWorktreeToBase(input: {
     return { refreshed: false, baseRefSha: null };
   }
 
-  const headSha = await runGit(["rev-parse", "HEAD"], input.worktreePath).catch(() => null);
-  if (!headSha) {
-    return { refreshed: false, baseRefSha: null };
-  }
-  if (headSha === input.currentBaseRefSha) {
-    return { refreshed: false, baseRefSha: input.currentBaseRefSha };
-  }
+  // Both realization and persisted restore use this gate. Canonical paths
+  // also serialize callers that reach the same worktree through a symlink.
+  const worktreeKey = await fs.realpath(input.worktreePath);
+  const previous = worktreeBaseRefreshes.get(worktreeKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  worktreeBaseRefreshes.set(worktreeKey, current);
+  await previous;
+  try {
+    const headSha = await runGit(["rev-parse", "HEAD"], input.worktreePath).catch(() => null);
+    if (!headSha) {
+      return { refreshed: false, baseRefSha: null };
+    }
+    if (headSha === input.currentBaseRefSha) {
+      return { refreshed: false, baseRefSha: input.currentBaseRefSha };
+    }
 
-  const commitsPastBaseRaw = await runGit(
-    ["rev-list", "--count", `${input.currentBaseRefSha}..HEAD`],
-    input.worktreePath,
-  ).catch(() => null);
-  const commitsPastBase = commitsPastBaseRaw === null ? null : Number.parseInt(commitsPastBaseRaw, 10);
-  if (commitsPastBase === null || !Number.isFinite(commitsPastBase) || commitsPastBase > 0) {
-    return { refreshed: false, baseRefSha: null };
+    const commitsPastBaseRaw = await runGit(
+      ["rev-list", "--count", `${input.currentBaseRefSha}..HEAD`],
+      input.worktreePath,
+    ).catch(() => null);
+    const commitsPastBase = commitsPastBaseRaw === null ? null : Number.parseInt(commitsPastBaseRaw, 10);
+    if (commitsPastBase === null || !Number.isFinite(commitsPastBase) || commitsPastBase > 0) {
+      return { refreshed: false, baseRefSha: null };
+    }
+
+    // Force `--untracked-files=all` so untracked files are counted regardless of a
+    // local `status.showUntrackedFiles=no`; otherwise the clean-tree guard could
+    // pass and the `reset --hard` below would destroy untracked work.
+    const status = await runExpensiveGitStatus({
+      args: ["status", "--porcelain", "--untracked-files=all"],
+      cwd: input.worktreePath,
+      operation: "workspace_runtime.base_refresh_clean_guard",
+      fairnessKeys: [
+        ...(input.branchName ? [`branch:${input.branchName}`] : []),
+      ],
+    }).catch(() => null);
+    if (status === null || status.trim().length > 0) {
+      return { refreshed: false, baseRefSha: null };
+    }
+
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["reset", "--hard", input.currentBaseRefSha],
+      cwd: input.worktreePath,
+      metadata: {
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        branchName: input.branchName,
+        baseRef: input.baseRef,
+        previousHeadSha: headSha,
+        baseRefSha: input.currentBaseRefSha,
+        refreshedUnstartedWorktree: true,
+      },
+      successMessage: `Refreshed unstarted git worktree at ${input.worktreePath} to ${input.baseRef} (${formatShortSha(input.currentBaseRefSha)})\n`,
+      failureLabel: `git reset --hard ${input.currentBaseRefSha}`,
+    });
+
+    return { refreshed: true, baseRefSha: input.currentBaseRefSha };
+  } finally {
+    release();
+    if (worktreeBaseRefreshes.get(worktreeKey) === current) {
+      worktreeBaseRefreshes.delete(worktreeKey);
+    }
   }
-
-  // Force `--untracked-files=all` so untracked files are counted regardless of a
-  // local `status.showUntrackedFiles=no`; otherwise the clean-tree guard could
-  // pass and the `reset --hard` below would destroy untracked work.
-  const status = await runExpensiveGitStatus({
-    args: ["status", "--porcelain", "--untracked-files=all"],
-    cwd: input.worktreePath,
-    operation: "workspace_runtime.base_refresh_clean_guard",
-    fairnessKeys: [
-      ...(input.branchName ? [`branch:${input.branchName}`] : []),
-    ],
-  }).catch(() => null);
-  if (status === null || status.trim().length > 0) {
-    return { refreshed: false, baseRefSha: null };
-  }
-
-  await recordGitOperation(input.recorder, {
-    phase: "worktree_prepare",
-    args: ["reset", "--hard", input.currentBaseRefSha],
-    cwd: input.worktreePath,
-    metadata: {
-      repoRoot: input.repoRoot,
-      worktreePath: input.worktreePath,
-      branchName: input.branchName,
-      baseRef: input.baseRef,
-      previousHeadSha: headSha,
-      baseRefSha: input.currentBaseRefSha,
-      refreshedUnstartedWorktree: true,
-    },
-    successMessage: `Refreshed unstarted git worktree at ${input.worktreePath} to ${input.baseRef} (${formatShortSha(input.currentBaseRefSha)})\n`,
-    failureLabel: `git reset --hard ${input.currentBaseRefSha}`,
-  });
-
-  return { refreshed: true, baseRefSha: input.currentBaseRefSha };
 }
 
 

@@ -290,8 +290,9 @@ async function pushRemoteOnlyBranch(
   return sha;
 }
 
-function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
+function realizeWorktreeForTest(repoRoot: string, repoRef: string | null, recorder?: WorkspaceOperationRecorder) {
   return realizeExecutionWorkspace({
+    recorder,
     base: {
       baseCwd: repoRoot,
       source: "project_primary",
@@ -1124,6 +1125,144 @@ describe("realizeExecutionWorkspace", () => {
     expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(advancedHead);
     expect(reused.baseRefSha).toBe(advancedHead);
     expect(reused.warnings).toEqual([]);
+  });
+
+  it.each(["realize", "restore", "restore-alias"])("serializes concurrent unstarted worktree refreshes (%s)", async (entry) => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    await fs.writeFile(path.join(sourceRepo, ".gitattributes"), "README.md filter=refresh-gate\n");
+    await runGit(sourceRepo, ["add", ".gitattributes"]);
+    await runGit(sourceRepo, ["commit", "-m", "Configure refresh gate"]);
+    await runGit(sourceRepo, ["push", remotePath, "master"]);
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const gateDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-refresh-gate-"));
+    const ready = path.join(gateDir, "ready");
+    const release = path.join(gateDir, "release");
+    const filter = path.join(gateDir, "smudge.sh");
+    // Git holds its real index.lock while this checkout filter waits. The
+    // working tree and old index remain clean until the filter emits content.
+    await fs.writeFile(filter, [
+      "#!/bin/sh",
+      `touch '${ready}'`,
+      `i=0; while [ ! -f '${release}' ]; do`,
+      '  i=$((i + 1)); [ "$i" -lt 200 ] || exit 1',
+      "  sleep 0.05",
+      "done",
+      "cat",
+    ].join("\n"));
+    await runGit(repoRoot, ["config", "filter.refresh-gate.smudge", `sh '${filter}'`]);
+    await runGit(repoRoot, ["config", "filter.refresh-gate.clean", "cat"]);
+    await runGit(repoRoot, ["config", "filter.refresh-gate.required", "true"]);
+    const advancedHead = await advanceRemoteMaster(sourceRepo, remotePath, "README.md");
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    const recordOperation = recorder.recordOperation;
+    let resetStarts = 0;
+    recorder.recordOperation = async (input) => {
+      if (input.metadata?.refreshedUnstartedWorktree) {
+        resetStarts += 1;
+        if (resetStarts === 1) {
+          // Leave the old tree intact long enough for a competing clean guard.
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        } else {
+          await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+        }
+      }
+      return recordOperation(input);
+    };
+    const first = realizeWorktreeForTest(repoRoot, null, recorder);
+    // Attach a rejection handler immediately, including when a test fails.
+    const firstResult = first.then((value) => ({ value }), (error: unknown) => ({ error }));
+    let secondResult: Promise<unknown> | undefined;
+    try {
+      // Start the competing call before the first Git checkout changes files.
+      const indexLock = await readGit(initial.cwd, ["rev-parse", "--git-path", "index.lock"]);
+      const reusePath = entry === "restore-alias" ? path.join(gateDir, "alias") : initial.cwd;
+      if (entry === "restore-alias") await fs.symlink(initial.cwd, reusePath, "dir");
+      const second = entry === "realize"
+        ? realizeWorktreeForTest(repoRoot, null, recorder)
+        : ensurePersistedExecutionWorkspaceAvailable({
+            base: initial,
+            workspace: {
+              mode: "isolated_workspace", strategyType: "git_worktree",
+              cwd: reusePath, providerRef: reusePath, projectId: initial.projectId,
+              projectWorkspaceId: initial.workspaceId, repoUrl: null,
+              baseRef: "origin/master", branchName: initial.branchName,
+              metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+            },
+            issue: { id: "issue-2", identifier: "TEST-2", title: "Reuse workspace" },
+            agent: { id: "agent-2", name: "Second agent", companyId: "company-1" },
+            recorder,
+          });
+      secondResult = second.then((value) => ({ value }), (error: unknown) => ({ error }));
+      await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+      expect(existsSync(path.resolve(initial.cwd, indexLock))).toBe(true);
+      // Let the competing reset reach the held native index before release.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fs.writeFile(release, "release\n");
+      for (const result of [await firstResult, await secondResult]) {
+        if (result && typeof result === "object" && "error" in result) throw result.error;
+        expect(result).toHaveProperty("value");
+      }
+      expect(await readGit(initial.cwd, ["rev-parse", "HEAD"])).toBe(advancedHead);
+      const resets = operations.filter((op) => op.metadata?.refreshedUnstartedWorktree);
+      expect(resets).toHaveLength(1);
+      expect(resets[0]?.result.status).toBe("succeeded");
+    } finally {
+      await fs.writeFile(release, "release\n");
+      await firstResult;
+      await secondResult;
+      await fs.rm(gateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases a failed refresh and preserves an external Git index lock", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    const advancedHead = await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+    const lockPath = path.resolve(initial.cwd, await readGit(initial.cwd, ["rev-parse", "--git-path", "index.lock"]));
+    await fs.writeFile(lockPath, "external writer\n", { flag: "wx" });
+    try {
+      await expect(realizeWorktreeForTest(repoRoot, null)).rejects.toThrow("index.lock");
+      expect(await fs.readFile(lockPath, "utf8")).toBe("external writer\n");
+      expect(await readGit(initial.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
+    } finally {
+      await fs.rm(lockPath);
+    }
+    const recovered = await realizeWorktreeForTest(repoRoot, null);
+    expect(recovered.baseRefSha).toBe(advancedHead);
+    expect(await readGit(initial.cwd, ["rev-parse", "HEAD"])).toBe(advancedHead);
+  });
+
+  it("allows a different worktree to refresh while one recorder is held", async () => {
+    const firstRepo = await createClonedRepoWithRemote();
+    const secondRepo = await createClonedRepoWithRemote();
+    await realizeWorktreeForTest(firstRepo.repoRoot, null);
+    await realizeWorktreeForTest(secondRepo.repoRoot, null);
+    await advanceRemoteMaster(firstRepo.sourceRepo, firstRepo.remotePath, "first.txt");
+    const secondHead = await advanceRemoteMaster(secondRepo.sourceRepo, secondRepo.remotePath, "second.txt");
+    const { recorder } = createWorkspaceOperationRecorderDouble();
+    const recordOperation = recorder.recordOperation;
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    recorder.recordOperation = async (input) => {
+      if (input.metadata?.refreshedUnstartedWorktree) {
+        enter();
+        await held;
+      }
+      return recordOperation(input);
+    };
+    const first = realizeWorktreeForTest(firstRepo.repoRoot, null, recorder);
+    void first.catch(() => {});
+    try {
+      await entered;
+      const second = await realizeWorktreeForTest(secondRepo.repoRoot, null);
+      expect(second.baseRefSha).toBe(secondHead);
+    } finally {
+      release();
+      await first;
+    }
   });
 
   it("does not reset a reused worktree that already has task commits", async () => {
