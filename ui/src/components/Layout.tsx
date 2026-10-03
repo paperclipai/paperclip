@@ -40,6 +40,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useDragSelectScroll } from "../hooks/useDragSelectScroll";
 import { healthApi } from "../api/health";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
@@ -451,6 +452,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [peeking, clearPeekTimer, setPeeking]);
 
   useCompanyPageMemory();
+  useDragSelectScroll(mainContentRef);
 
   useKeyboardShortcuts({
     onNewIssue: () => openNewIssue(),
