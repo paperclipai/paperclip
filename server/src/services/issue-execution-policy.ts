@@ -414,6 +414,165 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function looksLikeUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+export type StoredIssueExecutionPolicyRepair = {
+  policy: IssueExecutionPolicy | null;
+  repaired: boolean;
+  warnings: string[];
+};
+
+/**
+ * Stored policies are written by several actors (board, API, recovery
+ * reconciler). Legacy reconciler dispatches persisted stages that no longer
+ * pass the strict input schema — slug stage ids ("reconciler-verify") and
+ * participants without an explicit principal type. Parsing such a row with
+ * `normalizeIssueExecutionPolicy` throws, and because write paths parse the
+ * STORED policy before applying any change, every write to the issue failed
+ * with 422 "Invalid execution policy" — including the PATCH
+ * `executionPolicy=null` repair itself.
+ *
+ * `repairStoredIssueExecutionPolicy` never throws for stored data. It applies
+ * deterministic repairs (drop non-GUID stage ids and let normalization mint
+ * fresh GUIDs, infer participant principal type from the principal id that is
+ * present, drop principal ids that cannot satisfy the strict schema, drop
+ * stages that stay unrepairable) and re-validates the result with the strict
+ * schema. Hopeless policies degrade to null (no policy) instead of wedging
+ * every write on the issue. Use it for policies read back from the database;
+ * keep `normalizeIssueExecutionPolicy` for request-body validation.
+ */
+export function repairStoredIssueExecutionPolicy(input: unknown): StoredIssueExecutionPolicyRepair {
+  if (input == null) return { policy: null, repaired: false, warnings: [] };
+
+  const strict = issueExecutionPolicySchema.safeParse(input);
+  if (strict.success) {
+    return { policy: normalizeIssueExecutionPolicy(input), repaired: false, warnings: [] };
+  }
+
+  const warnings: string[] = [];
+  const raw = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+  const rawStages = Array.isArray(raw.stages) ? raw.stages : [];
+  if (!Array.isArray(raw.stages)) {
+    warnings.push("stages: replaced non-array stages with []");
+  }
+
+  const repairedStages = rawStages.map(
+    (stage, stageIndex): Record<string, unknown> | null => {
+      if (typeof stage !== "object" || stage === null) {
+        warnings.push(`stages[${stageIndex}]: dropped non-object stage`);
+        return null;
+      }
+      const record = stage as Record<string, unknown>;
+      if (record.type !== "review" && record.type !== "approval") {
+        warnings.push(
+          `stages[${stageIndex}]: dropped stage with invalid type ${JSON.stringify(record.type)}`,
+        );
+        return null;
+      }
+
+      const rawParticipants = Array.isArray(record.participants) ? record.participants : [];
+      if (!Array.isArray(record.participants)) {
+        warnings.push(`stages[${stageIndex}].participants: replaced non-array with []`);
+      }
+      const repairedParticipants = rawParticipants.flatMap(
+        (participant, participantIndex): Record<string, unknown>[] => {
+          if (typeof participant !== "object" || participant === null) {
+            warnings.push(
+              `stages[${stageIndex}].participants[${participantIndex}]: dropped non-object participant`,
+            );
+            return [];
+          }
+          const principal = participant as Record<string, unknown>;
+          let type = principal.type;
+          if (type !== "agent" && type !== "user") {
+            if (typeof principal.agentId === "string" && principal.agentId.trim()) {
+              type = "agent";
+              warnings.push(
+                `stages[${stageIndex}].participants[${participantIndex}]: inferred type "agent" from agentId`,
+              );
+            } else if (typeof principal.userId === "string" && principal.userId.trim()) {
+              type = "user";
+              warnings.push(
+                `stages[${stageIndex}].participants[${participantIndex}]: inferred type "user" from userId`,
+              );
+            } else {
+              warnings.push(
+                `stages[${stageIndex}].participants[${participantIndex}]: dropped participant without resolvable principal`,
+              );
+              return [];
+            }
+          }
+          if (type === "agent") {
+            if (!looksLikeUuid(principal.agentId)) {
+              warnings.push(
+                `stages[${stageIndex}].participants[${participantIndex}]: dropped agent participant without GUID agentId`,
+              );
+              return [];
+            }
+            return [
+              {
+                ...(looksLikeUuid(principal.id) ? { id: principal.id } : {}),
+                type,
+                agentId: principal.agentId,
+              },
+            ];
+          }
+          if (typeof principal.userId !== "string" || !principal.userId.trim()) {
+            warnings.push(
+              `stages[${stageIndex}].participants[${participantIndex}]: dropped user participant without userId`,
+            );
+            return [];
+          }
+          return [
+            {
+              ...(looksLikeUuid(principal.id) ? { id: principal.id } : {}),
+              type,
+              userId: principal.userId,
+            },
+          ];
+        },
+      );
+
+      return {
+        ...(looksLikeUuid(record.id) ? { id: record.id } : {}),
+        type: record.type,
+        ...(record.approvalsNeeded === 1 ? { approvalsNeeded: 1 } : {}),
+        participants: repairedParticipants,
+      };
+    },
+  );
+
+  const candidate = {
+    ...raw,
+    stages: repairedStages.filter((stage): stage is Record<string, unknown> => stage !== null),
+  };
+
+  const retry = issueExecutionPolicySchema.safeParse(candidate);
+  if (!retry.success) {
+    const summary = retry.error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+      .join("; ");
+    warnings.push(`policy is unrepairable and degrades to null (${summary})`);
+    return { policy: null, repaired: true, warnings };
+  }
+
+  return { policy: normalizeIssueExecutionPolicy(candidate), repaired: true, warnings };
+}
+
+/**
+ * Lenient read-side twin of `normalizeIssueExecutionPolicy` for policies
+ * loaded from the database. Same output for valid data; repairs known legacy
+ * shapes instead of throwing; returns null (never throws) for garbage.
+ */
+export function hydrateStoredIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  return repairStoredIssueExecutionPolicy(input).policy;
+}
+
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
   const parsed = issueExecutionStateSchema.safeParse(input);
@@ -1046,7 +1205,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? hydrateStoredIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,

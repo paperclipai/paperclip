@@ -438,6 +438,7 @@ import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
+  hydrateStoredIssueExecutionPolicy,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -11676,7 +11677,7 @@ export function heartbeatService(
 
     const scheduledAtIso = claimed.monitorNextCheckAt.toISOString();
     const nextAttemptCount = (claimed.monitorAttemptCount ?? 0) + 1;
-    const policy = normalizeIssueExecutionPolicy(
+    const policy = hydrateStoredIssueExecutionPolicy(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;
