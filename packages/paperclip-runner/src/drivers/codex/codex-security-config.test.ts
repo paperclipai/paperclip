@@ -4,6 +4,7 @@ import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js
 import { describe, expect, it } from "vitest";
 
 import {
+  codexCommandEnvironment,
   codexExecutableReadOnlyRoots,
   codexNetworkReadOnlyRoots,
   createIsolatedCodexAppServerArgs,
@@ -29,6 +30,19 @@ describe("Codex security configuration", () => {
     expect(registered).toContain('"/provider"="none"');
     expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: "/arbitrary" }, [], root).join("\n")).not.toContain("AGENT_HOME");
     expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: root }).join("\n")).not.toContain("AGENT_HOME");
+  });
+
+  it("projects only the registered AGENT_HOME into the native thread environment", () => {
+    const root = "/agent-files/run-1";
+    expect(codexCommandEnvironment({ AGENT_HOME: root, PATH: "/safe/bin" }, root)).toEqual({
+      AGENT_HOME: root,
+      PATH: "/safe/bin",
+    });
+    expect(codexCommandEnvironment({ AGENT_HOME: "/arbitrary" }, root)).not.toHaveProperty("AGENT_HOME");
+    expect(codexCommandEnvironment({ AGENT_HOME: root })).not.toHaveProperty("AGENT_HOME");
+    const args = createIsolatedCodexAppServerArgs({ AGENT_HOME: root }, [], root, "thread");
+    expect(args).toContain('shell_environment_policy.include_only=["AGENT_HOME"]');
+    expect(args.some((arg) => arg.startsWith("shell_environment_policy.set="))).toBe(false);
   });
 
   it("makes the installed npm Codex native sandbox executable readable without exposing its parent workspace", () => {

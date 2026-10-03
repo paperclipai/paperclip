@@ -1939,6 +1939,29 @@ it("denies the isolated Codex home without denying a remote execution workspace"
   expect(serialized).toContain('\":workspace_roots\"={\".\"=\"write\"}');
 });
 
+it("keeps long native command environment values out of bounded launch arguments", () => {
+  const commandPath = Array.from({ length: 600 }, (_, i) => `/tools/toolchain-${i}/bin`).join(":");
+  const args = createRunnerdCodexAppServerArgs({
+    environment: { PATH: commandPath, LANG: "C.UTF-8" },
+    codexHome: "/isolated/codex-home",
+  });
+  expect(Buffer.byteLength(commandPath)).toBeGreaterThan(4096);
+  expect(args.length).toBeLessThanOrEqual(64);
+  for (const argument of args) expect(Buffer.byteLength(argument)).toBeLessThanOrEqual(4096);
+  expect(args.join("\n")).not.toContain(commandPath);
+  expect(args).toContain('shell_environment_policy.inherit="none"');
+  expect(args).toContain('shell_environment_policy.include_only=["LANG","PATH"]');
+});
+
+it("retains explicit argv values for legacy native session profiles", () => {
+  const args = createRunnerdCodexAppServerArgs({
+    environment: { PATH: "/tools/bin", LANG: "C.UTF-8" },
+    codexHome: "/isolated/codex-home",
+    commandEnvironmentTransport: "argv",
+  });
+  expect(args).toContain('shell_environment_policy.set={PATH="/tools/bin",LANG="C.UTF-8"}');
+});
+
 it("rejects remote OpenCode before spawn when provider-pack paths are absent", async () => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-pack-"));
   const { transport } = createCapabilityRunnerdCodexTransport({
@@ -6600,6 +6623,118 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
     );
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it.each([false, true])("retains the versioned command-environment profile across recovery (rotated: %s)", async (rotated) => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-environment-recovery-"));
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  const codexCommand = join(directory, "codex");
+  await writeFile(codexCommand, `#!/bin/sh\nexec ${quote(fakeCodex)} --state-file ${quote(join(directory, "fake-state.json"))} "$@"\n`, { mode: 0o700 });
+  const identity = {
+    runnerInstanceId: "runner-env-capability", environmentLeaseId: "lease-env-capability",
+    runId: "run-env-capability", normalizedSessionId: "session-env-capability",
+    turnId: "turn-env-capability", itemId: "item-env-capability",
+  };
+  const options = {
+    stateDirectory: directory, codexCommand,
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    prpIdentity: identity, environment: { PATH: "/explicit/tools" },
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+  };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  try {
+    await first.transport.request("thread/start", { cwd: directory });
+    await first.transport.close();
+    const provider = JSON.parse(await readFile(join(directory, "runner", "codex-provider-state.json"), "utf8"));
+    expect(provider.config.driver).toBe("codex_app_server_command_environment_v2");
+    expect(provider.config.commandEnvironment.PATH).toBe("/explicit/tools");
+    const nextIdentity = rotated ? { ...identity, runId: "run-env-second", turnId: "turn-env-second", itemId: "item-env-second" } : identity;
+    const compatible = createCapabilityRunnerdCodexTransport({ ...options, prpIdentity: nextIdentity });
+    try {
+      await expect(compatible.transport.request("thread/read", {})).resolves.toHaveProperty("thread.id", provider.threadId);
+      const resumed = JSON.parse(await readFile(join(directory, "runner", "codex-provider-state.json"), "utf8"));
+      expect(resumed.config.driver).toBe("codex_app_server_command_environment_v2");
+      expect(resumed.config.commandEnvironment).toEqual(provider.config.commandEnvironment);
+    } finally {
+      await compatible.transport.close();
+    }
+  } finally {
+    await first.transport.close().catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it.each(["changed", "removed", "unregistered"] as const)("rebinds command AGENT_HOME to the current registered run copy (%s)", async (nextCopy) => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-agent-home-"));
+  const tracePath = join(directory, "provider-trace.ndjson");
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  const codexCommand = join(directory, "codex");
+  const skillRoot = join(directory, "skill");
+  const firstRoot = join(directory, "agent-first");
+  const secondRoot = join(directory, "agent-second");
+  const context = (root: string): NativeRuntimeContextSnapshot => {
+    const value = assignedRuntimeContext(skillRoot, root);
+    value.skills = [];
+    value.instructions.workingCopy = { rootPath: root, entryPath: "AGENTS.md", kind: "agent_files" };
+    value.aggregateDigest = canonicalNativeRuntimeContextDigest(value);
+    return value;
+  };
+  const identity = {
+    runnerInstanceId: "runner-agent-home", environmentLeaseId: "lease-agent-home",
+    runId: "run-first", normalizedSessionId: "session-agent-home",
+    turnId: "turn-first", itemId: "item-first",
+  };
+  const options = {
+    stateDirectory: directory, codexCommand,
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    environment: {
+      PATH: "/explicit/tools", AGENT_HOME: firstRoot,
+      PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+    },
+    runtimeContext: context(firstRoot),
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+  };
+  let current: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  try {
+    for (const root of [skillRoot, firstRoot, secondRoot]) await mkdir(root);
+    await writeFile(join(skillRoot, "SKILL.md"), "# Assigned skill\n");
+    for (const root of [firstRoot, secondRoot]) await writeFile(join(root, "AGENTS.md"), "Agent instructions\n");
+    await writeFile(codexCommand, `#!/bin/sh\nexec ${quote(fakeCodex)} --state-file ${quote(join(directory, "fake-state.json"))} "$@"\n`, { mode: 0o700 });
+    current = createCapabilityRunnerdCodexTransport({ ...options, prpIdentity: identity });
+    const started = await current.transport.request("thread/start", { cwd: directory });
+    await current.transport.close();
+    const providerPath = join(directory, "runner", "codex-provider-state.json");
+    const initial = JSON.parse(await readFile(providerPath, "utf8"));
+    const nextOptions = {
+      ...options,
+      environment: { ...options.environment, AGENT_HOME: nextCopy === "changed" ? secondRoot : firstRoot },
+      runtimeContext: nextCopy === "removed" ? undefined : context(secondRoot),
+      prpIdentity: { ...identity, runId: "run-second", turnId: "turn-second", itemId: "item-second" },
+    };
+    current = createCapabilityRunnerdCodexTransport(nextOptions);
+    await expect(current.transport.request("thread/read", {})).resolves.toHaveProperty("thread.id", (started.thread as { id: string }).id);
+    await current.transport.close();
+    // Exact recovery must retain the new binding without a second run.attach.
+    current = createCapabilityRunnerdCodexTransport(nextOptions);
+    await current.transport.request("thread/read", {});
+    await current.transport.close();
+    const persisted = JSON.parse(await readFile(providerPath, "utf8"));
+    expect(persisted.config.commandEnvironment).toEqual(initial.config.commandEnvironment);
+    const requests = (await readFile(tracePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const frames = requests
+      .filter((entry) => entry.kind === "frame" && entry.direction === "client_to_provider")
+      .map((entry) => JSON.parse(Buffer.from(entry.rawBase64, "base64").toString("utf8")))
+      .filter((frame) => ["thread/start", "thread/resume"].includes(frame.method));
+    expect(frames.length).toBeGreaterThanOrEqual(3);
+    expect(frames[0].params.config["shell_environment_policy.set"].AGENT_HOME).toBe(firstRoot);
+    const environment = frames.at(-1)!.params.config["shell_environment_policy.set"];
+    expect(environment.PATH).toBe("/explicit/tools");
+    if (nextCopy === "changed") expect(environment.AGENT_HOME).toBe(secondRoot);
+    else expect(environment).not.toHaveProperty("AGENT_HOME");
+  } finally {
+    await current?.transport.close().catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
   }
 }, 30_000);
 

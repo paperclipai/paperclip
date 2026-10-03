@@ -31,6 +31,7 @@ import type {
   CodexTransportProcessInfo,
 } from "../drivers/codex/app-server-transport.js";
 import { createSanitizedCodexEnvironment } from "../drivers/codex/app-server-transport.js";
+import { codexCommandEnvironment } from "../drivers/codex/codex-security-config.js";
 import {
   codexSemanticToolSpecs,
   createIsolatedCodexAppServerArgs,
@@ -3288,6 +3289,7 @@ export function createRunnerdCodexAppServerArgs(input: {
   codexHome: string;
   codexCommand?: string;
   readOnlyRoots?: string[];
+  commandEnvironmentTransport?: "argv" | "thread";
   instructionWorkingCopyRoot?: string;
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
@@ -3302,6 +3304,7 @@ export function createRunnerdCodexAppServerArgs(input: {
     },
     [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
     input.instructionWorkingCopyRoot,
+    input.commandEnvironmentTransport ?? "thread",
   );
 }
 
@@ -4670,7 +4673,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   driver:
                     provider === "opencode"
                       ? "opencode_server"
-                      : "codex_app_server",
+                      : this.options.codexArgs === undefined
+                        ? "codex_app_server_command_environment_v2"
+                        : "codex_app_server",
                   providerVersion:
                     provider === "opencode" ? "1.18.32" : "codex-app-server-v1",
                   command:
@@ -4729,7 +4734,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
                   ...(provider === "codex"
-                    ? { includeSkillInstructions: runtimeContext !== null }
+                    ? {
+                        includeSkillInstructions: runtimeContext !== null,
+                        ...(this.options.codexArgs === undefined
+                          ? {
+                              commandEnvironment: codexCommandEnvironment(
+                                this.options.environment ?? {},
+                              ),
+                              instructionWorkingCopyRoot: codexCommandEnvironment(
+                                this.options.environment ?? {},
+                                runtimeContext?.instructions.workingCopy?.rootPath,
+                              ).AGENT_HOME ?? null,
+                            }
+                          : {}),
+                      }
                     : {}),
                   runtimeContext,
                 },
@@ -5158,12 +5176,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (provider === "codex") {
         // These controller-owned, token-free paths belong to the new run.
         // Keep the durable provider profile and thread identity unchanged.
+        const providerConfig = record(runAttachTemplate.provider);
+        if (providerConfig.commandEnvironment != null) {
+          providerConfig.driver = "codex_app_server_command_environment_v2";
+          providerConfig.instructionWorkingCopyRoot = codexCommandEnvironment(
+            this.options.environment ?? {},
+            runtimeContext?.instructions.workingCopy?.rootPath,
+          ).AGENT_HOME ?? null;
+        }
         runAttachTemplate.runtimeLaunchArgs =
           this.options.codexArgs ??
           createRunnerdCodexAppServerArgs({
             environment: this.options.environment,
             codexHome,
             codexCommand: this.options.codexCommand,
+            // Older profiles retain their explicit argv values. Moving those
+            // values to a different channel would change protected launch args.
+            commandEnvironmentTransport:
+              record(runAttachTemplate.provider).commandEnvironment == null
+                ? "argv"
+                : "thread",
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),

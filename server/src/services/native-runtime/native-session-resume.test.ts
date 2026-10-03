@@ -774,7 +774,7 @@ const recoveryFakeCodex = resolve(
       expect(() => parseNativeExecutionInput(firstExecution)).not.toThrow();
       const runnerInstanceId = randomUUID();
       const environment = {
-        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}:${Array.from({ length: 600 }, (_, i) => `/tools/toolchain-${i}/bin`).join(":")}`,
         HOME: sourceHome,
         CODEX_HOME: sourceHome,
       };
@@ -879,6 +879,8 @@ const recoveryFakeCodex = resolve(
       const runner = JSON.parse(await readFile(runnerPath, "utf8"));
       const provider = JSON.parse(await readFile(providerPath, "utf8"));
       expect(runner.lifecycle).toBe("suspended");
+      expect(provider.config.commandEnvironment.PATH).toBe(environment.PATH);
+      expect(provider.config.args.every((arg: string) => Buffer.byteLength(arg) <= 4096)).toBe(true);
 
       // Reproduce only in a generated disposable root the historical failure:
       // an unacknowledged input whose digest predates bounded sanitization.

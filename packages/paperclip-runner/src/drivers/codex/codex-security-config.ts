@@ -115,6 +115,7 @@ const SKILLLESS_BASE_CONFIG = {
 
 export function codexCommandEnvironment(
   source: NodeJS.ProcessEnv = process.env,
+  instructionWorkingCopyRoot?: string,
 ): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const key of [
@@ -127,6 +128,9 @@ export function codexCommandEnvironment(
   ] as const) {
     const value = source[key];
     if (value !== undefined) environment[key] = value;
+  }
+  if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) {
+    environment.AGENT_HOME = instructionWorkingCopyRoot;
   }
   if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
     environment.HOME = source.PAPERCLIP_GITHUB_HOST_HOME;
@@ -171,6 +175,9 @@ export function createIsolatedCodexAppServerArgs(
   readOnlyRoots: string[] = [],
   /** Server-registered run copy, never an environment/config-supplied root. */
   instructionWorkingCopyRoot?: string,
+  // Native runner profiles persist these values and supply them on each
+  // thread/start and thread/resume instead of exceeding the runner's argv cap.
+  commandEnvironmentTransport: "argv" | "thread" = "argv",
 ): string[] {
   const gitRoots = gitFilesystemRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
@@ -180,8 +187,7 @@ export function createIsolatedCodexAppServerArgs(
   const hasProjectedEnvironment = inheritedGitHubKeys.length > 0;
   // Codex filters the configured `set` values through include_only as well.
   // Retain the explicit command PATH/HOME/locale settings, not ambient secrets.
-  const commandEnvironment = codexCommandEnvironment(source);
-  if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) commandEnvironment.AGENT_HOME = instructionWorkingCopyRoot;
+  const commandEnvironment = codexCommandEnvironment(source, instructionWorkingCopyRoot);
   const shellEnvironmentKeys = [...new Set([...inheritedGitHubKeys, ...Object.keys(commandEnvironment)])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
   const deniedHostRoots = [
@@ -253,7 +259,7 @@ export function createIsolatedCodexAppServerArgs(
     // Keep values in the process environment, never in argv/config diagnostics.
     "-c",
     `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`,
-    ...(commandEnv.length > 0
+    ...(commandEnvironmentTransport === "argv" && commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),
     "--disable",
