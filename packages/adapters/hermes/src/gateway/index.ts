@@ -42,13 +42,16 @@ Optional fields:
 - sessionKeyStrategy (issue | agent | run | none): defaults to issue.
 - timeoutSec (number): defaults to 600.
 - eventReconnectMs (number): defaults to 2000.
+- dispatchRetryAttempts (number, 1-3): defaults to 1. Total POST /v1/runs attempts on 429, 5xx, or connection failures, resent with the same Idempotency-Key and the same body bytes (backoff 1.5s, then 6s). Raise above 1 only for Hermes gateways that reserve the Idempotency-Key durably, so a resend replays the same run_id instead of starting a second run.
 - instructions (string): stable Hermes instructions sent separately from wake input.
 
 Runtime mapping:
 - Creates runs with POST /v1/runs.
-- Sends Idempotency-Key equal to the Paperclip run id for correlation only; Hermes v0.16.0 did not dedupe duplicate creates.
+- Sends Idempotency-Key equal to the Paperclip run id. Older Hermes gateways (v0.16.0) did not dedupe duplicate creates, which is why dispatchRetryAttempts defaults to 1.
+- Reports executionRecovery bootstrap/providerWorkStarted:false only when every create attempt proves non-delivery (HTTP 401/403/404, or ECONNREFUSED/ENOTFOUND/EAI_AGAIN); records attempts under resultJson.hermesDispatch.
+- Emits a hermes.run.created run event with the Hermes run id before observing the run.
 - Streams GET /v1/runs/{run_id}/events and polls GET /v1/runs/{run_id} as fallback.
-- Calls POST /v1/runs/{run_id}/stop on timeout.
+- Calls POST /v1/runs/{run_id}/stop on timeout and on Paperclip Stop; a Stop is acknowledged only once Hermes reports a terminal status.
 
 Security guidance:
 - Prefer HTTPS or a private overlay network for non-loopback hosts.
