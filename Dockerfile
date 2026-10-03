@@ -124,6 +124,7 @@ RUN find runner protocol -type f -exec touch -d @0 {} + \
 
 FROM runner-build AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=3072
 COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
