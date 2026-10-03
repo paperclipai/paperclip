@@ -805,6 +805,10 @@ async function startServerWithDatabaseTeardown(
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
+  const databaseBackupMinSizeBytes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_MIN_SIZE_BYTES) || 1024,
+  );
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
@@ -857,6 +861,7 @@ async function startServerWithDatabaseTeardown(
           backupFile: result.backupFile,
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
+          sweptOrphans: result.sweptOrphans,
           backupDir: config.databaseBackupDir,
           retention,
           trigger,
@@ -902,6 +907,7 @@ async function startServerWithDatabaseTeardown(
           enabled: config.databaseBackupEnabled,
           backupDir: config.databaseBackupDir,
           maxAgeHours: databaseBackupMaxAgeHours,
+          minSizeBytes: databaseBackupMinSizeBytes,
           alertFile: databaseBackupAlertFile,
           alertFiles: databaseBackupAlertFiles,
         }
