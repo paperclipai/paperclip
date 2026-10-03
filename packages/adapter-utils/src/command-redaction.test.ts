@@ -11,6 +11,7 @@ describe("explicit diagnostic credential forms", () => {
 });
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  redactCommandText,
   redactDiagnosticText,
   redactCommandText,
 } from "./command-redaction.js";
@@ -112,5 +113,37 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+});
+
+describe("redactCommandText", () => {
+  // Deliberately fake tokens: they match the redaction shape but carry no
+  // entropy, so secret scanners never mistake them for live credentials.
+  const FINE_GRAINED_PAT = "github_pat_test_only_fake_token_1234567890";
+  const CLASSIC_PAT = "ghp_test_only_fake_token_1234567890";
+
+  it("redacts a bare github_pat_ fine-grained token", () => {
+    const output = redactCommandText(FINE_GRAINED_PAT);
+    expect(output).not.toContain(FINE_GRAINED_PAT);
+    expect(output).toBe(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("redacts a github_pat_ token embedded in surrounding text", () => {
+    const input = `deploying with ${FINE_GRAINED_PAT} now`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain(FINE_GRAINED_PAT);
+    expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+    expect(output).toContain("deploying with");
+  });
+
+  it("keeps redacting classic ghp_ tokens unchanged", () => {
+    const output = redactCommandText(CLASSIC_PAT);
+    expect(output).not.toContain(CLASSIC_PAT);
+    expect(output).toBe(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("leaves non-secret text untouched", () => {
+    const input = "git status --short && echo done";
+    expect(redactCommandText(input)).toBe(input);
   });
 });

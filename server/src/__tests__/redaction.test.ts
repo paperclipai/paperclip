@@ -494,6 +494,15 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("redacts a bare github_pat_ fine-grained token from unstructured text", () => {
+    // Deliberately fake token: matches the redaction shape but carries no
+    // entropy, so secret scanners never mistake it for a live credential.
+    const fineGrainedPat = "github_pat_test_only_fake_token_1234567890";
+    const result = redactSensitiveText(fineGrainedPat);
+    expect(result).not.toContain(fineGrainedPat);
+    expect(result).toBe(REDACTED_EVENT_VALUE);
+  });
+
   it("redacts authorization variants and standalone bearer credentials from diagnostic text", () => {
     const input = [
       "Authorization: Basic dXNlcjpwYXNz",
