@@ -1,0 +1,13 @@
+# Runtime state, never committed.
+#
+# suppression-list.json holds real opted-out addresses (personal data) and
+# send-audit.log holds the same addresses in dispatch records. Both are
+# regenerated at runtime and are shared between the opt-out origin and the send
+# preflight by being one file behind one origin (resolveStorePath()), not by
+# being in version control.
+#
+# A fresh clone therefore has no store — and the preflight fails closed (exit
+# code 3) rather than reporting a clear list. That is the intended behaviour.
+suppression-list.json
+send-audit.log
+*.tmp
