@@ -12,6 +12,7 @@ import {
 import { conflict, forbidden } from "../errors.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId } from "./queued-interaction-response.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
 export async function explicitOperatorRunIdentity(
@@ -43,12 +44,23 @@ export async function explicitOperatorRunIdentity(
   ));
   const marker = receipt?.payload?.queuedCommentInterrupt;
   const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
-  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
-  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
-  if (typeof actorId !== "string" || !actorId || !ids.length ||
+  if (typeof actorId !== "string" || !actorId ||
       receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
-      !ids.every(id => deliveredIds.includes(id)) ||
       request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
+  if (!ids.length) {
+    // Queued card answers (approvals, question answers, connection intents) interrupt a run
+    // without delivering comments, so there is no message authority to delegate. Returning
+    // null takes the same path as a wake without an interrupt key, instead of failing every
+    // claim and stalling the agent's whole queue (#14043). Comment receipts without ids
+    // still fail closed.
+    if (queuedInteractionId(receipt?.payload)) return null;
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
+  if (!ids.every(id => deliveredIds.includes(id))) {
     throw forbidden("Queued-message interrupt authority is unavailable");
   }
   return { actorId, cause: "queued_comment_interrupt" };
