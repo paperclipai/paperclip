@@ -2,7 +2,42 @@ import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
-const MODELS_CACHE_TTL_MS = 60_000;
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 45_000;
+const MIN_DISCOVERY_TIMEOUT_MS = 5_000;
+const MAX_DISCOVERY_TIMEOUT_MS = 300_000;
+const DEFAULT_MODELS_CACHE_TTL_MS = 60_000;
+const MAX_MODELS_CACHE_TTL_MS = 3_600_000;
+const STALE_RETENTION_MS = 30 * 60_000;
+// `pi --list-models` output does not depend on cwd (verified: identical output
+// from /tmp and /), so the discovery key intentionally excludes cwd. Callers
+// still pass cwd through to the spawned process.
+
+export function resolvePiModelsTimeoutMs(): number {
+  return readClampedMsEnv(
+    "PAPERCLIP_PI_MODELS_TIMEOUT_MS",
+    DEFAULT_DISCOVERY_TIMEOUT_MS,
+    MIN_DISCOVERY_TIMEOUT_MS,
+    MAX_DISCOVERY_TIMEOUT_MS,
+  );
+}
+
+export function resolvePiModelsCacheTtlMs(): number {
+  const raw = process.env.PAPERCLIP_PI_MODELS_CACHE_TTL_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_MODELS_CACHE_TTL_MS;
+  const parsed = Number(raw);
+  // 0 disables caching (single-flight still applies); NaN/negative fall
+  // back to the default so a typo can never wedge discovery.
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MODELS_CACHE_TTL_MS;
+  return Math.min(Math.floor(parsed), MAX_MODELS_CACHE_TTL_MS);
+}
+
+function readClampedMsEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.max(Math.floor(parsed), min), max);
+}
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -73,6 +108,11 @@ function resolvePiCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+// Single-flight: concurrent callers with the same discovery key share one
+// in-flight spawn instead of each forking `pi --list-models`. Failures are
+// never cached — the entry is removed in `finally` so the next caller
+// re-discovers.
+const discoveryInFlight = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
 
@@ -85,18 +125,21 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
+function discoveryCacheKey(command: string, env: Record<string, string>) {
   const envKey = Object.entries(env)
     .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${hashValue(value)}`)
     .join("\n");
-  return `${command}\n${cwd}\n${envKey}`;
+  return `${command}\n${envKey}`;
 }
 
 function pruneExpiredDiscoveryCache(now: number) {
+  // Expired entries are retained briefly for opt-in stale fallback
+  // (`allowStaleOnFailure`); only ancient ones are dropped to bound memory.
+  // Failures are still never written — only successful discoveries land here.
   for (const [key, value] of discoveryCache.entries()) {
-    if (value.expiresAt <= now) discoveryCache.delete(key);
+    if (value.expiresAt + STALE_RETENTION_MS <= now) discoveryCache.delete(key);
   }
 }
 
@@ -110,6 +153,7 @@ export async function discoverPiModels(input: {
   const env = normalizeEnv(input.env);
   const runtimeEnv = normalizeEnv({ ...process.env, ...env });
 
+  const timeoutMs = resolvePiModelsTimeoutMs();
   const result = await runChildProcess(
     `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
@@ -117,7 +161,7 @@ export async function discoverPiModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: 20,
+      timeoutSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
       graceSec: 3,
       onLog: async () => {},
     },
@@ -151,19 +195,70 @@ export async function discoverPiModelsCached(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  /**
+   * Opt-in stale fallback: on discovery failure, return the last expired
+   * cache entry instead of throwing. Defaults to false (fail-closed).
+   * Failures are never written to the cache either way.
+   */
+  allowStaleOnFailure?: unknown;
 } = {}): Promise<AdapterModel[]> {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const allowStaleOnFailure = input.allowStaleOnFailure === true;
+  const ttlMs = resolvePiModelsCacheTtlMs();
+  const key = discoveryCacheKey(command, env);
   const now = Date.now();
+  // Snapshot a possibly-expired entry before pruning so
+  // `allowStaleOnFailure` callers can fall back to it. The age bound is
+  // enforced here (not just by pruning) so an idle cache can never serve
+  // a fallback older than STALE_RETENTION_MS. Expired entries are
+  // otherwise dropped below and failures are never written to the cache.
+  const previous = ttlMs > 0 ? discoveryCache.get(key) : undefined;
+  const stale =
+    allowStaleOnFailure &&
+    previous &&
+    previous.expiresAt <= now &&
+    previous.expiresAt + STALE_RETENTION_MS > now
+      ? previous
+      : undefined;
   pruneExpiredDiscoveryCache(now);
-  const cached = discoveryCache.get(key);
+  const cached = ttlMs > 0 ? discoveryCache.get(key) : undefined;
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverPiModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  // The shared promise stays fail-closed: it never returns stale data.
+  // Each caller applies its own stale snapshot after the shared discovery
+  // settles, so an opt-in caller can never leak stale models into a
+  // strict caller (e.g. the ensure-path) sharing the same flight.
+  const inFlight = discoveryInFlight.get(key);
+  if (inFlight) {
+    try {
+      return await inFlight;
+    } catch (err) {
+      if (stale) return stale.models;
+      throw err;
+    }
+  }
+
+  let discovery!: Promise<AdapterModel[]>;
+  discovery = (async (): Promise<AdapterModel[]> => {
+    try {
+      const models = await discoverPiModels({ command, cwd, env });
+      if (ttlMs > 0) {
+        discoveryCache.set(key, { expiresAt: Date.now() + ttlMs, models });
+      }
+      return models;
+    } finally {
+      if (discoveryInFlight.get(key) === discovery) discoveryInFlight.delete(key);
+    }
+  })();
+  discoveryInFlight.set(key, discovery);
+  try {
+    return await discovery;
+  } catch (err) {
+    if (stale) return stale.models;
+    throw err;
+  }
 }
 
 export async function ensurePiModelConfiguredAndAvailable(input: {
@@ -197,9 +292,14 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
   return models;
 }
 
-export async function listPiModels(): Promise<AdapterModel[]> {
+export async function listPiModels(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+  allowStaleOnFailure?: unknown;
+} = {}): Promise<AdapterModel[]> {
   try {
-    return await discoverPiModelsCached();
+    return await discoverPiModelsCached(input);
   } catch {
     return [];
   }
@@ -207,4 +307,5 @@ export async function listPiModels(): Promise<AdapterModel[]> {
 
 export function resetPiModelsCacheForTests() {
   discoveryCache.clear();
+  discoveryInFlight.clear();
 }
