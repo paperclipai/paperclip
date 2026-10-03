@@ -2654,6 +2654,13 @@ export function buildHostServices(
         if (!approval || approval.companyId !== companyId) return null;
         return redactApprovalPayload(approval) as any;
       },
+      async listComments(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const approval = await approvalSvc.getById(params.approvalId);
+        if (!approval || approval.companyId !== companyId) return [];
+        return (await approvalSvc.listComments(params.approvalId)) as any;
+      },
       async decide(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
