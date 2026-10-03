@@ -511,9 +511,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId,
       blockerIssueIds: [],
-      isDependencyReady: false,
+      unresolvedBlockerIssueIds: [],
       unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: false,
     });
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
