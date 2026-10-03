@@ -71,6 +71,13 @@ For local adapters, set:
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
 
+### opencode_local: log surfacing and hang protection
+
+The `opencode_local` adapter surfaces OpenCode's own logs and bounds silent runs (a rate-limited or unhealthy model can otherwise retry with backoff for over an hour emitting nothing on stdout):
+
+- **Log surfacing (on by default):** runs start with `--print-logs --log-level WARN`, so OpenCode's own WARN logs — including model stream errors and retries — appear in the run's captured stderr. Disable with `PAPERCLIP_OPENCODE_PRINT_LOGS=0`, or change the level with `PAPERCLIP_OPENCODE_PRINT_LOG_LEVEL` (`DEBUG`|`INFO`|`WARN`|`ERROR`); both are read from the run env first, then the process env.
+- **Output-inactivity monitor (default 30 minutes):** a run that emits no stdout JSONL model events for 30 minutes is terminated (SIGTERM, 5s grace, then SIGKILL) and fails fast with the `opencode_output_inactivity_monitor` error instead of churning until `timeoutSec`. Only model progress events count — `--print-logs` stderr output and long-but-healthy tool activity (tracked via process polling on Linux) do not keep a silent run alive. Configure per agent via `adapterConfig.outputInactivityTimeoutMs` (milliseconds); set it to `null` to disable the monitor.
+
 ## 3.4 Prompt templates
 
 You can set:

@@ -777,6 +777,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
       let sigkillFired = false;
       let monitorLogPromise: Promise<unknown> | null = null;
+      // Queue a stderr diagnostic instead of replacing any pending write: the
+      // cleanup below awaits only the latest promise, so a bare reassignment
+      // could drop an earlier diagnostic before the heartbeat logger
+      // persists it. Chaining also keeps the lines in emission order.
+      const queueMonitorLog = (line: string): void => {
+        const previous = monitorLogPromise ?? Promise.resolve();
+        monitorLogPromise = previous
+          .catch(() => {})
+          .then(() => Promise.resolve(onLog("stderr", line)).catch(() => {}));
+      };
       const processActivityMonitor: { current: OpenCodeProcessActivityMonitorHandle | null } = { current: null };
       const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
 
@@ -805,11 +815,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   `parsedEvents=${state.parsedEventCount} stderrChunkCount=${state.stderrChunkCount} stderrBytes=${state.stderrBytes} ` +
                   `processActivityCount=${state.processActivityCount} ` +
                   `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ${terminationNote}.\n`;
-                // Issue the log without awaiting on the kill hot path, but capture
-                // the promise so the surrounding try/finally can await flush before
-                // the run resolves. Without this the diagnostic that explains the
-                // kill could be dropped if the child exits faster than onLog flushes.
-                monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+                // Issue the log without awaiting on the kill hot path, but keep
+                // the promise queued so the surrounding try/finally can await
+                // flush before the run resolves. Without this the diagnostic
+                // that explains the kill could be dropped if the child exits
+                // faster than onLog flushes.
+                queueMonitorLog(logLine);
               },
             });
 
@@ -840,12 +851,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // runtime preparation). The already-fired monitor never signals
           // again, so without this the fresh child would run to the
           // wall-clock timeout. Terminate it immediately on spawn.
-          monitorLogPromise = Promise.resolve(
-            onLog(
-              "stderr",
-              "[paperclip] Output inactivity monitor fired before the opencode child spawned; terminating the fresh child now.\n",
-            ),
-          ).catch(() => {});
+          queueMonitorLog(
+            "[paperclip] Output inactivity monitor fired before the opencode child spawned; terminating the fresh child now.\n",
+          );
           beginMonitorTermination();
         } else if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
           processActivityMonitor.current = createOpenCodeProcessActivityMonitor({
@@ -863,6 +871,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       };
 
+      let invocation:
+        | {
+            proc: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>;
+            rawStderr: string;
+            parsed: ReturnType<typeof parseOpenCodeJsonl>;
+          }
+        | null = null;
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           onProcessStopped: providerStop.beginInvocation(),
@@ -880,18 +895,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           runLogTail: paperclipBridge?.runLogTail,
           settleRunDisposition: paperclipBridge?.settleRunDisposition,
         });
-        return {
+        invocation = {
           proc,
           rawStderr: proc.stderr,
           parsed: parseOpenCodeJsonl(proc.stdout),
-          monitor: monitorFired
-            ? {
-                fired: true as const,
-                terminationSignal: monitorTerminationSignal,
-                elapsedMsSinceLastEvent: monitorElapsedMs,
-                timeoutMs: monitorTimeoutMs,
-              }
-            : { fired: false as const },
         };
       } finally {
         processActivityMonitor.current?.stop();
@@ -921,12 +928,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             // A hard slack bounds the wait so a group that survives even
             // SIGKILL (e.g. uninterruptible disk sleep) can never hang the
             // run.
-            monitorLogPromise = Promise.resolve(
-              onLog(
-                "stderr",
-                "[paperclip] Surviving process group is still alive after opencode exited; holding the run result until teardown completes so the next queued run cannot start early.\n",
-              ),
-            ).catch(() => {});
+            queueMonitorLog(
+              "[paperclip] Surviving process group is still alive after opencode exited; holding the run result until teardown completes so the next queued run cannot start early.\n",
+            );
             const teardownDeadlineMs =
               Date.now() + OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS + OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS;
             while (!sigkillFired && Date.now() < teardownDeadlineMs && (await isSpawnTargetLive(signalableTarget))) {
@@ -950,6 +954,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           monitorLogPromise = null;
         }
       }
+      // Snapshot the monitor outcome only after teardown completes: the
+      // scheduled SIGKILL can fire during the surviving-group teardown wait
+      // above, and the run result must report the actually-delivered signal
+      // (SIGKILL), not the stale SIGTERM captured when termination began.
+      return {
+        proc: invocation.proc,
+        rawStderr: invocation.rawStderr,
+        parsed: invocation.parsed,
+        monitor: monitorFired
+          ? {
+              fired: true as const,
+              terminationSignal: monitorTerminationSignal,
+              elapsedMsSinceLastEvent: monitorElapsedMs,
+              timeoutMs: monitorTimeoutMs,
+            }
+          : { fired: false as const },
+      };
     };
 
     const buildSessionIdentity = (resolvedSessionId: string | null) =>

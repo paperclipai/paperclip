@@ -139,6 +139,53 @@ describe("OpenCode local skill injection", () => {
     expect(result.clearSession).toBe(false);
   });
 
+  it("awaits both queued monitor diagnostics before the run resolves", { timeout: 20_000 }, async () => {
+    if (process.platform === "win32") return;
+    const commandPath = path.join(configHome, "fake-opencode-diagnostic");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // The monitor fires (50ms) before the mocked run spawns (150ms), so the
+    // fired diagnostic and the pre-spawn termination note both queue. The
+    // diagnostic write is slow (250ms — the heartbeat logger persists
+    // asynchronously) while every other write is fast: a cleanup that awaited
+    // only the most recent write would resolve the run first and drop the
+    // diagnostic explaining the termination.
+    runProcessMock
+      .mockReset()
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[4] as
+          | { onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void> }
+          | undefined;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await options?.onSpawn?.({ pid: 999_999, processGroupId: null, startedAt: new Date().toISOString() });
+        return probeResult({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "" });
+      });
+    let diagnosticLoggedAt = 0;
+    const result = await execute({
+      runId: "run-monitor-diagnostic",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "sess_diag", sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath, cwd: configHome, model: "openai/gpt-5",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+        outputInactivityTimeoutMs: 50,
+      },
+      context: createPromptContextFixture(),
+      onLog: async (_stream, chunk) => {
+        const line = String(chunk);
+        if (line.includes("adapter.invoke") && line.includes("no opencode activity")) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          diagnosticLoggedAt = Date.now();
+        }
+      },
+    });
+    const resolvedAt = Date.now();
+    expect(result.errorCode).toBe("opencode_output_inactivity_monitor");
+    expect(diagnosticLoggedAt).toBeGreaterThan(0);
+    // The run must not finalize while either queued diagnostic write is still
+    // in flight — awaiting only the latest one would orphan the earlier one.
+    expect(resolvedAt).toBeGreaterThanOrEqual(diagnosticLoggedAt);
+  });
+
   it("holds the run resolve until a surviving group tears down, honoring the full grace before SIGKILL", { timeout: 20_000 }, async () => {
     if (process.platform === "win32") return;
     // A real detached process group that ignores SIGTERM, mirroring a
@@ -203,7 +250,10 @@ describe("OpenCode local skill injection", () => {
       const monitorInfo = result.resultJson?.outputInactivityMonitor as
         | { terminationSignal?: NodeJS.Signals | null }
         | undefined;
-      expect(monitorInfo?.terminationSignal).toBe("SIGTERM");
+      expect(monitorInfo?.terminationSignal).toBe("SIGKILL");
+      // The scheduled grace-end SIGKILL fires during the teardown wait above,
+      // and the result must report the actually-delivered escalation signal —
+      // not the stale SIGTERM captured when termination began.
       // The result must land only after the surviving group tore down: the
       // heartbeat executor may immediately start the next queued run for the
       // same agent once this result resolves, and that run must not race a
