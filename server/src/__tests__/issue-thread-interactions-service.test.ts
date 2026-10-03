@@ -4247,4 +4247,39 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
     });
   });
+
+  it("supersedes older pending confirmations from the same board user (double-submit dedup)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Board user dedup");
+
+    const first = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the plan?" },
+    }, { userId: "user-board-1" });
+
+    const otherUser = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the plan?" },
+    }, { userId: "user-board-2" });
+
+    const replacement = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the revised plan?" },
+    }, { userId: "user-board-1" });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+
+    // The first card from user-board-1 must be superseded by the replacement.
+    expect(interactions.find((i) => i.id === first.id)).toMatchObject({
+      status: "expired",
+      resolvedByUserId: "user-board-1",
+      result: {
+        outcome: "superseded_by_newer_request",
+        supersededByInteractionId: replacement.id,
+      },
+    });
+    // The replacement is pending.
+    expect(interactions.find((i) => i.id === replacement.id)?.status).toBe("pending");
+    // A different user's card is untouched.
+    expect(interactions.find((i) => i.id === otherUser.id)?.status).toBe("pending");
+  });
 });

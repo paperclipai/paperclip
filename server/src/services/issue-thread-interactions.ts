@@ -3534,19 +3534,28 @@ export function issueThreadInteractionService(
             })
             .returning();
 
-          // An agent replacing its own still-pending card supersedes the older
+          // An actor replacing its own still-pending card supersedes the older
           // one so the thread never accumulates stale sibling cards. This covers
           // request_confirmation drafts and ask_user_questions (PAP-437: probe
-          // question cards that agents never withdrew). Each kind keeps its own
-          // result shape. Scoped strictly to the same agent + issue + kind, so
-          // other agents' or other kinds' pending cards are untouched.
+          // question cards that agents never withdrew; INUA-8412: board users
+          // double-submitting the same card). Each kind keeps its own result
+          // shape. Scoped strictly to the same creator + issue + kind, so
+          // other actors' or other kinds' pending cards are untouched.
           const canSupersedeSiblingCards =
             options.supersedePendingSiblingInteractions !== false &&
             ((data.kind === "request_confirmation" &&
               data.payload.toolAction === undefined &&
               data.payload.secretProposal === undefined) ||
               data.kind === "ask_user_questions");
-          if (!actor.agentId || !canSupersedeSiblingCards) {
+          // Build a per-creator filter: agents filter by createdByAgentId,
+          // board users filter by createdByUserId. If neither is set (system
+          // actor with no identity), skip supersede.
+          const actorCreatorFilter = actor.agentId
+            ? eq(issueThreadInteractions.createdByAgentId, actor.agentId)
+            : actor.userId
+              ? eq(issueThreadInteractions.createdByUserId, actor.userId)
+              : null;
+          if (!actorCreatorFilter || !canSupersedeSiblingCards) {
             await enqueueIssueInteractionChatPublications(
               tx as unknown as Db,
               hydrateInteraction(row),
@@ -3564,7 +3573,7 @@ export function issueThreadInteractionService(
             .set({
               status: "expired",
               result: supersededResult,
-              resolvedByAgentId: actor.agentId,
+              resolvedByAgentId: actor.agentId ?? null,
               resolvedByUserId: actor.userId ?? null,
               resolvedAt: now,
               updatedAt: now,
@@ -3574,7 +3583,7 @@ export function issueThreadInteractionService(
                 eq(issueThreadInteractions.companyId, issue.companyId),
                 eq(issueThreadInteractions.issueId, issue.id),
                 eq(issueThreadInteractions.kind, data.kind),
-                eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+                actorCreatorFilter,
                 eq(issueThreadInteractions.status, "pending"),
                 ne(issueThreadInteractions.id, row.id),
               ),
