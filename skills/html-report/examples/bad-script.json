@@ -1,0 +1,27 @@
+{
+  "title": "Should fail",
+  "sections": [
+    {
+      "type": "code_block",
+      "language": "javascript",
+      "code": "alert('this is only text — ok')"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trying to sneak a javascript: href",
+      "anchor": true
+    },
+    {
+      "type": "text",
+      "spans": [
+        { "kind": "text", "text": "Bad link: " },
+        {
+          "kind": "link",
+          "text": "click me",
+          "href": "javascript:alert(1)"
+        }
+      ]
+    }
+  ]
+}
