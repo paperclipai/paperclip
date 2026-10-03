@@ -644,6 +644,38 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("redacts hire credentials in approval payloads returned to runner tools", async () => {
+    const approvalId = "00000000-0000-4000-8000-000000000221";
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: {
+        name: "New hire",
+        adapterConfig: { apiToken: "hire-secret-token", model: "gpt" },
+        runtimeConfig: { env: { OPENAI_API_KEY: "hire-secret-key" } },
+      },
+    });
+    await db.insert(issueApprovals).values({ companyId, approvalId, issueId, linkedByAgentId: agentId });
+
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const results = await Promise.all([
+      authority.execute({ tool: "list_approvals", callId: "redact-list", arguments: {} }),
+      authority.execute({ tool: "get_approval", callId: "redact-get", arguments: { approvalId } }),
+      authority.execute({ tool: "get_approval_context", callId: "redact-context", arguments: { approvalId } }),
+    ]);
+    for (const result of results) {
+      const serialized = JSON.stringify(result);
+      expect(serialized).toContain(approvalId);
+      expect(serialized).not.toContain("hire-secret-token");
+      expect(serialized).not.toContain("hire-secret-key");
+    }
+    // The stored approval keeps the real value for board approval to apply.
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(JSON.stringify(stored!.payload)).toContain("hire-secret-token");
+  });
+
   it("relays assigned MCP calls only while the native run still owns its task", async () => {
     const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
     const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });

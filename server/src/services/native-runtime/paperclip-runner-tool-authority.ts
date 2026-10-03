@@ -60,6 +60,7 @@ import {
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
+import { redactEventPayload } from "../../redaction.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -534,10 +535,10 @@ export class PaperclipRunnerToolAuthority {
         return { actor: redactedActor(actor) };
       }
       case "list_approvals":
-        return { approvals: await approvalService(this.db).list(this.binding.companyId) };
+        return { approvals: (await approvalService(this.db).list(this.binding.companyId)).map(redactedApproval) };
       case "get_approval": {
         const approval = await this.#approval(requiredString(input.approvalId));
-        return { approval };
+        return { approval: redactedApproval(approval) };
       }
       case "get_approval_context": {
         const approval = await this.#approval(requiredString(input.approvalId));
@@ -548,7 +549,7 @@ export class PaperclipRunnerToolAuthority {
             eq(issueApprovals.companyId, this.binding.companyId),
             eq(issues.companyId, this.binding.companyId),
           ));
-        return { approval, tasks: tasks.map((row) => row.issue) };
+        return { approval: redactedApproval(approval), tasks: tasks.map((row) => row.issue) };
       }
       case "report_progress": return this.#reportProgress(input);
       case "request_human_input": return this.#requestHumanInput(input,
@@ -1958,6 +1959,13 @@ function boundedLimit(value: unknown, fallback = 50, maximum = 100): number {
   return typeof value === "number" && Number.isInteger(value)
     ? Math.max(1, Math.min(value, maximum))
     : fallback;
+}
+
+// Approval payloads can carry hire credentials (adapter/runtime config). Agents
+// reading approvals through runner tools get the same redacted view as the
+// approvals API and the plugin bridge.
+function redactedApproval<T extends { payload: Record<string, unknown> }>(approval: T): T {
+  return { ...approval, payload: redactEventPayload(approval.payload) ?? {} };
 }
 
 function redactedActor(actor: {
