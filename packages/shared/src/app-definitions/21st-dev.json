@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "slug": "21st-dev",
+  "name": "21st Dev",
+  "description": "Search UI components, retrieve code, and generate designs with 21st Dev.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/21st-dev.svg"
+  },
+  "urlPatterns": [
+    "https://21st.dev/*"
+  ],
+  "docsUrl": "https://github.com/21st-dev/magic-mcp/blob/main/README.md",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect the hosted 21st MCP server with your account's API key.",
+      "defaults": {
+        "serverUrl": "https://21st.dev/api/mcp"
+      },
+      "guidanceMd": "Sign in at 21st.dev/mcp, create a fresh API key for the account agents should use, and paste it below. Keys from the retired Magic console no longer work.",
+      "riskTier": "S3",
+      "label": "Connect with an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "21st Dev API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your 21st Dev API key",
+          "secret": true,
+          "helperMd": "Create a fresh API key for the account agents should use at https://21st.dev/mcp. The account controls component retrieval, library/profile changes and hosted AI access. Check get_usage.aiGenerationEnabled before generation; Paperclip cannot enable paid capabilities or increase a key’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "x-api-key",
+        "prefix": ""
+      },
+      "consoleLinks": {
+        "keys": "https://21st.dev/mcp",
+        "docs": "https://github.com/21st-dev/magic-mcp/blob/main/README.md"
+      },
+      "warnings": [
+        "Component retrieval depends on your account's access. Hosted generation requires AI access and credits; check get_usage.aiGenerationEnabled before generating. Refresh tools or reconnect after enabling AI access."
+      ]
+    }
+  ]
+}

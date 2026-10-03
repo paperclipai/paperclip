@@ -3,6 +3,24 @@
   "evidenceLevel": "Official documentation and public MCP metadata; no account-bound read/write proof. Runtime discovery never expands this allowlist.",
   "methods": [
     {
+      "app": "21st-dev",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Search and retrieve components, themes, templates and logos; manage bookmarks, team libraries and profile data; generate and iterate UI when hosted AI is enabled for the account.",
+      "evidence": [
+        "https://github.com/21st-dev/magic-mcp/blob/main/README.md",
+        "https://github.com/21st-dev/magic-mcp/blob/main/llms-install.md",
+        "https://21st.dev/mcp"
+      ],
+      "reviewedAt": "2026-10-03",
+      "liveProof": "not-run",
+      "keyPermissions": "Create a fresh API key for the account agents should use at https://21st.dev/mcp. The account controls component retrieval, library/profile changes and hosted AI access. Check get_usage.aiGenerationEnabled before generation; Paperclip cannot enable paid capabilities or increase a key\u2019s permissions.",
+      "evidenceLimit": "Official setup documentation and unauthenticated protocol metadata verified; authenticated tool inventory and account-bound read/write proof remain outstanding."
+    },
+    {
       "app": "airtable",
       "method": "mcp-oauth",
       "auth": "oauth",

@@ -232,6 +232,24 @@ describe("AppDefinition catalog", () => {
 
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
+  it("offers the hosted 21st MCP with the documented custom API-key header", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "21st-dev")!;
+    expect(app).toBeDefined();
+    expect(app.categories).toEqual(["developer"]);
+    expect(app.branding.logoUrl).toBe("/brands/apps/21st-dev.svg");
+    expect(app.methods).toHaveLength(1);
+    const connectionMethod = app.methods[0];
+    expect(connectionMethod.transport).toBe("mcp_remote");
+    expect(connectionMethod.auth).toBe("api_key");
+    expect(connectionMethod.defaults?.serverUrl).toBe("https://21st.dev/api/mcp");
+    expect(connectionMethod.keyPlacement).toEqual({ location: "header", name: "x-api-key", prefix: "" });
+    expect(connectionMethod.consoleLinks?.keys).toBe("https://21st.dev/mcp");
+    expect(connectionMethod.credentialFields?.[0]).toMatchObject({ key: "authorization", type: "password", secret: true, required: true });
+    expect(connectionMethod.credentialFields?.[0].helperMd).toContain("get_usage.aiGenerationEnabled");
+    expect(connectionMethod.guidanceMd).toContain("retired Magic");
+    expect(connectionMethod.warnings?.join(" ")).toContain("credits");
+  });
+
   it("contains every established provider plus the reviewed self-serve catalog", () => {
     expect(APP_DEFINITIONS.map((app) => app.slug)).toEqual(
       expect.arrayContaining([
@@ -262,7 +280,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(49);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(50);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -426,15 +444,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 52 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 53 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(52);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(53);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 52);
+    ).toHaveProperty("size", 53);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -728,7 +746,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(59);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

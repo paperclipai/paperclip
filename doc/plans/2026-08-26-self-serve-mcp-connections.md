@@ -355,3 +355,11 @@ refresh; no client registration was performed during research. Its optional
 V2 `meeting.summarized` webhook uses a separately signed routine trigger.
 See [Fireflies setup and evidence](../connections/FIREFLIES.md) for ownership,
 public HTTPS requirements, artwork provenance, and live-proof boundaries.
+
+## 21st Dev addition — 2026-10-03
+
+Added the documented hosted MCP API-key method at `https://21st.dev/api/mcp`,
+with the `x-api-key` header, official vendor artwork, and account-entitlement
+setup guidance. Public protocol metadata and official setup documentation were
+verified; authenticated discovery and read/write qualification remain outstanding.
+See [21st Dev](../connections/21ST-DEV.md) for evidence and acceptance criteria.

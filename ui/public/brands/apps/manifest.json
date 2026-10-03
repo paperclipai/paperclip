@@ -2,6 +2,17 @@
   "schemaVersion": 1,
   "providers": [
     {
+      "slug": "21st-dev",
+      "provider": "21st Dev",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/21st-dev.svg",
+      "aliases": [
+        "21st",
+        "21st.dev",
+        "Magic MCP"
+      ]
+    },
+    {
       "slug": "agentmail",
       "provider": "AgentMail",
       "catalogVisible": true,

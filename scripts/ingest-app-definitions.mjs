@@ -918,6 +918,7 @@ const researchManifest = JSON.parse(
   ),
 );
 const categoryBySlug = {
+  "21st-dev": "developer",
   airtable: "data",
   asana: "productivity",
   beehiiv: "content",
@@ -1095,6 +1096,16 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "21st-dev") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      label: "Connect with an API key",
+      whenToUse: "Connect the hosted 21st MCP server with your account's API key.",
+      keyPlacement: { location: "header", name: "x-api-key", prefix: "" },
+      guidanceMd: "Sign in at 21st.dev/mcp, create a fresh API key for the account agents should use, and paste it below. Keys from the retired Magic console no longer work.",
+      consoleLinks: { keys: "https://21st.dev/mcp", docs: entry.docsUrl },
+      warnings: ["Component retrieval depends on your account's access. Hosted generation requires AI access and credits; check get_usage.aiGenerationEnabled before generating. Refresh tools or reconnect after enabling AI access."],
+    }),
+  ];
   if (entry.slug === "asana") return [
     oauthMethodFor(entry, "managed", entry.serverUrl, {
       label: "Sign in with Asana",
@@ -1515,7 +1526,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ "21st-dev": "Search UI components, retrieve code, and generate designs with 21st Dev.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
