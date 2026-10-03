@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# agy-gemini-bridge
+#
+# Adapts the Paperclip `gemini_local` adapter's CLI invocation to `agy`
+# (Antigravity CLI, subscription/OAuth auth) instead of `gemini` (which
+# requires GOOGLE_API_KEY). Translates the flags gemini_local always sends,
+# runs agy headlessly, and re-emits its plain-text output as the JSONL
+# stream `parseGeminiJsonl` expects (see
+# packages/adapters/gemini-local/src/server/parse.ts).
+#
+# Flag translation (see ZIM-427):
+#   --output-format stream-json  -> dropped (this wrapper always emits JSONL)
+#   --resume <id>                -> --conversation <id>
+#   --model <model>               -> --model <model> (passthrough)
+#   --approval-mode yolo         -> --dangerously-skip-permissions
+#   --sandbox=none / --sandbox   -> dropped (agy has no sandbox flag)
+#   --prompt <text>               -> --print <text>
+#
+# Any other flag is dropped with a stderr warning rather than forwarded,
+# since agy fails hard ("flags provided but not defined") on unknown flags.
+#
+# This script has no assumptions about which host it runs on beyond `agy`
+# being on PATH (or AGY_GEMINI_BRIDGE_AGY_BIN pointing at it) and `node`
+# being available (guaranteed by every Paperclip adapter-runtime image —
+# python3 is not, so JSON encoding below uses `node`, not python3).
+#
+# OAuth token portability: `agy` authenticates via a token file at
+# $HOME/.gemini/antigravity-cli/antigravity-oauth-token. Fresh hosts/sandboxes
+# won't have this file. If AGY_OAUTH_TOKEN_JSON is set (adapterConfig.env,
+# treated as a secret) and the token file is missing, this script writes it
+# out before invoking agy so the adapter config is the single source of truth
+# for credential distribution rather than requiring a pre-provisioned host.
+set -u
+
+AGY_BIN="${AGY_GEMINI_BRIDGE_AGY_BIN:-agy}"
+TOKEN_PATH="${HOME:-/tmp}/.gemini/antigravity-cli/antigravity-oauth-token"
+
+if [ ! -s "$TOKEN_PATH" ] && [ -n "${AGY_OAUTH_TOKEN_JSON:-}" ]; then
+  mkdir -p "$(dirname "$TOKEN_PATH")"
+  printf '%s' "$AGY_OAUTH_TOKEN_JSON" > "$TOKEN_PATH"
+  chmod 600 "$TOKEN_PATH"
+fi
+
+agy_args=()
+prompt=""
+have_prompt=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-format)
+      shift 2
+      ;;
+    --resume)
+      agy_args+=(--conversation "$2")
+      shift 2
+      ;;
+    --model)
+      agy_args+=(--model "$2")
+      shift 2
+      ;;
+    --approval-mode)
+      # value (always "yolo") is discarded; --dangerously-skip-permissions
+      # is always passed below regardless, so just consume it here.
+      shift 2
+      ;;
+    --sandbox=*)
+      shift
+      ;;
+    --sandbox)
+      shift
+      ;;
+    --prompt)
+      prompt="$2"
+      have_prompt=1
+      shift 2
+      ;;
+    *)
+      echo "[agy-gemini-bridge] warning: dropping unrecognized flag: $1" >&2
+      shift
+      ;;
+  esac
+done
+
+if [ "$have_prompt" -ne 1 ]; then
+  echo "[agy-gemini-bridge] error: no --prompt provided" >&2
+  exit 2
+fi
+
+tmpdir="${TMPDIR:-/tmp}"
+log_file=$(mktemp "$tmpdir/agy-gemini-bridge-XXXXXX.log")
+out_file=$(mktemp "$tmpdir/agy-gemini-bridge-XXXXXX.out")
+cleanup() { rm -f "$log_file" "$out_file"; }
+trap cleanup EXIT
+
+# --log-file isolates this invocation's log from concurrent agy runs, so the
+# conversation ID can be scraped reliably without a newest-mtime race against
+# other agents running agy at the same time.
+"$AGY_BIN" --dangerously-skip-permissions --log-file "$log_file" \
+  "${agy_args[@]}" --print "$prompt" >"$out_file" 2>&1
+exit_code=$?
+
+conversation_id=$(grep -oE '(Created conversation|resuming conversation) [0-9a-fA-F-]{36}' "$log_file" \
+  | tail -1 | awk '{print $NF}')
+
+AGY_BRIDGE_EXIT_CODE="$exit_code" AGY_BRIDGE_CONVERSATION_ID="$conversation_id" AGY_BRIDGE_OUT_FILE="$out_file" node -e '
+const fs = require("fs");
+const exitCode = parseInt(process.env.AGY_BRIDGE_EXIT_CODE, 10);
+const conversationId = process.env.AGY_BRIDGE_CONVERSATION_ID || "";
+const text = fs.readFileSync(process.env.AGY_BRIDGE_OUT_FILE, "utf8").trim();
+
+process.stdout.write(JSON.stringify({ type: "message", role: "assistant", content: text }) + "\n");
+
+const result = { type: "result", is_error: exitCode !== 0 };
+result.result = exitCode === 0 ? "success" : "error";
+if (exitCode !== 0) result.error = text.slice(-4000);
+if (conversationId) result.session_id = conversationId;
+process.stdout.write(JSON.stringify(result) + "\n");
+'
+
+exit "$exit_code"
