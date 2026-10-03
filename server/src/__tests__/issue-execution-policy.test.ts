@@ -1760,12 +1760,108 @@ describe("issue execution policy transitions", () => {
       ).toThrow("Monitor can only be scheduled");
     });
 
-    it("rejects explicitly re-arming a monitor after max attempts are exhausted", () => {
+    it("starts a new monitor at attempt zero once the previous monitor is spent", () => {
       const policy = normalizeIssueExecutionPolicy({
         stages: [],
         monitor: {
           nextCheckAt: "2099-04-11T12:30:00.000Z",
           maxAttempts: 1,
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: null,
+          monitorAttemptCount: 1,
+          monitorNextCheckAt: null,
+          monitorLastTriggeredAt: new Date("2026-04-11T12:30:00.000Z"),
+          monitorNotes: null,
+          monitorScheduledBy: "assignee",
+        },
+        policy,
+        previousPolicy: null,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        monitorExplicitlyUpdated: true,
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2099-04-11T12:30:00.000Z"));
+      expect(result.patch.monitorAttemptCount).toBe(0);
+      expect(result.patch.executionState).toMatchObject({
+        monitor: {
+          status: "scheduled",
+          attemptCount: 0,
+          maxAttempts: 1,
+        },
+      });
+    });
+
+    it("still rejects a maxAttempts below the attempts the scheduled monitor already spent", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2099-04-11T12:30:00.000Z",
+          maxAttempts: 2,
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: null,
+            executionState: {
+              status: "idle",
+              currentStageId: null,
+              currentStageIndex: null,
+              currentStageType: null,
+              currentParticipant: null,
+              returnAssignee: null,
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+              monitor: {
+                status: "scheduled",
+                nextCheckAt: "2098-04-11T12:30:00.000Z",
+                lastTriggeredAt: "2026-04-11T12:30:00.000Z",
+                attemptCount: 2,
+                notes: null,
+                scheduledBy: "assignee",
+                clearedAt: null,
+                clearReason: null,
+              },
+            },
+            monitorAttemptCount: 2,
+            monitorNextCheckAt: new Date("2098-04-11T12:30:00.000Z"),
+            monitorLastTriggeredAt: new Date("2026-04-11T12:30:00.000Z"),
+            monitorNotes: null,
+            monitorScheduledBy: "assignee",
+          },
+          policy,
+          previousPolicy: null,
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          monitorExplicitlyUpdated: true,
+        }),
+      ).toThrow(
+        "Monitor bounds are already exhausted: the scheduled monitor has already used 2 attempt(s) and maxAttempts is 2. Supply maxAttempts of at least 3.",
+      );
+    });
+
+    it("names the offending timeoutAt when the monitor deadline has already passed", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2099-04-11T12:30:00.000Z",
+          timeoutAt: "2020-04-11T12:30:00.000Z",
           scheduledBy: "assignee",
         },
       })!;
@@ -1778,11 +1874,6 @@ describe("issue execution policy transitions", () => {
             assigneeUserId: null,
             executionPolicy: null,
             executionState: null,
-            monitorAttemptCount: 1,
-            monitorNextCheckAt: null,
-            monitorLastTriggeredAt: null,
-            monitorNotes: null,
-            monitorScheduledBy: "assignee",
           },
           policy,
           previousPolicy: null,
@@ -1790,7 +1881,7 @@ describe("issue execution policy transitions", () => {
           actor: { agentId: coderAgentId },
           monitorExplicitlyUpdated: true,
         }),
-      ).toThrow("Monitor bounds are already exhausted");
+      ).toThrow("timeoutAt 2020-04-11T12:30:00.000Z has already passed");
     });
   });
 });
