@@ -3121,10 +3121,10 @@ export function agentRoutes(
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
+    const { adapterConfig: _adapterConfig, runtimeConfig: _runtimeConfig, ...rest } = agent;
     return {
-      ...agent,
-      adapterConfig: {},
-      runtimeConfig: {},
+      ...rest,
+      configRedacted: true as const,
     };
   }
 
@@ -3158,6 +3158,7 @@ export function agentRoutes(
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
+      configRedacted: false as const,
     };
   }
 
