@@ -427,7 +427,7 @@ npx paperclipai issue get <issue-id-or-identifier>
 npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 npx paperclipai issue delete <issue-id> --yes
-npx paperclipai issue comment <issue-id> --body "..." [--attachment-id <id...>] [--reopen]
+npx paperclipai issue comment <issue-id> (--body "..." | --body-file <path-or->) [--attachment-id <id...>] [--reopen]
 npx paperclipai issue comments <issue-id> [--limit 50]
 npx paperclipai issue comment:get <issue-id> <comment-id>
 npx paperclipai issue comment:delete <issue-id> <comment-id>
@@ -775,6 +775,7 @@ still enforced by the server in both cases.
   `slug`; catalog references accept catalog `id`, `key`, or unique `slug`.
 - `skills file` prints raw file content in human mode so it can be piped.
 - `skills create --body-file -` reads the skill markdown body from stdin.
+- `issue comment --body-file <path>` and `approval comment --body-file <path>` read the comment body from a file, and `-` reads it from stdin. Prefer `--body-file` (or a quoted heredoc on `-`) for any body that can contain backticks, `$( )`, or `$VAR`: a shell-typed `--body "..."` lets the shell command-substitute those spans before the CLI receives them.
 - `skills remove`, `skills reset`, and `skills agent clear` prompt in a TTY and
   require `--yes` in non-interactive use.
 - `--json` prints the raw API result for each command.
@@ -863,7 +864,7 @@ npx paperclipai approval approve <approval-id> [--decision-note "..."]
 npx paperclipai approval reject <approval-id> [--decision-note "..."]
 npx paperclipai approval request-revision <approval-id> [--decision-note "..."]
 npx paperclipai approval resubmit <approval-id> [--payload '{"...":"..."}']
-npx paperclipai approval comment <approval-id> --body "..."
+npx paperclipai approval comment <approval-id> (--body "..." | --body-file <path-or->)
 ```
 
 ## Activity Commands

@@ -34,6 +34,7 @@ import {
   handleCommandError,
   inferContentTypeFromPath,
   printOutput,
+  readBodyFile,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -79,7 +80,8 @@ interface IssueUpdateOptions extends BaseClientOptions {
 }
 
 interface IssueCommentOptions extends BaseClientOptions {
-  body: string;
+  body?: string;
+  bodyFile?: string;
   attachmentId?: string[];
   reopen?: boolean;
   resume?: boolean;
@@ -361,7 +363,8 @@ export function registerIssueCommands(program: Command): void {
       .command("comment")
       .description("Add comment to issue")
       .argument("<issueId>", "Issue ID")
-      .requiredOption("--body <text>", "Comment body")
+      .option("--body <text>", "Comment body")
+      .option("--body-file <path>", "Read comment body from a file; use - to read stdin")
       .option(
         "--attachment-id <id...>",
         "Bind uploaded issue attachments to this comment",
@@ -371,8 +374,15 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: IssueCommentOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
+          if (opts.body !== undefined && opts.bodyFile !== undefined) {
+            throw new Error("Pass either --body or --body-file, not both.");
+          }
+          const body = opts.bodyFile !== undefined ? await readBodyFile(opts.bodyFile) : opts.body;
+          if (body === undefined) {
+            throw new Error("Comment body is required. Pass --body or --body-file.");
+          }
           const payload = addIssueCommentSchema.parse({
-            body: opts.body,
+            body,
             attachmentIds: opts.attachmentId,
             reopen: opts.reopen,
             resume: opts.resume,
