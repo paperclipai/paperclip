@@ -703,12 +703,11 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
     },
     readTextFile: async (remotePath, maxBytes) => {
       const command = maxBytes === undefined
-        ? `base64 < ${shellQuote(remotePath)}`
-        : `head -c ${Math.trunc(maxBytes) + 1} ${shellQuote(remotePath)} | base64`;
+        ? `cat ${shellQuote(remotePath)}`
+        : `head -c ${Math.trunc(maxBytes) + 1} ${shellQuote(remotePath)}`;
       const result = await runChecked(`read ${remotePath}`, command);
-      const bytes = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
-      if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error("Bridge envelope exceeded the configured size limit.");
-      return bytes.toString("utf8");
+      if (maxBytes !== undefined && Buffer.byteLength(result.stdout) > maxBytes) throw new Error("Bridge envelope exceeded the configured size limit.");
+      return result.stdout;
     },
     writeTextFile: async (remotePath, body) => {
       const remoteDir = path.posix.dirname(remotePath);
