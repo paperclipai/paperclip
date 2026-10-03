@@ -11,6 +11,7 @@ import {
   formatMonitorEtaLabel,
   formatMonitorOffset,
   useMonitorCountdown,
+  waitingSurfaceCheckNowAction,
 } from "./issue-monitor";
 
 describe("monitor time formatting", () => {
@@ -193,6 +194,49 @@ describe("deriveMonitorState", () => {
         now,
       ),
     ).toMatchObject({ state: "retrying", source: "scheduled-retry", attemptCount: 2 });
+  });
+});
+
+describe("waitingSurfaceCheckNowAction", () => {
+  const now = new Date("2026-07-17T19:56:00.000Z");
+  const scheduledRetry = {
+    status: "scheduled_retry" as const,
+    scheduledRetryAt: "2026-07-17T20:05:00.000Z",
+    scheduledRetryAttempt: 1,
+  };
+
+  it("promotes the retry when the surface has no monitor behind it", () => {
+    expect(waitingSurfaceCheckNowAction({ status: "blocked", scheduledRetry }, now)).toBe(
+      "promote-scheduled-retry",
+    );
+  });
+
+  it("checks the monitor whenever one exists, retry or not", () => {
+    expect(
+      waitingSurfaceCheckNowAction(
+        { executionState: { monitor: { status: "scheduled", nextCheckAt: "2026-07-17T20:05:00.000Z" } } },
+        now,
+      ),
+    ).toBe("check-monitor");
+    // A monitored task that also carries a retry keeps checking its monitor.
+    expect(
+      waitingSurfaceCheckNowAction(
+        { monitorNextCheckAt: "2026-07-17T20:05:00.000Z", scheduledRetry },
+        now,
+      ),
+    ).toBe("check-monitor");
+  });
+
+  it("falls back to the monitor when there is nothing to promote", () => {
+    expect(waitingSurfaceCheckNowAction(null, now)).toBe("check-monitor");
+    expect(waitingSurfaceCheckNowAction({}, now)).toBe("check-monitor");
+    // Promotion already happened: a queued retry is no longer waiting.
+    expect(
+      waitingSurfaceCheckNowAction({ scheduledRetry: { ...scheduledRetry, status: "queued" } }, now),
+    ).toBe("check-monitor");
+    expect(waitingSurfaceCheckNowAction({ status: "done", scheduledRetry }, now)).toBe(
+      "check-monitor",
+    );
   });
 });
 

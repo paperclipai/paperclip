@@ -12,6 +12,7 @@ import {
   hasVisibleMonitorSurface,
 } from "./IssueMonitorBanner";
 import type { DerivedMonitorState } from "@/lib/issue-monitor";
+import { waitingSurfaceCheckNowAction } from "@/lib/issue-monitor";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -180,6 +181,61 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(button).toBeTruthy();
     flushSync(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onCheckNow).toHaveBeenCalledTimes(1);
+
+    flushSync(() => root.unmount());
+  });
+
+  // The button looks the same on both surfaces, so the endpoint it hits is the
+  // only thing that tells a monitor check from promoting a scheduled retry.
+  it.each([
+    {
+      label: "promotes the retry when no monitor backs the wait",
+      issue: {
+        status: "blocked",
+        scheduledRetry: {
+          status: "scheduled_retry",
+          scheduledRetryAt: new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString(),
+          scheduledRetryAttempt: 1,
+        },
+      } as unknown as Issue,
+      retryCalls: 1,
+      monitorCalls: 0,
+    },
+    {
+      label: "checks the monitor when one is scheduled",
+      issue: issueWithMonitor(new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString()),
+      retryCalls: 0,
+      monitorCalls: 1,
+    },
+  ])("$label", ({ issue, retryCalls, monitorCalls }) => {
+    const promoteRetry = vi.fn();
+    const checkMonitor = vi.fn();
+    const onCheckNow = () =>
+      waitingSurfaceCheckNowAction(issue) === "promote-scheduled-retry"
+        ? promoteRetry()
+        : checkMonitor();
+
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(
+        <>
+          <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} />
+          <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} />
+        </>,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button")).filter((b) =>
+      b.textContent?.includes("Check now"),
+    );
+    // Banner and composer strip both offer the button and must route alike.
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      flushSync(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    }
+
+    expect(promoteRetry).toHaveBeenCalledTimes(retryCalls * 2);
+    expect(checkMonitor).toHaveBeenCalledTimes(monitorCalls * 2);
 
     flushSync(() => root.unmount());
   });
