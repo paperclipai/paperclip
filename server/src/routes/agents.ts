@@ -262,6 +262,7 @@ import { managedAgentProfileService } from "../services/managed-agent-profiles.j
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
+const HEARTBEAT_INTERVAL_SEC_DEFAULT = 300;
 
 function requireAgentSkillAssignmentMode(req: Request, _res: Response, next: NextFunction) {
   if (!AGENT_SKILL_ASSIGNMENT_MODES.includes(req.body?.mode)) {
@@ -2426,15 +2427,26 @@ export function agentRoutes(
   function parseNumberLike(value: unknown): number | null {
     if (typeof value === "number" && Number.isFinite(value)) return value;
     if (typeof value !== "string") return null;
-    const parsed = Number(value.trim());
+
+    const normalized = value.trim();
+    if (normalized === "") return null;
+
+    const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    const enabled = parseBooleanLike(heartbeat.enabled) ?? false;
+
     return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? false,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+      enabled,
+      intervalSec: Math.max(
+        0,
+        parseNumberLike(heartbeat.intervalSec) ??
+          (enabled ? HEARTBEAT_INTERVAL_SEC_DEFAULT : 0),
+      ),
     };
   }
 

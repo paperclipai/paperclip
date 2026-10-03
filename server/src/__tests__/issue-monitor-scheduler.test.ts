@@ -152,11 +152,14 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
+    heartbeat?: Record<string, unknown>;
+    nextCheckAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
-    const nextCheckAt = new Date("2026-04-11T12:30:00.000Z");
+    const nextCheckAt = input?.nextCheckAt ?? new Date("2026-04-11T12:30:00.000Z");
+    const createdAt = new Date("2026-04-11T12:29:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
@@ -191,9 +194,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         heartbeat: {
           enabled: false,
           wakeOnDemand: true,
+          ...(input?.heartbeat ?? {}),
         },
       },
       permissions: {},
+      createdAt,
     });
     seededAgentIds.add(agentId);
 
@@ -246,6 +251,100 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     return { companyId, agentId, issueId, nextCheckAt };
   }
+
+
+  it("uses the default heartbeat interval when heartbeat is enabled without intervalSec", async () => {
+    const { agentId } = await seedFixture({
+      heartbeat: {
+        enabled: true,
+      },
+      nextCheckAt: new Date("2026-04-11T13:00:00.000Z"),
+  });
+
+    const heartbeat = heartbeatService(db);
+
+    // createdAt is 12:29:00, so the 300-second default is due at 12:34:00.
+
+    const beforeDefaultInterval = new Date(
+      "2026-04-11T12:33:59.999Z",
+    );
+
+    const atDefaultInterval = new Date(
+      "2026-04-11T12:34:00.000Z",
+    );
+
+    const beforeResult = await heartbeat.tickTimers(beforeDefaultInterval);
+
+    expect(beforeResult.enqueued).toBe(0);
+
+    const result = await heartbeat.tickTimers(atDefaultInterval);
+
+    expect(result.enqueued).toBe(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(
+      wakeups.some((wake) => wake.reason === "heartbeat_timer"),
+    ).toBe(true);
+  });
+
+
+  it("uses the default heartbeat interval when intervalSec is blank", async () => {
+    const { agentId } = await seedFixture({
+      heartbeat: {
+        enabled: true,
+        intervalSec: "   ",
+      },
+      nextCheckAt: new Date("2026-04-11T13:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const tickAt = new Date("2026-04-11T12:34:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(
+      wakeups.some((wake) => wake.reason === "heartbeat_timer"),
+    ).toBe(true);
+  });
+
+  it("keeps heartbeat disabled when intervalSec is explicitly zero", async () => {
+    const { agentId } = await seedFixture({
+      heartbeat: {
+        enabled: true,
+        intervalSec: "0",
+      },
+      nextCheckAt: new Date("2026-04-11T13:00:00.000Z"),
+  });
+
+    const heartbeat = heartbeatService(db);
+
+    const tickAt = new Date("2026-04-11T12:35:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(
+      wakeups.some((wake) => wake.reason === "heartbeat_timer"),
+    ).toBe(false);
+  });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
