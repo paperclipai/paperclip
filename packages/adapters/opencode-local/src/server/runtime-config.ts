@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
@@ -102,10 +103,45 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+// Project the run's Paperclip-managed MCP servers onto OpenCode's `mcp` config
+// shape. OpenCode speaks the MCP wire protocol itself, so a remote server is
+// enough; there is no adapter-side proxy. This is the same projection the native
+// runner's OpenCode driver writes (packages/paperclip-runner/.../opencode-server-driver.ts),
+// and the run-scoped gateway token is the only credential involved. Names are
+// deduplicated the same way claude-local does, so two connections with the same
+// display name cannot silently collapse into one entry.
+function buildOpenCodeMcpConfig(input: {
+  existing: Record<string, unknown>;
+  servers: readonly AdapterRuntimeMcpServer[];
+}): Record<string, unknown> {
+  const mcp: Record<string, unknown> = { ...input.existing };
+  const usedNames = new Set(Object.keys(mcp));
+  for (const server of input.servers) {
+    let name = server.name;
+    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    mcp[name] = {
+      type: "remote",
+      url: server.url,
+      enabled: true,
+      oauth: false,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  return mcp;
+}
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /** Run-scoped Paperclip-managed MCP servers, read from `ctx.runtimeMcp`. */
+  runtimeMcpServers?: readonly AdapterRuntimeMcpServer[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -208,6 +244,22 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   };
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
+  }
+
+  // Deliver the run's Paperclip-managed MCP servers (connector gateways, the
+  // runtime connections endpoint, project tools) to OpenCode as remote servers.
+  // `permission: "allow"` above already authorizes their tools, and the gateway
+  // tokens are minted per run, so the credential in this file lives no longer
+  // than the run that may use it -- `cleanup` removes the config home.
+  const runtimeMcpServers = input.runtimeMcpServers ?? [];
+  if (runtimeMcpServers.length > 0) {
+    nextConfig.mcp = buildOpenCodeMcpConfig({
+      existing: isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {},
+      servers: runtimeMcpServers,
+    });
+    notes.push(
+      `Registered ${runtimeMcpServers.length} Paperclip-managed MCP server(s) with OpenCode: ${Object.keys(nextConfig.mcp as Record<string, unknown>).join(", ")}.`,
+    );
   }
 
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
