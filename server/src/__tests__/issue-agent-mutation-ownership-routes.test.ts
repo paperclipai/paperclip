@@ -29,6 +29,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
   listAttachments: vi.fn(),
   listComments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -518,6 +519,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listAcceptedPlanDecompositions.mockReset();
     mockIssueService.listAttachments.mockReset();
     mockIssueService.listComments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
@@ -966,6 +968,35 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+  });
+
+  it("rejects peer agents from listing accepted-plan-decompositions when issue read is outside their boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/accepted-plan-decompositions`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    expect(mockIssueService.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
+  });
+
+  it("allows peer agents to list accepted-plan-decompositions when issue read is granted", async () => {
+    const decompositions = [{ id: "decomp-1", sourceIssueId: issueId }];
+    mockIssueService.listAcceptedPlanDecompositions.mockResolvedValue(decompositions);
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/accepted-plan-decompositions`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(decompositions);
+    expect(mockIssueService.listAcceptedPlanDecompositions).toHaveBeenCalledWith(issueId);
   });
 
   it("rejects peer agents from listing interactions when issue read is outside their boundary", async () => {
