@@ -140,7 +140,7 @@ RUN /bin/sh -lc 'set -eu; \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
     test "$(codex --version)" = "codex-cli 0.156.0"; \
-    test "$(claude --version)" = "2.1.280 (Claude Code)"; \
+    test "$(claude --version)" = "2.1.286 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.32"; \
     test "$(acpx --version)" = "0.13.1"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \
