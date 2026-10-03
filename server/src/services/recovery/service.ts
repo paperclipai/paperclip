@@ -2449,7 +2449,21 @@ export function recoveryService(
       issue: input.issue,
       latestRun: input.latestRun,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota";
+    // Auth/availability failover: when the primary connection is unavailable
+    // (e.g. a stale subscription login) and the returning assignee has a healthy
+    // quota fallback, treat it like a provider-quota wait — system-owned, retried
+    // automatically on the fallback — instead of escalating to the board.
+    const aiUnavailableFailoverEligible =
+      recoveryCause === "configuration_incomplete" &&
+      readConfigurationIncompletePayload(input.latestRun)?.reason ===
+        "ai_connection_unavailable" &&
+      Boolean(routing.returnOwnerAgentId) &&
+      (await shouldFailoverProviderQuota(
+        routing.returnOwnerAgentId!,
+        input.latestRun,
+      ));
+    const isProviderQuotaWait =
+      recoveryCause === "provider_quota" || aiUnavailableFailoverEligible;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -3786,8 +3800,18 @@ export function recoveryService(
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    const aiUnavailableFailover =
+      recoveryCause === "configuration_incomplete" &&
+      readConfigurationIncompletePayload(input.latestRun)?.reason ===
+        "ai_connection_unavailable" &&
+      !recoveryAction.ownerAgentId &&
+      Boolean(recoveryAction.returnOwnerAgentId) &&
+      (await shouldFailoverProviderQuota(
+        recoveryAction.returnOwnerAgentId!,
+        input.latestRun,
+      ));
     const isProviderQuotaWait =
-      recoveryCause === "provider_quota" &&
+      (recoveryCause === "provider_quota" || aiUnavailableFailover) &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);
     if (isProviderQuotaWait && recoveryAction.returnOwnerAgentId) {

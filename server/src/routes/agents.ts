@@ -1,7 +1,7 @@
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, bindingQuotaFallback, quotaFallbackBinding, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
@@ -3361,11 +3361,27 @@ export function agentRoutes(
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
         const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
-        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
-          code: "ai_connection_validation_failed",
-          checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
-        });
-        if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
+        const primaryFailed = result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+        if (primaryFailed) {
+          // An agent with a healthy quota fallback stays runnable when its
+          // primary is temporarily unavailable (e.g. a stale subscription
+          // login), so accept the save if the fallback itself validates.
+          const fallback = bindingQuotaFallback(binding);
+          let fallbackHealthy = false;
+          if (fallback) {
+            let fallbackManaged: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+            try {
+              const fallbackBinding = quotaFallbackBinding(fallback);
+              fallbackManaged = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding: fallbackBinding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
+              const fallbackResult = await testManagedEnvironment(adapterType, { companyId, adapterType, config: fallbackManaged.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, fallbackBinding);
+              fallbackHealthy = !(fallbackResult.status === "fail" || fallbackResult.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE));
+            } catch { fallbackHealthy = false; } finally { await fallbackManaged?.cleanup?.(); }
+          }
+          if (!fallbackHealthy) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
+            code: "ai_connection_validation_failed",
+            checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
+          });
+        } else if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
       } finally { try { await managed?.cleanup(); } finally { await target.release("released"); } }
     }
     return selection.connection.id;
