@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  costEvents,
   activityLog,
   authUsers,
   agentWakeupRequests,
@@ -103,6 +104,7 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
     await db.delete(activityLog);
     try {
       await db.delete(heartbeatRunEvents);
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;

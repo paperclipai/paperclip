@@ -21,6 +21,13 @@ type SupertestTestConstructor = {
   };
 };
 
+// Receipt-spool recovery must never scan a developer's instance during tests.
+const paperclipTestHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-home-"));
+process.env.PAPERCLIP_HOME = paperclipTestHome;
+// Setup-file afterAll hooks run before suites drain asynchronous heartbeats.
+// Cleanup at worker exit, after all suite teardown, avoids deleting live state.
+process.once("exit", () => fs.rmSync(paperclipTestHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
+
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 
