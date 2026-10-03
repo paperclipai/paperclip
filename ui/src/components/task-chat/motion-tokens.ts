@@ -67,6 +67,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-scrollbar-idle-delay", group: "States", kind: "time", min: 0, max: 2000, step: 10 },
   { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-side-panel-tab", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-mobile-nav-duration", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
+  { name: "--motion-mobile-nav-ease", group: "States", kind: "easing" },
 ];
 
 /** Common easing presets offered by the tweak panel's easing picker. */

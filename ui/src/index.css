@@ -388,6 +388,15 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+  /* When the nav hides, the task page slides down by this much instead of
+     shrinking its bottom padding, so the page height and scroll position
+     stay put. The classic layout docks at --sz-calc-8 instead. */
+  --tc-composer-nav-slide: calc(var(--tc-composer-visible-nav-offset) - var(--tc-composer-hidden-nav-offset));
+  --tc-composer-classic-nav-slide: calc(var(--tc-composer-visible-nav-offset) - var(--sz-calc-8));
+  /* The mobile bottom nav's hide/show motion. The task page slide uses the
+     same values so the page and the nav move together. */
+  --motion-mobile-nav-duration: 200ms;
+  --motion-mobile-nav-ease: cubic-bezier(0, 0, 0.2, 1);
 }
 
 .dark {

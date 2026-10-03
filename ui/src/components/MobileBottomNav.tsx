@@ -61,7 +61,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   return (
     <nav
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-30 bg-border/50 transition-transform duration-200 ease-out dark:bg-muted md:hidden pb-(--sz-safe-bottom)",
+        "fixed bottom-0 left-0 right-0 z-30 bg-border/50 transition-transform duration-(--motion-mobile-nav-duration) ease-(--motion-mobile-nav-ease) dark:bg-muted md:hidden pb-(--sz-safe-bottom)",
         visible ? "translate-y-0" : "translate-y-full",
       )}
       aria-label="Mobile navigation"

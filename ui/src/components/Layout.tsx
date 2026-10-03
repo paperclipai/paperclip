@@ -29,6 +29,7 @@ import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
+import { useTaskPageSlidesWithMobileNav } from "../hooks/useTaskPageSlidesWithMobileNav";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
@@ -121,6 +122,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";
   const companyPathSegments = shellRoute.companySegments;
   const isTaskDetailRoute = shellRoute.isTaskDetail;
+  const taskPageSlidesWithNav = useTaskPageSlidesWithMobileNav(location.pathname, companyPrefix);
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
@@ -714,6 +716,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </div>
           <div className={cn(
             isMobile ? "block" : "flex flex-1 min-h-0",
+            // Clip the task page's slide below the fold so it never adds
+            // scrollable height. clip (not hidden) keeps the sticky composer
+            // working because it doesn't create a scroll container.
+            isMobile && taskPageSlidesWithNav && "overflow-y-clip",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
             {!isMobile && keepsPrimarySidebar ? (
@@ -735,12 +741,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               // Publish the pinned-composer bottom offset to descendants
               // (PAP-495): while the auto-hiding mobile nav is on screen, raise
               // it to the nav height so a sticky composer clears the nav; drop
-              // it back to the safe-area dock when the nav hides. Desktop leaves
-              // the token at its :root default.
+              // it back to the safe-area dock when the nav hides. Task pages
+              // keep the nav-height offset and slide the whole page down
+              // instead (see the className below). Desktop leaves the token at
+              // its :root default.
               style={
                 isMobile
                   ? ({
-                      "--tc-composer-bottom": mobileNavVisible
+                      "--tc-composer-bottom": mobileNavVisible || taskPageSlidesWithNav
                         ? "var(--tc-composer-visible-nav-offset)"
                         : "var(--tc-composer-hidden-nav-offset)",
                     } as CSSProperties)
@@ -755,11 +763,24 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 // Reserve the scrollbar gutter on desktop so pages whose height
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
+                // On mobile task pages the bottom padding never changes with
+                // the nav. Changing it resized the page on every nav toggle,
+                // which moved the scroll position, which toggled the nav again;
+                // at the end of a thread the last messages slid under the
+                // composer. The page slides with the nav instead, so the
+                // composer still docks at the bottom when the nav hides. The
+                // Classic Task Interface keeps the padding swap (see
+                // taskPageSlidesWithNav).
                 isMobile
                   ? isTaskDetailRoute
-                    ? mobileNavVisible
-                      ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
-                      : "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
+                    ? taskPageSlidesWithNav
+                      ? cn(
+                          "overflow-visible pb-(--tc-composer-visible-nav-offset) transition-[translate] duration-(--motion-mobile-nav-duration) ease-(--motion-mobile-nav-ease)",
+                          !mobileNavVisible && "translate-y-(--tc-composer-nav-slide)",
+                        )
+                      : mobileNavVisible
+                        ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
+                        : "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
                     : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
