@@ -103,6 +103,7 @@ import {
   TERMINAL_HEARTBEAT_RUN_STATUSES,
   issueService,
   executeIssuePostCommitActions,
+  type IssueBlockedWakePath,
   type IssuePostCommitAction,
 } from "../issues.js";
 import {
@@ -172,6 +173,34 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
   "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
+/**
+ * How many times a stranded issue with no dependency is handed back as `todo`
+ * before recovery stops re-arming it and escalates to a named owner instead.
+ *
+ * `todo` is the cheap, reachable disposition — the assignee's own next
+ * heartbeat is the wake path — but on its own it is also an unbounded retry
+ * loop for a failure that never fixes itself. 3 matches the other bounded
+ * recovery ladders in this file (`INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS`,
+ * `CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS`).
+ */
+const STRANDED_REHOME_MAX_TODO_ATTEMPTS = 3;
+/**
+ * Causes that no amount of retrying can clear, so they are never rehomed to
+ * `todo`.
+ *
+ * Rehoming exists to make a *transiently* stranded task pickable again. A task
+ * stranded on configuration — an unbound secret ref, a sandbox plugin stuck in
+ * `error`, a workspace with no project id — fails identically on every retry,
+ * so `todo` would just burn the ladder re-dispatching a doomed run. These stay
+ * `blocked`, and the escalation declares the `notified_owner` wake path (the
+ * board-owned recovery action and its notice) so the orphan-blocked guard is
+ * still satisfied.
+ */
+const STRANDED_REHOME_INELIGIBLE_CAUSES = new Set<StrandedRecoveryCause>([
+  "configuration_incomplete",
+  "workspace_validation_failed",
+]);
+const STRANDED_REHOME_EXHAUSTED_FINGERPRINT_PREFIX = "stranded_rehome_exhausted";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -2739,6 +2768,14 @@ export function recoveryService(
   }) {
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      // A recovery issue is already owned by a recovery owner, and the comment
+      // added below is that owner's notice. Declared rather than edge-based so
+      // the central orphan-blocked guard admits it; the owner, not a blocker
+      // edge, is what moves this issue out of `blocked`.
+      blockedWakePath: {
+        kind: "notified_owner",
+        reason: "recovery_issue_in_place_escalation",
+      },
     });
     if (!updated) return null;
 
@@ -3595,6 +3632,14 @@ export function recoveryService(
 
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      // The disposition-repair escalation notifies the board owner through the
+      // comment and notice added below, and the recovery action above was just
+      // moved to `escalated` with a board `wakePolicy`. Declared rather than
+      // edge-based so the central orphan-blocked guard admits it.
+      blockedWakePath: {
+        kind: "notified_owner",
+        reason: input.terminalReason,
+      },
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3905,6 +3950,217 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  /**
+   * The named agent that owns a stranded task once automatic rehoming is spent.
+   *
+   * A blocker edge owned by `board` / `null` satisfies the schema but nobody is
+   * woken by it, so this walks up the stuck assignee's reporting chain to the
+   * first live manager and falls back to the company's root agent.
+   */
+  async function resolveStrandedEscalationOwnerAgentId(
+    issue: typeof issues.$inferSelect,
+  ) {
+    const companyAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, issue.companyId))
+      .orderBy(asc(agents.createdAt), asc(agents.id));
+    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
+
+    const seen = new Set<string>();
+    let current = issue.assigneeAgentId
+      ? agentsById.get(issue.assigneeAgentId) ?? null
+      : null;
+    while (current?.reportsTo && !seen.has(current.reportsTo)) {
+      seen.add(current.reportsTo);
+      const manager = agentsById.get(current.reportsTo) ?? null;
+      if (!manager) break;
+      if (await isAgentInvokable(manager)) return manager.id;
+      current = manager;
+    }
+
+    for (const agent of companyAgents) {
+      if (agent.reportsTo !== null) continue;
+      // The stuck assignee cannot be its own escalation owner.
+      if (agent.id === issue.assigneeAgentId) continue;
+      if (await isAgentInvokable(agent)) return agent.id;
+    }
+    return null;
+  }
+
+  /**
+   * Find-or-create the recovery issue used as the blocker edge once the `todo`
+   * ladder is spent. Scoped by source issue + cause so repeated sweeps reuse
+   * one issue instead of fanning out a new blocker per tick.
+   */
+  async function ensureStrandedRecoveryBlockerIssue(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause: StrandedRecoveryCause;
+    ownerAgentId: string;
+    attemptCount: number;
+  }) {
+    const originFingerprint = `${STRANDED_REHOME_EXHAUSTED_FINGERPRINT_PREFIX}:${input.recoveryCause}`;
+    const existing = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, input.issue.id),
+          eq(issues.originFingerprint, originFingerprint),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return issuesSvc.create(input.issue.companyId, {
+      title: `Recover stranded task ${input.issue.identifier ?? input.issue.title}`,
+      description: [
+        `Automatic recovery for ${issueUiLink(input.issue, prefix)} handed the task back as \`todo\` ${
+          input.attemptCount - 1
+        } times and the same failure recurred each time, so this issue now owns the repair.`,
+        "",
+        `- Recovery cause: \`${input.recoveryCause}\``,
+        `- Latest run: \`${input.latestRun?.id ?? "unknown"}\` (status \`${
+          input.latestRun?.status ?? "unknown"
+        }\`)`,
+        failureSummary
+          ? `- Failure: ${failureSummary.trim()}`
+          : "- Failure: none recorded",
+        "",
+        "This issue blocks the source task, so closing or cancelling it is what releases the source task.",
+        "Next action: fix the runtime/adapter/configuration problem behind the failure, then retry the original assignee, explicitly reassign, or record an intentional resolution on the source task.",
+      ].join("\n"),
+      status: "todo",
+      priority: "high",
+      projectId: input.issue.projectId,
+      goalId: input.issue.goalId,
+      assigneeAgentId: input.ownerAgentId,
+      originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+      originId: input.issue.id,
+      originFingerprint,
+      billingCode: input.issue.billingCode,
+    });
+  }
+
+  /**
+   * Chooses the disposition a stranded task is written to.
+   *
+   * The invariant: never `blocked` without something that can clear it.
+   * Heartbeat work selection skips `blocked`, and the only automatic exit is
+   * `issue_blockers_resolved`, which fires off a blocker edge — so `blocked`
+   * with zero edges and no other wake path is unreachable work (AND-13551).
+   */
+  async function resolveStrandedEscalationDisposition(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause: StrandedRecoveryCause;
+    recoveryAction: Awaited<
+      ReturnType<typeof ensureSourceScopedStrandedRecoveryAction>
+    >;
+    blockerIds: string[];
+    isProviderQuotaWait: boolean;
+  }): Promise<{
+    patch: {
+      status: "blocked" | "todo";
+      blockedByIssueIds?: string[];
+      blockedWakePath?: IssueBlockedWakePath;
+    };
+    recoveryIssue: typeof issues.$inferSelect | null;
+  }> {
+    // The provider-quota wait is status-independent: it already inserted an
+    // agent wakeup request plus a `scheduled_retry` run. `blocked` stays
+    // correct here; the wake path is declared instead of edge-based.
+    if (input.isProviderQuotaWait) {
+      return {
+        patch: {
+          status: "blocked",
+          blockedByIssueIds: input.blockerIds,
+          blockedWakePath: {
+            kind: "scheduled_retry_run",
+            reason: "provider_quota_wait_recovery",
+          },
+        },
+        recoveryIssue: null,
+      };
+    }
+
+    // A real dependency already gates the task, so `blocked` is reachable:
+    // resolving that blocker fires `issue_blockers_resolved`.
+    if (input.blockerIds.length > 0) {
+      return {
+        patch: { status: "blocked", blockedByIssueIds: input.blockerIds },
+        recoveryIssue: null,
+      };
+    }
+
+    // A configuration failure cannot fix itself, so rehoming it to `todo` only
+    // buys N wasted re-dispatches of a run that will fail the same way: a
+    // missing secret binding, a stuck sandbox plugin, or a workspace with no
+    // project id needs a human or an executive to change configuration. Park
+    // it, but declare the wake path rather than leaving an orphan `blocked` —
+    // the board-owned recovery action and its notice comment are the owner that
+    // clears this, which is the same contract the other escalations here use.
+    if (STRANDED_REHOME_INELIGIBLE_CAUSES.has(input.recoveryCause)) {
+      return {
+        patch: {
+          status: "blocked",
+          blockedWakePath: {
+            kind: "notified_owner",
+            reason: input.recoveryCause,
+          },
+        },
+        recoveryIssue: null,
+      };
+    }
+
+    // Within budget, hand the task back as `todo`. It is pickable by normal
+    // heartbeat work selection, so the wake path is the assignee's own next
+    // heartbeat — and this is exactly the remedy verified by hand on the live
+    // orphan-`blocked` issues.
+    if (
+      input.recoveryAction.attemptCount <= STRANDED_REHOME_MAX_TODO_ATTEMPTS
+    ) {
+      return { patch: { status: "todo" }, recoveryIssue: null };
+    }
+
+    const ownerAgentId = await resolveStrandedEscalationOwnerAgentId(
+      input.issue,
+    );
+    if (!ownerAgentId) {
+      // With no invokable owner, a blocker edge would be owned by nobody. Stay
+      // on `todo`: a pickable task is strictly better than an unreachable one.
+      logger.warn(
+        {
+          issueId: input.issue.id,
+          identifier: input.issue.identifier,
+          attemptCount: input.recoveryAction.attemptCount,
+          recoveryCause: input.recoveryCause,
+        },
+        "no invokable escalation owner for an exhausted stranded rehome; keeping the issue pickable",
+      );
+      return { patch: { status: "todo" }, recoveryIssue: null };
+    }
+
+    const recoveryIssue = await ensureStrandedRecoveryBlockerIssue({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause: input.recoveryCause,
+      ownerAgentId,
+      attemptCount: input.recoveryAction.attemptCount,
+    });
+    return {
+      patch: { status: "blocked", blockedByIssueIds: [recoveryIssue.id] },
+      recoveryIssue,
+    };
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -3949,11 +4205,59 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
+    const disposition = await resolveStrandedEscalationDisposition({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+      recoveryAction,
+      blockerIds,
+      isProviderQuotaWait,
     });
+    const updated = await issuesSvc.update(input.issue.id, disposition.patch);
     if (!updated) return null;
+    if (disposition.recoveryIssue) {
+      // Link the recovery issue to the action so the board and
+      // `listRecoveryActions` can see which issue owns the repair.
+      await db
+        .update(issueRecoveryActions)
+        .set({
+          recoveryIssueId: disposition.recoveryIssue.id,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issueRecoveryActions.id, recoveryAction.id),
+            eq(issueRecoveryActions.companyId, input.issue.companyId),
+          ),
+        );
+      if (disposition.recoveryIssue.assigneeAgentId) {
+        await deps.enqueueWakeup(disposition.recoveryIssue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "stranded_recovery_issue",
+          idempotencyKey: `stranded-recovery-issue:${disposition.recoveryIssue.id}`,
+          payload: withRecoveryContext(
+            {
+              issueId: disposition.recoveryIssue.id,
+              sourceIssueId: input.issue.id,
+            },
+            "normal_model",
+          ),
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: withRecoveryContext(
+            {
+              issueId: disposition.recoveryIssue.id,
+              taskId: disposition.recoveryIssue.id,
+              sourceIssueId: input.issue.id,
+              wakeReason: "stranded_recovery_issue",
+              source: "issue.stranded_rehome_exhausted",
+            },
+            "normal_model",
+          ),
+        });
+      }
+    }
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
@@ -4104,7 +4408,11 @@ export function recoveryService(
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        // The disposition is now chosen, not fixed: a stranded task with no
+        // dependency is rehomed to `todo`. Log what was actually written.
+        status: updated.status,
+        rehomedRecoveryIssueId: disposition.recoveryIssue?.id ?? null,
+        rehomeAttemptCount: recoveryAction.attemptCount,
         previousStatus: input.previousStatus,
         source:
           input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
