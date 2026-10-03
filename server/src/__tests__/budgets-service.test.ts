@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -11,6 +12,8 @@ import {
   projects,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
+import { agentService } from "../services/agents.ts";
+import { projectService } from "../services/projects.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -637,4 +640,100 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
   });
+
+  it("keeps the overview working when a policy's agent or project scope no longer exists (#11545)", async () => {
+    const { companyId } = await createBudgetFixture();
+    const service = budgetService(db);
+    // Simulate rows orphaned by deletes that predate scope cleanup: the scope ids point at nothing.
+    const [orphanAgentPolicy] = await db
+      .insert(budgetPolicies)
+      .values({
+        companyId,
+        scopeType: "agent",
+        scopeId: randomUUID(),
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 100,
+        isActive: true,
+      })
+      .returning();
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "project",
+      scopeId: randomUUID(),
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 100,
+      isActive: true,
+    });
+    await db.insert(budgetIncidents).values({
+      companyId,
+      policyId: orphanAgentPolicy!.id,
+      scopeType: "agent",
+      scopeId: orphanAgentPolicy!.scopeId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(Date.UTC(2026, 0, 1)),
+      windowEnd: new Date(Date.UTC(2026, 1, 1)),
+      thresholdType: "hard",
+      amountLimit: 100,
+      amountObserved: 150,
+      status: "open",
+    });
+
+    const overview = await service.overview(companyId);
+    expect(overview.policies).toEqual([]);
+    expect(overview.activeIncidents).toEqual([]);
+    expect(overview.pausedAgentCount).toBe(0);
+  });
+
+  it.each(["agent", "project"] as const)(
+    "deleting a %s removes its budget policy and incident and cancels the pending approval (#11545)",
+    async (scopeType) => {
+      const { companyId, agentId, projectId } = await createBudgetFixture();
+      const service = budgetService(db);
+      const scopeId = scopeType === "agent" ? agentId : projectId;
+      const windowKind = scopeType === "agent" ? "calendar_month_utc" : "lifetime";
+      const [policy] = await db
+        .insert(budgetPolicies)
+        .values({ companyId, scopeType, scopeId, metric: "billed_cents", windowKind, amount: 100, isActive: true })
+        .returning();
+      // Cost events block agent/project deletes via FK, so seed the hard-stop state directly:
+      // an open hard incident paired with a pending board approval.
+      const [approval] = await db
+        .insert(approvals)
+        .values({ companyId, type: "budget_override_required", status: "pending", payload: {} })
+        .returning();
+      await db.insert(budgetIncidents).values({
+        companyId,
+        policyId: policy!.id,
+        scopeType,
+        scopeId,
+        metric: "billed_cents",
+        windowKind,
+        windowStart: new Date(Date.UTC(2026, 0, 1)),
+        windowEnd: new Date(Date.UTC(2026, 1, 1)),
+        thresholdType: "hard",
+        amountLimit: 100,
+        amountObserved: 150,
+        status: "open",
+        approvalId: approval!.id,
+      });
+      expect((await service.overview(companyId)).pendingApprovalCount).toBe(1);
+
+      if (scopeType === "agent") {
+        await agentService(db).remove(agentId);
+      } else {
+        await projectService(db).remove(projectId);
+      }
+
+      expect(await db.select().from(budgetPolicies)).toEqual([]);
+      expect(await db.select().from(budgetIncidents)).toEqual([]);
+      const [approvalAfter] = await db.select().from(approvals).where(eq(approvals.id, approval!.id));
+      expect(approvalAfter?.status).toBe("cancelled");
+      const overview = await service.overview(companyId);
+      expect(overview.policies).toEqual([]);
+      expect(overview.pendingApprovalCount).toBe(0);
+    },
+  );
 });
