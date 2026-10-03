@@ -4,6 +4,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   chatActions,
@@ -1221,6 +1222,40 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).toContain(
         "Please handle this follow-up after you finish",
       );
+
+      // The reopen entry keeps the releasing run in `runId` but must name the
+      // deferred wake and comment that asked for the reopen.
+      const promotedRun = await db
+        .select({ wakeupRequestId: heartbeatRuns.wakeupRequestId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt))
+        .then((rows) => rows[1] ?? null);
+      expect(promotedRun?.wakeupRequestId).toBeTruthy();
+      const reopenActivity = await db
+        .select({ runId: activityLog.runId, details: activityLog.details })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.updated"),
+            sql`${activityLog.details} ->> 'source' = 'deferred_comment_wake'`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(reopenActivity).toMatchObject({
+        runId: firstRun!.id,
+        details: {
+          reopened: true,
+          reopenedFrom: "done",
+          releasingRunId: firstRun!.id,
+          wakeupRequestId: promotedRun?.wakeupRequestId,
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+          commentIds: [comment2.id],
+        },
+      });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

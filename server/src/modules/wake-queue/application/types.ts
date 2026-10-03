@@ -65,10 +65,17 @@ export type IssueReopenedEffect = {
   kind: "issue_reopened";
   companyId: string;
   agentId: string;
+  /** The finishing run whose release drained the queue. It did not ask for the reopen. */
   runId: string;
   issueId: string;
   identifier: string;
   reopenedFrom: string;
+  /** The deferred wake that asked for the reopen, and who queued it. */
+  wakeupRequestId: string;
+  requestedByActorType: "user" | "agent" | "system" | null;
+  requestedByActorId: string | null;
+  /** The deferred comment ids the reopen decision was made on. */
+  commentIds: string[];
 };
 
 /** Explicit post-commit work a caller applies only after the release transaction commits. */
