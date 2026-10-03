@@ -1418,19 +1418,36 @@ it.each(["acpx-runtime-sidecar.cjs", "opencode-app-server-proxy.cjs"] as const)(
   },
 );
 
-it("resolves the OpenCode executable from the installed package instead of the vendored runner path", () => {
-  const serverPackage = "/app/server/node_modules/opencode-ai/package.json";
+it("resolves OpenCode through Node from the server dependency tree in a vendored layout", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-opencode-resolution-"));
+  const serverRoot = join(directory, "server");
+  const vendoredRunnerModule = join(
+    serverRoot,
+    "dist/vendor/paperclip-runner/dist/live/runnerd-codex-transport.js",
+  );
+  const packageRoot = join(serverRoot, "node_modules/opencode-ai");
+  const expectedExecutable = join(packageRoot, "bin/opencode.exe");
 
-  expect(
-    runnerdLaunchProfileInternals.resolveInstalledPackageFile(
-      "opencode-ai",
-      "bin/opencode.exe",
-      (specifier) => {
-        expect(specifier).toBe("opencode-ai/package.json");
-        return serverPackage;
-      },
-    ),
-  ).toBe("/app/server/node_modules/opencode-ai/bin/opencode.exe");
+  try {
+    await mkdir(resolve(vendoredRunnerModule, ".."), { recursive: true });
+    await mkdir(resolve(expectedExecutable, ".."), { recursive: true });
+    await writeFile(vendoredRunnerModule, "");
+    await writeFile(
+      join(packageRoot, "package.json"),
+      JSON.stringify({ name: "opencode-ai", version: "1.18.32" }),
+    );
+    await writeFile(expectedExecutable, "");
+
+    expect(
+      runnerdLaunchProfileInternals.resolveInstalledPackageFile(
+        "opencode-ai",
+        "bin/opencode.exe",
+        vendoredRunnerModule,
+      ),
+    ).toBe(expectedExecutable);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("derives the ACPX package authority only from the verified dist/cli layout", () => {

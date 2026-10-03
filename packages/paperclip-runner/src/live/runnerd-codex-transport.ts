@@ -84,7 +84,6 @@ import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js"
 // build artifacts do not. Normalize once so a source build cannot be
 // misclassified as an external provider pack by a string-only comparison.
 const packageRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const requireFromRunner = createRequire(import.meta.url);
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
@@ -96,9 +95,12 @@ const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 function resolveInstalledPackageFile(
   packageName: string,
   relativePath: string,
-  resolveManifest: (specifier: string) => string = requireFromRunner.resolve,
+  parentModule: string | URL = import.meta.url,
 ): string {
-  return resolve(dirname(resolveManifest(`${packageName}/package.json`)), relativePath);
+  const packageManifest = createRequire(parentModule).resolve(
+    `${packageName}/package.json`,
+  );
+  return resolve(dirname(packageManifest), relativePath);
 }
 
 function readLocalProcessStartedAt(pid: number): string | null {
