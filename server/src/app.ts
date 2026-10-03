@@ -125,6 +125,7 @@ import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
+import { isApiRequest } from "./api-path-guard.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -1014,7 +1015,15 @@ export async function createApp(
       // with a MIME-type error, and cache that broken response. Return 404
       // instead. The index.html response itself is no-cache so a subsequent
       // deploy's updated asset hashes are picked up on next load.
+      // Malformed API URLs ("//api/x", "/api%2Fx") miss the exact-prefix
+      // "/api" mount and used to fall through to this handler, which served
+      // index.html with HTTP 200 to API clients. Contract: any URL that
+      // refers to the API gets a JSON response, never the HTML shell.
       app.get(/.*/, (req, res) => {
+        if (isApiRequest(req)) {
+          res.status(404).json({ error: "API route not found" });
+          return;
+        }
         if (req.path.startsWith("/assets/")) {
           res.status(404).end();
           return;
@@ -1109,7 +1118,7 @@ export async function createApp(
       app.use(express.static(publicUiRoot, { index: false }));
     }
     app.get(/.*/, async (req, res, next) => {
-      if (!shouldServeViteDevHtml(req)) {
+      if (!shouldServeViteDevHtml(req) || isApiRequest(req)) {
         next();
         return;
       }
