@@ -5119,21 +5119,33 @@ export async function waitForRuntimeServiceReadiness(input: {
   let lastError = "service did not become ready";
   let lastCause: unknown;
   let probes = 0;
+  let sawServiceFailure = false;
   while (now() < deadline) {
-    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, deadline - now()));
+    const remainingMs = deadline - now();
+    // When the readiness budget is what bounds this probe, aborting it only means we ran out of
+    // time — it is not an observation about the service, so it must not replace one we already have.
+    const boundedByDeadline = remainingMs <= RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS;
+    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, remainingMs));
+    let probeSignal: AbortSignal | undefined;
     probes += 1;
     try {
-      const response = await fetchImpl(readinessUrl, { signal: AbortSignal.timeout(probeBudgetMs) });
+      probeSignal = AbortSignal.timeout(probeBudgetMs);
+      const response = await fetchImpl(readinessUrl, { signal: probeSignal });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
       lastCause = undefined;
+      sawServiceFailure = true;
     } catch (err) {
-      lastCause = err;
-      lastError = err instanceof Error ? err.message : String(err);
-      // Node fetch hides connection errors behind "fetch failed". Retain the
-      // transport cause so a refused port is distinguishable from a timeout.
-      if (err instanceof Error && err.cause instanceof Error) {
-        lastError += `: ${err.cause.message}`;
+      const abortedByDeadline = Boolean(probeSignal?.aborted) && boundedByDeadline;
+      if (!abortedByDeadline || !sawServiceFailure) {
+        lastCause = err;
+        lastError = err instanceof Error ? err.message : String(err);
+        // Node fetch hides connection errors behind "fetch failed". Retain the
+        // transport cause so a refused port is distinguishable from a timeout.
+        if (err instanceof Error && err.cause instanceof Error) {
+          lastError += `: ${err.cause.message}`;
+        }
+        sawServiceFailure = true;
       }
     }
     if (now() >= deadline) break;
