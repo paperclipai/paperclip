@@ -647,6 +647,39 @@ export const PAPERCLIP_CORE_SKILL_KEYS = [
 
 export const ONBOARDING_FIRST_TASK_SKILL_KEY = "paperclipai/paperclip/first-task";
 
+/**
+ * The path-hashed key a `local_path` skill falls back to when its directory is
+ * the only thing telling it apart from another skill with the same slug.
+ */
+function hashedLocalSkillKey(locator: string, slug: string) {
+  return `local/${hashSkillValue(path.resolve(locator))}/${slug}`;
+}
+
+/** True when both locators point at the same directory on disk. */
+function sameSkillDirectory(a: string | null | undefined, b: string | null | undefined) {
+  if (!a || !b) return false;
+  return path.resolve(a) === path.resolve(b);
+}
+
+/**
+ * True when a skill only gets the `company/<companyId>/<slug>` key because its
+ * directory sits in the company managed-skills root — the case this module
+ * canonicalizes above. The slug comes from `SKILL.md` frontmatter and need not
+ * match the directory name, so two managed directories can ask for the same
+ * key; these are the imports that must yield it to whoever already holds it.
+ */
+function claimsCompanyKeyByManagedRoot(
+  companyId: string,
+  input: Pick<ImportedSkill, "sourceType" | "sourceLocator" | "metadata">,
+) {
+  if (input.sourceType !== "local_path") return false;
+  const metadata = isPlainRecord(input.metadata) ? input.metadata : null;
+  if (readCanonicalSkillKey({}, metadata)) return false;
+  if (asString(metadata?.sourceKind) === "managed_local") return false;
+  const locator = asString(input.sourceLocator);
+  return Boolean(locator && isManagedSkillDirectory(companyId, locator));
+}
+
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
@@ -681,12 +714,18 @@ function deriveCanonicalSkillKey(
   }
 
   if (input.sourceType === "local_path") {
-    if (sourceKind === "managed_local") {
+    const locator = asString(input.sourceLocator);
+    // `local/<hash>/<slug>` exists to disambiguate project-scanned skills, where
+    // the same slug can live under many unrelated directories. A skill whose
+    // directory is the company managed-skills root needs no disambiguation: its
+    // slug is already unique there, so it keeps the canonical company key even
+    // when `sourceKind` is missing or stale (e.g. imported from disk rather than
+    // authored through the skills API).
+    if (sourceKind === "managed_local" || (locator && isManagedSkillDirectory(companyId, locator))) {
       return `company/${companyId}/${slug}`;
     }
-    const locator = asString(input.sourceLocator);
     if (locator) {
-      return `local/${hashSkillValue(path.resolve(locator))}/${slug}`;
+      return hashedLocalSkillKey(locator, slug);
     }
   }
 
@@ -2405,6 +2444,21 @@ function resolveManagedSkillsRoot(companyId: string) {
 }
 
 /**
+ * True when `locator` is a Paperclip-managed skill directory for the company:
+ * a direct child of the company managed-skills root (`<managedRoot>/<slug>`).
+ * Reserved subtrees (`__catalog__/...`, `__runtime__/...`), nested paths and
+ * anything outside the root are rejected.
+ */
+function isManagedSkillDirectory(companyId: string, locator: string): boolean {
+  const managedRoot = resolveManagedSkillsRoot(companyId);
+  const relative = path.relative(managedRoot, path.resolve(locator));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep);
+  // Managed skills are a direct child of the root; reject reserved `__*` dirs.
+  return segments.length === 1 && !segments[0]!.startsWith("__");
+}
+
+/**
  * A rename target must be a true Paperclip-managed local skill: a `local_path`
  * skill whose `managed_local` source directory lives directly under the
  * company managed-skills root (e.g. `<managedRoot>/<slug>`). This deliberately
@@ -2417,12 +2471,7 @@ function isPaperclipManagedRenameTarget(skill: CompanySkill): boolean {
   if (getSkillMeta(skill).sourceKind !== "managed_local") return false;
   const skillDir = normalizeSkillDirectory(skill);
   if (!skillDir) return false;
-  const managedRoot = resolveManagedSkillsRoot(skill.companyId);
-  const relative = path.relative(managedRoot, skillDir);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
-  const segments = relative.split(path.sep);
-  // Managed skills are a direct child of the root; reject reserved `__*` dirs.
-  return segments.length === 1 && !segments[0]!.startsWith("__");
+  return isManagedSkillDirectory(skill.companyId, skillDir);
 }
 
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
@@ -3388,6 +3437,35 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
       .then((rows) => rows[0] ?? null);
+    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
+  }
+
+  /**
+   * Finds a catalog row that already points at `locator` under the legacy
+   * hashed `local/<hash>/<slug>` key. Managed-root skills imported before
+   * `deriveCanonicalSkillKey` canonicalized them still carry that key, so an
+   * import of the same directory must adopt the row instead of inserting a
+   * second entry for one directory.
+   */
+  async function findLegacyHashedLocalSkill(
+    companyId: string,
+    skill: Pick<ImportedSkill, "sourceType" | "sourceLocator">,
+    database: DbOrTransaction = db,
+  ) {
+    if (skill.sourceType !== "local_path") return null;
+    const locator = asString(skill.sourceLocator);
+    if (!locator) return null;
+    const resolved = path.resolve(locator);
+    if (!isManagedSkillDirectory(companyId, resolved)) return null;
+    const rows = await database
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(and(
+        eq(companySkills.companyId, companyId),
+        eq(companySkills.sourceType, "local_path"),
+        inArray(companySkills.sourceLocator, [locator, resolved]),
+      ));
+    const row = rows.find((candidate) => candidate.key.startsWith("local/"));
     return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
@@ -6245,10 +6323,37 @@ export function companySkillService(db: Db) {
     database: DbOrTransaction = db,
   ): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
-    for (const skill of imported) {
-      assertImportedSkillKeyAllowed(skill);
-      assertImportedSkillSourceAllowed(skill);
-      const existing = await getByKey(companyId, skill.key, database);
+    for (const importedSkill of imported) {
+      assertImportedSkillKeyAllowed(importedSkill);
+      assertImportedSkillSourceAllowed(importedSkill);
+      let candidate = importedSkill;
+      let existingByKey = await getByKey(companyId, candidate.key, database);
+      const fallbackKey = claimsCompanyKeyByManagedRoot(companyId, candidate)
+        ? hashedLocalSkillKey(
+          asString(candidate.sourceLocator) ?? "",
+          normalizeSkillSlug(candidate.slug) ?? "skill",
+        )
+        : null;
+      // The company key is claimed by one directory only. When another
+      // directory already holds it, this import keeps the path-hashed key
+      // instead of repointing that row at itself — the frontmatter slug need
+      // not match the directory name, so two managed directories can collide.
+      if (
+        existingByKey
+        && fallbackKey
+        && !sameSkillDirectory(existingByKey.sourceLocator, candidate.sourceLocator)
+      ) {
+        candidate = { ...candidate, key: fallbackKey };
+        existingByKey = await getByKey(companyId, candidate.key, database);
+      }
+      // Keep one catalog row per managed directory: a legacy row still keyed
+      // `local/<hash>/<slug>` keeps its stored key, so agents that reference
+      // it stay attached.
+      const adopted = existingByKey
+        ? null
+        : await findLegacyHashedLocalSkill(companyId, candidate, database);
+      const skill = adopted ? { ...candidate, key: adopted.key } : candidate;
+      const existing = existingByKey ?? adopted;
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
@@ -6316,11 +6421,26 @@ export function companySkillService(db: Db) {
           .where(eq(companySkills.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null)
-        : await database
-          .insert(companySkills)
-          .values(values)
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        : fallbackKey && skill.key !== fallbackKey
+          // A concurrent import of another directory can claim the company key
+          // between the read above and this insert; yield it the same way.
+          ? await database
+            .insert(companySkills)
+            .values(values)
+            .onConflictDoNothing({ target: [companySkills.companyId, companySkills.key] })
+            .returning()
+            .then((rows) => rows[0] ?? null)
+          : await database
+            .insert(companySkills)
+            .values(values)
+            .returning()
+            .then((rows) => rows[0] ?? null);
+      if (!row && !existing && fallbackKey && skill.key !== fallbackKey) {
+        // Lost the race: re-run against the row that won. Another directory
+        // sends this import to its hashed key; the same directory updates it.
+        out.push(...await upsertImportedSkills(companyId, [importedSkill], database));
+        continue;
+      }
       if (!row) throw notFound("Failed to persist company skill");
       out.push(toCompanySkill(row));
     }
