@@ -1,3 +1,4 @@
+import { IssueContextMenu } from "./IssueContextMenu";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -2082,8 +2083,8 @@ export function IssuesList({
                   ) : null;
 
                   return (
+                    <IssueContextMenu key={issue.id} issue={issue}>
                     <div
-                      key={issue.id}
                       data-issue-row-id={issue.id}
                       // Desktop indentation comes from IssueRow's treeGuides
                       // (vertical connector slots); mobile keeps a plain
@@ -2317,6 +2318,7 @@ export function IssuesList({
                         )}
                       />
                     </div>
+                    </IssueContextMenu>
                   );
                 };
 

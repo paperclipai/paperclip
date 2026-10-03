@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // @vitest-environment jsdom
 
 import { createRoot, type Root } from "react-dom/client";
@@ -85,17 +86,20 @@ function renderBoard(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   mountedRoots.push(root);
 
   const render = (nextProps: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] }) => {
     act(() => {
       root.render(
+        <QueryClientProvider client={queryClient}>
         <KanbanBoard
           agents={[{ id: "agent-1", name: "Codex" }]}
           liveIssueIds={new Set(["issue-todo-1"])}
           onUpdateIssue={vi.fn()}
           {...nextProps}
-        />,
+        />
+        </QueryClientProvider>,
       );
     });
   };
