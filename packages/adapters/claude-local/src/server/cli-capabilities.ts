@@ -1,5 +1,7 @@
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const effortFlagSupportCache = new Map<string, Promise<boolean | null>>();
@@ -36,7 +38,7 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
 }
 
 export function minimumClaudeCliVersionForModel(model: string): string | null {
-  const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, "");
+  const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global|jp|au)\.)?anthropic\./, "");
   if (modelId === "claude-opus-5-5") return "2.1.280";
   return modelId === "claude-fable-5-1"
     ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
@@ -45,6 +47,26 @@ export function minimumClaudeCliVersionForModel(model: string): string | null {
 
 export function parseClaudeCliVersion(output: string): string | null {
   return output.match(/\b(\d+)\.(\d+)\.(\d+)\b/)?.[0] ?? null;
+}
+
+/**
+ * The Claude Code version bundled with the ACP bridge's SDK dependency, which
+ * the bridge launches unless CLAUDE_CODE_EXECUTABLE is set. Resolved through
+ * the bridge like `build-provider-pack.mjs`, so workspace overrides count.
+ * `from` is where resolution starts; tests point it into an npm-style tree.
+ */
+export async function readBundledClaudeCodeVersion(from: string | URL = import.meta.url): Promise<string | null> {
+  try {
+    const acpRequire = createRequire(
+      createRequire(from).resolve("@agentclientprotocol/claude-agent-acp/package.json"),
+    );
+    // The SDK does not export ./package.json; its entry sits at the package root.
+    const sdkDir = path.dirname(acpRequire.resolve("@anthropic-ai/claude-agent-sdk"));
+    const sdkPackage = JSON.parse(await fs.readFile(path.join(sdkDir, "package.json"), "utf8"));
+    return parseClaudeCliVersion(String(sdkPackage.claudeCodeVersion ?? ""));
+  } catch {
+    return null;
+  }
 }
 
 export function claudeCliVersionAtLeast(version: string, minimum: string): boolean {
