@@ -99,6 +99,26 @@ coming-soon GCP/Vault) live in the board UI under
 `Company Settings → Secrets → Provider vaults` and the
 `/api/companies/{companyId}/secret-provider-configs` API.
 
+## `paperclipai service`
+
+Install Paperclip as a macOS launchd agent or a Linux systemd user service:
+
+```sh
+paperclipai service install
+```
+
+The service manager does not inherit the PATH from an interactive shell. During
+installation, Paperclip records the installer's PATH and adds the active Node
+directory, `~/.local/bin`, and standard platform directories. This lets service
+checks and agent processes find tools installed outside the supervisor's small
+default PATH.
+
+If you add a tool or change PATH after installing the service, run
+`paperclipai service install` again from a shell where that tool is on PATH. The
+service definition is refreshed and the service is restarted with the updated
+PATH. You can confirm a tool is on the installer's PATH with
+`command -v codex` or `command -v claude` before reinstalling.
+
 ## `paperclipai env`
 
 Show resolved environment configuration:

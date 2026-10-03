@@ -16,6 +16,8 @@ import {
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  defaultPathForPlatform,
+  ensurePathInEnv,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
@@ -39,6 +41,25 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("ensurePathInEnv", () => {
+  it("keeps the inherited PATH and adds the active Node and platform paths", () => {
+    const inheritedEntries = ["/custom/bin", "/usr/bin"];
+    const env = ensurePathInEnv({
+      PATH: inheritedEntries.join(path.delimiter),
+      KEEP_ME: "yes",
+    });
+    const entries = env.PATH?.split(path.delimiter) ?? [];
+
+    expect(entries.slice(0, inheritedEntries.length)).toEqual(inheritedEntries);
+    expect(entries).toContain(path.dirname(process.execPath));
+    for (const entry of defaultPathForPlatform().split(path.delimiter)) {
+      expect(entries).toContain(entry);
+    }
+    expect(new Set(entries).size).toBe(entries.length);
+    expect(env.KEEP_ME).toBe("yes");
+  });
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {

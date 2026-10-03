@@ -8,6 +8,7 @@ import {
   LaunchdServiceManager,
   renderLaunchdPlist,
   renderSystemdUnit,
+  servicePathForEnvironment,
   SystemdServiceManager,
   type CommandRunner,
   type ServiceManager,
@@ -28,12 +29,13 @@ async function temporaryDirectory(): Promise<string> {
 
 describe("service definition generation", () => {
   it("generates a stable systemd notify unit without secrets", () => {
-    const unit = renderSystemdUnit({ instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip" });
+    const unit = renderSystemdUnit({ instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip", path: "/home/alice/.local/bin:/usr/bin:/bin" });
     expect(unit).toContain("Type=notify");
     expect(unit).toContain("NotifyAccess=all");
     expect(unit).toContain('ExecStart="/home/alice/.local/bin/paperclipai" run --instance "team-a"');
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("TimeoutStopSec=300");
+    expect(unit).toContain('Environment="PATH=/home/alice/.local/bin:/usr/bin:/bin"');
     expect(unit).not.toContain("API_KEY");
   });
 
@@ -42,26 +44,48 @@ describe("service definition generation", () => {
       instanceId: "team-$USER-%i",
       shimPath: "/home/$USER/%i/paperclipai",
       homeDir: "/home/$USER/%i/.paperclip",
+      path: "/home/$USER/.local/bin:/usr/bin",
     });
 
     expect(unit).toContain('ExecStart="/home/$$USER/%%i/paperclipai" run --instance "team-$$USER-%%i"');
     expect(unit).toContain('Environment="PAPERCLIP_HOME=/home/$$USER/%%i/.paperclip"');
+    expect(unit).toContain('Environment="PATH=/home/$$USER/.local/bin:/usr/bin"');
   });
 
   it.each([
-    ["instanceId", { instanceId: "team-a\nExecStartPre=/tmp/attack", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip" }],
-    ["shimPath", { instanceId: "team-a", shimPath: "/home/alice/bin/paperclipai\r\nExecStartPre=/tmp/attack", homeDir: "/home/alice/.paperclip" }],
-    ["homeDir", { instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip\nEnvironment=ATTACK=1" }],
+    ["instanceId", { instanceId: "team-a\nExecStartPre=/tmp/attack", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip", path: "/usr/bin:/bin" }],
+    ["shimPath", { instanceId: "team-a", shimPath: "/home/alice/bin/paperclipai\r\nExecStartPre=/tmp/attack", homeDir: "/home/alice/.paperclip", path: "/usr/bin:/bin" }],
+    ["homeDir", { instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip\nEnvironment=ATTACK=1", path: "/usr/bin:/bin" }],
+    ["path", { instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip", path: "/usr/bin\nEnvironment=ATTACK=1" }],
   ])("rejects line breaks in the systemd %s", (_field, input) => {
     expect(() => renderSystemdUnit(input)).toThrow("Systemd service values must not contain line breaks");
   });
 
   it("generates a launchd agent with keepalive and instance logs", () => {
-    const plist = renderLaunchdPlist({ instanceId: "team-a", shimPath: "/Users/alice/.local/bin/paperclipai", homeDir: "/Users/alice/.paperclip", stdoutPath: "/Users/alice/.paperclip/instances/team-a/logs/service.log", stderrPath: "/Users/alice/.paperclip/instances/team-a/logs/service.err.log" });
+    const plist = renderLaunchdPlist({ instanceId: "team-a", shimPath: "/Users/alice/.local/bin/paperclipai", homeDir: "/Users/alice/.paperclip", stdoutPath: "/Users/alice/.paperclip/instances/team-a/logs/service.log", stderrPath: "/Users/alice/.paperclip/instances/team-a/logs/service.err.log", path: "/Users/alice/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" });
     expect(plist).toContain("ing.paperclip.paperclipai.team-a");
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("service.err.log");
+    expect(plist).toContain("<key>PATH</key><string>/Users/alice/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>");
+  });
+});
+
+describe("service PATH", () => {
+  it("keeps the installer PATH and adds the active Node and platform paths", () => {
+    expect(servicePathForEnvironment(
+      { HOME: "/Users/alice", PATH: "/Users/alice/.local/bin:/usr/bin" },
+      "/opt/homebrew/Cellar/node/bin/node",
+      "darwin",
+    )).toBe("/Users/alice/.local/bin:/usr/bin:/opt/homebrew/Cellar/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/bin:/usr/sbin:/sbin");
+  });
+
+  it("includes the standard per-user executable directory when the installer PATH is minimal", () => {
+    expect(servicePathForEnvironment(
+      { HOME: "/Users/alice", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      "/opt/homebrew/Cellar/node/bin/node",
+      "darwin",
+    )).toContain("/Users/alice/.local/bin");
   });
 });
 
