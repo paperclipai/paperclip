@@ -41,38 +41,20 @@ export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
-function isPathInside(parent: string, candidate: string): boolean {
-  const relative = path.relative(parent, candidate);
-  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
-}
-
 export async function removeProjectManagedFiles(input: {
   companyId: string;
   projectId: string;
-  workspaceCwds: string[];
 }): Promise<void> {
   if (!SAFE_PATH_SEGMENT.test(input.companyId) || !SAFE_PATH_SEGMENT.test(input.projectId)) {
     throw new Error("Invalid company or project id for managed-file cleanup");
   }
 
-  const managedProjectRoot = path.dirname(
-    resolveManagedProjectWorkspaceDir({
-      companyId: input.companyId,
-      projectId: input.projectId,
-      repoName: "_default",
-    }),
-  );
-  const targets = new Set([managedProjectRoot]);
-  for (const cwd of input.workspaceCwds) {
-    const resolved = path.resolve(cwd);
-    if (isPathInside(managedProjectRoot, resolved)) targets.add(resolved);
-  }
-
-  const results = await Promise.allSettled(
-    [...targets].map((target) => rm(target, { recursive: true, force: true })),
-  );
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure?.status === "rejected") throw failure.reason;
+  const managedProjectRoot = path.dirname(resolveManagedProjectWorkspaceDir({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    repoName: "_default",
+  }));
+  await rm(managedProjectRoot, { recursive: true, force: true });
 }
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -1005,8 +987,12 @@ export function projectService(
           .from(projects)
           .where(eq(projects.id, id))
           .for("update");
-        if (!project) return { row: null, workspaceCwds: [] as string[] };
-        if (project.deletionClaimToken && !removeOptions.deletionClaimToken) {
+        if (!project) return { row: null };
+        if (
+          project.deletionClaimToken &&
+          (!project.deletionClaimExpiresAt || project.deletionClaimExpiresAt.getTime() > Date.now()) &&
+          !removeOptions.deletionClaimToken
+        ) {
           throw conflict("Project deletion is already in progress. Retry the requested deletion.");
         }
         if (removeOptions.deletionClaimToken) {
@@ -1019,12 +1005,6 @@ export function projectService(
             throw conflict("Project deletion claim expired. Retry the deletion.");
           }
         }
-        const workspaceRows = removeOptions.deleteFiles
-          ? await tx
-              .select({ cwd: projectWorkspaces.cwd })
-              .from(projectWorkspaces)
-              .where(eq(projectWorkspaces.projectId, id))
-          : [];
         const rows = await tx
           .delete(projects)
           .where(
@@ -1042,9 +1022,6 @@ export function projectService(
         }
         return {
           row: rows[0] ?? null,
-          workspaceCwds: workspaceRows
-            .map(({ cwd }) => cwd)
-            .filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0),
         };
       });
       if (!result.row) return null;
@@ -1055,7 +1032,6 @@ export function projectService(
           await (options.removeManagedFiles ?? removeProjectManagedFiles)({
             companyId: result.row.companyId,
             projectId: result.row.id,
-            workspaceCwds: result.workspaceCwds,
           });
           fileCleanup = "succeeded";
         } catch (err) {

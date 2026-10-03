@@ -43,7 +43,6 @@ describe("project managed-file cleanup", () => {
     await removeProjectManagedFiles({
       companyId,
       projectId,
-      workspaceCwds: [externalWorkspace, siblingWorkspace],
     });
 
     await expect(access(managedWorkspace)).rejects.toThrow();
@@ -56,7 +55,6 @@ describe("project managed-file cleanup", () => {
       removeProjectManagedFiles({
         companyId: "../outside",
         projectId: "project-id",
-        workspaceCwds: [],
       }),
     ).rejects.toThrow("Invalid company or project id");
   });
