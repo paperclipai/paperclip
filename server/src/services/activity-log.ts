@@ -13,6 +13,12 @@ import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
+  // Child creation routes (POST /issues/:id/children, accepted-plan
+  // decompositions) log only `issue.child_created`. Bridge it so plugins
+  // subscribed to `issue.created` observe every new issue, not just top-level
+  // creations. The activity row carries entityType "issue" and the new child
+  // issue id, so the bridged payload matches a top-level creation.
+  issue_child_created: "issue.created",
   issue_comment_added: "issue.comment.created",
   issue_comment_created: "issue.comment.created",
   issue_document_created: "issue.document.created",
