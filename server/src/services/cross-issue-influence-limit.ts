@@ -27,10 +27,19 @@ export type CrossIssueInfluenceDecision = {
   enforceAt: string;
 };
 
-export function crossIssueInfluenceRunContextError() {
+/**
+ * `runContextRequired` is for a request that arrived with no run at all — the
+ * header advice is correct there. `rejected` is for a request that *did* carry a
+ * run id which does not resolve to a live run of this agent; the old copy told
+ * those callers to resend a header they had already sent.
+ */
+export function crossIssueInfluenceRunContextError(options: { runIdPresent?: boolean } = {}) {
+  const code = options.runIdPresent
+    ? "cross_issue_influence_run_context_rejected"
+    : "cross_issue_influence_run_context_required";
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
-  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
+  const { body } = issueWriteDenialResponse(code);
   return forbidden(body.error, body.details);
 }
 
@@ -82,7 +91,7 @@ export async function observeCrossIssueInfluence(
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
-  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
+  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError({ runIdPresent: true });
 
   return db.transaction(async (tx) => {
     const run = await tx
@@ -106,7 +115,7 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw crossIssueInfluenceRunContextError({ runIdPresent: true });
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
