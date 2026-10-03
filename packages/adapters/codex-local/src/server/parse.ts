@@ -97,6 +97,20 @@ export function parseCodexJsonl(stdout: string) {
   };
 }
 
+export function parseCodexProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string; displayFallbackSafe?: boolean };
+}) {
+  const parsed = parseCodexJsonl(output.controlOutput?.stdout ?? output.stdout);
+  if (output.controlOutput?.displayFallbackSafe === true && !parsed.sawProtocolTerminalEvent) {
+    // A large protected string can shrink below the display cap after its raw
+    // opening left the control window. Only accept already-redacted display.
+    const display = parseCodexJsonl(output.stdout);
+    if (display.sawProtocolTerminalEvent) return display;
+  }
+  return parsed;
+}
+
 /**
  * Structural crash detection: the codex CLI can only report an agent-level
  * failure through the JSONL protocol (an `error` event, `turn.failed`, or a

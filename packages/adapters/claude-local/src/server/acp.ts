@@ -703,11 +703,12 @@ export async function probeClaudeAcpSandboxLogin(input: {
   if (probe.timedOut) {
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe timed out.", targetIsSandbox)];
   }
-  const parsedStream = parseClaudeStreamJson(probe.stdout);
+  const controlOutput = probe.controlOutput ?? probe;
+  const parsedStream = parseClaudeStreamJson(controlOutput.stdout);
   const loginMeta = detectClaudeLoginRequired({
     parsed: parsedStream.resultJson,
-    stdout: probe.stdout,
-    stderr: probe.stderr,
+    stdout: controlOutput.stdout,
+    stderr: controlOutput.stderr,
   });
   if (loginMeta.requiresLogin) {
     return buildAcpAuthMissingChecks({ targetIsSandbox, loginUrl: loginMeta.loginUrl });

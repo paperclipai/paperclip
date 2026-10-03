@@ -52,7 +52,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeProcessOutput } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -661,7 +661,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return {
         proc,
         rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
+        parsed: parseOpenCodeProcessOutput(proc),
       };
     };
 
@@ -669,7 +669,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        parsed: ReturnType<typeof parseOpenCodeProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {

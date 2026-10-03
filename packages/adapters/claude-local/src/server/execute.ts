@@ -63,6 +63,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   claudeModelUsageTotals,
+  parseClaudeProcessOutput,
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
@@ -981,8 +982,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       localProcessSandbox,
     });
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
-    const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+    const { parsedStream, parsed } = parseClaudeProcessOutput(proc);
     return { proc, parsedStream, parsed };
   };
 

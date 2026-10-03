@@ -231,6 +231,14 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
   return result;
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parsePiProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}): ParsedPiOutput {
+  return parsePiJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export function isPiUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

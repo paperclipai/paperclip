@@ -53,7 +53,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { firstCursorDiagnosticLine, parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorProcessOutput, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -673,7 +673,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return {
       proc,
-      parsed: parseCursorJsonl(proc.stdout),
+      parsed: parseCursorProcessOutput(proc),
     };
   };
 
@@ -689,7 +689,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: string;
         errorCode?: string | null;
       };
-      parsed: ReturnType<typeof parseCursorJsonl>;
+      parsed: ReturnType<typeof parseCursorProcessOutput>;
     },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {

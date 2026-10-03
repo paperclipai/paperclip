@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
@@ -13,6 +14,12 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+import {
+  collectKnownSecretEnvValues,
+  createSecretEnvRedactionStream,
+  createSecretEnvRedactionScanner,
+  createSecretEnvRedactionControlStream,
+} from "./secret-env-redaction.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -48,6 +55,15 @@ export interface RunProcessResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
+  // Optional sanitized control text for terminal-aware local capture. Display
+  // logs keep literal markers; JSON control records retain safe token syntax.
+  controlOutput?: {
+    stdout: string;
+    stderr: string;
+    // A valid display record proves original JSON syntax only when literal
+    // replacement cannot remove quotes, escapes or forbidden string controls.
+    displayFallbackSafe?: boolean;
+  };
   pid: number | null;
   startedAt: string | null;
   // The stop timestamp and the measured wall time of one execution. Both are
@@ -4702,6 +4718,7 @@ export async function runChildProcess(
     timeoutSec: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    onControlOutput?: (stream: "stdout" | "stderr", records: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: {
       pid: number;
@@ -4752,6 +4769,21 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        // Known secret env values (DATABASE_URL, API keys, signing secrets,
+        // ...) must not land verbatim in Paperclip's captured run log just
+        // because a command like `printenv` or `env` echoed them. Collected
+        // once per spawn from the actual child env, not learned from any
+        // corpus of captured/leaked values.
+        // Streaming (not per-chunk) so a value split across a pipe-buffer
+        // boundary is still caught; stdout and stderr each need their own
+        // carry buffer.
+        const knownSecretEnvValues = collectKnownSecretEnvValues(childEnv);
+        const stdoutRedaction = createSecretEnvRedactionStream(knownSecretEnvValues);
+        const stderrRedaction = createSecretEnvRedactionStream(knownSecretEnvValues);
+        // Decode across byte boundaries before matching secret values or
+        // scanning terminal output. The two pipes must not share decoder state.
+        const stdoutDecoder = new StringDecoder("utf8");
+        const stderrDecoder = new StringDecoder("utf8");
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
@@ -4791,8 +4823,22 @@ export async function runChildProcess(
         let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
-        let terminalResultStdoutScanOffset = 0;
-        let terminalResultStderrScanOffset = 0;
+        // A valid compacted display record is evidence only if actual literal
+        // replacements have preserved JSON string/escape boundaries on both pipes.
+        const displayFallbackSafe = () => stdoutRedaction.displayFallbackSafe() &&
+          stderrRedaction.displayFallbackSafe();
+        const liveControl = opts.onControlOutput ? {
+          stdout: createSecretEnvRedactionControlStream(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+          stderr: createSecretEnvRedactionControlStream(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+        } : null;
+        const controlOutput = knownSecretEnvValues.length > 0 || opts.terminalResultCleanup ? {
+          stdout: createSecretEnvRedactionScanner(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+          stderr: createSecretEnvRedactionScanner(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+        } : null;
+        const terminalScan = {
+          stdout: createSecretEnvRedactionScanner(knownSecretEnvValues, TERMINAL_RESULT_SCAN_OVERLAP_CHARS),
+          stderr: createSecretEnvRedactionScanner(knownSecretEnvValues, TERMINAL_RESULT_SCAN_OVERLAP_CHARS),
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -4801,34 +4847,39 @@ export async function runChildProcess(
           terminalCleanupKillTimer = null;
         };
 
-        const maybeArmTerminalResultCleanup = () => {
+        const maybeArmTerminalResultCleanup = (
+          stream?: "stdout" | "stderr",
+          text = "",
+        ) => {
+          // Structured final consumers also need sanitized output when they
+          // have no terminal-cleanup policy, including late-arriving records.
+          if (stream && text) controlOutput?.[stream].append(text);
           const terminalCleanup = opts.terminalResultCleanup;
-          if (!terminalCleanup || terminalCleanupStarted || timedOut) return;
+          if (!terminalCleanup) return;
+          if (terminalCleanupStarted || timedOut) return;
           if (!terminalResultSeen) {
-            const stdoutStart = Math.max(
-              0,
-              terminalResultStdoutScanOffset -
-                TERMINAL_RESULT_SCAN_OVERLAP_CHARS,
-            );
-            const stderrStart = Math.max(
-              0,
-              terminalResultStderrScanOffset -
-                TERMINAL_RESULT_SCAN_OVERLAP_CHARS,
-            );
-            const scanOutput = {
-              stdout: stdout.slice(stdoutStart),
-              stderr: stderr.slice(stderrStart),
-            };
-            terminalResultStdoutScanOffset = stdout.length;
-            terminalResultStderrScanOffset = stderr.length;
-            if (
-              scanOutput.stdout.length === 0 &&
-              scanOutput.stderr.length === 0
-            )
-              return;
             try {
-              terminalResultSeen =
-                terminalCleanup.hasTerminalResult(scanOutput);
+              const inspect = (sanitized?: string) => {
+                const output = {
+                  stdout: stream === "stdout" && sanitized !== undefined
+                    ? sanitized : terminalScan.stdout.snapshot(),
+                  stderr: stream === "stderr" && sanitized !== undefined
+                    ? sanitized : terminalScan.stderr.snapshot(),
+                };
+                if (output.stdout || output.stderr) {
+                  terminalResultSeen = terminalCleanup.hasTerminalResult(output);
+                }
+                // Raw retention can clip a large record that literal redaction
+                // shrinks below the display cap. Only fall back to redacted capture.
+                if (!terminalResultSeen && displayFallbackSafe() && (stdout || stderr) &&
+                  (stdout !== output.stdout || stderr !== output.stderr)) {
+                  terminalResultSeen = terminalCleanup.hasTerminalResult({ stdout, stderr });
+                }
+              };
+              // append inspects before trimming and preserves recognized match
+              // coverage. Parameterless rescans never expose raw retained text.
+              if (stream && text) terminalScan[stream].append(text, inspect);
+              else inspect();
             } catch (err) {
               onLogError(
                 err,
@@ -4874,15 +4925,18 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
+        child.stdout?.on("data", (chunk: Buffer) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const rawText = stdoutDecoder.write(chunk);
+          const text = stdoutRedaction.push(rawText);
           stdout = appendWithCap(stdout, text);
-          maybeArmTerminalResultCleanup();
+          maybeArmTerminalResultCleanup("stdout", rawText);
+          const controls = liveControl?.stdout.push(rawText) ?? "";
           logChain = logChain
-            .then(() => opts.onLog("stdout", text))
+            .then(() => (text ? opts.onLog("stdout", text) : undefined))
+            .then(() => (controls ? opts.onControlOutput?.("stdout", controls) : undefined))
             .catch((err) =>
               onLogError(err, runId, "failed to append stdout log chunk"),
             )
@@ -4892,15 +4946,35 @@ export async function runChildProcess(
             });
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
+        // Pass any incomplete UTF-8 remainder through redaction before
+        // releasing its carry, so EOF cannot bypass matching or drop output.
+        child.stdout?.on("end", () => {
+          const rawText = stdoutDecoder.end();
+          const text = stdoutRedaction.push(rawText) + stdoutRedaction.flush();
+          stdout = appendWithCap(stdout, text);
+          maybeArmTerminalResultCleanup("stdout", rawText);
+          const controls = (liveControl?.stdout.push(rawText) ?? "") + (liveControl?.stdout.flush() ?? "");
+          if (!text && !controls) return;
+          logChain = logChain
+            .then(() => (text ? opts.onLog("stdout", text) : undefined))
+            .then(() => (controls ? opts.onControlOutput?.("stdout", controls) : undefined))
+            .catch((err) =>
+              onLogError(err, runId, "failed to append stdout log chunk"),
+            );
+        });
+
+        child.stderr?.on("data", (chunk: Buffer) => {
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const rawText = stderrDecoder.write(chunk);
+          const text = stderrRedaction.push(rawText);
           stderr = appendWithCap(stderr, text);
-          maybeArmTerminalResultCleanup();
+          maybeArmTerminalResultCleanup("stderr", rawText);
+          const controls = liveControl?.stderr.push(rawText) ?? "";
           logChain = logChain
-            .then(() => opts.onLog("stderr", text))
+            .then(() => (text ? opts.onLog("stderr", text) : undefined))
+            .then(() => (controls ? opts.onControlOutput?.("stderr", controls) : undefined))
             .catch((err) =>
               onLogError(err, runId, "failed to append stderr log chunk"),
             )
@@ -4908,6 +4982,21 @@ export async function runChildProcess(
               maybeArmTerminalResultCleanup();
               resumeReadable(readable);
             });
+        });
+
+        child.stderr?.on("end", () => {
+          const rawText = stderrDecoder.end();
+          const text = stderrRedaction.push(rawText) + stderrRedaction.flush();
+          stderr = appendWithCap(stderr, text);
+          maybeArmTerminalResultCleanup("stderr", rawText);
+          const controls = (liveControl?.stderr.push(rawText) ?? "") + (liveControl?.stderr.flush() ?? "");
+          if (!text && !controls) return;
+          logChain = logChain
+            .then(() => (text ? opts.onLog("stderr", text) : undefined))
+            .then(() => (controls ? opts.onControlOutput?.("stderr", controls) : undefined))
+            .catch((err) =>
+              onLogError(err, runId, "failed to append stderr log chunk"),
+            );
         });
 
         const stdin = child.stdin;
@@ -4953,6 +5042,11 @@ export async function runChildProcess(
                     timedOut,
                     stdout,
                     stderr,
+                    ...(controlOutput ? { controlOutput: {
+                      stdout: controlOutput.stdout.snapshot(),
+                      stderr: controlOutput.stderr.snapshot(),
+                      displayFallbackSafe: displayFallbackSafe(),
+                    } } : {}),
                     pid: child.pid ?? null,
                     startedAt,
                     terminalResultCleanup: terminalCleanupStarted

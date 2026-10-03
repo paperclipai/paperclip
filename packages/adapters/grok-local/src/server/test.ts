@@ -24,7 +24,7 @@ import path from "node:path";
 import { stageGrokHomeForSync } from "./grok-home.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
-import { parseGrokJsonl } from "./parse.js";
+import { parseGrokProcessOutput } from "./parse.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 
 export interface GrokModelsProbe {
@@ -336,7 +336,7 @@ export async function testEnvironment(
         onLog: async () => {},
       },
     );
-    const parsed = parseGrokJsonl(helloProbe.stdout);
+    const parsed = parseGrokProcessOutput(helloProbe);
     const detail = summarizeProbeDetail(helloProbe.stdout, helloProbe.stderr, parsed.errorMessage);
     const authRequired = GROK_AUTH_REQUIRED_RE.test(`${helloProbe.stdout}\n${helloProbe.stderr}`);
 

@@ -57,7 +57,7 @@ import {
   extractKimiRuntimeEvents,
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
-  parseKimiJsonl,
+  parseKimiProcessOutput,
 } from "./parse.js";
 import {
   createKimiAcpExecutor,
@@ -69,47 +69,17 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const executeKimiAcp = createKimiAcpExecutor();
 
-/**
- * Wrap `onLog` so each complete kimi stream-json stdout line is also mapped to
- * `onEvent` runtime events (assistant snippet, tool name). This keeps the raw
- * run log intact while lighting up the issue-thread activity indicator, which
- * reads `currentToolName` / `lastAssistantSnippet` / `lastEventAt` derived from
- * `onEvent` rather than from the raw log stream. Stdout arrives in arbitrary
- * chunks, so lines are buffered and split on newlines. `flush` must be called
- * once the process exits so the final line reaches `onEvent` even when kimi
- * closes stdout without a trailing newline (otherwise the last assistant
- * message or tool call would be missing from live status).
- */
-function createKimiEventForwardingLog(
-  onLog: AdapterExecutionContext["onLog"],
-  onEvent: AdapterExecutionContext["onEvent"],
-): { log: AdapterExecutionContext["onLog"]; flush: () => Promise<void> } {
-  if (!onEvent) return { log: onLog, flush: async () => {} };
-  let buffer = "";
-  const emitLine = async (raw: string): Promise<void> => {
-    const line = raw.trim();
-    if (!line) return;
-    for (const event of extractKimiRuntimeEvents(line)) {
-      await onEvent({ eventType: event.eventType, stream: "stdout", message: event.message, payload: event.payload });
-    }
-  };
-  return {
-    log: async (stream, chunk) => {
-      await onLog(stream, chunk);
-      if (stream !== "stdout") return;
-      buffer += chunk;
-      let newlineIndex: number;
-      while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        await emitLine(line);
+/** Live events consume only ordered sanitized records, never literal log chunks. */
+function createKimiEventForwarder(onEvent: AdapterExecutionContext["onEvent"]) {
+  return async (stream: "stdout" | "stderr", records: string): Promise<void> => {
+    if (!onEvent || stream !== "stdout") return;
+    for (const raw of records.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      for (const event of extractKimiRuntimeEvents(line)) {
+        await onEvent({ eventType: event.eventType, stream: "stdout", message: event.message, payload: event.payload });
       }
-    },
-    flush: async () => {
-      const remaining = buffer;
-      buffer = "";
-      await emitLine(remaining);
-    },
+    }
   };
 }
 
@@ -602,7 +572,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const eventForwarder = createKimiEventForwardingLog(onLog, onEvent);
+    const onControlOutput = createKimiEventForwarder(onEvent);
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       onProcessStopped: providerStop.beginInvocation(),
       cwd,
@@ -611,14 +581,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog: eventForwarder.log,
+      onLog,
+      onControlOutput,
       runLogTail: paperclipBridge?.runLogTail,
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
     });
-    await eventForwarder.flush();
     return {
       proc,
-      parsed: parseKimiJsonl(proc.stdout),
+      parsed: parseKimiProcessOutput(proc),
     };
   };
 
@@ -632,7 +602,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: string;
         errorCode?: string | null;
       };
-      parsed: ReturnType<typeof parseKimiJsonl>;
+      parsed: ReturnType<typeof parseKimiProcessOutput>;
     },
     clearSessionOnMissingSession = false,
     isRetry = false,

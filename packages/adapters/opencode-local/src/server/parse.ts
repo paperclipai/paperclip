@@ -88,6 +88,14 @@ export function parseOpenCodeJsonl(stdout: string) {
   };
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseOpenCodeProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}) {
+  return parseOpenCodeJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

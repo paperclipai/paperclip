@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   readPaperclipRuntimeSkillEntries,
@@ -39,6 +41,11 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {
@@ -568,6 +575,366 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  async function captureByteChunks(
+    chunks: Array<["stdout" | "stderr", Buffer]>,
+    env: Record<string, string>,
+  ) {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null,
+      signalCode: null,
+    });
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        for (const [stream, chunk] of chunks) child[stream].emit("data", chunk);
+        child.stdout.emit("end");
+        child.stderr.emit("end");
+        child.emit("close", 0, null);
+      });
+      return child as unknown as ChildProcess;
+    });
+    const logged = { stdout: "", stderr: "" };
+    const inspected: Array<{ stdout: string; stderr: string }> = [];
+    const result = await runChildProcess(randomUUID(), process.execPath, [], {
+      cwd: process.cwd(),
+      env,
+      timeoutSec: 0,
+      graceSec: 1,
+      onLog: async (stream, chunk) => {
+        await Promise.resolve();
+        logged[stream] += chunk;
+      },
+      terminalResultCleanup: {
+        hasTerminalResult: (output) => {
+          inspected.push(output);
+          return false;
+        },
+      },
+    });
+    return { result, logged, inspected };
+  }
+
+  it.each(["stdout", "stderr"] as const)(
+    "redacts UTF-8 secrets at every %s byte boundary, including intact controls",
+    async (stream) => {
+      for (const character of ["é", "雪", "🧭"]) {
+        const secret = `postgresql://test:synthetic_password@localhost/${character}`;
+        const bytes = Buffer.from(secret);
+        // Explicit Buffer events make all byte partitions deterministic,
+        // independently of how the OS combines writes into pipe chunks.
+        for (let cut = 0; cut <= bytes.length; cut += 1) {
+          const { result, logged, inspected } = await captureByteChunks(
+            [[stream, bytes.subarray(0, cut)], [stream, bytes.subarray(cut)]],
+            { DATABASE_URL: secret },
+          );
+          expect(result[stream]).toBe("***REDACTED***");
+          expect(logged[stream]).toBe("***REDACTED***");
+          expect(inspected.at(-1)?.[stream]).toBe("***REDACTED***");
+        }
+      }
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "redacts the %s decoder remainder before flushing redaction at EOF",
+    async (stream) => {
+      const secret = "synthetic-eof-�";
+      const bytes = Buffer.concat([Buffer.from("synthetic-eof-"), Buffer.from([0xe2, 0x82])]);
+      const { result, logged, inspected } = await captureByteChunks(
+        [[stream, bytes]],
+        { DATABASE_URL: secret },
+      );
+      expect(result[stream]).toBe("***REDACTED***");
+      expect(logged[stream]).toBe("***REDACTED***");
+      expect(inspected.at(-1)?.[stream]).toBe("***REDACTED***");
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "preserves safe Unicode %s output and incomplete EOF bytes in order",
+    async (stream) => {
+      const safe = "tick é 雪 🧭\n";
+      const bytes = Buffer.concat([Buffer.from(safe), Buffer.from([0xf0, 0x9f])]);
+      const chunks: Array<["stdout" | "stderr", Buffer]> = Array.from(
+        bytes,
+        (byte) => [stream, Buffer.from([byte])],
+      );
+      const { result, logged, inspected } = await captureByteChunks(chunks, {});
+      expect(result[stream]).toBe(`${safe}�`);
+      expect(logged[stream]).toBe(result[stream]);
+      expect(inspected.at(-1)?.[stream]).toBe(result[stream]);
+    },
+  );
+
+  it("keeps interleaved stdout and stderr UTF-8 decoding independent", async () => {
+    const stdoutSecret = "synthetic-stdout-雪";
+    const stderrSecret = "synthetic-stderr-🧭";
+    const out = Buffer.from(stdoutSecret);
+    const err = Buffer.from(stderrSecret);
+    const { result, logged } = await captureByteChunks(
+      [
+        ["stdout", out.subarray(0, out.length - 2)],
+        ["stderr", err.subarray(0, err.length - 2)],
+        ["stdout", out.subarray(out.length - 2)],
+        ["stderr", err.subarray(err.length - 2)],
+      ],
+      { DATABASE_URL: stdoutSecret, ANTHROPIC_API_KEY: stderrSecret },
+    );
+    expect(result.stdout).toBe("***REDACTED***");
+    expect(result.stderr).toBe("***REDACTED***");
+    expect(logged.stdout).toBe(result.stdout);
+    expect(logged.stderr).toBe(result.stderr);
+  });
+
+  it.each(["stdout", "stderr"] as const)(
+    "redacts a UTF-8 secret split across real %s pipe writes",
+    async (stream) => {
+      const secret = "postgresql://test:synthetic_password@localhost/雪";
+      const logged: string[] = [];
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", [
+          "const fs = require('node:fs');",
+          "const bytes = Buffer.from(process.env.DATABASE_URL);",
+          "const cut = bytes.length - 2;",
+          `fs.writeSync(${stream === "stdout" ? 1 : 2}, bytes.subarray(0, cut));`,
+          `setTimeout(() => fs.writeSync(${stream === "stdout" ? 1 : 2}, bytes.subarray(cut)), 150);`,
+        ].join(" ")],
+        {
+          cwd: process.cwd(),
+          env: { DATABASE_URL: secret },
+          timeoutSec: 3,
+          graceSec: 1,
+          onLog: async (name, chunk) => { if (name === stream) logged.push(chunk); },
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result[stream]).toBe("***REDACTED***");
+      expect(logged.join("")).toBe(result[stream]);
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "delivers safe %s progress while the child waits for a response",
+    async (stream) => {
+      const secret = "Z".repeat(2048);
+      const logged: string[] = [];
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "safe-output-"));
+      const ackPath = path.join(dir, "ack");
+      try {
+        const result = await runChildProcess(
+          randomUUID(),
+          process.execPath,
+          ["-e", [
+            "const fs = require('node:fs');",
+            `setInterval(() => { if (fs.existsSync(${JSON.stringify(ackPath)})) process.exit(0); }, 10);`,
+            `fs.writeSync(${stream === "stdout" ? 1 : 2}, 'tick\\n');`,
+          ].join(" ")],
+          {
+            cwd: process.cwd(),
+            env: { DATABASE_URL: secret },
+            timeoutSec: 2,
+            graceSec: 1,
+            onLog: async (loggedStream, chunk) => {
+              if (loggedStream !== stream) return;
+              logged.push(chunk);
+              await fs.writeFile(ackPath, "ack");
+            },
+          },
+        );
+        expect(result.timedOut).toBe(false);
+        expect(result.exitCode).toBe(0);
+        expect(logged.join("")).toBe("tick\n");
+        expect(result[stream]).toBe("tick\n");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "scans a complete %s chunk before retaining only its trailing window",
+    async (stream) => {
+      const secret = "synthetic-secret-value";
+      const candidate = `terminal-result\n${secret}\n${"z".repeat(70_000)}`;
+      const inspected: string[] = [];
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        exitCode: null,
+        signalCode: null,
+      });
+      // Force one large data event: OS pipe chunk sizes must not determine
+      // whether the truncate-before-scan regression is exercised.
+      vi.mocked(spawn).mockImplementationOnce(() => {
+        queueMicrotask(() => {
+          child[stream].emit("data", Buffer.from(candidate));
+          child.stdout.emit("end");
+          child.stderr.emit("end");
+          child.emit("close", 0, null);
+        });
+        return child as unknown as ChildProcess;
+      });
+      const result = await runChildProcess(randomUUID(), process.execPath, [], {
+        cwd: process.cwd(),
+        env: { DATABASE_URL: secret },
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: {
+          hasTerminalResult: (output) => {
+            inspected.push(output[stream]);
+            return false;
+          },
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(inspected[0]?.includes("terminal-result\n")).toBe(true);
+      expect(inspected[0]?.includes("***REDACTED***")).toBe(true);
+      expect(inspected.every((text) => !text.includes(secret))).toBe(true);
+    },
+  );
+
+  it.each([
+    { stream: "stdout", holdClosingPrefix: true },
+    { stream: "stderr", holdClosingPrefix: true },
+    { stream: "stdout", holdClosingPrefix: false },
+    { stream: "stderr", holdClosingPrefix: false },
+  ] as const)(
+    "inspects compacted $stream display synchronously after EOF flush (carry=$holdClosingPrefix)",
+    async ({ stream, holdClosingPrefix }) => {
+      const secret = "S".repeat(64);
+      const text = JSON.stringify({ type: "result", result: "S".repeat(4 * 1024 * 1024 + 1) }) + "\n";
+      let ending = false;
+      let recognizedAtEnd = false;
+      const inspected: string[] = [];
+      const logged: string[] = [];
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null,
+      });
+      vi.mocked(spawn).mockImplementationOnce(() => {
+        queueMicrotask(async () => {
+          // Start after spawn installs the pipe listeners, then drain each
+          // log callback before EOF so no later data callback can
+          // accidentally conceal the missing synchronous end inspection.
+          for (let from = 0; from < text.length; from += 65536) {
+            child[stream].emit("data", Buffer.from(text.slice(from, from + 65536)));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          ending = true;
+          child[stream].emit("end");
+          ending = false;
+          child[stream === "stdout" ? "stderr" : "stdout"].emit("end");
+          child.emit("close", 0, null);
+        });
+        return child as unknown as ChildProcess;
+      });
+      const result = await runChildProcess(randomUUID(), process.execPath, [], {
+        cwd: process.cwd(), env: {
+          DATABASE_URL: secret,
+          CLIENT_SECRET: holdClosingPrefix ? '\"}\nnot-printed-secret' : "unused-secret",
+        },
+        timeoutSec: 0, graceSec: 1,
+        onLog: async (actualStream, chunk) => { if (actualStream === stream) logged.push(chunk); },
+        terminalResultCleanup: {
+          graceMs: 10000,
+          hasTerminalResult: (output) => {
+            inspected.push(output[stream]);
+            let recognized = false;
+            try { recognized = JSON.parse(output[stream]).type === "result"; } catch {}
+            if (ending && recognized) recognizedAtEnd = true;
+            // Keep inspection active so this assertion observes the end handler,
+            // not an earlier successful cleanup latch or a later log callback.
+            return false;
+          },
+        },
+      });
+      expect(recognizedAtEnd, JSON.stringify({
+        display: result[stream].slice(0, 100),
+        logged: logged.slice(0, 3).map((chunk) => ({ length: chunk.length, prefix: chunk.slice(0, 100) })),
+        last: inspected.slice(-5).map((output) => output.slice(0, 100)),
+        total: inspected.length,
+      })).toBe(true);
+      expect(JSON.parse(result[stream]).type).toBe("result");
+      expect(logged.join("")).toBe(result[stream]);
+      expect(inspected.every((output) => !output.includes(secret))).toBe(true);
+    },
+    30000,
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "detects a short terminal line held by the %s redactor without waiting for EOF",
+    async (stream) => {
+      const secret = "terminal-result\nnot-printed-secret";
+      const logged: string[] = [];
+      const inspected: string[] = [];
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", `process.${stream}.write('terminal-result\\n'); setInterval(() => {}, 1000);`],
+        {
+          cwd: process.cwd(),
+          env: { DATABASE_URL: secret },
+          timeoutSec: 2,
+          graceSec: 1,
+          onLog: async (_stream, chunk) => { logged.push(chunk); },
+          terminalResultCleanup: {
+            graceMs: 10,
+            hasTerminalResult: (output) => {
+              inspected.push(output[stream]);
+              return output[stream].includes("terminal-result\n");
+            },
+          },
+        },
+      );
+      expect(result.timedOut).toBe(false);
+      expect(result.terminalResultCleanup?.terminalResultSeen).toBe(true);
+      expect(result[stream]).toBe("terminal-result\n");
+      expect(logged.join("")).toBe("terminal-result\n");
+      expect(inspected.every((text) => !text.includes(secret))).toBe(true);
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "redacts a split secret before the %s terminal predicate and log consumers see it",
+    async (stream) => {
+      const secret = "synthetic-split-secret";
+      const inspected: string[] = [];
+      const logged: string[] = [];
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", [
+          `process.${stream}.write(process.env.DATABASE_URL.slice(0, 10));`,
+          `setTimeout(() => process.${stream}.write(process.env.DATABASE_URL.slice(10) + '\\nterminal-result\\n'), 50);`,
+          "setInterval(() => {}, 1000);",
+        ].join(" ")],
+        {
+          cwd: process.cwd(),
+          env: { DATABASE_URL: secret },
+          timeoutSec: 2,
+          graceSec: 1,
+          onLog: async (_stream, chunk) => { logged.push(chunk); },
+          terminalResultCleanup: {
+            graceMs: 10,
+            hasTerminalResult: (output) => {
+              inspected.push(output[stream]);
+              return output[stream].includes("terminal-result\n");
+            },
+          },
+        },
+      );
+      expect(result.timedOut).toBe(false);
+      expect(result.terminalResultCleanup?.terminalResultSeen).toBe(true);
+      expect(inspected.some((text) => text.includes("***REDACTED***"))).toBe(true);
+      expect(inspected.every((text) => !text.includes(secret))).toBe(true);
+      expect(result[stream]).toBe("***REDACTED***\nterminal-result\n");
+      expect(logged.join("")).toBe(result[stream]);
+    },
+  );
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -585,6 +952,85 @@ describe("runChildProcess", () => {
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
     expect(result.stdout).toBe("done");
+  });
+
+  it("redacts known secret env values out of captured stdout before it reaches onLog or the result", async () => {
+    const loggedChunks: string[] = [];
+    const secretValue = "sk-live-super-secret-value-123456";
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write('DATABASE_URL=' + process.env.DATABASE_URL + '\\n'); process.stdout.write('bare value: ' + process.env.DATABASE_URL + '\\n');",
+      ],
+      {
+        cwd: process.cwd(),
+        env: { DATABASE_URL: secretValue },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          loggedChunks.push(chunk);
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain(secretValue);
+    expect(result.stdout).toContain("***REDACTED***");
+    expect(loggedChunks.join("")).not.toContain(secretValue);
+  });
+
+  it("does not redact short/common env values even if the name is denylisted", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('DATABASE_URL=' + process.env.DATABASE_URL);"],
+      {
+        cwd: process.cwd(),
+        env: { DATABASE_URL: "x" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("DATABASE_URL=x");
+  });
+
+  it("redacts a secret that straddles a stdout chunk boundary", async () => {
+    const loggedChunks: string[] = [];
+    const secretValue = "postgres://user:p4ssw0rd@db.internal:5432/paperclip";
+    // Push the secret across a pipe-buffer boundary, so it arrives split over
+    // two "data" events and no single chunk contains it whole.
+    const fillerLength = 65536 - 20;
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        `process.stdout.write("A".repeat(${fillerLength}) + process.env.DATABASE_URL + "\\ntail\\n");`,
+      ],
+      {
+        cwd: process.cwd(),
+        env: { DATABASE_URL: secretValue },
+        timeoutSec: 15,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          loggedChunks.push(chunk);
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain(secretValue);
+    expect(loggedChunks.join("")).not.toContain(secretValue);
+    // The surrounding output must survive intact: redaction must not silently
+    // truncate the tail that the carry buffer held back.
+    expect(result.stdout).toContain("***REDACTED***");
+    expect(result.stdout.endsWith("\ntail\n")).toBe(true);
+    expect(result.stdout).toBe("A".repeat(fillerLength) + "***REDACTED***\ntail\n");
   });
 
   it("waits for onSpawn before sending stdin to the child", async () => {

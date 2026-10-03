@@ -160,6 +160,14 @@ export function parseCursorJsonl(stdout: string) {
   };
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseCursorProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}) {
+  return parseCursorJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export function isCursorUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

@@ -396,12 +396,13 @@ export async function testEnvironment(
         },
       );
 
-      const parsedStream = parseClaudeStreamJson(probe.stdout);
+      const controlOutput = probe.controlOutput ?? probe;
+      const parsedStream = parseClaudeStreamJson(controlOutput.stdout);
       const parsed = parsedStream.resultJson;
       const loginMeta = detectClaudeLoginRequired({
         parsed,
-        stdout: probe.stdout,
-        stderr: probe.stderr,
+        stdout: controlOutput.stdout,
+        stderr: controlOutput.stderr,
       });
 
       if (probe.timedOut) {
@@ -473,13 +474,13 @@ export async function testEnvironment(
         // warning instead of a hard probe failure.
         const usageLimited = isClaudeProviderQuotaError({
           parsed,
-          stdout: probe.stdout,
-          stderr: probe.stderr,
+          stdout: controlOutput.stdout,
+          stderr: controlOutput.stderr,
         });
         const transient = isClaudeTransientUpstreamError({
           parsed,
-          stdout: probe.stdout,
-          stderr: probe.stderr,
+          stdout: controlOutput.stdout,
+          stderr: controlOutput.stderr,
         });
         checks.push(
           usageLimited

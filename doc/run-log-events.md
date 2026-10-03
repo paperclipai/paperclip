@@ -5,6 +5,88 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Child-Process Captured-Output Literal Protection
+
+The local `runChildProcess` pipe capture collects values once from the resolved
+child environment. It uses a static denylist of secret environment-variable
+names in `packages/adapter-utils/src/secret-env-redaction.ts`. It does not learn
+values from incident reports or past output. Values whose trimmed length is
+less than six are excluded to limit accidental matches in ordinary output.
+
+Stdout and stderr have independent incremental UTF-8 decoders and streaming
+literal redactors. A complete known value is replaced with `***REDACTED***`
+before it reaches `onLog` or the returned display capture. Matching spans can
+cross pipe chunks or overlap other matches. Safe progress is released without
+waiting for EOF; only a possible secret prefix is held. At EOF, each decoder's
+remainder passes through redaction before the redactor's carry is flushed.
+
+Capture with known secret values, or a terminal-cleanup policy, also supplies
+optional sanitized `controlOutput` text. Its collection is independent of cleanup.
+Cleanup predicates receive sanitized text, never the private raw scan buffers.
+The Claude, Codex, Cursor, Gemini, Pi, OpenCode, Grok, and Kimi CLI adapters prefer
+sanitized control records. Their environment probes also use that selection,
+including Claude CLI hello and ACP stored-login parsing and error classification.
+The selection is nullish: an explicitly empty control output never re-enables
+literal display parsing. Producers without control output retain their stdout
+fallback. Claude and Codex additionally inspect already-redacted display capture
+when no terminal result survives private raw retention, but only with explicit
+`displayFallbackSafe` provenance from the capture boundary. A large protected
+string can shrink to a valid record below the display cap after its raw opening
+was clipped. Actual complete replacements must not have removed JSON quotes,
+backslashes or forbidden string controls on either pipe; otherwise display-only
+fallback is disabled for that invocation. Unused unsafe env values do not disable
+it. This deliberately conservative condition can decline genuine compacted
+records after syntax-changing replacements, but cannot promote repaired originals.
+The other adapters do not reconstruct records clipped from the control window.
+EOF cleanup inspection happens after the flushed display has been captured on either
+pipe, without waiting for asynchronous logging. Display capture and `onLog` still
+use literal markers; they need not remain valid JSON.
+
+For a valid single-line JSON record, control sanitization replaces each affected
+string token (including keys) with the quoted marker and each affected numeric
+token with `0`. Unaffected tokens remain unchanged. A matched span crossing
+record structure suppresses that record instead of making a new control event.
+A changed malformed JSON-looking line is also suppressed, not repaired. Supported
+Cursor `stdout`/`stderr` framing is recognized before validating the original JSON
+payload; sanitization preserves that frame and uses payload-relative token offsets.
+Malformed framed payloads are not repaired into controls. This preserves genuine
+result records and unaffected accounting; a protected numeric counter itself is not
+recoverable and is neutralized. Other text uses literal replacement. This is not a
+general structured-output sanitizer for all formats.
+
+The private terminal scan inspects each full candidate before retaining its
+64-Ki-character tail. The final control capture uses the existing four-Mi-character
+capture limit. Both retain and translate coverage of already-recognized complete
+matches when trimming raw text. They also retain original line-boundary provenance:
+a clipped leading fragment is suppressed through its original newline, including
+later pre-trim inspections and EOF snapshots. Trimming cannot promote a suffix of a
+rejected original record into terminal evidence. Genuine full records are inspected
+before retention and subsequent complete records remain eligible. A protected span
+cannot become a terminal event merely because its original prefix leaves the
+retained window or more data arrives.
+These are private per-pipe buffers, not a new run-log event or schema.
+
+Local/SSH process capture optionally delivers `onControlOutput` batches of ordered,
+once-only sanitized complete records. An unterminated final record is delivered
+at pipe EOF before the process promise resolves. Each pipe holds unresolved secret
+prefixes across record boundaries and retains complete-match coverage when trimming
+its four-Mi-character pending tail. An unresolved prefix may exceed that cap,
+but remains bounded by the longest collected value, as with display carry.
+A record whose opening was clipped is suppressed
+through its newline; its fragment is not a new event. Kimi live assistant/tool events
+consume this callback only, while display `onLog` remains unchanged. Small stable
+records are forwarded live, not reconstructed by replaying final capture. Opaque
+sandbox producers do not supply this provenance callback: their display-only logs
+are not used to synthesize Kimi events. This limitation does not extend redaction
+to independent provider capture or tail implementations.
+
+This boundary does not scrub child-created sidecars, provider-owned transcripts,
+historical files, independent sandbox/remote capture implementations, values
+absent from the denylist, encoded or transformed spellings, or arbitrary partial
+fragments. A child can still read its injected credentials. This change does not
+replace credential containment, file permissions, or other run-log safeguards.
+It adds no Paperclip Telemetry or OpenTelemetry export.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound

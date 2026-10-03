@@ -199,6 +199,14 @@ export function parseGeminiJsonl(stdout: string) {
   };
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseGeminiProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}) {
+  return parseGeminiJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export function isGeminiSessionUnrecoverableError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
