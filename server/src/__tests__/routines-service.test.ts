@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
+  issueComments,
   issues,
   projectWorkspaces,
   projects,
@@ -24,6 +25,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  routineWebhookTestReceipts,
   secretAccessEvents,
 } from "@paperclipai/db";
 import {
@@ -2383,6 +2385,110 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   });
 
+  it.each(["none", "bearer", "github_hmac"] as const)(
+    "never replays a keyless %s setup test after activation",
+    async (signingMode) => {
+      const { routine, svc } = await seedFixture();
+      const { trigger, secretMaterial } = await svc.createTrigger(
+        routine.id,
+        { kind: "webhook", signingMode, setupPending: true },
+        {},
+      );
+      const payload = { event: "deployment.completed", deployment_id: "setup-deploy-1" };
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const request = signingMode === "none"
+        ? { rawBody, payload }
+        : signingMode === "bearer"
+          ? {
+              authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+              rawBody,
+              payload,
+            }
+          : {
+              hubSignatureHeader: `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+                .update(rawBody)
+                .digest("hex")}`,
+              rawBody,
+              payload,
+            };
+
+      await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+        status: "test_received",
+      });
+      await svc.updateTrigger(trigger.id, { setupPending: false }, {});
+      await expect(svc.firePublicTrigger(trigger.publicId!, {
+        ...request,
+        timestampHeader: "ignored-by-this-signing-mode",
+      })).resolves.toMatchObject({
+        status: "test_received",
+        routineStarted: false,
+      });
+      expect(await svc.listRuns(routine.id)).toEqual([]);
+    },
+  );
+
+  it("expires a keyless setup receipt instead of suppressing a later identical event forever", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "none", setupPending: true },
+      {},
+    );
+    const request = {
+      rawBody: Buffer.from('{"event":"deployment.completed"}'),
+      payload: { event: "deployment.completed" },
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      status: "test_received",
+    });
+    await db.update(routineWebhookTestReceipts)
+      .set({ receivedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(routineWebhookTestReceipts.triggerId, trigger.id));
+    await svc.updateTrigger(trigger.id, { setupPending: false }, {});
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      status: "issue_created",
+    });
+  });
+
+  it("honors a recent keyless setup receipt written with the legacy header-aware fingerprint", async () => {
+    const { routine, svc, companyId } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "bearer", setupPending: true },
+      {},
+    );
+    const rawBody = Buffer.from('{"event":"deployment.completed"}');
+    const authorizationHeader = `Bearer ${secretMaterial!.webhookSecret}`;
+    const legacyReceiptKey = `request:${createHash("sha256")
+      .update("bearer")
+      .update("\0")
+      .update(authorizationHeader)
+      .update("\0")
+      .update("")
+      .update("\0")
+      .update("")
+      .update("\0")
+      .update(rawBody)
+      .digest("hex")}`;
+    await db.insert(routineWebhookTestReceipts).values({
+      companyId,
+      triggerId: trigger.id,
+      deliveryKeyHash: createHash("sha256").update(legacyReceiptKey).digest("hex"),
+    });
+    await svc.updateTrigger(trigger.id, { setupPending: false }, {});
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, {
+      authorizationHeader,
+      rawBody,
+      payload: { event: "deployment.completed" },
+    })).resolves.toMatchObject({
+      status: "test_received",
+      routineStarted: false,
+    });
+  });
+
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
     const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();
     const results = await Promise.all([
@@ -2496,6 +2602,252 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  it.each(["todo", "done"] as const)(
+    "updates the canonical %s Sentry issue across delayed lifecycle events without creating a duplicate",
+    async (canonicalStatus) => {
+      const { routine, svc } = await seedFixture();
+      const { trigger, secretMaterial } = await svc.createTrigger(
+        routine.id,
+        {
+          kind: "webhook",
+          signingMode: "github_hmac",
+        },
+        {},
+      );
+
+      const payload = {
+        action: "created",
+        data: {
+          issue: {
+            id: "7625432288",
+            shortId: "API-FX",
+            project: { slug: "api" },
+          },
+        },
+      };
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const signature = createHmac("sha256", secretMaterial!.webhookSecret)
+        .update(rawBody)
+        .digest("hex");
+      const request = {
+        sentrySignatureHeader: signature,
+        rawBody,
+        payload,
+      };
+      const first = await svc.firePublicTrigger(trigger.publicId!, request);
+
+      if (canonicalStatus === "done") {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, first.linkedIssueId!));
+      }
+
+      const resolvedPayload = {
+        ...payload,
+        action: "assigned",
+        data: {
+          issue: {
+            ...payload.data.issue,
+            count: "2",
+            status: "unresolved",
+            lastSeen: "2026-09-22T01:01:50Z",
+          },
+        },
+        actor: { type: "application", name: "Sentry" },
+      };
+      const resolvedRawBody = Buffer.from(JSON.stringify(resolvedPayload));
+      const resolvedRequest = {
+        sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+          .update(resolvedRawBody)
+          .digest("hex"),
+        rawBody: resolvedRawBody,
+        payload: resolvedPayload,
+      };
+
+      const retry = await svc.firePublicTrigger(trigger.publicId!, request);
+      const assigned = await svc.firePublicTrigger(trigger.publicId!, resolvedRequest);
+      const assignedRetry = await svc.firePublicTrigger(trigger.publicId!, resolvedRequest);
+
+      const unresolvedPayload = {
+        ...resolvedPayload,
+        action: "unresolved",
+        data: {
+          issue: {
+            ...resolvedPayload.data.issue,
+            count: "3",
+            lastSeen: "2026-09-29T01:56:15.301Z",
+          },
+        },
+      };
+      const unresolvedRawBody = Buffer.from(JSON.stringify(unresolvedPayload));
+      const unresolved = await svc.firePublicTrigger(trigger.publicId!, {
+        sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+          .update(unresolvedRawBody)
+          .digest("hex"),
+        rawBody: unresolvedRawBody,
+        payload: unresolvedPayload,
+      });
+
+      expect(first).toMatchObject({ source: "webhook", status: "issue_created" });
+      expect(retry.id).toBe(first.id);
+      expect(retry.linkedIssueId).toBe(first.linkedIssueId);
+      expect(assigned.id).not.toBe(first.id);
+      expect(assigned).toMatchObject({ status: "completed", linkedIssueId: first.linkedIssueId });
+      expect(assignedRetry.id).toBe(assigned.id);
+      expect(assignedRetry.linkedIssueId).toBe(first.linkedIssueId);
+      expect(unresolved).toMatchObject({ status: "completed", linkedIssueId: first.linkedIssueId });
+      const storedRuns = await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id));
+      expect(storedRuns).toHaveLength(3);
+      expect(storedRuns).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          triggerPayload: expect.objectContaining({
+            _paperclipProviderIdentity: {
+              provider: "sentry",
+              entityType: "issue",
+              entityId: "7625432288",
+            },
+          }),
+        }),
+      ]));
+      expect(
+        await db.select().from(issues).where(eq(issues.originId, routine.id)),
+      ).toHaveLength(1);
+      expect(
+        await db.select().from(issueComments).where(eq(issueComments.issueId, first.linkedIssueId!)),
+      ).toEqual([
+        expect.objectContaining({
+          authorType: "system",
+          body: expect.stringContaining("Immutable Sentry issue ID: 7625432288"),
+        }),
+        expect.objectContaining({
+          authorType: "system",
+          body: expect.stringContaining("Action: unresolved"),
+        }),
+      ]);
+      expect(
+        await db.select().from(activityLog).where(eq(activityLog.entityId, assigned.id)),
+      ).toEqual([
+        expect.objectContaining({
+          action: "routine.run_triggered",
+          details: expect.objectContaining({
+            routineId: routine.id,
+            triggerId: trigger.id,
+            source: "webhook",
+            status: "completed",
+          }),
+        }),
+      ]);
+    },
+    20_000,
+  );
+
+  it("routes a signed dashboard event to the routine assignee and dashboard workspace", async () => {
+    const { companyId, agentId, projectId, routine, svc } = await seedFixture();
+    const dashboardWorkspaceId = randomUUID();
+    await db.update(agents).set({ name: "Product Engineer" }).where(eq(agents.id, agentId));
+    await db.insert(projectWorkspaces).values({
+      id: dashboardWorkspaceId,
+      companyId,
+      projectId,
+      name: "Dashboard",
+      isPrimary: true,
+      sharedWorkspaceKey: "dashboard",
+    });
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+    const payload = {
+      action: "created",
+      data: {
+        issue: {
+          id: "7760233895",
+          shortId: "DASHBOARD-GR",
+          project: { slug: "dashboard" },
+        },
+      },
+    };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+        .update(rawBody)
+        .digest("hex"),
+      rawBody,
+      payload,
+    });
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!));
+    expect(issue).toMatchObject({
+      assigneeAgentId: agentId,
+      projectId,
+      projectWorkspaceId: dashboardWorkspaceId,
+    });
+  });
+
+  it("does not enable Sentry canonical handling from an unverified Sentry header", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "bearer" },
+      {},
+    );
+    const payload = {
+      action: "created",
+      data: { issue: { id: "7625432288", project: { slug: "api" } } },
+    };
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+      sentrySignatureHeader: "not-verified-by-bearer-mode",
+      rawBody: Buffer.from(JSON.stringify(payload)),
+      payload,
+    });
+    const [storedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, run.id));
+
+    expect(run).toMatchObject({ status: "issue_created" });
+    expect(storedRun?.triggerPayload).not.toHaveProperty("_paperclipProviderIdentity");
+  });
+
+  it("prefers a provider delivery id when deduplicating Sentry webhook retries", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+    const payload = {
+      action: "created",
+      data: { issue: { id: "7625432288", project: { slug: "api" } } },
+    };
+    const requestFor = (idempotencyKey: string, body: Record<string, unknown>) => {
+      const rawBody = Buffer.from(JSON.stringify(body));
+      return {
+        idempotencyKey,
+        sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+          .update(rawBody)
+          .digest("hex"),
+        rawBody,
+        payload: body,
+      };
+    };
+
+    const first = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-1", payload),
+    );
+    const retry = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-1", { ...payload, actor: { type: "application" } }),
+    );
+    const separateDelivery = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-2", payload),
+    );
+
+    expect(retry.id).toBe(first.id);
+    expect(separateDelivery.id).not.toBe(first.id);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(2);
+  });
+
   it("rejects invalid signature for github_hmac signing mode", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger } = await svc.createTrigger(
@@ -2507,15 +2859,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    const rawBody = Buffer.from(JSON.stringify({ ok: true }));
+    const payload = {
+      action: "unresolved",
+      data: { issue: { id: "7625432288", project: { slug: "api" } } },
+    };
+    const rawBody = Buffer.from(JSON.stringify(payload));
 
     await expect(
       svc.firePublicTrigger(trigger.publicId!, {
-        hubSignatureHeader: "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+        sentrySignatureHeader: "0000000000000000000000000000000000000000000000000000000000000000",
         rawBody,
-        payload: { ok: true },
+        payload,
       }),
     ).rejects.toThrow();
+    expect(
+      await db.select().from(activityLog).where(eq(activityLog.entityId, routine.id)),
+    ).toEqual([
+      expect.objectContaining({
+        action: "routine.webhook_rejected",
+        details: {
+          triggerId: trigger.id,
+          test: false,
+          result: "rejected",
+        },
+      }),
+    ]);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).toHaveLength(0);
   });
 
   it("accepts any request with none signing mode", async () => {

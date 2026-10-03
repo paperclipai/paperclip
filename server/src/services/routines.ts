@@ -1,7 +1,7 @@
 import { verifyAppWebhook } from "./app-webhook.js";
 import crypto from "node:crypto";
 import { verifyFirefliesWebhook } from "./fireflies-webhook.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -319,6 +319,59 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sentryIssueIdFromWebhookPayload(payload: Record<string, unknown> | null | undefined) {
+  if (!payload) return null;
+  const data = isPlainRecord(payload.data) ? payload.data : null;
+  const issue = data && isPlainRecord(data.issue) ? data.issue : null;
+  const id = issue?.id;
+  return typeof id === "string" || typeof id === "number" ? String(id) : null;
+}
+
+function sentryActionFromWebhookPayload(payload: Record<string, unknown> | null | undefined) {
+  const action = payload?.action;
+  return typeof action === "string" && action.trim().length > 0 ? action.trim() : null;
+}
+
+function sentryRecurrenceSummary(payload: Record<string, unknown> | null | undefined) {
+  if (!payload) return null;
+  const data = isPlainRecord(payload.data) ? payload.data : null;
+  const issue = data && isPlainRecord(data.issue) ? data.issue : null;
+  if (!issue) return null;
+  const value = (key: string) => {
+    const candidate = issue[key];
+    return typeof candidate === "string" || typeof candidate === "number" ? String(candidate) : null;
+  };
+  const project = isPlainRecord(issue.project) ? issue.project : null;
+  const projectSlug = project && typeof project.slug === "string" ? project.slug : null;
+  const fields = [
+    `- Immutable Sentry issue ID: ${value("id") ?? "unknown"}`,
+    `- Action: ${sentryActionFromWebhookPayload(payload) ?? "unknown"}`,
+    `- Project: ${projectSlug ?? "unknown"}`,
+    `- Issue key: ${value("shortId") ?? "unknown"}`,
+    `- Status: ${value("status") ?? "unknown"}`,
+    `- Event count: ${value("count") ?? "unknown"}`,
+    `- Last seen: ${value("lastSeen") ?? "unknown"}`,
+  ];
+  return `Sentry recurrence received\n\n${fields.join("\n")}`;
+}
+
+const PAPERCLIP_PROVIDER_IDENTITY_KEY = "_paperclipProviderIdentity";
+
+function withCanonicalProviderIdentity(
+  payload: Record<string, unknown> | null,
+  providerEntityId: string | null | undefined,
+) {
+  if (!providerEntityId) return payload;
+  return {
+    ...(payload ?? {}),
+    [PAPERCLIP_PROVIDER_IDENTITY_KEY]: {
+      provider: "sentry",
+      entityType: "issue",
+      entityId: providerEntityId,
+    },
+  };
 }
 
 function parseBooleanVariableValue(name: string, raw: unknown) {
@@ -1726,6 +1779,8 @@ export function routineService(
     descriptionAppendix?: string | null;
     nextRunAtOverride?: Date | null;
     actor?: Actor;
+    canonicalProviderEntityId?: string | null;
+    canonicalProviderSummary?: string | null;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const projectWorkspaceId = input.projectWorkspaceId ?? null;
@@ -1764,7 +1819,13 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    // Persist provider identity from the verified request as server-owned metadata. Raw
+    // webhook payloads remain useful evidence, but they are not the canonical lookup key:
+    // providers may add or reorder mutable fields between delayed lifecycle deliveries.
+    const triggerPayload = withCanonicalProviderIdentity(
+      mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables }),
+      input.canonicalProviderEntityId,
+    );
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -1872,6 +1933,58 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
+        if (input.canonicalProviderEntityId && input.canonicalProviderSummary) {
+          const canonicalIssue = await txDb
+            .select({ issue: issues })
+            .from(routineRuns)
+            .innerJoin(
+              issues,
+              and(
+                eq(issues.id, routineRuns.linkedIssueId),
+                eq(issues.companyId, input.routine.companyId),
+                eq(issues.originKind, issueOriginKind),
+                eq(issues.originId, issueOriginId),
+              ),
+            )
+            .where(
+              and(
+                eq(routineRuns.companyId, input.routine.companyId),
+                eq(routineRuns.routineId, input.routine.id),
+                ne(routineRuns.id, createdRun.id),
+                sql`coalesce(
+                  ${routineRuns.triggerPayload} #>> '{${sql.raw(PAPERCLIP_PROVIDER_IDENTITY_KEY)},entityId}',
+                  ${routineRuns.triggerPayload} #>> '{data,issue,id}'
+                ) = ${input.canonicalProviderEntityId}`,
+              ),
+            )
+            .orderBy(desc(routineRuns.createdAt), desc(routineRuns.id))
+            .limit(1)
+            .then((rows) => rows[0]?.issue ?? null);
+          if (canonicalIssue) {
+            await issueSvc.addComment(
+              canonicalIssue.id,
+              input.canonicalProviderSummary,
+              {},
+              { authorType: "system", authorizationReason: "routine_webhook_canonical_recurrence" },
+              txDb,
+            );
+            const updated = await finalizeRun(createdRun.id, {
+              status: "completed",
+              linkedIssueId: canonicalIssue.id,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status: "completed",
+              issueId: canonicalIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
+        }
+
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
@@ -2908,6 +3021,7 @@ export function routineService(
       authorizationHeader?: string | null;
       signatureHeader?: string | null;
       hubSignatureHeader?: string | null;
+      sentrySignatureHeader?: string | null;
       firefliesSignatureHeader?: string | null;
       timestampHeader?: string | null;
       idempotencyKey?: string | null;
@@ -2961,10 +3075,12 @@ export function routineService(
           } else if (trigger.signingMode === "github_hmac") {
             const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
             const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
-            // Accept X-Hub-Signature-256 (GitHub/Sentry) or fall back to the
-            // generic X-Paperclip-Signature header so operators can use github_hmac
-            // mode with either header convention.
-            const providedSignature = (input.hubSignatureHeader ?? input.signatureHeader)?.trim() ?? "";
+            // GitHub prefixes its digest in X-Hub-Signature-256. Sentry sends the
+            // unprefixed digest in Sentry-Hook-Signature. Keep the generic header
+            // fallback for existing integrations using this raw-body HMAC mode.
+            const providedSignature = (
+              input.hubSignatureHeader ?? input.sentrySignatureHeader ?? input.signatureHeader
+            )?.trim() ?? "";
             if (!providedSignature) throw unauthorized();
             const expectedHmac = crypto
               .createHmac("sha256", secretValue)
@@ -2977,6 +3093,19 @@ export function routineService(
               normalizedBuf.length === expectedBuf.length &&
               crypto.timingSafeEqual(normalizedBuf, expectedBuf);
             if (!valid) throw unauthorized();
+            if (input.sentrySignatureHeader) {
+              const sentryIssueId = sentryIssueIdFromWebhookPayload(input.payload);
+              if (sentryIssueId) {
+                const providerDeliveryId = input.idempotencyKey?.trim();
+                const deliveryIdentity = providerDeliveryId
+                  ? `delivery:${providerDeliveryId}`
+                  : `payload:${expectedHmac}`;
+                hmacReplayKey = `webhook-sentry-event:${crypto
+                  .createHash("sha256")
+                  .update(`${trigger.id}:${deliveryIdentity}`)
+                  .digest("hex")}`;
+              }
+            }
           } else if (trigger.signingMode === "bearer") {
             const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
             const expected = `Bearer ${secretValue}`;
@@ -3033,17 +3162,47 @@ export function routineService(
         }
         const deliveryKey = hmacReplayKey ?? appDelivery?.idempotencyKey ?? input.idempotencyKey;
         const payload: Record<string, unknown> | null | undefined = appDelivery?.payload ?? input.payload;
-        const deliveryKeyHash = deliveryKey ? crypto.createHash("sha256").update(deliveryKey).digest("hex") : null;
+        const setupRequestBody = input.rawBody ?? Buffer.from(JSON.stringify(payload ?? {}));
+        const setupReceiptKey = deliveryKey ?? `request:${crypto
+          .createHash("sha256")
+          .update(trigger.signingMode ?? "none")
+          .update("\0")
+          .update(setupRequestBody)
+          .digest("hex")}`;
+        const setupReceiptKeyHash = crypto.createHash("sha256").update(setupReceiptKey).digest("hex");
+        const legacySetupReceiptKeyHash = deliveryKey == null
+          ? crypto.createHash("sha256").update(`request:${crypto
+              .createHash("sha256")
+              .update(trigger.signingMode ?? "none")
+              .update("\0")
+              .update(input.authorizationHeader ?? "")
+              .update("\0")
+              .update(input.firefliesSignatureHeader ?? input.hubSignatureHeader ?? input.sentrySignatureHeader ?? input.signatureHeader ?? "")
+              .update("\0")
+              .update(input.timestampHeader ?? "")
+              .update("\0")
+              .update(setupRequestBody)
+              .digest("hex")}`).digest("hex")
+          : null;
         if (trigger.setupPending) {
-          if (deliveryKeyHash) await txDb.insert(routineWebhookTestReceipts).values({ companyId: routine.companyId, triggerId: trigger.id, deliveryKeyHash }).onConflictDoNothing();
+          await txDb.insert(routineWebhookTestReceipts).values({ companyId: routine.companyId, triggerId: trigger.id, deliveryKeyHash: setupReceiptKeyHash }).onConflictDoNothing();
           await recordDelivery("received");
           return { routine, trigger, hmacReplayKey, deliveryKey, payload, testReceived: true };
         }
-        if (deliveryKeyHash) {
-          const receipt = await txDb.select({ id: routineWebhookTestReceipts.id }).from(routineWebhookTestReceipts)
-            .where(and(eq(routineWebhookTestReceipts.triggerId, trigger.id), eq(routineWebhookTestReceipts.deliveryKeyHash, deliveryKeyHash))).limit(1);
-          if (receipt.length) return { routine, trigger, hmacReplayKey, deliveryKey, payload, testReceived: true };
-        }
+        const receipt = await txDb.select({ id: routineWebhookTestReceipts.id }).from(routineWebhookTestReceipts)
+          .where(and(
+            eq(routineWebhookTestReceipts.triggerId, trigger.id),
+            legacySetupReceiptKeyHash
+              ? or(
+                  eq(routineWebhookTestReceipts.deliveryKeyHash, setupReceiptKeyHash),
+                  eq(routineWebhookTestReceipts.deliveryKeyHash, legacySetupReceiptKeyHash),
+                )
+              : eq(routineWebhookTestReceipts.deliveryKeyHash, setupReceiptKeyHash),
+            ...(deliveryKey == null
+              ? [gte(routineWebhookTestReceipts.receivedAt, new Date(Date.now() - 5 * 60_000))]
+              : []),
+          )).limit(1);
+        if (receipt.length) return { routine, trigger, hmacReplayKey, deliveryKey, payload, testReceived: true };
         await recordDelivery("received");
         return { routine, trigger, hmacReplayKey, deliveryKey, payload, meetingMetadata: appDelivery?.meetingMetadata, testReceived: false };
       });
@@ -3051,6 +3210,7 @@ export function routineService(
       if ("ignored" in accepted) return { status: "ignored" as const, routineStarted: false, linkedIssueId: null };
       if (accepted.testReceived) return { status: "test_received" as const, test: true, routineStarted: false, linkedIssueId: null };
       const { routine, trigger, hmacReplayKey, deliveryKey, payload } = accepted;
+      const verifiedSentryDelivery = hmacReplayKey?.startsWith("webhook-sentry-event:") ?? false;
 
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
       if (!eligibility.eligible) {
@@ -3060,7 +3220,8 @@ export function routineService(
           source: "webhook",
           reason: "worktree_execution_cutoff",
           idempotencyKey: deliveryKey,
-          rejectIdempotencyReplay: hmacReplayKey !== null,
+          rejectIdempotencyReplay:
+            hmacReplayKey !== null && !hmacReplayKey.startsWith("webhook-sentry-event:"),
         });
       }
 
@@ -3094,7 +3255,14 @@ export function routineService(
           ? payload.variables
           : null,
         idempotencyKey: deliveryKey,
-        rejectIdempotencyReplay: hmacReplayKey !== null,
+        rejectIdempotencyReplay:
+          hmacReplayKey !== null && !hmacReplayKey.startsWith("webhook-sentry-event:"),
+        canonicalProviderEntityId: verifiedSentryDelivery
+          ? sentryIssueIdFromWebhookPayload(input.payload)
+          : null,
+        canonicalProviderSummary: verifiedSentryDelivery
+          ? sentryRecurrenceSummary(input.payload)
+          : null,
       });
     },
 
