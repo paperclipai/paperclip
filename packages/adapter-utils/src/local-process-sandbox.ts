@@ -386,14 +386,20 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 
   if (filesystemScope === "workspace") {
     args.push("--tmpfs", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
-    args.push(
-      "--symlink", "usr/bin", "/bin",
-      "--symlink", "usr/sbin", "/sbin",
-      "--symlink", "usr/lib", "/lib",
-      "--symlink", "usr/lib64", "/lib64",
-    );
     const created = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
     const mounted = new Set<string>();
+    // On merged-usr hosts these paths are symlinks into /usr. Recreate the
+    // links, but never bind over them: Bubblewrap cannot mount onto a symlink.
+    // On hosts with separate directories, mount the directories below instead.
+    for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const stat = await fs.lstat(alias).catch(() => null);
+      if (!stat?.isSymbolicLink()) continue;
+      const resolved = await fs.realpath(alias).catch(() => null);
+      if (!resolved?.startsWith("/usr/")) continue;
+      args.push("--symlink", await fs.readlink(alias), alias);
+      created.add(alias);
+      mounted.add(alias);
+    }
     const mount = async (source: string, access: LocalProcessSandboxAccess) => {
       const normalized = normalizeAbsolutePath(source, "Sandbox path");
       if (mounted.has(normalized) || !(await pathExists(normalized))) return;
