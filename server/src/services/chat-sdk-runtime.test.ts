@@ -441,6 +441,37 @@ describe("Chat SDK endpoint runtime", () => {
     },
   );
 
+  it("builds a Teams message-rooted thread id from the decoded conversation id", async () => {
+    const runtime = createChatSdkEndpointRuntime(
+      baseOptions({
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "teams-app",
+          appPassword: "teams-password",
+          appTenantId: "teams-tenant",
+          appType: "SingleTenant" as const,
+        },
+      }),
+    );
+    const conversationId = "19:teams-conversation@thread.tacv2";
+    const channelThreadId = `teams:${Buffer.from(conversationId).toString("base64url")}`;
+    const result = await runtime.ensureThreadFromMessage({
+      provider: "microsoft-teams",
+      channelThreadId,
+      messageId: "root-1",
+      name: "Paperclip thread",
+    });
+    // The mock adapter decodes every Teams thread id to `teams-mock-conversation`.
+    // The rooted id must encode that plain conversation id once, never the
+    // already-encoded channel segment.
+    expect(result.threadId.replace(/^teams:/, "")).toBe(
+      Buffer.from("teams-mock-conversation;messageid=root-1").toString(
+        "base64url",
+      ),
+    );
+  });
+
   it("passes only the Discord application credentials to the adapter and fences guild callbacks", async () => {
     const onDiscordGatewayEvent = vi.fn();
     const options = baseOptions({

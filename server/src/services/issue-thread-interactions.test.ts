@@ -49,21 +49,31 @@ function createFakeDb(args: {
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
+        const tableName = getTableName(table as never);
         return {
           where() {
-            if (getTableName(table as never) === "tool_action_requests") {
+            if (tableName === "tool_action_requests") {
               toolActionRequestUpdates.push(values);
               return Promise.resolve(undefined);
             }
-            if ("status" in values || "result" in values || "resolvedAt" in values) {
+            if (
+              tableName === "issue_thread_interactions" &&
+              ("status" in values || "result" in values || "resolvedAt" in values)
+            ) {
               interactionUpdates.push(values);
               interactionRow = { ...interactionRow, ...values };
               return {
                 returning: async () => [interactionRow],
               };
             }
-            if ("updatedAt" in values) {
+            if (tableName === "issues" && "updatedAt" in values) {
               issueTouches.push(values);
+              return Promise.resolve(undefined);
+            }
+            // Resolving an interaction also expires its issued chat action
+            // tokens, which updates chat_actions. Accept only that expected
+            // side effect and keep failing on any other unexpected table.
+            if (tableName === "chat_actions") {
               return Promise.resolve(undefined);
             }
             throw new Error(`Unexpected update target: ${String(table)}`);

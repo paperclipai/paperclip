@@ -5,6 +5,7 @@ import { Actions, Button, Card, CardText } from "chat";
 import {
   createChatQuestionOptionActionToken,
   nativeChatQuestion,
+  selectInteractionSettlementTargets,
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramCallbackDataByteLength,
   telegramChatSdkCallbackData,
@@ -55,6 +56,41 @@ describe("native chat question eligibility", () => {
 
   it("keeps an explicitly open question on the Paperclip-only response path", () => {
     expect(nativeChatQuestion(closedQuestion(true))).toBeNull();
+  });
+});
+
+describe("interaction settlement targets", () => {
+  const mirrored = [{ endpointId: "e1", conversationId: "c1" }];
+
+  it("acknowledges exactly the conversations a mirrored card reached", () => {
+    expect(
+      selectInteractionSettlementTargets({
+        hasMirroredOriginal: true,
+        providerVisibleTargets: mirrored,
+      }),
+    ).toEqual(mirrored);
+  });
+
+  it("stays silent when a mirrored card was never provider-visible", () => {
+    // originals exist but none were delivered, so the card never appeared in
+    // the thread and there is nothing to settle.
+    expect(
+      selectInteractionSettlementTargets({
+        hasMirroredOriginal: true,
+        providerVisibleTargets: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("fails closed for a card with no mirrored delivery row", () => {
+    // Without a durable delivery binding, a terminal resolution must not be
+    // broadcast to every live conversation bound to the task.
+    expect(
+      selectInteractionSettlementTargets({
+        hasMirroredOriginal: false,
+        providerVisibleTargets: [],
+      }),
+    ).toEqual([]);
   });
 });
 

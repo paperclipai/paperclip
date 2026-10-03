@@ -70,4 +70,8 @@ export {
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
-export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+export {
+  parseOpenCodeJsonl,
+  isOpenCodeUnknownSessionError,
+  isOpenCodeProviderAdmissionError,
+} from "./parse.js";
