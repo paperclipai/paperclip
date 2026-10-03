@@ -957,3 +957,47 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+describe("list truncation OpenAPI contract", () => {
+  // A header no caller knows about is nearly as invisible as no header, which
+  // is how the silent clamp went unnoticed: the server already named its 1000
+  // bound in an error message, in a branch no over-max request could reach.
+  it("documents the pagination query params and truncation headers on both capped list routes", () => {
+    const { spec } = loadSpecRoutes();
+    const issueList = spec.paths["/api/companies/{companyId}/issues"].get;
+    const runList = spec.paths["/api/companies/{companyId}/heartbeat-runs"].get;
+
+    for (const operation of [issueList, runList]) {
+      const headers = operation.responses["200"].headers;
+      expect(headers["X-Result-Truncated"].schema.enum).toEqual([
+        "true",
+        "false",
+        "unknown",
+      ]);
+      expect(headers["X-Result-Count"]).toBeDefined();
+      expect(headers["X-Result-Limit"].description).toContain("clamped");
+      expect(headers["X-Result-Offset"]).toBeDefined();
+      const names = (operation.parameters ?? []).map(
+        (param: { name: string }) => param.name,
+      );
+      expect(names).toContain("limit");
+      expect(names).toContain("offset");
+      expect(operation.responses["400"]).toBeDefined();
+    }
+
+    // Only the run list can establish a total cheaply. The issue list omits the
+    // header rather than publishing a guess, so a caller must not read its
+    // absence as zero.
+    expect(runList.responses["200"].headers["X-Total-Count"]).toBeDefined();
+    expect(issueList.responses["200"].headers["X-Total-Count"]).toBeUndefined();
+    expect(issueList.description).toContain("no `X-Total-Count`");
+
+    // The bound itself is deliberately not written into the spec: a number in
+    // documentation expires silently, and the response already carries the
+    // applied value. Both routes must say so rather than restate it.
+    for (const operation of [issueList, runList]) {
+      expect(operation.description).toContain("clamped rather than rejected");
+      expect(operation.description).toContain("X-Result-Limit");
+    }
+  });
+});

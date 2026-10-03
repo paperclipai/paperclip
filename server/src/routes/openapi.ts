@@ -3904,20 +3904,64 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+// Collection responses are bare arrays with a server-side `limit` cap, so the
+// page metadata travels in headers. `X-Result-Truncated` is the completeness
+// signal: `rows.length < limit` cannot distinguish a corpus that ends at the
+// cap from one the cap cut off.
+const listPaginationResponseHeaders = {
+  "X-Result-Count": {
+    description: "Rows in this response body.",
+    schema: { type: "integer" },
+  },
+  "X-Result-Limit": {
+    description:
+      "The limit the server applied, after clamping. A request above the maximum is clamped, not rejected, so this can be lower than the requested `limit`. Absent when the route applied no limit.",
+    schema: { type: "integer" },
+  },
+  "X-Result-Offset": {
+    description: "The offset the server applied.",
+    schema: { type: "integer" },
+  },
+  "X-Result-Truncated": {
+    description:
+      "`true` when at least one more row exists after this page. Read this for completeness instead of comparing the row count against the requested limit. `false` is the only completeness claim. `unknown` means the server cannot answer for this caller — currently only for an actor whose rows are authorization-filtered after the query. Such a caller never receives `false`, so it must stop on an empty page rather than wait for one, and must treat the result as a floor: a page can be empty because every row in its window was filtered while readable rows remain further on. Where completeness matters, scope the request to a subtree the actor can read in full.",
+    schema: { type: "string", enum: ["true", "false", "unknown"] },
+  },
+};
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. The response is a bare array; page metadata is in the `X-Result-*` headers. A `limit` above the server maximum is clamped rather than rejected, and the maximum is deliberately not restated here — read the applied value from `X-Result-Limit`, check `X-Result-Truncated` for completeness, and page with `offset`, rather than inferring completeness from the row count. This route publishes no `X-Total-Count`.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    query: z
+      .object({
+        view: z.enum(["compact"]).optional(),
+        limit: z.coerce
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Page size. A value above the server maximum is clamped; the applied value is reported in X-Result-Limit.",
+          ),
+        offset: z.coerce
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Rows to skip. Page with this until X-Result-Truncated is false."),
+      })
+      .passthrough(),
   },
   responses: {
-    200: r.ok(),
+    200: { ...r.ok(), headers: listPaginationResponseHeaders },
     304: { description: "Not Modified" },
+    400: r.badRequest,
     401: r.unauthorized,
   },
 });
@@ -6811,8 +6855,53 @@ registry.registerPath({
   path: "/api/companies/{companyId}/heartbeat-runs",
   tags: ["runs"],
   summary: "List heartbeat runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "Newest first. The response is a bare array; page metadata is in the `X-Result-*` headers and the full matching row count in `X-Total-Count`. Omitting `limit` returns every run for the company, which can be very large — prefer `limit` with `offset`, paging until `X-Result-Truncated` is false. A `limit` above the server maximum is clamped rather than rejected, and a non-positive or non-numeric one falls back to the route default; read the applied value from `X-Result-Limit`.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z
+      .object({
+        agentId: z.string().uuid().optional(),
+        summary: z
+          .enum(["true", "false", "1", "0"])
+          .optional()
+          .describe("Return the reduced per-run projection."),
+        // Deliberately not `.positive()`: the handler does not reject a
+        // non-positive or non-numeric `limit`, it substitutes its default, so a
+        // stricter schema here would have generated clients refuse requests the
+        // API accepts.
+        limit: z.coerce
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "Page size. A value above the server maximum is clamped, and a non-positive or non-numeric value falls back to the route default; either way the applied value is reported in X-Result-Limit. Omit for no limit.",
+          ),
+        offset: z.coerce
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe(
+            "Rows to skip. Rejected with 400 unless it is a non-negative integer the server can apply.",
+          ),
+      })
+      .passthrough(),
+  },
+  responses: {
+    200: {
+      ...r.ok(),
+      headers: {
+        ...listPaginationResponseHeaders,
+        "X-Total-Count": {
+          description: "Rows matching the request across all pages.",
+          schema: { type: "integer" },
+        },
+      },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
 });
 
 registry.registerPath({

@@ -338,6 +338,139 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
     expect(run?.error).toBe(terminalSessionFailure.details);
   });
+
+  async function seedCompanyWithAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  async function seedRuns(
+    companyId: string,
+    agentId: string,
+    createdAts: Date[],
+  ) {
+    const ids = createdAts.map(() => randomUUID());
+    await db.insert(heartbeatRuns).values(
+      createdAts.map((createdAt, index) => ({
+        id: ids[index] as string,
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        status: "completed" as const,
+        createdAt,
+      })),
+    );
+    return ids;
+  }
+
+  it("pages with offset instead of repeating the first page", async () => {
+    // Before offset support every page of a sweep came back byte-identical, so
+    // a pager accumulated duplicates and reported a fabricated total.
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const ids = await seedRuns(companyId, agentId, [
+      new Date("2026-04-18T12:00:05Z"),
+      new Date("2026-04-18T12:00:04Z"),
+      new Date("2026-04-18T12:00:03Z"),
+      new Date("2026-04-18T12:00:02Z"),
+      new Date("2026-04-18T12:00:01Z"),
+    ]);
+
+    const svc = heartbeatService(db);
+    const page1 = await svc.list(companyId, undefined, 2, { offset: 0 });
+    const page2 = await svc.list(companyId, undefined, 2, { offset: 2 });
+    const page3 = await svc.list(companyId, undefined, 2, { offset: 4 });
+
+    expect(page1.map((run) => run.id)).toEqual([ids[0], ids[1]]);
+    expect(page2.map((run) => run.id)).toEqual([ids[2], ids[3]]);
+    expect(page3.map((run) => run.id)).toEqual([ids[4]]);
+    // The control for "offset is inert": pages must not be identical.
+    expect(page2.map((run) => run.id)).not.toEqual(page1.map((run) => run.id));
+    const swept = [...page1, ...page2, ...page3].map((run) => run.id);
+    expect(new Set(swept).size).toBe(ids.length);
+  });
+
+  it("returns each tied run exactly once across a paged sweep", async () => {
+    // createdAt alone is not a total order, which is why `list` also orders by
+    // id. ⚠️ This test does NOT pin that tiebreaker: measured by removing it,
+    // Postgres still returns a consistent order at this size and the test
+    // stayed green. It pins the end-to-end property a caller depends on — a
+    // paged sweep over tied rows neither duplicates nor drops a row.
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const sharedCreatedAt = new Date("2026-04-18T12:00:00Z");
+    const ids = await seedRuns(companyId, agentId, [
+      sharedCreatedAt,
+      sharedCreatedAt,
+      sharedCreatedAt,
+      sharedCreatedAt,
+    ]);
+
+    const svc = heartbeatService(db);
+    const swept: string[] = [];
+    for (let offset = 0; offset < ids.length; offset += 2) {
+      const page = await svc.list(companyId, undefined, 2, { offset });
+      swept.push(...page.map((run) => run.id));
+    }
+
+    expect(swept).toHaveLength(ids.length);
+    expect(new Set(swept)).toEqual(new Set(ids));
+  });
+
+  it("counts every run for the company, and per agent", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Other runner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await seedRuns(companyId, agentId, [
+      new Date("2026-04-18T12:00:03Z"),
+      new Date("2026-04-18T12:00:02Z"),
+      new Date("2026-04-18T12:00:01Z"),
+    ]);
+    await seedRuns(companyId, otherAgentId, [
+      new Date("2026-04-18T12:00:04Z"),
+    ]);
+
+    const svc = heartbeatService(db);
+    expect(await svc.countRuns(companyId)).toBe(4);
+    expect(await svc.countRuns(companyId, agentId)).toBe(3);
+    expect(await svc.countRuns(companyId, otherAgentId)).toBe(1);
+    // The count must exceed what a capped page can show, or it proves nothing
+    // about truncation.
+    const capped = await svc.list(companyId, undefined, 2);
+    expect(capped).toHaveLength(2);
+    expect(await svc.countRuns(companyId)).toBeGreaterThan(capped.length);
+  });
+
+  it("counts zero for a company with no runs", async () => {
+    const { companyId } = await seedCompanyWithAgent();
+    expect(await heartbeatService(db).countRuns(companyId)).toBe(0);
+  });
 });
 
 describe("heartbeat run event payload bounding", () => {

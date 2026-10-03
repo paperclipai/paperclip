@@ -244,6 +244,13 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  LIST_OFFSET_ERROR,
+  probeLimit,
+  setListPaginationHeaders,
+  splitProbePage,
+  type ListPagination,
+} from "./list-truncation.js";
+import {
   formatAttachmentSize,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
@@ -3086,10 +3093,12 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      pagination: ListPagination;
     }
   | {
       kind: "full";
       body: unknown[];
+      pagination: ListPagination;
     };
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
@@ -7974,18 +7983,26 @@ export function issueRoutes(
         !Number.isInteger(parsedLimit) ||
         parsedLimit <= 0)
     ) {
+      // Deliberately does not claim an upper bound: an over-max `limit` is
+      // clamped, not rejected, so this branch can never fire for one. The
+      // applied value is reported in the X-Result-Limit response header.
       res.status(400).json({
-        error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}`,
+        error:
+          `limit must be a positive integer; values above ` +
+          `${ISSUE_LIST_MAX_LIMIT} are clamped to ${ISSUE_LIST_MAX_LIMIT} ` +
+          `(see the X-Result-Limit response header)`,
       });
       return;
     }
     if (
       rawOffset !== undefined &&
-      (parsedOffset === null ||
-        !Number.isInteger(parsedOffset) ||
+      // Safe-integer rather than integer: a long digit string parses to a
+      // finite value Postgres cannot take as an OFFSET, which failed the
+      // request rather than answering it.
+      (parsedOffset === null || !Number.isSafeInteger(parsedOffset) ||
         parsedOffset < 0)
     ) {
-      res.status(400).json({ error: "offset must be a non-negative integer" });
+      res.status(400).json({ error: LIST_OFFSET_ERROR });
       return;
     }
     if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
@@ -8106,10 +8123,47 @@ export function issueRoutes(
       allowTtlCache: compactView,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        const rawResult = await svc.list(companyId, listFilters);
-        const result = (await actorCanReadCompanyScope(req, companyId))
-          ? rawResult
-          : await filterIssuesForActor(req, rawResult);
+        // Read one row past the page so truncation is measured, not inferred:
+        // `rows.length < requestedLimit` cannot distinguish a corpus that ends
+        // exactly at the cap from one the cap cut off.
+        const probeResult = await svc.list(companyId, {
+          ...listFilters,
+          limit: probeLimit(limit),
+        });
+        // For an actor whose rows are authorization-filtered after the query,
+        // NEITHER page answers the truncation question safely. Measuring the
+        // raw page makes the header an existence oracle — the actor varies
+        // filters and learns that an issue it may not read exists. Measuring
+        // the filtered page reports a complete collection whenever the dropped
+        // rows sat inside the probe window, while readable rows remain further
+        // on; a caller paging until `false` would stop early. So the route says
+        // `unknown` instead of picking a wrong answer. Server-side offsets index
+        // the unfiltered set, so completeness was never obtainable here for such
+        // an actor — this reports that, rather than hiding it behind a `false`.
+        const readsCompanyScope = await actorCanReadCompanyScope(req, companyId);
+        const page = readsCompanyScope
+          ? splitProbePage(probeResult, limit)
+          : {
+              // The probe row is dropped BEFORE filtering, so the body stays
+              // the first `limit` rows of the same window the query would have
+              // returned without a probe. Filtering first and trimming after
+              // would pull a row from the next window into this page: with raw
+              // order [hidden, readable] and limit 1, offset 0 and offset 1
+              // would both return the readable row, and an offset sweep would
+              // collect it twice.
+              rows: await filterIssuesForActor(
+                req,
+                probeResult.slice(0, limit),
+              ),
+              truncated: "unknown" as const,
+            };
+        const result = page.rows;
+        const pagination: ListPagination = {
+          count: result.length,
+          limit,
+          offset,
+          truncated: page.truncated,
+        };
         const issueIds = result.map((issue) => issue.id);
         if (compactView) {
           const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8144,6 +8198,7 @@ export function issueRoutes(
             body: compactResult,
             etag: compactIssueListEtag(compactResult),
             cacheControl: "private, must-revalidate",
+            pagination,
           };
         }
         const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8173,11 +8228,15 @@ export function issueRoutes(
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
           })),
+          pagination,
         };
       },
     });
 
     res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
+    if (coordinated.response) {
+      setListPaginationHeaders(res, coordinated.response.pagination);
+    }
     if (!coordinated.response) {
       const body = {
         error: "Too many concurrent issue-list requests for this actor/client",

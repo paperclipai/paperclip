@@ -1933,6 +1933,85 @@ describeEmbeddedPostgres(
       expect(lowTrustCount.body.count).toBe(1);
     });
 
+    it("never answers issue-list truncation for a low-trust actor", async () => {
+      // Neither page answers this safely for an actor filtered after the query.
+      // The raw page makes the header an existence oracle for issues outside the
+      // boundary. The filtered page claims a complete collection whenever the
+      // dropped rows sat inside the probe window — measured here: at limit=1 the
+      // filtered page is short while readable rows remain, so a `false` would
+      // stop a pager on its first page. The route reports `unknown` instead.
+      const fixture = await seedLowTrustFixture(db);
+      const lowTrustApp = createApp(db, agentActor(fixture));
+      const boardApp = createApp(db, boardActor(fixture));
+
+      const board = await request(boardApp)
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query({ limit: "50" });
+      expect(board.status, JSON.stringify(board.body)).toBe(200);
+
+      const visible = await request(lowTrustApp)
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query({ limit: "50" });
+      expect(visible.status, JSON.stringify(visible.body)).toBe(200);
+      const visibleCount = visible.body.length;
+
+      // The control for the whole test: with nothing hidden from this actor
+      // there is no oracle to close and the assertions below would hold for the
+      // wrong reason.
+      expect(visibleCount).toBeGreaterThan(1);
+      expect(visibleCount).toBeLessThan(board.body.length);
+
+      for (const limit of ["50", String(visibleCount), "1"]) {
+        const res = await request(lowTrustApp)
+          .get(`/api/companies/${fixture.company.id}/issues`)
+          .query({ limit });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.headers["x-result-truncated"], `limit=${limit}`).toBe(
+          "unknown",
+        );
+        expect(res.headers["x-result-count"], `limit=${limit}`).toBe(
+          String(res.body.length),
+        );
+        expect(res.body.length).toBeLessThanOrEqual(Number(limit));
+      }
+
+      // The second control: an actor that reads company scope still gets a real
+      // answer, or "always unknown" would satisfy the loop above.
+      expect(board.headers["x-result-truncated"]).toBe("false");
+      const boardShort = await request(boardApp)
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query({ limit: "1" });
+      expect(boardShort.headers["x-result-truncated"]).toBe("true");
+    });
+
+    it("never hands a low-trust actor the same issue on two pages", async () => {
+      // The probe row must be dropped before authorization filtering. Filtering
+      // the probe row and trimming afterwards pulls a row from the next window
+      // into this page, so with raw order [hidden, readable] the readable row
+      // comes back at both offset 0 and offset 1.
+      const fixture = await seedLowTrustFixture(db);
+      const lowTrustApp = createApp(db, agentActor(fixture));
+      const boardApp = createApp(db, boardActor(fixture));
+
+      const board = await request(boardApp)
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query({ limit: "50" });
+      expect(board.status, JSON.stringify(board.body)).toBe(200);
+
+      const swept: string[] = [];
+      for (let offset = 0; offset < board.body.length; offset += 1) {
+        const page = await request(lowTrustApp)
+          .get(`/api/companies/${fixture.company.id}/issues`)
+          .query({ limit: "1", offset: String(offset) });
+        expect(page.status, JSON.stringify(page.body)).toBe(200);
+        swept.push(...page.body.map((issue: { id: string }) => issue.id));
+      }
+
+      // The control: a sweep that returns nothing cannot duplicate anything.
+      expect(swept.length).toBeGreaterThan(1);
+      expect(new Set(swept).size).toBe(swept.length);
+    });
+
     it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
       const fixture = await seedLowTrustFixture(db);
       const lowTrustApp = createApp(db, agentActor(fixture));

@@ -17,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  list: vi.fn(),
+  countRuns: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -1861,5 +1863,156 @@ describe("agent live run routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+  });
+
+  describe("company heartbeat run list pagination", () => {
+    // The list returns a bare array and caps `limit` server side, so without a
+    // signal on the response a caller cannot tell a corpus that ends at the cap
+    // from one the cap cut off, and `rows.length < requested` passes
+    // unconditionally above the cap.
+    function seedRunCorpus(size: number) {
+      const corpus = Array.from({ length: size }, (_, index) => ({
+        id: `run-${String(index).padStart(4, "0")}`,
+        companyId: "company-1",
+        agentId: "agent-1",
+      }));
+      mockHeartbeatService.list.mockImplementation(
+        async (
+          _companyId: string,
+          _agentId: string | undefined,
+          limit: number | undefined,
+          options: { offset?: number } = {},
+        ) => {
+          const offset = options.offset ?? 0;
+          const rest = corpus.slice(offset);
+          return limit === undefined ? rest : rest.slice(0, limit);
+        },
+      );
+      mockHeartbeatService.countRuns.mockResolvedValue(corpus.length);
+      return corpus;
+    }
+
+    async function listRuns(query: Record<string, string> = {}) {
+      return requestApp(await createApp({}), (baseUrl) =>
+        request(baseUrl)
+          .get("/api/companies/company-1/heartbeat-runs")
+          .query(query),
+      );
+    }
+
+    it("reports truncation when the corpus runs past the requested page", async () => {
+      seedRunCorpus(5);
+
+      const res = await listRuns({ limit: "2" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.headers["x-result-truncated"]).toBe("true");
+      expect(res.headers["x-result-count"]).toBe("2");
+      expect(res.headers["x-result-limit"]).toBe("2");
+      expect(res.headers["x-result-offset"]).toBe("0");
+      expect(res.headers["x-total-count"]).toBe("5");
+      // One row past the page is read so truncation is measured, not inferred.
+      expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+        "company-1",
+        undefined,
+        3,
+        expect.objectContaining({ offset: 0 }),
+      );
+    });
+
+    // The control: without this case a hard-coded `truncated: true` passes the
+    // test above, which is the whole defect being fixed.
+    it("reports no truncation when the corpus ends exactly at the requested page", async () => {
+      seedRunCorpus(2);
+
+      const res = await listRuns({ limit: "2" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.headers["x-result-truncated"]).toBe("false");
+      expect(res.headers["x-total-count"]).toBe("2");
+    });
+
+    it("publishes the clamped limit for an over-max request", async () => {
+      seedRunCorpus(1200);
+
+      const res = await listRuns({ limit: "5000" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(1000);
+      expect(res.headers["x-result-limit"]).toBe("1000");
+      expect(res.headers["x-result-truncated"]).toBe("true");
+      expect(res.headers["x-total-count"]).toBe("1200");
+    });
+
+    it("forwards offset so pages differ", async () => {
+      const corpus = seedRunCorpus(5);
+
+      const first = await listRuns({ limit: "2", offset: "0" });
+      const second = await listRuns({ limit: "2", offset: "2" });
+
+      expect(second.headers["x-result-offset"]).toBe("2");
+      expect(second.body.map((run: { id: string }) => run.id)).toEqual([
+        corpus[2]?.id,
+        corpus[3]?.id,
+      ]);
+      expect(second.body).not.toEqual(first.body);
+    });
+
+    it("reports no truncation on the final page", async () => {
+      seedRunCorpus(5);
+
+      const res = await listRuns({ limit: "2", offset: "4" });
+
+      expect(res.body).toHaveLength(1);
+      expect(res.headers["x-result-truncated"]).toBe("false");
+      expect(res.headers["x-result-count"]).toBe("1");
+    });
+
+    it.each([
+      ["-1", "negative"],
+      ["abc", "non-numeric"],
+      // Digit-only, so a pattern test alone accepts both: the first is finite
+      // but past what Postgres takes as an OFFSET, the second parses to
+      // Infinity and would floor to 0 — serving page one while the response
+      // reported the offset the caller asked for.
+      ["1".repeat(20), "beyond the applicable range"],
+      ["9".repeat(400), "unrepresentable"],
+    ])("rejects a %s offset instead of silently ignoring it (%s)", async (offset) => {
+      seedRunCorpus(5);
+
+      const res = await listRuns({ offset });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toContain("offset must be a non-negative integer");
+      expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+    });
+
+    it("still accepts the largest applicable offset", async () => {
+      // The control for the rejections above: a bound that rejects everything
+      // would satisfy them.
+      seedRunCorpus(5);
+
+      const res = await listRuns({
+        limit: "2",
+        offset: String(Number.MAX_SAFE_INTEGER),
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.headers["x-result-offset"]).toBe(String(Number.MAX_SAFE_INTEGER));
+      expect(res.body).toHaveLength(0);
+    });
+
+    it("omits the applied-limit header when the caller sent no limit", async () => {
+      seedRunCorpus(5);
+
+      const res = await listRuns();
+
+      expect(res.body).toHaveLength(5);
+      expect(res.headers["x-result-limit"]).toBeUndefined();
+      expect(res.headers["x-result-truncated"]).toBe("false");
+      expect(res.headers["x-total-count"]).toBe("5");
+    });
   });
 });

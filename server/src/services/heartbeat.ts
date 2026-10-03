@@ -29967,14 +29967,33 @@ export function heartbeatService(
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
     },
+    countRuns: async (companyId: string, agentId?: string) => {
+      const [row] = await db
+        .select({ value: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(
+          agentId
+            ? and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.agentId, agentId),
+              )
+            : eq(heartbeatRuns.companyId, companyId),
+        );
+      return row?.value ?? 0;
+    },
+
     list: async (
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; offset?: number } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
+      const offset =
+        typeof options.offset === "number" && Number.isFinite(options.offset)
+          ? Math.max(0, Math.floor(options.offset))
+          : 0;
       const query = db
         .select(
           summary
@@ -30003,9 +30022,12 @@ export function heartbeatService(
               )
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        // `id` breaks `createdAt` ties so a paged sweep cannot see the same row
+        // twice (or skip one) when several runs share a timestamp.
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const limitedQuery = limit ? query.limit(limit) : query;
+      const rows = offset > 0 ? await limitedQuery.offset(offset) : await limitedQuery;
       return rows.map((row) => {
         const {
           contextIssueId,
