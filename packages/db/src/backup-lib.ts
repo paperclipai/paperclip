@@ -28,6 +28,14 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Invoked when the `auto` engine catches a pg_dump failure and is about to
+   * fall back to the JavaScript engine. Carries the real pg_dump error (with its
+   * captured stderr, e.g. a server-version mismatch) so the caller can log it
+   * loudly instead of letting the fallback swallow it silently. Never receives
+   * secrets beyond whatever pg_dump itself wrote to stderr.
+   */
+  onEngineFallback?: (error: unknown) => void;
 };
 
 export type RunDatabaseBackupResult = {
@@ -317,6 +325,38 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+/**
+ * Settle the two halves of a CLI backup (the stdout→gzip→file pipeline and the
+ * child-process exit watcher) and surface the RIGHT error.
+ *
+ * The child-exit watcher carries the process's real failure — the captured
+ * stderr (e.g. `server version mismatch`), a fatal signal, or an ENOENT spawn
+ * error. The gzip pipeline, by contrast, tends to reject first with a generic
+ * stream error (`premature close`) the instant the failing child tears down its
+ * stdout. Racing them with `Promise.all` therefore masks the actionable error
+ * behind stream noise.
+ *
+ * Both promises are always awaited (via `allSettled`) so neither can leak an
+ * unhandled rejection, and the child-exit error wins whenever the process
+ * itself failed. Only when the process exited cleanly do we surface a pipeline
+ * error (e.g. the destination disk filled up).
+ */
+export async function settleBackupChildPipeline(
+  pipelinePromise: Promise<unknown>,
+  childExitPromise: Promise<unknown>,
+): Promise<void> {
+  const [pipelineResult, childExitResult] = await Promise.allSettled([
+    pipelinePromise,
+    childExitPromise,
+  ]);
+  if (childExitResult.status === "rejected") {
+    throw childExitResult.reason;
+  }
+  if (pipelineResult.status === "rejected") {
+    throw pipelineResult.reason;
+  }
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
@@ -346,10 +386,10 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
+  await settleBackupChildPipeline(
     pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
-  ]);
+  );
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -379,10 +419,10 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
     ? createReadStream(opts.backupFile).pipe(createGunzip())
     : createReadStream(opts.backupFile);
 
-  await Promise.all([
+  await settleBackupChildPipeline(
     pipeline(input, child.stdin),
     waitForChildExit(child, psqlBin),
-  ]);
+  );
 }
 
 async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
@@ -570,6 +610,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (backupEngine === "pg_dump") {
           throw error;
         }
+        // Auto engine: pg_dump failed (e.g. server-version mismatch). Surface the
+        // real error before falling back to the JavaScript engine so it is never
+        // swallowed silently — the caller logs it loudly (SIN-70819 AC2).
+        opts.onEngineFallback?.(error);
         effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
