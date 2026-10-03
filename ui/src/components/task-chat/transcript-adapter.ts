@@ -1888,7 +1888,11 @@ export interface ThreadBackboneEntry {
 export function assembleThreadItems(
   entries: readonly ThreadBackboneEntry[],
   turnsByAnchor: ReadonlyMap<string, readonly TaskChatTurnItem[]>,
-  unanchored: readonly { turn: TaskChatTurnItem; startMs: number }[],
+  // Chronological lane for rows that own no reply comment: settled turns, and
+  // (REK-311) the per-run transcript placeholder a still-hydrating run keeps in
+  // the list. Both sort on the run's own startMs, so the placeholder lands where
+  // the transcript will appear and resolves in place.
+  unanchored: readonly { turn: TaskChatItem; startMs: number }[],
 ): TaskChatItem[] {
   const out: TaskChatItem[] = [];
   let next = 0;

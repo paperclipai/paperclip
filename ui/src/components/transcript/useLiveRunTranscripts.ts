@@ -131,8 +131,24 @@ export function useLiveRunTranscripts({
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
   const [errorsByRun, setErrorsByRun] = useState<ReadonlyMap<string, Error>>(new Map());
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const retry = useCallback(() => {
-    missingTerminalLogRunIdsRef.current.clear();
+  // Retry scope for the next effect pass: null = every run (the thread-level
+  // retry), a one-entry set = exactly that run (REK-311 per-row retry). The
+  // scope is consumed by the effect run it triggers, so a later restart for an
+  // unrelated reason (runs list changed) still reads everything.
+  const retryRunIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const retry = useCallback((runId?: string) => {
+    retryRunIdsRef.current = runId ? new Set([runId]) : null;
+    if (runId) {
+      missingTerminalLogRunIdsRef.current.delete(runId);
+      setErrorsByRun((previous) => {
+        if (!previous.has(runId)) return previous;
+        const next = new Map(previous);
+        next.delete(runId);
+        return next;
+      });
+    } else {
+      missingTerminalLogRunIdsRef.current.clear();
+    }
     setRetryGeneration((value) => value + 1);
   }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
@@ -366,11 +382,25 @@ export function useLiveRunTranscripts({
       }
     };
 
-    const readAll = async () => {
-      await Promise.all(readableRuns.map((run) => readRunLog(run)));
-    };
-
-    void readAll();
+    // A scoped retry (REK-311) re-reads the run whose row asked for it, and does
+    // not fan out to one request per run on the issue. It still has to pick up
+    // the reads this restart interrupted: bumping `retryGeneration` runs the
+    // cleanup below, which aborts the shared AbortController, and only a
+    // completed read marks its run hydrated (the `finally` skips that on an
+    // abort). Terminal runs are not polled, so an unhydrated run would keep its
+    // "Loading" row forever. `!hydratedRunIds.has(run.id)` is exactly that set.
+    // The recurring poll below keeps covering every run, so the scope never
+    // narrows live updates.
+    const retryScope = retryRunIdsRef.current;
+    retryRunIdsRef.current = null;
+    const initialTargets = retryScope
+      ? readableRuns.filter(
+          (run) => retryScope.has(run.id) || !hydratedRunIds.has(run.id),
+        )
+      : readableRuns;
+    if (initialTargets.length > 0) {
+      void Promise.all(initialTargets.map((run) => readRunLog(run)));
+    }
     const activeRuns = readableRuns.filter((run) => run.status === "running");
     // The realtime websocket is the primary live source when enabled, so the
     // recurring poll only needs to run as a slow fallback rather than doubling

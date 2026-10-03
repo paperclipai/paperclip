@@ -25,6 +25,75 @@ function fakeGeometry(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400
   });
 }
 
+/**
+ * Rows at absolute document offsets with faked rects, so "a batch landed above
+ * the reader" is a real geometry change rather than a total-height change: the
+ * rect subtracts the live scrollTop, exactly like a real viewport.
+ */
+function transcriptRowsProbe(host: {
+  container: HTMLElement;
+  scroller: () => HTMLElement;
+  root: { render: (node: React.ReactNode) => void };
+}) {
+  const { root } = host;
+  const { container, scroller } = host;
+  const state = { shift: 0, faked: false };
+  function Rows({ ids }: { ids: string[] }) {
+    return (
+      <>
+        {ids.map((id, index) => (
+          <div
+            key={id}
+            data-thread-anchor={id}
+            ref={(node) => {
+              if (!node) return;
+              const docTop = 100 + index * 300 + state.shift;
+              node.getBoundingClientRect = () => {
+                const top = docTop - scroller().scrollTop;
+                return { top, bottom: top + 200, height: 200 } as DOMRect;
+              };
+            }}
+          />
+        ))}
+      </>
+    );
+  }
+  return {
+    get shift() {
+      return state.shift;
+    },
+    set shift(value: number) {
+      state.shift = value;
+    },
+    Rows,
+    renderRows(ids: string[], contentKey: unknown) {
+      flushSync(() => {
+        root.render(
+          <TaskMessageScroller contentKey={contentKey}>
+            <Rows ids={ids} />
+          </TaskMessageScroller>,
+        );
+      });
+    },
+    /** Fake the viewport itself: the anchor reader needs a real rect to span. */
+    fakeViewport() {
+      const viewport = container.querySelector<HTMLElement>('[data-testid="task-chat-scroller"]')!;
+      if (state.faked) return;
+      state.faked = true;
+      fakeGeometry(viewport);
+      Object.defineProperty(viewport, "getBoundingClientRect", {
+        value: () => ({ top: 0, bottom: 400, height: 400 } as DOMRect),
+        configurable: true,
+      });
+    },
+    rowTop(id: string): number {
+      return container
+        .querySelector(`[data-thread-anchor="${id}"]`)!
+        .getBoundingClientRect().top;
+    },
+  };
+}
+
 function fakeResizableGeometry(
   el: HTMLElement,
   { scrollHeight = 1000, clientHeight = 400 } = {},
@@ -406,5 +475,46 @@ describe("TaskMessageScroller", () => {
     await waitForPill(true);
     await scrollTo(el, 600);
     await waitForPill(false); // no animationend needed
+  });
+
+  /**
+   * REK-311: the reveal now happens before the transcripts, so a run's rows are
+   * INSERTED ABOVE wherever the reader happens to be. These two tests are the
+   * guard for that. They fake real row rects on top of a real anchor, so the
+   * compensation has to be exact — an assertion of "the scroller moved" or of
+   * "no scroll happened" would both pass on a broken hold.
+   */
+  it("holds the reading position when a transcript batch lands above the reader", async () => {
+    const probe = transcriptRowsProbe({ container, scroller, root });
+    probe.renderRows(["a", "b", "c"], 1);
+    probe.fakeViewport();
+    // Reader is scrolled up: 1000 - 200 - 400 = 400 > the 48px pin threshold.
+    await scrollTo(scroller(), 200);
+    const before = probe.rowTop("a");
+    expect(before).toBe(-100); // docTop 100 - scrollTop 200
+
+    // A batch lands above the reader: everything below shifts down by 200px.
+    // This is the transcript placeholder resolving into its real turn.
+    probe.shift = 200;
+    probe.renderRows(["new", "a", "b", "c"], 2);
+
+    // Compensated by exactly the total shift: 200px of moved content plus the
+    // 300px row that was inserted. The invariant that matters is the second
+    // assertion — the row the reader was looking at did not move. With the hold
+    // broken, scrollTop would still be 200 and `a` would sit at 400.
+    expect(scroller().scrollTop).toBe(700);
+    expect(probe.rowTop("a")).toBe(before);
+  });
+
+  it("still follows the bottom through that same insertion while the reader is pinned", async () => {
+    const probe = transcriptRowsProbe({ container, scroller, root });
+    probe.renderRows(["a", "b", "c"], 1);
+    probe.fakeViewport();
+    await scrollTo(scroller(), 600); // pinned: 1000 - 600 - 400 = 0
+
+    probe.shift = 200;
+    probe.renderRows(["new", "a", "b", "c"], 2);
+
+    expect(scroller().scrollTop).toBe(1000);
   });
 });
