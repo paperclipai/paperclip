@@ -51,6 +51,7 @@
     "@paperclipai/db": "workspace:*",
     "@paperclipai/server": "workspace:*",
     "@paperclipai/shared": "workspace:*",
+    "@paperclipai/adapter-bob-shell": "workspace:*",
     "@paperclipai/hermes-paperclip-adapter": "workspace:*",
     "drizzle-orm": "0.45.2",
     "dotenv": "^17.4.2",

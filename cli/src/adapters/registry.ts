@@ -11,6 +11,7 @@ import { printHermesStreamEvent } from "@paperclipai/hermes-paperclip-adapter/cl
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
+import { printBobShellStreamEvent } from "@paperclipai/adapter-bob-shell/cli";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
 
@@ -74,6 +75,11 @@ const openclawGatewayCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printOpenClawGatewayStreamEvent,
 };
 
+const bobShellCLIAdapter: CLIAdapterModule = {
+  type: "bob_shell",
+  formatStdoutEvent: printBobShellStreamEvent,
+};
+
 const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     claudeLocalCLIAdapter,
@@ -88,6 +94,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     hermesGatewayCLIAdapter,
     hermesLocalCLIAdapter,
     openclawGatewayCLIAdapter,
+    bobShellCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,
   ].map((a) => [a.type, a]),
