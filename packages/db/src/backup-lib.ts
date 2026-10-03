@@ -1,5 +1,13 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import {
+  acquireStorageTransactionLock,
+  assertStorageTransactionLockHeld,
+  isStorageTransactionReservedName,
+  releaseStorageTransactionLock,
+  type StorageTransactionLockHandle,
+  StorageTransactionLockError,
+} from "./backup-transaction-lock.js";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
@@ -34,6 +42,8 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  /** Present when the backup transaction lock was acquired for this run. */
+  lockTokenPrefix?: string;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -120,7 +130,12 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+function pruneOldBackups(
+  backupDir: string,
+  retention: BackupRetentionPolicy,
+  filenamePrefix: string,
+  lockHandle?: StorageTransactionLockHandle,
+): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -132,10 +147,13 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const entries: BackupEntry[] = [];
 
   for (const name of readdirSync(backupDir)) {
+    // Never treat protocol artifacts as backup candidates.
+    if (isStorageTransactionReservedName(name)) continue;
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
+    if (!stat.isFile()) continue;
     entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
@@ -179,6 +197,10 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   }
 
   for (const filePath of toDelete) {
+    // Reverify producer lock ownership before every irreversible retention unlink.
+    if (lockHandle) {
+      assertStorageTransactionLockHeld(lockHandle);
+    }
     unlinkSync(filePath);
   }
 
@@ -533,6 +555,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
+
   let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   let sqlClosed = false;
   const closeSql = async () => {
@@ -540,12 +563,32 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     sqlClosed = true;
     await sql.end();
   };
+
+  // Acquire the source-root transaction lock before any backup/prune filesystem activity.
+  // Client construction stays outside the hold so a synchronous setup error cannot strand it.
   mkdirSync(opts.backupDir, { recursive: true });
+  let lockHandle: StorageTransactionLockHandle;
+  try {
+    lockHandle = acquireStorageTransactionLock({
+      sourceRoot: opts.backupDir,
+      operationKind: "backup",
+    });
+  } catch (error) {
+    await closeSql();
+    if (error instanceof StorageTransactionLockError) {
+      throw error;
+    }
+    throw error;
+  }
+
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  let writer: ReturnType<typeof createBufferedTextFileWriter> | null = null;
+  let operationError: unknown = null;
 
   try {
+    writer = createBufferedTextFileWriter(sqlFile);
+    const activeWriter = writer;
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
       try {
@@ -555,13 +598,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
+        await activeWriter.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        assertStorageTransactionLockHeld(lockHandle);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, lockHandle);
         return {
           backupFile,
           sizeBytes,
           prunedCount,
+          lockTokenPrefix: lockHandle.token.slice(0, 8),
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -578,7 +623,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await sql`SELECT 1`;
 
-    const emit = (line: string) => writer.emit(line);
+    const emit = (line: string) => activeWriter.emit(line);
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -936,19 +981,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
+        await activeWriter.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+            await activeWriter.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
           await copySql.end();
         }
-        await writer.writeRaw("\\.\n");
+        await activeWriter.writeRaw("\\.\n");
         emitStatementBoundary();
         emit("");
         continue;
@@ -965,7 +1010,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           );
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
-        await writer.drain();
+        await activeWriter.drain();
       }
       emit("");
     }
@@ -1018,7 +1063,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    await writer.close();
+    await activeWriter.close();
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
@@ -1026,16 +1071,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
 
+    assertStorageTransactionLockHeld(lockHandle);
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, lockHandle);
 
     return {
       backupFile,
       sizeBytes,
       prunedCount,
+      lockTokenPrefix: lockHandle.token.slice(0, 8),
     };
   } catch (error) {
-    await writer.abort();
+    operationError = error;
+    await writer?.abort();
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
     }
@@ -1044,7 +1092,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
     throw error;
   } finally {
-    await closeSql();
+    let closeError: unknown = null;
+    try {
+      await closeSql();
+    } catch (error) {
+      closeError = error;
+    }
+    let releaseError: unknown = null;
+    try {
+      releaseStorageTransactionLock(lockHandle, { participationState: "ready" });
+    } catch (error) {
+      releaseError = error;
+    }
+    const teardownErrors = [operationError, closeError, releaseError].filter(
+      (error): error is NonNullable<typeof error> => error !== null,
+    );
+    if (closeError || releaseError) {
+      if (teardownErrors.length === 1) throw teardownErrors[0];
+      throw new AggregateError(teardownErrors, "Database backup and storage transaction teardown failed");
+    }
   }
 }
 
