@@ -5482,6 +5482,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/status-digest",
   tags: ["dashboard"],
   summary: "Get the cheap status digest for a company",
+  description: "Requires company-scope read authorization. Contained low-trust actors cannot read company-wide aggregates.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });

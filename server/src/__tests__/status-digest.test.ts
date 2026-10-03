@@ -1,9 +1,16 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { statusDigestRoutes } from "../routes/status-digest.ts";
 import { statusDigestService } from "../services/status-digest.ts";
+
+const mockAccess = vi.hoisted(() => ({ decide: vi.fn() }));
+vi.mock("../services/access.js", () => ({ accessService: () => mockAccess }));
+beforeEach(() => {
+  mockAccess.decide.mockReset();
+  mockAccess.decide.mockResolvedValue({ allowed: true });
+});
 
 const COMPANY = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY = "99999999-9999-4999-8999-999999999999";
@@ -119,6 +126,29 @@ describe("statusDigestService", () => {
 });
 
 describe("GET /api/companies/:companyId/status-digest", () => {
+  it("refuses company aggregates outside the actor's read boundary before querying", async () => {
+    mockAccess.decide.mockResolvedValue({ allowed: false, reason: "deny_trust_boundary" });
+    const { db, seen } = queueDb(digestFixture());
+    const actor = {
+      type: "agent",
+      source: "agent_jwt",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: COMPANY,
+      runId: "44444444-4444-4444-8444-444444444444",
+    };
+    const response = await request(digestApp(db, actor))
+      .get(`/api/companies/${COMPANY}/status-digest`);
+
+    expect(response.status).toBe(403);
+    expect(seen).toEqual([]);
+    expect(response.body.humanWaits).toBeUndefined();
+    expect(mockAccess.decide).toHaveBeenCalledWith({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: COMPANY },
+    });
+  });
+
   it("answers an agent key in the same company", async () => {
     const { db } = queueDb(digestFixture());
     const response = await request(digestApp(db, {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, request as pwRequest, test, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
-import { closeRegisteredClients, createDb, heartbeatRuns, principalPermissionGrants } from "../../packages/db/src/index.ts";
+import { agents, closeRegisteredClients, createDb, heartbeatRuns, principalPermissionGrants } from "../../packages/db/src/index.ts";
 import { eq } from "../../server/node_modules/drizzle-orm/index.js";
 import { createLocalAgentJwt } from "../../server/src/agent-auth-jwt";
 
@@ -362,6 +362,21 @@ test.describe("Pipelines tutorial UI flow", () => {
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(),
         contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, runId));
       await createItem(agentApi, pipeline.id, { title: "Finished reader no longer blocks" });
+      const digestPath = `/api/companies/${company.id}/status-digest`;
+      await expectOk(await agentApi.get(digestPath), "standard agent company digest");
+      // The whole digest is company-scoped, even when a contained agent can
+      // read its exact source issue. Seed containment only in this throwaway DB.
+      await db.update(agents).set({ permissions: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: { trustBoundary: {
+          mode: "low_trust_review", issueIds: [issue.id],
+        } },
+      } }).where(eq(agents.id, key.agentId));
+      await expectOk(await agentApi.get(`/api/issues/${issue.id}`), "contained source issue GET");
+      const deniedDigest = await agentApi.get(digestPath);
+      expect(deniedDigest.status()).toBe(403);
+      expect((await deniedDigest.json()).humanWaits).toBeUndefined();
+      await expectOk(await board.get(digestPath), "board company digest");
     } finally {
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
         .where(eq(heartbeatRuns.id, runId));
