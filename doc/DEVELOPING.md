@@ -1169,6 +1169,15 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### SSH private keys and agent identities
+
+When an SSH execution target supplies `privateKey`, the shared SSH transport
+disables the controller's SSH agent with `IdentityAgent=none` and sets
+`IdentitiesOnly=yes`. This prevents unrelated agent keys from being offered or
+used when the supplied key fails. Targets without a supplied key keep OpenSSH's
+normal agent behavior. OpenSSH still reads the operator's configuration, including
+any explicit `IdentityFile` entries; this option does not isolate that configuration.
+
 ### Sandbox ACP input delivery
 
 The legacy sandbox process bridge retries recognized Daytona and Cloudflare
