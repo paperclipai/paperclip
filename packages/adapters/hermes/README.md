@@ -20,7 +20,7 @@ type keys did not change during package consolidation.
 This adapter provides:
 
 - **8 inference providers** — Anthropic, OpenRouter, OpenAI, Nous, OpenAI Codex, ZAI, Kimi Coding, MiniMax
-- **Skills integration** — Scans both Paperclip-managed and Hermes-native skills (`~/.hermes/skills/`), with sync/list/resolve APIs
+- **Skills integration** — Scans both Paperclip-managed and Hermes-native skills (`~/.hermes/skills/` or `$HERMES_HOME/skills`), with sync/list/resolve APIs
 - **Structured transcript parsing** — Raw Hermes stdout is parsed into typed `TranscriptEntry` objects so Paperclip renders proper tool cards with status icons and expand/collapse
 - **Rich post-processing** — Converts Hermes ASCII banners, setext headings, and `+--+` table borders into clean GFM markdown
 - **Comment-driven wakes** — Agents wake to respond to issue comments, not just task assignments
@@ -316,7 +316,13 @@ and migrates session state between runs.
 The adapter scans two skill sources and merges them:
 
 - **Paperclip-managed skills** — bundled with the adapter, togglable from the UI
-- **Hermes-native skills** — from `~/.hermes/skills/`, read-only, always loaded
+- **Hermes-native skills** — from the Hermes skills home, read-only, always loaded
+
+The Hermes skills home defaults to `~/.hermes/skills`. Set `HERMES_HOME` in the
+agent's adapter environment to select a different home: skills are then scanned
+in `$HERMES_HOME/skills`. A plain `HERMES_HOME` value also selects the home for
+reconciliation, and the process environment is honored when the config does not
+set the variable.
 
 The `listSkills` / `syncSkills` APIs expose a unified snapshot so the
 Paperclip UI can display both managed and native skills in one view.
