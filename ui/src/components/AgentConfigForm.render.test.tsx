@@ -6,7 +6,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
-import { getEnvironmentCapabilities } from "@paperclipai/shared";
+import { getEnvironmentCapabilities, AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
@@ -212,7 +212,8 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     id: "agent-1",
     companyId: "company-1",
     name: "Cody",
-    role: "Engineer",
+    urlKey: "cody",
+    role: "engineer",
     title: null,
     icon: null,
     status: "idle",
@@ -222,16 +223,17 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     adapterConfig: {},
     runtimeConfig: {},
     defaultEnvironmentId: null,
-    contextMode: "thin",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
-    permissions: {},
+    pauseReason: null,
+    pausedAt: null,
+    permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
     metadata: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
-  } as Agent;
+  };
 }
 
 function makeEnvironment(overrides: Partial<Environment>): Environment {
@@ -598,7 +600,7 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
 }
 
 async function selectEnvironment(container: HTMLElement, environmentId: string) {
-  const select = container.querySelector("select");
+  const select = container.querySelector('select[aria-label="Environment"]');
   await act(async () => {
     if (select) {
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
@@ -808,7 +810,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(result.container.querySelector('select[aria-label="Environment"]')).toBeNull();
   });
 
   it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
@@ -935,7 +937,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector('select[aria-label="Environment"]');
 
     expect(text).toContain("Environment");
     expect(text).toContain("Environment override");
@@ -962,7 +964,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector('select[aria-label="Environment"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -984,7 +986,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector('select[aria-label="Environment"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -1006,7 +1008,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector('select[aria-label="Environment"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
@@ -1026,7 +1028,7 @@ describe("AgentConfigForm environment selector", () => {
     ]);
     roots.push(result.root);
 
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector('select[aria-label="Environment"]');
 
     expect(selector?.textContent).toContain("Default: Paperclip Computer");
     expect(selector?.textContent).toContain("Paperclip Computer");
@@ -2428,7 +2430,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     expect(findButton(result.container, "Sign in")).toBeTruthy();
 
-    const select = result.container.querySelector("select");
+    const select = result.container.querySelector('select[aria-label="Environment"]');
     await act(async () => {
       if (select) {
         const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
@@ -3910,5 +3912,88 @@ describe("subtractPersistedOverlay", () => {
     expect(subtractPersistedOverlay(changed, persisted).adapterConfig).toEqual({
       args: ["--flag", "other"],
     });
+  });
+});
+
+describe("AgentConfigForm role field", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "codex_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date(0).toISOString(),
+    });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("renders the role dropdown with all available role options", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+
+    const roleSelect = result.container.querySelector<HTMLSelectElement>('select[aria-label="Role"]');
+    expect(roleSelect).toBeTruthy();
+    expect(roleSelect?.value).toBe("engineer");
+
+    const options = Array.from(roleSelect?.querySelectorAll("option") ?? []);
+    expect(options.map((o) => o.value)).toEqual([...AGENT_ROLES]);
+    expect(options.map((o) => o.textContent)).toEqual(AGENT_ROLES.map((r) => AGENT_ROLE_LABELS[r]));
+  });
+
+  it("updates the agent role when a different role is selected", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+
+    const roleSelect = result.container.querySelector('select[aria-label="Role"]') as HTMLSelectElement;
+    expect(roleSelect).toBeTruthy();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(roleSelect, "cto");
+      roleSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    );
+    expect(saveButton).toBeTruthy();
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "cto",
+      }),
+    );
   });
 });
