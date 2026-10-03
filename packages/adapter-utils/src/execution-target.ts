@@ -1731,7 +1731,27 @@ export async function prepareGitHubOperationLaunchers(input: {
   const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
     .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
     .join("");
-  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
+  // Claude Code's sandbox exports NO_PROXY with loopback entries on every
+  // command, but Seatbelt only permits loopback through the sandbox proxy, so
+  // direct calls to the local Paperclip API fail. Route loopback through the
+  // proxy, where the sandbox allowlist still decides which ports are reachable.
+  const proxyLoopbackInSandbox = [
+    'if [ "${SANDBOX_RUNTIME:-}" = 1 ] && [ -n "${HTTP_PROXY:-}${http_proxy:-}" ]; then',
+    "  for __paperclip_np_var in NO_PROXY no_proxy; do",
+    '    eval "__paperclip_np=\\",\\${$__paperclip_np_var:-},\\""',
+    "    for __paperclip_np_host in localhost 127.0.0.1 ::1 '[::1]' 127.0.0.0/8; do",
+    '      while case "$__paperclip_np" in *",$__paperclip_np_host,"*) true ;; *) false ;; esac; do',
+    '        __paperclip_np="${__paperclip_np%%,"$__paperclip_np_host",*},${__paperclip_np#*,"$__paperclip_np_host",}"',
+    "      done",
+    "    done",
+    '    __paperclip_np="${__paperclip_np#,}"',
+    '    eval "export $__paperclip_np_var=\\"\\${__paperclip_np%,}\\""',
+    "  done",
+    "  unset __paperclip_np __paperclip_np_var __paperclip_np_host",
+    "fi",
+    "",
+  ].join("\n");
+  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}${proxyLoopbackInSandbox}`;
   const files: Record<string, string> = Object.fromEntries([
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
