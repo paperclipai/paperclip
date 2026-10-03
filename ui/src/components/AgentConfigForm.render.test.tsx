@@ -900,6 +900,56 @@ describe("AgentConfigForm environment selector", () => {
     expect(existing.onSave).not.toHaveBeenCalled();
   });
 
+  it("names the detected server model as the Claude default", async () => {
+    mockAgentsApi.detectModel.mockResolvedValue({
+      model: "claude-opus-5-5",
+      provider: "anthropic",
+      source: "env:ANTHROPIC_MODEL",
+    });
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(existing.root);
+    await flushReact();
+    expect(existing.container.textContent).toContain("Default (claude-opus-5-5)");
+    expect(existing.container.textContent).not.toContain("Default (claude-opus-5)");
+    expect(existing.onSave).not.toHaveBeenCalled();
+  });
+
+  it("ignores the host model default for a remote Claude environment", async () => {
+    mockAgentsApi.detectModel.mockResolvedValue({
+      model: "claude-opus-5-5",
+      provider: "anthropic",
+      source: "env:ANTHROPIC_MODEL",
+    });
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({ id: "sandbox-1", name: "Daytona", driver: "sandbox", config: { provider: "daytona" } }),
+      ],
+      { adapterType: "claude_local", adapterConfig: {}, defaultEnvironmentId: "sandbox-1" },
+    );
+    roots.push(result.root);
+    await flushReact();
+    expect(result.container.textContent).toContain("Default (claude-opus-5)");
+    expect(result.container.textContent).not.toContain("Default (claude-opus-5-5)");
+  });
+
+  it("names the agent's own ANTHROPIC_MODEL as the Claude default", async () => {
+    mockAgentsApi.detectModel.mockResolvedValue({
+      model: "claude-opus-5-5",
+      provider: "anthropic",
+      source: "env:ANTHROPIC_MODEL",
+    });
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const result = await renderForm(environments, {
+      adapterType: "claude_local",
+      adapterConfig: { env: { ANTHROPIC_MODEL: { type: "plain", value: "claude-sonnet-5" } } },
+    });
+    roots.push(result.root);
+    await flushReact();
+    expect(result.container.textContent).toContain("Default (claude-sonnet-5)");
+  });
+
   it("keeps secret access out of the main Configuration content", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),

@@ -166,6 +166,15 @@ export async function refreshClaudeModels(): Promise<AdapterModel[]> {
   return loadClaudeModels({ forceRefresh: true });
 }
 
+/**
+ * Report the host `ANTHROPIC_MODEL` override. Local agents with no explicit
+ * model resolve to this value, so the UI can show it as the effective default.
+ */
+export async function detectClaudeModel(): Promise<{ model: string; provider: string; source: string } | null> {
+  const model = process.env.ANTHROPIC_MODEL?.trim();
+  return model ? { model, provider: "anthropic", source: "env:ANTHROPIC_MODEL" } : null;
+}
+
 export function resetClaudeModelsCacheForTests() {
   cached = null;
 }
