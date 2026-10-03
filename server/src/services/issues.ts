@@ -1,3 +1,5 @@
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { holdReviewedIssueForDependencies, reconcileReviewDependencyHolds } from "./review-dependency-hold.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -247,6 +249,10 @@ export type IssuePostCommitAction = {
   runId: string;
   issueId: string;
   issueStatus: string;
+} | {
+  type: "reconcile_review_dependencies";
+  companyId: string;
+  issueId: string;
 };
 
 /** Execute side effects that must never run before the issue transaction commits. */
@@ -255,14 +261,22 @@ export async function executeIssuePostCommitActions(
   actions: readonly IssuePostCommitAction[],
 ): Promise<void> {
   if (actions.length === 0) return;
-  const { heartbeatService } = await import("./heartbeat.js");
-  const heartbeat = heartbeatService(db);
+  const needsHeartbeat = actions.some((action) => action.type === "cancel_native_question_run");
+  const heartbeat = needsHeartbeat ? (await import("./heartbeat.js")).heartbeatService(db) : null;
   const cancelledRunIds = new Set<string>();
   for (const action of actions) {
+    if (action.type === "reconcile_review_dependencies") {
+      try {
+        await reconcileReviewDependencyHolds(db, { companyId: action.companyId, issueId: action.issueId });
+      } catch (err) {
+        logger.warn({ err, issueId: action.issueId }, "Review dependency reconciliation deferred to the scheduler");
+      }
+      continue;
+    }
     if (cancelledRunIds.has(action.runId)) continue;
     cancelledRunIds.add(action.runId);
     try {
-      await heartbeat.cancelRun(
+      await heartbeat!.cancelRun(
         action.runId,
         "Task closed while waiting for operator input",
         {
@@ -2595,6 +2609,7 @@ async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
+  proposedBlockerIds?: string[],
 ) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const readinessMap = new Map<string, IssueDependencyReadiness>();
@@ -2603,7 +2618,15 @@ async function listIssueDependencyReadinessMap(
   }
   if (uniqueIssueIds.length === 0) return readinessMap;
 
-  const blockerRows = await dbOrTx
+  const blockerRows = proposedBlockerIds !== undefined
+    ? proposedBlockerIds.length === 0 ? [] : await dbOrTx
+      .select({
+        issueId: sql<string>`${uniqueIssueIds[0]}::text`,
+        blockerIssueId: issues.id,
+        blockerStatus: issues.status,
+        blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, proposedBlockerIds)))
+    : await dbOrTx
     .select({
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
@@ -4443,6 +4466,8 @@ function reviewPathLabel(
         : "Queued review wake";
     case "recovery":
       return "Open review recovery";
+    case "blocker":
+      return "Awaiting blocker";
   }
 }
 
@@ -4763,7 +4788,24 @@ async function listIssueReviewAttentionMap(
     ]),
   );
 
+  const heldReviewIds = reviewIssues.filter((issue) => {
+    const state = parseIssueExecutionState(issue.executionState);
+    return state?.status === "completed" && Boolean(state.dependencyHold);
+  }).map((issue) => issue.id);
+  const heldReadiness = await listIssueDependencyReadinessMap(dbOrTx, companyId, heldReviewIds);
   for (const issue of reviewIssues) {
+    const held = heldReadiness.get(issue.id);
+    if (held && !held.isDependencyReady) {
+      const blockers = await listUnresolvedBlockerDetails(dbOrTx, companyId, held.unresolvedBlockerIssueIds,
+        held.pendingFinalizeBlockerIssueIds);
+      result.set(issue.id, {
+        state: "covered",
+        reason: `Review approved; awaiting blockers: ${blockers.map((blocker) => blocker.identifier ?? blocker.issueId).join(", ")}.`,
+        paths: blockers.map((blocker) => ({ kind: "blocker", label: `Awaiting ${blocker.identifier ?? blocker.issueId}`,
+          responder: null, since: null, ref: blocker.issueId })),
+      });
+      continue;
+    }
     const pathFacts = classifyIssueReviewPaths(
       livenessInput,
       livenessInput.issues.find((entry) => entry.id === issue.id)!,
@@ -7387,6 +7429,29 @@ export function issueService(db: Db) {
     }
   }
 
+  async function validateBlockedByIssueIds(
+    issueId: string,
+    companyId: string,
+    blockedByIssueIds: string[],
+    dbOrTx: any = db,
+  ) {
+    const deduped = [...new Set(blockedByIssueIds)];
+    if (deduped.includes(issueId)) {
+      throw unprocessable("Issue cannot be blocked by itself");
+    }
+    if (deduped.length > 0) {
+      const relatedIssues = await dbOrTx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
+      if (relatedIssues.length !== deduped.length) {
+        throw unprocessable("Blocked-by issues must belong to the same company");
+      }
+      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+    }
+    return deduped;
+  }
+
   async function syncBlockedByIssueIds(
     issueId: string,
     companyId: string,
@@ -7394,32 +7459,16 @@ export function issueService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: any = db,
   ) {
-    const deduped = [...new Set(blockedByIssueIds)];
-    if (deduped.some((candidate) => candidate === issueId)) {
-      throw unprocessable("Issue cannot be blocked by itself");
-    }
-
-    if (deduped.length > 0) {
-      const lockedIssueIds = [issueId, ...deduped].sort();
+    if (blockedByIssueIds.length > 0) {
+      const lockedIssueIds = [...new Set([issueId, ...blockedByIssueIds])].sort();
       await dbOrTx.execute(
         sql`SELECT ${issues.id} FROM ${issues}
             WHERE ${and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds))}
             ORDER BY ${issues.id}
             FOR UPDATE`,
       );
-      const relatedIssues = await dbOrTx
-        .select({ id: issues.id })
-        .from(issues)
-        .where(
-          and(eq(issues.companyId, companyId), inArray(issues.id, deduped)),
-        );
-      if (relatedIssues.length !== deduped.length) {
-        throw unprocessable(
-          "Blocked-by issues must belong to the same company",
-        );
-      }
-      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
+    const deduped = await validateBlockedByIssueIds(issueId, companyId, blockedByIssueIds, dbOrTx);
 
     await dbOrTx
       .delete(issueRelations)
@@ -9017,7 +9066,7 @@ export function issueService(db: Db) {
       };
     },
 
-    getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
+    getDependencyReadiness: async (issueId: string, dbOrTx: any = db, proposedBlockerIds?: string[]) => {
       const issue = await dbOrTx
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -9026,10 +9075,16 @@ export function issueService(db: Db) {
           (rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null,
         );
       if (!issue) throw notFound("Issue not found");
+      // Validate proposed edits before callers perform terminal run side effects.
+      // syncBlockedByIssueIds repeats this validation under the update lock.
+      if (proposedBlockerIds !== undefined) {
+        proposedBlockerIds = await validateBlockedByIssueIds(issueId, issue.companyId, proposedBlockerIds, dbOrTx);
+      }
       const readiness = await listIssueDependencyReadinessMap(
         dbOrTx,
         issue.companyId,
         [issueId],
+        proposedBlockerIds,
       );
       return readiness.get(issueId) ?? createIssueDependencyReadiness(issueId);
     },
@@ -10594,7 +10649,11 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
-      options: { bindRuntimeSharedWorkspace?: boolean } = {},
+      options: {
+        bindRuntimeSharedWorkspace?: boolean;
+        /** Internal only: the route authorized a stage decision and persists it in this transaction. */
+        recordExecutionDecision?: boolean;
+      } = {},
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
@@ -10741,7 +10800,10 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
+      // Recording a verdict is not admission to builder work. The route's
+      // authorized decision may retain in_progress for an approval hold or
+      // return there for changes requested; wake/checkout and done gates still apply.
+      if (patch.status === "in_progress" && !options.recordExecutionDecision) {
         const dependencyReadiness =
           blockedByIssueIds === undefined
             ? (
@@ -10930,6 +10992,28 @@ export function issueService(db: Db) {
             ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
             : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
         ]);
+        if (patch.status === "done" && receiptExisting.status !== "done") {
+          // The issue lock serializes completion with edits to its blocker set.
+          // Apply a supplied set before checking, inside the same transaction.
+          if (blockedByIssueIds !== undefined) {
+            await syncBlockedByIssueIds(id, existing.companyId, blockedByIssueIds,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null }, tx);
+          }
+          const readiness = (await listIssueDependencyReadinessMap(tx, existing.companyId, [id])).get(id);
+          if (readiness && !readiness.isDependencyReady) {
+            const hold = holdReviewedIssueForDependencies({ status: receiptExisting.status,
+              executionState: patch.executionState ?? receiptExisting.executionState,
+              unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds, now: new Date() });
+            if (!hold) throw unprocessable("Issue is blocked by unresolved blockers", {
+              unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            });
+            Object.assign(patch, hold);
+          } else {
+            const state = parseIssueExecutionState(patch.executionState ?? receiptExisting.executionState);
+            if (state?.dependencyHold) patch.executionState = { ...state, dependencyHold: null };
+          }
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -11120,7 +11204,7 @@ export function issueService(db: Db) {
             tx,
           );
         }
-        if (blockedByIssueIds !== undefined) {
+        if (blockedByIssueIds !== undefined && !(issueData.status === "done" && receiptExisting.status !== "done")) {
           await syncBlockedByIssueIds(
             updated.id,
             existing.companyId,
@@ -11168,6 +11252,9 @@ export function issueService(db: Db) {
               })
               .where(eq(executionWorkspaces.id, workspace.id));
           }
+        }
+        if ((updated.status === "done" && receiptExisting.status !== "done") || blockedByIssueIds !== undefined) {
+          queuedPostCommitActions.push({ type: "reconcile_review_dependencies", companyId: updated.companyId, issueId: updated.id });
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
         const nextBlockedByIssueIds =

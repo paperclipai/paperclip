@@ -2918,6 +2918,7 @@ describe.sequential("issue comment reopen routes", () => {
       mockTx,
       expect.any(Array),
       expect.any(Array),
+      { recordExecutionDecision: true },
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<
       string,

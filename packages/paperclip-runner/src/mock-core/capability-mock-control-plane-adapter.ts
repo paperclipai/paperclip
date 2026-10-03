@@ -1124,6 +1124,12 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
       }
       case "finish_task": {
         requireText(command.summary, "completion summary");
+        if (this.#hasUnresolvedBlockers(task.id)) {
+          throw new CapabilityMockControlPlaneError(
+            "semantic_rule_violation",
+            "a task cannot finish with unresolved blockers",
+          );
+        }
         this.#transitionTask(run, task, "done", command.kind);
         task.completedAt = this.#now();
         const comment = this.#appendComment(task.id, run.actorId, command.summary);

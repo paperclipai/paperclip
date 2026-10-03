@@ -209,6 +209,22 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     await tempDb?.cleanup();
   });
 
+  it.each(["failed", "cancelled", "deferred_issue_execution"])("shows a %s review wake before completion blockers", async (status) => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Review");
+    const issue = await seedIssue(db, { companyId: company.id, projectId: project.id,
+      title: "Review with blockers", status: "in_review", assigneeAgentId: agent.id });
+    const blocker = await seedIssue(db, { companyId: company.id, projectId: project.id,
+      title: "Unfinished prerequisite", status: "todo", assigneeAgentId: agent.id });
+    await db.insert(issueRelations).values({ companyId: company.id, issueId: blocker.id, relatedIssueId: issue.id, type: "blocks" });
+    await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "automation", reason: "execution_review_requested", status, payload: { issueId: issue.id } });
+    const res = await request(createApp(db, boardActor(company))).get(`/api/issues/${issue.id}/diagnostics/wakes`);
+    expect(res.status).toBe(200);
+    expect(res.body.diagnosis).toContain(status === "deferred_issue_execution" ? "is deferred" : status);
+  });
+
   it("returns recent wake rows newest-first with a deterministic diagnosis", async () => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);

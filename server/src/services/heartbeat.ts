@@ -532,6 +532,7 @@ import { withRecoveryContext } from "./recovery/status-only-context.js";
 import { recoveryService } from "./recovery/service.js";
 import {
   createRunDispatch,
+  isCurrentStageParticipant,
   type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -17481,8 +17482,12 @@ export function heartbeatService(
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      const reviewIssue = unresolvedBlockerCount > 0
+        ? await getIssueExecutionContext(run.companyId, issueId)
+        : null;
       if (
         unresolvedBlockerCount > 0 &&
+        !isCurrentStageParticipant({ agentId: run.agentId, executionState: reviewIssue?.executionState }) &&
         !allowsIssueInteractionWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
@@ -27614,6 +27619,7 @@ export function heartbeatService(
               conversationState: issues.conversationState,
               status: issues.status,
               statusVersion: issues.statusVersion,
+              executionState: issues.executionState,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -28165,9 +28171,11 @@ export function heartbeatService(
             .listDependencyReadiness(issue.companyId, [issue.id], tx)
             .then((rows) => rows.get(issue.id) ?? null);
 
-          // Blocked descendants should stay idle until the final blocker resolves.
-          // Human comment/mention wakes are the exception: they may run in a
-          // bounded interaction mode so the assignee can answer or triage.
+          // Dependencies hold builder execution and completion. A pending
+          // stage's selected reviewer can inspect work before a merge blocker
+          // resolves. Read the stored participant, never trust a wake reason.
+          const currentStageWake = isCurrentStageParticipant({ agentId, executionState: issue.executionState });
+          // Human comments may still run in bounded interaction mode.
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
@@ -28195,7 +28203,8 @@ export function heartbeatService(
             !activeExecutionRun &&
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            !blockedInteractionWake
+            !blockedInteractionWake &&
+            !currentStageWake
           ) {
             await recordExecutionWait(tx as unknown as Db, {
               issueId: issue.id,

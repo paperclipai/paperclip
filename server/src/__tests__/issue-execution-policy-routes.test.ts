@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
+  getDependencyReadiness: vi.fn(),
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
@@ -56,7 +57,7 @@ const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })))
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
   transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+    callback({ select: mockDbSelect, insert: () => ({ values: async () => undefined }) } as any)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -263,6 +264,47 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+  });
+
+  it.each(["unresolved", "invalid"])("does not stop a reviewer's goal when final approval adds %s blockers", async (kind) => {
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ id: stageId, type: "review",
+      participants: [{ type: "agent", agentId }] }] });
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "in_review", assigneeAgentId: agentId, assigneeUserId: null,
+      createdByUserId: "local-board", identifier: "PAP-1012", title: "Held approval",
+      executionPolicy: policy, executionState: { status: "pending", currentStageId: stageId,
+        currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId },
+        returnAssignee: { type: "agent", agentId }, completedStageIds: [],
+        lastDecisionId: null, lastDecisionOutcome: null } };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({ isDependencyReady: false,
+      unresolvedBlockerIssueIds: [blockerId] });
+    if (kind === "invalid") {
+      const { unprocessable } = await import("../errors.js");
+      mockIssueService.getDependencyReadiness.mockRejectedValue(unprocessable("Blocked-by issues must belong to the same company"));
+    }
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+    mockIssueService.addComment.mockResolvedValue({ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId: issue.companyId, issueId: issue.id, body: "Approved", createdAt: new Date() });
+    const res = await request(await createApp({ type: "agent", agentId, companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555" })).patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", blockedByIssueIds: [blockerId], comment: "Approved" });
+    expect(res.status, JSON.stringify(res.body)).toBe(kind === "invalid" ? 422 : 200);
+    expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    if (kind === "invalid") {
+      expect(res.body.error).toBe("Blocked-by issues must belong to the same company");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      return;
+    }
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review",
+      executionState: { status: "completed", dependencyHold: { unresolvedBlockerIssueIds: [blockerId] } } });
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {

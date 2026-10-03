@@ -1,3 +1,4 @@
+import { holdReviewedIssueForDependencies } from "../services/review-dependency-hold.js";
 import { setIssueTitle } from "../services/issue-title.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
@@ -1404,6 +1405,10 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "issue_comment_already_answered",
+  "execution_review_requested",
+  "execution_approval_requested",
+  "execution_stage_pending_rewake",
   "issue_execution_deferred",
   "chat_task_completed",
   "issue_assigned",
@@ -1625,6 +1630,11 @@ function buildIssueWakeDiagnosis(input: {
         latest.reason,
       )}.`;
     }
+  }
+
+  const unresolvedReviewBlockers = input.blockerDiagnostics.blockers.filter((blocker) => blocker.isUnresolved);
+  if (input.issue.status === "in_review" && unresolvedReviewBlockers.length > 0) {
+    return `Review may proceed; completion is awaiting blockers: ${unresolvedReviewBlockers.map(blockerDiagnosticLabel).join(", ")}.`;
   }
 
   if (input.events.length > 0) return null;
@@ -13243,6 +13253,24 @@ export function issueRoutes(
       }
       Object.assign(updateFields, transition.patch);
 
+      // Avoid terminal run side effects for a final approval waiting on the
+      // effective dependency set, including edits in this request. The service
+      // validates and rechecks the same set under its lock before completion.
+      if (updateFields.status === "done" &&
+          holdReviewedIssueForDependencies({ status: existing.status,
+            executionState: updateFields.executionState ?? existing.executionState,
+            unresolvedBlockerIssueIds: [], now: new Date() })) {
+        const readiness = await svc.getDependencyReadiness(existing.id, db, req.body.blockedByIssueIds);
+        if (!readiness.isDependencyReady) {
+          const hold = holdReviewedIssueForDependencies({ status: existing.status,
+            executionState: updateFields.executionState ?? existing.executionState,
+            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds, now: new Date() });
+          if (hold) Object.assign(updateFields, hold);
+        }
+      }
+
+
+
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
@@ -13575,6 +13603,12 @@ export function issueRoutes(
         updateFields.status === "done" || updateFields.status === "cancelled";
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
+          if (transition.decision) {
+            // Only a workflow-authorized decision gets this internal exception.
+            // The decision row and issue patch are committed together below.
+            return svc.update(id, issueUpdateData, tx, postCommitActivityPublications,
+              postCommitIssueActions, { recordExecutionDecision: true });
+          }
           if (shouldCollectCompletionPublication) {
             return svc.update(
               id,

@@ -436,7 +436,8 @@ export type IssueReviewAttentionPathKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  | "blocker";
 
 export interface IssueReviewAttentionPath {
   kind: IssueReviewAttentionPathKind;
@@ -707,6 +708,7 @@ export interface IssueReviewRequest {
 }
 
 export interface IssueExecutionState {
+  dependencyHold?: { heldAt: string; unresolvedBlockerIssueIds: string[] } | null;
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
   currentStageIndex: number | null;
