@@ -6,6 +6,7 @@ import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-l
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import type { AiProvider } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
+import { isRefreshableClaudeDocument } from "./claude-credential-document.js";
 
 /** Read an owned login home, or an explicitly authorized local-operator import. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
@@ -17,6 +18,13 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       // Never change process.env or fall back to the server account when an
       // authenticated user's isolated login is missing or invalid.
       let token: string | null = null;
+      // The whole credential document, when the login home holds one the CLI
+      // can refresh. Claude Code rotates the short-lived access token in place,
+      // so keeping only the token discards the refresh token that carries the
+      // connection past the token's expiry. A document without a refresh token
+      // (a `claude setup-token` credential) or without a readable expiry keeps
+      // the bare-token shape.
+      let document: string | null = null;
       if (loginHome) {
         for (const name of [".credentials.json", "credentials.json"]) {
           const raw = await readLocalAiCredentialFile(path.join(loginHome, name)).catch(() => null);
@@ -24,7 +32,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
           let parsed;
           try { parsed = JSON.parse(raw); } catch { continue; }
           const value = parsed?.claudeAiOauth?.accessToken;
-          if (typeof value === "string" && value.length) { token = value; break; }
+          if (typeof value === "string" && value.length) { token = value; if (isRefreshableClaudeDocument(raw)) document = raw; break; }
         }
         // On macOS the CLI stores the isolated login in the auth home's own
         // suffixed Keychain item rather than a credentials file. The helper
@@ -35,7 +43,10 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       }
       if (!token) throw new Error("Missing login");
       await fetchClaudeQuota(token);
-      return token;
+      // A keychain or host login yields no document. Those, and a document
+      // the CLI cannot refresh, keep the legacy bare-token shape and the
+      // env-var delivery that goes with it.
+      return document ?? token;
     }
     if (provider === "openai") {
       const auth = await readCodexAuthInfo(loginHome);
