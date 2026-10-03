@@ -2036,6 +2036,7 @@ export type CreateIssueThreadInteractionInput = z.input<
 
 export const acceptIssueThreadInteractionSchema = z
   .object({
+    reason: z.string().trim().max(4000).optional(),
     rememberAction: z.boolean().optional(),
     selectedClientKeys: z
       .array(z.string().trim().min(1).max(120))

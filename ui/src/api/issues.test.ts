@@ -66,6 +66,21 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("trims an accept reason and omits a blank one", async () => {
+    await issuesApi.acceptInteraction("issue-1", "interaction-1", {
+      reason: "  do X only under condition Y  ",
+      selectedOptionIds: ["file-b"],
+    });
+    expect(mockApi.post).toHaveBeenCalledWith("/issues/issue-1/interactions/interaction-1/accept", {
+      reason: "do X only under condition Y",
+      selectedOptionIds: ["file-b"],
+    });
+
+    mockApi.post.mockClear();
+    await issuesApi.acceptInteraction("issue-1", "interaction-1", { reason: "   " });
+    expect(mockApi.post).toHaveBeenCalledWith("/issues/issue-1/interactions/interaction-1/accept", {});
+  });
+
   it("sends explicit attachment receipt IDs with the atomic comment request", async () => {
     const ids = [
       "9af8228f-0be7-45ae-a104-6fbe0af6f1d3",
