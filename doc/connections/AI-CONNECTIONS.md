@@ -280,6 +280,11 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
+Local checks inspect provider configuration in the working directory and its
+ancestors. A regular file named `.codex` or `.claude` cannot contain the expected
+configuration file, so the check continues to the next ancestor. Other read
+errors still block managed authentication.
+
 A subscription invocation takes no lease. Two invocations of one grant, from
 the same or a different provider account, run at the same time. At cleanup,
 each invocation re-reads the credential stored at that moment under a row
