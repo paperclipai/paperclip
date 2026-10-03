@@ -5127,6 +5127,10 @@ export function companySkillService(db: Db) {
     const invalidSelections: Array<{ workspaceId: string; path: string; slug?: string }> = [];
     const rediscoveredSelections = new Set<string>();
     const scannedProjectIds = new Set<string>();
+    // Shared across every per-skill upsertImportedSkills call in this scan so
+    // each project's folder is resolved/resynced once per scan, not once per
+    // scanned skill.
+    const projectFoldersById = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureProjectFolder>>>();
     let discovered = 0;
 
     for (const selection of input.selection ?? []) {
@@ -5290,7 +5294,7 @@ export function companySkillService(db: Db) {
             ...nextSkill,
             key: existingBySource.key,
             slug: existingBySource.slug,
-          }]))[0];
+          }], db, projectFoldersById))[0];
           if (!persisted) continue;
           updated.push(persisted);
           upsertAcceptedSkill(persisted);
@@ -5387,7 +5391,7 @@ export function companySkillService(db: Db) {
             ...(selectiveImport && !selected ? { reason: "Not selected for import." } : {}),
           });
           if (mode === "preview" || !selected) continue;
-          const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
+          const persisted = (await upsertImportedSkills(companyId, [nextSkill], db, projectFoldersById))[0];
           if (!persisted) continue;
           updated.push(persisted);
           upsertAcceptedSkill(persisted);
@@ -5444,7 +5448,7 @@ export function companySkillService(db: Db) {
           ...(!selected ? { reason: "Not selected for import." } : {}),
         });
         if (mode === "preview" || !selected) continue;
-        const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
+        const persisted = (await upsertImportedSkills(companyId, [nextSkill], db, projectFoldersById))[0];
         if (!persisted) continue;
         imported.push(persisted);
         upsertAcceptedSkill(persisted);
@@ -6243,6 +6247,12 @@ export function companySkillService(db: Db) {
     companyId: string,
     imported: ImportedSkill[],
     database: DbOrTransaction = db,
+    // Cache resolved project folders per project id so a scan importing many
+    // skills for the same project resyncs that project's folder once, not
+    // once per skill. Callers that invoke this once per skill (e.g. the
+    // per-directory scan loop in scanProjectWorkspaces) pass a cache shared
+    // across those calls; other callers get one scoped to this call only.
+    projectFoldersById = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureProjectFolder>>>(),
   ): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     for (const skill of imported) {
@@ -6277,12 +6287,21 @@ export function companySkillService(db: Db) {
         : null;
       const projectId = asString(incomingMeta.projectId);
       const projectName = asString(incomingMeta.projectName);
-      const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
-        ? await folderSvc.ensureProjectFolder(companyId, projectId, projectName)
-        : null;
+      // Always resolve the project folder (not just for new skills) so a rescan
+      // of an already-imported project resyncs its folder on a rename.
+      // existing?.folderId still wins below, preserving manual folder moves.
+      // Resolved once per project id per scan (cached above), not once per skill.
+      let projectFolder: Awaited<ReturnType<typeof folderSvc.ensureProjectFolder>> | null = null;
+      if (incomingKind === "project_scan" && projectId && projectName) {
+        projectFolder = projectFoldersById.get(projectId) ?? null;
+        if (!projectFolder) {
+          projectFolder = await folderSvc.ensureProjectFolder(companyId, projectId, projectName);
+          projectFoldersById.set(projectId, projectFolder);
+        }
+      }
       const values: ImportedSkillPersistValues = {
         companyId,
-        folderId: bundledFolder?.id ?? projectFolder?.id ?? existing?.folderId ?? null,
+        folderId: bundledFolder?.id ?? (existing ? existing.folderId ?? null : projectFolder?.id ?? null),
         key: skill.key,
         slug: skill.slug,
         name: skill.name,
