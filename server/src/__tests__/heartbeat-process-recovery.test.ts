@@ -1489,6 +1489,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  it("clears a stale agent error_reason when the run starts (CON-218)", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    const staleReason =
+      "Cannot connect to API: Unable to connect. Is the computer able to access the url?";
+    // `error` is invokable, so the run-start transition accepts this row.
+    await db
+      .update(agents)
+      .set({ status: "error", errorReason: staleReason })
+      .where(eq(agents.id, agentId));
+
+    // Hold the adapter open so the agent row is observed mid-run. Without the
+    // gate the run would settle and the finalizer would overwrite the pair,
+    // which is exactly the window this defect lives in.
+    let releaseAdapter: () => void = () => {};
+    const adapterGate = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await adapterGate;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Recovered stranded heartbeat work.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const previousImpl = mockAdapterExecute.getMockImplementation();
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+
+      const midRun = await waitForValue(async () => {
+        const row = await db
+          .select({ status: agents.status, errorReason: agents.errorReason })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        return row?.status === "running" ? row : null;
+      });
+
+      // The invariant: a `running` agent never carries a previous run's reason.
+      expect(midRun).toEqual({ status: "running", errorReason: null });
+
+      releaseAdapter();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+    } finally {
+      // afterEach uses clearAllMocks, which does not drain a queued `Once`
+      // implementation. Drop it explicitly so the gate cannot leak into the
+      // next test that drives the adapter.
+      mockAdapterExecute.mockReset();
+      if (previousImpl) mockAdapterExecute.mockImplementation(previousImpl);
+    }
+  });
+
   it("persists the normalized failure without permanently blocking the conversation", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,
