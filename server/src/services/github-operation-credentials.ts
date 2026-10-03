@@ -164,6 +164,10 @@ export async function resolveGitHubOperationCredentials(
         connectionId: resolved.credential.connectionId,
         grantId: resolved.credential.grantId,
         authenticationMode: "managed",
+        // A credential can be good for reads and still unable to commit, because no identity
+        // could be verified for it. Saying so here is the difference between an operator
+        // reading "the connection is fine" and reading why their commit did not happen.
+        ...(resolved.error ? { reason: resolved.error } : {}),
       };
       env = buildGitAuthInvocation(resolved.credential).env;
     } else {
