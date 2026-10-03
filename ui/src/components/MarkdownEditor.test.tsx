@@ -26,6 +26,8 @@ const mdxEditorMockState = vi.hoisted(() => ({
   throwOnRender: false,
   /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
   emitMountChange: null as string | null,
+  /** Markdown the mock emits once mounted with MDXEditor's `initialMarkdownNormalize` flag set. */
+  emitMountNormalizedMarkdown: null as string | null,
   /** Milliseconds the mock waits before painting its content, to model a slow import. */
   populateDelayMs: 0,
   markdownValues: [] as string[],
@@ -72,7 +74,7 @@ vi.mock("@mdxeditor/editor", async () => {
     }: {
       markdown: string;
       placeholder?: string;
-      onChange?: (value: string) => void;
+      onChange?: (value: string, initialMarkdownNormalize?: boolean) => void;
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
       className?: string;
@@ -149,6 +151,10 @@ vi.mock("@mdxeditor/editor", async () => {
         }
         if (mdxEditorMockState.emitMountChange !== null) {
           onChange?.(mdxEditorMockState.emitMountChange);
+        }
+        if (mdxEditorMockState.emitMountNormalizedMarkdown !== null) {
+          setContent(mdxEditorMockState.emitMountNormalizedMarkdown);
+          onChange?.(mdxEditorMockState.emitMountNormalizedMarkdown, true);
         }
       }, 0);
       return () => {
@@ -315,6 +321,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountNormalizedMarkdown = null;
     mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.insertedMarkdownValues = [];
@@ -641,6 +648,31 @@ describe("MarkdownEditor", () => {
     // What the user sees is still the markdown they wrote.
     expect(container.textContent).toContain("Rename <name> to the real name.");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not report MDXEditor's initial markdown normalization as a change", async () => {
+    // MDXEditor rewrites `-` bullets to `*` on load and flags it as normalization.
+    mdxEditorMockState.emitMountNormalizedMarkdown = "* first\n* second";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={"- first\n- second"} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    // The editor keeps its normalized document; nothing pushes the original back.
+    expect(container.textContent).toContain("* first");
+    expect(container.querySelector("textarea")).toBeNull();
 
     await act(async () => {
       root.unmount();

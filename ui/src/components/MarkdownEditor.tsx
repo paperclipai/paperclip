@@ -1475,7 +1475,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
-          onChange={(rawNext) => {
+          onChange={(rawNext, initialMarkdownNormalize) => {
             if (readOnly) return;
             // Reverse the editor-only rewrites: blockquotes the exporter escaped
             // as `\>` (so a `>`-prefixed line the user typed survives even when
@@ -1503,6 +1503,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 return;
               }
             }
+            // MDXEditor re-serialises the initial markdown on load (bullet
+            // markers, escapes, blank lines) and flags that emission. It is not
+            // a user edit: forwarding it marks every controlled parent with
+            // dirty tracking as unsaved before any keystroke. `latestValueRef`
+            // stays on the parent's value, so the prop-sync effect does not
+            // push the original back over the editor.
+            if (initialMarkdownNormalize) return;
             // `latestValueRef` is compared against `editorValue`, so it has to
             // hold editor space; storing `next` would make every edit containing
             // an escaped bracket look like a pending prop sync and trigger a
