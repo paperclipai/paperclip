@@ -213,6 +213,9 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  openclaw_gateway: [
+    { value: "", label: "Default" },
+  ],
 } as const;
 
 function loadDraft(): IssueDraft | null {
@@ -957,7 +960,9 @@ export function NewIssueDialog() {
         ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          : assigneeAdapterType === "openclaw_gateway"
+            ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+            : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -1216,13 +1221,17 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
-        : "Agent options";
+          : assigneeAdapterType === "openclaw_gateway"
+            ? "OpenClaw options"
+            : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : assigneeAdapterType === "openclaw_gateway"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
     () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
@@ -1983,7 +1992,7 @@ export function NewIssueDialog() {
                     />
                   </div>
                 )}
-                {assigneeModelLane === "custom" && (
+                {assigneeModelLane === "custom" && thinkingEffortOptions.length > 1 && (
                   <div className="space-y-1.5">
                     <div className="text-xs text-muted-foreground">Thinking effort</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
