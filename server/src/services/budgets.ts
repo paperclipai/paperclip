@@ -258,7 +258,28 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     });
   }
 
+  async function hasOtherExceededHardStop(policy: PolicyRow) {
+    const siblings = await db
+      .select()
+      .from(budgetPolicies)
+      .where(
+        and(
+          eq(budgetPolicies.companyId, policy.companyId),
+          eq(budgetPolicies.scopeType, policy.scopeType),
+          eq(budgetPolicies.scopeId, policy.scopeId),
+          eq(budgetPolicies.isActive, true),
+          eq(budgetPolicies.hardStopEnabled, true),
+          ne(budgetPolicies.id, policy.id),
+        ),
+      );
+    for (const sibling of siblings) {
+      if (sibling.amount > 0 && (await computeObservedAmount(db, sibling)) >= sibling.amount) return true;
+    }
+    return false;
+  }
+
   async function resumeScopeFromBudget(policy: PolicyRow) {
+    if (await hasOtherExceededHardStop(policy)) return;
     const now = new Date();
     if (policy.scopeType === "agent") {
       await db
@@ -365,7 +386,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (existing) return { incident: existing, created: false };
+    const reopen = existing?.status === "resolved" && thresholdType === "hard";
+    if (existing && !reopen) return { incident: existing, created: false };
 
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
     const payload = buildApprovalPayload({
@@ -377,8 +399,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       windowEnd: end,
     });
 
-    const approval = thresholdType === "hard"
-      ? await db
+    const insertApproval = (executor: Db) =>
+      executor
         .insert(approvals)
         .values({
           companyId: policy.companyId,
@@ -389,8 +411,43 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           payload,
         })
         .returning()
-        .then((rows) => rows[0] ?? null)
-      : null;
+        .then((rows) => rows[0] ?? null);
+
+    if (existing) {
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const claimed = await txDb
+          .update(budgetIncidents)
+          .set({
+            amountLimit: policy.amount,
+            amountObserved,
+            status: "open",
+            resolvedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(budgetIncidents.id, existing.id), eq(budgetIncidents.status, "resolved")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!claimed) {
+          const current = await txDb
+            .select()
+            .from(budgetIncidents)
+            .where(eq(budgetIncidents.id, existing.id))
+            .then((rows) => rows[0] ?? null);
+          return current ? { incident: current, created: false } : null;
+        }
+        const approval = await insertApproval(txDb);
+        const incident = await txDb
+          .update(budgetIncidents)
+          .set({ approvalId: approval?.id ?? null })
+          .where(eq(budgetIncidents.id, claimed.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return incident ? { incident, created: true } : null;
+      });
+    }
+
+    const approval = thresholdType === "hard" ? await insertApproval(db) : null;
 
     const incident = await db
       .insert(budgetIncidents)
@@ -588,7 +645,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(agents.id, input.scopeId));
       }
 
-      if (amount > 0) {
+      if (row.isActive) {
         const observedAmount = await computeObservedAmount(db, row);
         if (observedAmount < amount) {
           await resumeScopeFromBudget(row);

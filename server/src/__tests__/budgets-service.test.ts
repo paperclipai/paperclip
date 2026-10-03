@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -298,6 +299,7 @@ describe("budgetService", () => {
         amount: 100,
       }],
       [{ total: 120 }],
+      [],
       [{ id: "approval-1", status: "approved" }],
       [{
         companyId: "company-1",
@@ -410,6 +412,21 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       .returning();
 
     return event!;
+  }
+
+  async function waitForBlockedIncidentUpdates(count: number) {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [row] = await db.execute<{ waiting: number }>(sql`
+        SELECT count(*)::int AS waiting
+        FROM pg_stat_activity
+        WHERE state = 'active'
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%update "budget_incidents"%'
+      `);
+      if ((row?.waiting ?? 0) >= count) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
   }
 
   it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {
@@ -636,5 +653,146 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("does not pause an over-budget agent when saving an inactive policy", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await insertCostEvent({ companyId, agentId, costCents: 150 });
+
+    await service.upsertPolicy(
+      companyId,
+      { scopeType: "agent", scopeId: agentId, amount: 100, isActive: false },
+      "board-user",
+    );
+
+    const [agent] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agent).toEqual({ status: "active", pauseReason: null });
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+    expect(await db.select().from(budgetIncidents)).toHaveLength(0);
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+  });
+
+  it("resumes a budget-paused agent and resolves its incidents when the policy is deactivated", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await insertCostEvent({ companyId, agentId, costCents: 150 });
+    await service.upsertPolicy(companyId, { scopeType: "agent", scopeId: agentId, amount: 100 }, "board-user");
+
+    const [agentAfterHardStop] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterHardStop).toEqual({ status: "paused", pauseReason: "budget" });
+
+    await service.upsertPolicy(
+      companyId,
+      { scopeType: "agent", scopeId: agentId, amount: 100, isActive: false },
+      "board-user",
+    );
+
+    const [agentAfterDeactivate] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterDeactivate).toEqual({ status: "idle", pauseReason: null });
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(1);
+    const incidentRows = await db.select().from(budgetIncidents);
+    expect(incidentRows.map((incident) => incident.status)).toEqual(["resolved", "resolved"]);
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+  });
+
+  it("reopens the hard incident with a new approval when a deactivated policy is reactivated", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await insertCostEvent({ companyId, agentId, costCents: 150 });
+    const policy = { scopeType: "agent" as const, scopeId: agentId, amount: 100 };
+
+    await service.upsertPolicy(companyId, policy, "board-user");
+    await service.upsertPolicy(companyId, { ...policy, isActive: false }, "board-user");
+    await service.upsertPolicy(companyId, policy, "board-user");
+
+    const [agent] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agent).toEqual({ status: "paused", pauseReason: "budget" });
+    const hardIncidents = await db
+      .select()
+      .from(budgetIncidents)
+      .where(eq(budgetIncidents.thresholdType, "hard"));
+    expect(hardIncidents).toHaveLength(1);
+    expect(hardIncidents[0]).toMatchObject({ status: "open", resolvedAt: null });
+    const approvalRows = await db.select().from(approvals);
+    expect(approvalRows.map((approval) => approval.status).sort()).toEqual(["approved", "pending"]);
+    expect(approvalRows.find((approval) => approval.status === "pending")?.id).toBe(hardIncidents[0]!.approvalId);
+  });
+
+  it("creates one pending approval when concurrent reactivations reopen the same hard incident", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await insertCostEvent({ companyId, agentId, costCents: 150 });
+    const policy = { scopeType: "agent" as const, scopeId: agentId, amount: 100 };
+    await service.upsertPolicy(companyId, policy, "board-user");
+    await service.upsertPolicy(companyId, { ...policy, isActive: false }, "board-user");
+    const [resolvedIncident] = await db
+      .select()
+      .from(budgetIncidents)
+      .where(eq(budgetIncidents.thresholdType, "hard"));
+
+    let markLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => { markLocked = resolve; });
+    const lockHolder = db.transaction(async (tx) => {
+      await tx.select().from(budgetIncidents).where(eq(budgetIncidents.id, resolvedIncident!.id)).for("update");
+      markLocked();
+      await new Promise<void>((resolve) => { releaseLock = resolve; });
+    });
+    await locked;
+    const reactivations = Promise.all(
+      Array.from({ length: 5 }, () => service.upsertPolicy(companyId, policy, "board-user")),
+    );
+    const allBlocked = await waitForBlockedIncidentUpdates(5);
+    releaseLock();
+    await Promise.all([lockHolder, reactivations]);
+    expect(allBlocked).toBe(true);
+
+    const [hardIncident] = await db
+      .select()
+      .from(budgetIncidents)
+      .where(eq(budgetIncidents.thresholdType, "hard"));
+    const pendingApprovals = await db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.status, "pending"));
+    expect(pendingApprovals.map((approval) => approval.id)).toEqual([hardIncident!.approvalId]);
+  });
+
+  it("keeps an agent paused when another active policy is still exceeded", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await insertCostEvent({ companyId, agentId, costCents: 150 });
+    const monthly = { scopeType: "agent" as const, scopeId: agentId, amount: 100 };
+    const lifetime = { ...monthly, windowKind: "lifetime" as const };
+    await service.upsertPolicy(companyId, monthly, "board-user");
+    await service.upsertPolicy(companyId, lifetime, "board-user");
+
+    await service.upsertPolicy(companyId, { ...monthly, isActive: false }, "board-user");
+
+    const [agentAfterFirst] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterFirst).toEqual({ status: "paused", pauseReason: "budget" });
+
+    await service.upsertPolicy(companyId, { ...lifetime, isActive: false }, "board-user");
+
+    const [agentAfterBoth] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterBoth).toEqual({ status: "idle", pauseReason: null });
   });
 });
