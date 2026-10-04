@@ -2998,6 +2998,90 @@ describe("Agent Chat unanswered question history", () => {
   });
 });
 
+describe("TaskChatThread view mode toggle", () => {
+  const viewModeToggle = () =>
+    container.querySelector<HTMLElement>(
+      '[data-testid="task-chat-view-mode-toggle"]',
+    );
+  const runnerRun = {
+    id: "native-run",
+    runtimeMode: "native" as const,
+    status: "running" as const,
+    invocationSource: "issue" as const,
+    triggerDetail: null,
+    startedAt: "2026-08-25T18:00:00.000Z",
+    finishedAt: null,
+    createdAt: "2026-08-25T18:00:00.000Z",
+    agentId: "agent-1",
+    agentName: "Runner",
+    adapterType: "paperclip_runner",
+  };
+
+  it("hides the toggle on a thread without Runner or Focus turns", () => {
+    const base = {
+      companyId: "company",
+      issueId: "issue",
+      authorAgentId: null,
+      authorUserId: null,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date("2026-08-25T18:00:00.000Z"),
+      updatedAt: new Date("2026-08-25T18:00:00.000Z"),
+    };
+    render(
+      <TaskChatThread
+        comments={[
+          { ...base, id: "question", authorType: "user", authorUserId: "board", body: "Can you check the task?" },
+          { ...base, id: "answer", authorType: "agent", authorAgentId: "agent-1", body: "The task is ready." },
+        ]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+      />,
+    );
+    expect(container.textContent).toContain("The task is ready.");
+    expect(viewModeToggle()).toBeNull();
+    expect(container.querySelector('[role="group"][aria-label="Thread view"]')).toBeNull();
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      { kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Checking the task.", channel: "progress" },
+    ]);
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...runnerRun, runtimeMode: "legacy", adapterType: "codex_local" }}
+      />,
+    );
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
+    expect(viewModeToggle()).toBeNull();
+  });
+
+  it("shows the toggle once the thread has a Runner turn", () => {
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      { kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Checking the task.", channel: "progress" },
+      { kind: "assistant", ts: "2026-08-25T18:00:02.000Z", text: "The task is ready.", channel: "final" },
+    ]);
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={runnerRun}
+      />,
+    );
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).not.toBeNull();
+    const toggle = viewModeToggle();
+    expect(toggle?.getAttribute("role")).toBe("group");
+    expect(toggle?.getAttribute("aria-label")).toBe("Thread view");
+    expect(
+      Array.from(toggle?.querySelectorAll("button[data-view-mode]") ?? []).map(
+        (button) => button.getAttribute("data-view-mode"),
+      ),
+    ).toEqual(["full", "focus"]);
+  });
+});
+
 describe("TaskChatThread composer alignment", () => {
   it("matches the thread width at every breakpoint", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
