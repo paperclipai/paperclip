@@ -119,6 +119,12 @@ export const issues = pgTable(
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
+    openHostWatcherOrderIdx: uniqueIndex("issues_open_host_watcher_order_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(sql`${table.originKind} = 'host_watcher'
+        and ${table.originId} is not null
+        and ${table.hiddenAt} is null
+        and ${table.status} not in ('done', 'cancelled')`),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),

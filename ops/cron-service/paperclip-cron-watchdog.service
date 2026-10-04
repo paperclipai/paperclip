@@ -1,0 +1,25 @@
+[Unit]
+Description=Paperclip agent watchdog under isolated service UID
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pc-cron-watchdog
+Group=pc-cron-watchdog
+Environment=HOME=/var/lib/pc-cron-watchdog
+Environment=PYTHONNOUSERSITE=1
+Environment=PGSERVICEFILE=/var/lib/pc-cron-watchdog/.secrets/pg_service.conf
+Environment=PGPASSFILE=/var/lib/pc-cron-watchdog/.secrets/pgpass
+EnvironmentFile=/etc/paperclip-cron/watchdog.env
+WorkingDirectory=/opt/paperclip-cron
+ExecStart=/usr/bin/python3 /opt/paperclip-cron/agent-watchdog.py
+StateDirectory=pc-cron-watchdog
+StateDirectoryMode=0700
+UMask=0077
+UnsetEnvironment=PYTHONPATH NODE_OPTIONS BASH_ENV
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pc-cron-watchdog
+PrivateTmp=true

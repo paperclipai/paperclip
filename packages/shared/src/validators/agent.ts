@@ -196,15 +196,69 @@ export const skillTestAgentKeyScopeSchema = z.object({
   issueId: z.string().guid(),
 }).strict();
 
+// Board-issued credentials for host watchers. The board pins the target and
+// assignee when issuing the key; the service never chooses its own authority.
+export const hostWatcherAgentKeyScopeSchema = z.discriminatedUnion("service", [
+  z.object({
+    kind: z.literal("host_watcher"),
+    service: z.literal("disk_guard"),
+    issueId: z.string().uuid(),
+    assigneeAgentId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    kind: z.literal("host_watcher"),
+    service: z.literal("pr_923"),
+    issueId: z.string().uuid(),
+    assigneeAgentId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    kind: z.literal("host_watcher"),
+    service: z.literal("be_1198"),
+    issueId: z.string().uuid(),
+    assigneeAgentId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    kind: z.literal("host_watcher"),
+    service: z.literal("fe_1042"),
+    issueId: z.string().uuid(),
+    assigneeAgentId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    kind: z.literal("host_watcher"),
+    service: z.literal("fleet_hourly"),
+    issueId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    assigneeAgentId: z.string().uuid(),
+  }).strict(),
+]);
+
+// Host cron keys are never handed to an agent run. The HTTP guard applies an
+// additional method/path/body boundary before the normal route authorization.
+export const cronServiceAgentKeyScopeSchema = z.discriminatedUnion("service", [
+  z.object({
+    kind: z.literal("cron_service"),
+    service: z.literal("agent_watchdog"),
+    alarmIssueIds: z.array(z.string().uuid()).min(1).max(20),
+  }).strict(),
+  z.object({
+    kind: z.literal("cron_service"),
+    service: z.literal("quota_rewake"),
+  }).strict(),
+]);
+
 export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  hostWatcherAgentKeyScopeSchema,
+  cronServiceAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
+export type HostWatcherAgentKeyScope = z.infer<typeof hostWatcherAgentKeyScopeSchema>;
+export type CronServiceAgentKeyScope = z.infer<typeof cronServiceAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
   const parsed = agentApiKeyScopeSchema.safeParse(value);

@@ -1895,7 +1895,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       const applicationId = randomUUID();
       const connectionId = randomUUID();
       const resourceId = randomUUID();
-      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+      // Parallel test files share the company prefix uniqueness constraint.
+      const issuePrefix = `T${companyId.replace(/-/g, "").toUpperCase()}`;
       const heartbeat = heartbeatService(db);
 
       try {

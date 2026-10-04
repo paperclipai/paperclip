@@ -153,6 +153,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
+import { assertHostWatcherCommentQuota, hostWatcherRequestAllowed } from "../middleware/cron-service-key.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
@@ -811,9 +812,7 @@ function authenticatedActorResponsibleUserId(req: Request) {
     : undefined;
 }
 
-// Matches the partial unique index that guarantees at most one onboarding
-// first-task issue per company (packages/db/src/schema/issues.ts).
-function isOnboardingFirstTaskConflict(error: unknown): boolean {
+function isUniqueIndexConflict(error: unknown, constraintName: string): boolean {
   for (
     let current = error, depth = 0;
     current && typeof current === "object" && depth < 5;
@@ -826,9 +825,9 @@ function isOnboardingFirstTaskConflict(error: unknown): boolean {
     };
     if (
       candidate.code === "23505" &&
-      (candidate.constraint === "issues_onboarding_first_task_uq" ||
+      (candidate.constraint === constraintName ||
         (typeof candidate.message === "string" &&
-          candidate.message.includes("issues_onboarding_first_task_uq")))
+          candidate.message.includes(constraintName)))
     ) {
       return true;
     }
@@ -2208,6 +2207,9 @@ async function assertCanManageIssueMonitor(
     req.actor.agentId === assigneeAgentId
   )
     return;
+  if (req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyId
+    && req.actor.keyScope?.kind === "cron_service"
+    && req.actor.keyScope.service === "agent_watchdog") return;
   throw forbidden(
     "Only the assignee agent or a board user can manage issue monitors",
   );
@@ -3772,6 +3774,13 @@ export function issueRoutes(
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
   ) {
+    // Host keys have no heartbeat run. Their exact operation and target are
+    // bounded by hostWatcherKeyGuard before a route reaches this check.
+    if (isHostWatcherKeyActor(req)) return true;
+    // The host cron key's route, body and issue boundary was already checked
+    // by cronServiceKeyGuard before this assignee ownership shortcut.
+    if (req.actor.source === "agent_key" && req.actor.keyId
+      && req.actor.keyScope?.kind === "cron_service") return true;
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
@@ -4931,6 +4940,11 @@ export function issueRoutes(
     );
   }
 
+  function isHostWatcherKeyActor(req: Request) {
+    return req.actor.type === "agent" && req.actor.source === "agent_key"
+      && req.actor.keyScope?.kind === "host_watcher";
+  }
+
   function isSkillTestScopedActor(req: Request) {
     return (
       req.actor.type === "agent" && req.actor.keyScope?.kind === "skill_test"
@@ -4940,6 +4954,14 @@ export function issueRoutes(
   function taskBridgeOriginForActor(req: Request) {
     return isTaskBridgeKeyActor(req) && req.actor.keyId
       ? { originKind: "task_bridge", originId: req.actor.keyId }
+      : null;
+  }
+
+  function hostWatcherOriginForActor(req: Request) {
+    return req.actor.type === "agent" && req.actor.source === "agent_key"
+      && req.actor.keyScope?.kind === "host_watcher"
+      && req.actor.keyScope.service === "fleet_hourly" && req.actor.agentId
+      ? { originKind: "host_watcher", originId: req.actor.agentId }
       : null;
   }
 
@@ -5247,6 +5269,11 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (isHostWatcherKeyActor(req)) return true;
+    // The cron guard checked the exact method, body and issue before this
+    // assignee run lock. Host service keys have no heartbeat run of their own.
+    if (req.actor.source === "agent_key" && req.actor.keyId
+      && req.actor.keyScope?.kind === "cron_service") return true;
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
     // boundary below: that boundary denies an agent mutating an issue owned by a
@@ -6547,6 +6574,7 @@ export function issueRoutes(
       }
     }
 
+    if (isHostWatcherKeyActor(req)) return true;
     if (req.actor.type !== "agent") return true;
 
     const actorAgentId = req.actor.agentId;
@@ -8833,6 +8861,12 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue)))) return;
+    // The full issue view embeds ancestor, relation, project, and document
+    // content. A host watcher may read only its pinned issue row.
+    if (isHostWatcherKeyActor(req)) {
+      res.json(issue);
+      return;
+    }
     const inboxArchiveFieldsPromise =
       req.actor.type === "board" && req.actor.userId
         ? timing.time("inbox", () => svc.getActiveInboxArchiveFields(issue, req.actor.userId!))
@@ -11841,6 +11875,7 @@ export function issueRoutes(
         ...createBody,
         projectId: createAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
+        ...(hostWatcherOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -11861,11 +11896,14 @@ export function issueRoutes(
       try {
         issue = await svc.create(companyId, createInput);
       } catch (error) {
+        if (isHostWatcherKeyActor(req) && isUniqueIndexConflict(error, "issues_open_host_watcher_order_uq")) {
+          throw conflict("Host watcher already has an open work order");
+        }
         // Concurrent onboarding creates can both pass the zero-count fast path;
         // the issues_onboarding_first_task_uq index rejects the loser here. Fail
         // closed: drop the privileged origin (and with it the agent-attributed
         // greeting) and create an ordinary issue instead.
-        if (!(isOnboardingFirstTask && isOnboardingFirstTaskConflict(error)))
+        if (!(isOnboardingFirstTask && isUniqueIndexConflict(error, "issues_onboarding_first_task_uq")))
           throw error;
         isOnboardingFirstTask = false;
         const { originKind: _onboardingOriginKind, ...ordinaryCreateInput } =
@@ -11873,6 +11911,7 @@ export function issueRoutes(
         issue = await svc.create(companyId, ordinaryCreateInput);
       }
       if (deduplicationReason) {
+        if (isHostWatcherKeyActor(req)) throw conflict("Host watcher already has an open work order");
         const referenceSummary =
           await issueReferencesSvc.listIssueReferenceSummary(issue.id);
         res.status(200).json({
@@ -13562,6 +13601,10 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
+        ...(isHostWatcherKeyActor(req) && req.actor.type === "agent" ? {
+          companyGuard: req.actor.companyId,
+          hostWatcherScope: req.actor.keyScope,
+        } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -13707,12 +13750,13 @@ export function issueRoutes(
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
+      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides || isHostWatcherKeyActor(req)
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
         commentWithAdapterOverrides ||
+        (isHostWatcherKeyActor(req) && Boolean(commentBody)) ||
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
@@ -13727,9 +13771,16 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
+            if (commentAttachmentIds?.length || commentWithAdapterOverrides || isHostWatcherKeyActor(req)) {
               // Adapter settings, reassignment, comment and upload binding commit together.
               // A failed comment or invalid receipt rolls back the issue update.
+              if (isHostWatcherKeyActor(req) && req.actor.type === "agent") {
+                await assertHostWatcherCommentQuota(tx as unknown as Db, {
+                  companyId: req.actor.companyId!,
+                  issueId: id,
+                  serviceAgentId: req.actor.agentId!,
+                });
+              }
               transactionalComment = await svc.addComment(
                 id,
                 commentBody,
@@ -17656,6 +17707,7 @@ export function issueRoutes(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =
+        !isHostWatcherKeyActor(req) &&
         currentIssue.status === "in_review" &&
         currentExecutionState?.status === "pending" &&
         actorMatchesExecutionParticipant(
@@ -17845,9 +17897,38 @@ export function issueRoutes(
             commentOptions,
             dbOrTx,
           );
-        comment = req.body.attachmentIds?.length
-          ? await db.transaction(async (tx) => add(tx as unknown as Db))
-          : await add();
+        if (isHostWatcherKeyActor(req) && req.actor.type === "agent") {
+          const scope = req.actor.keyScope;
+          const url = new URL(req.originalUrl, "http://localhost");
+          comment = await db.transaction(async (tx) => {
+            const locked = await tx.select({
+              companyId: issueRows.companyId,
+              status: issueRows.status,
+              assigneeAgentId: issueRows.assigneeAgentId,
+              projectId: issueRows.projectId,
+            }).from(issueRows).where(and(eq(issueRows.id, id), eq(issueRows.companyId, req.actor.companyId!)))
+              .for("update").then((rows) => rows[0] ?? null);
+            const allowed = scope?.kind === "host_watcher" && await hostWatcherRequestAllowed(scope, {
+              method: req.method,
+              path: url.pathname,
+              query: url.search,
+              body: req.body,
+              companyId: req.actor.companyId!,
+              serviceAgentId: req.actor.agentId!,
+            }, async () => locked, async () => false);
+            if (!allowed) throw conflict("Host watcher target changed before the comment");
+            await assertHostWatcherCommentQuota(tx as unknown as Db, {
+              companyId: req.actor.companyId!,
+              issueId: id,
+              serviceAgentId: req.actor.agentId!,
+            });
+            return add(tx as unknown as Db);
+          });
+        } else {
+          comment = req.body.attachmentIds?.length
+            ? await db.transaction(async (tx) => add(tx as unknown as Db))
+            : await add();
+        }
       }
 
       await issueReferencesSvc.syncComment(comment.id);
