@@ -40,6 +40,8 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
+  takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.

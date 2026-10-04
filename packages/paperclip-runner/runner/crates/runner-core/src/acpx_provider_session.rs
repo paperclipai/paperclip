@@ -357,6 +357,35 @@ impl AcpxProviderSession {
         &self.state
     }
 
+    /// Read the same live sidecar before exposing its in-memory pending ledger.
+    /// A durable file alone cannot authorize a request after process loss.
+    pub fn verify_live_request_snapshot(
+        &mut self,
+    ) -> Result<std::collections::BTreeMap<String, String>, LocalRunnerError> {
+        self.ensure_open()?;
+        if self.runtime_retired || self.transport_terminated {
+            return Err(LocalRunnerError::invalid(
+                "ACPX request snapshot requires a live provider",
+            ));
+        }
+        let snapshot = self
+            .transport
+            .request(GeneratedAcpxSidecarCommand::SessionSnapshot, json!({}))?;
+        let identity: AcpxProviderSessionIdentity =
+            serde_json::from_value(snapshot["identity"].clone()).map_err(|_| {
+                LocalRunnerError::invalid("ACPX request snapshot identity is invalid")
+            })?;
+        if identity != self.identity
+            || snapshot["runId"].as_str() != Some(self.config.run_id.as_str())
+            || snapshot["turnId"].as_str() != self.state.active_turn_id()
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX request snapshot changed session or turn",
+            ));
+        }
+        live_snapshot_requests(&snapshot, self.state.active_turn_id())
+    }
+
     pub fn catalog_revision(&self) -> u64 {
         self.catalog_revision
     }
@@ -989,6 +1018,20 @@ impl AcpxProviderSession {
         self.terminate_transport()
     }
 
+    /// Retires an idle provider at the same owned-process boundary as an active
+    /// turn. The caller must prove the inherited lifetime fence before making
+    /// the persisted identity attachable; an RPC close cannot supply that proof.
+    pub fn terminate_idle_for_suspension(&mut self) -> Result<(), LocalRunnerError> {
+        self.ensure_open()?;
+        if self.state.active_turn_id().is_some() || self.state.has_pending_requests() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX idle suspension requires a settled turn and no pending requests",
+            ));
+        }
+        self.closed = true;
+        self.terminate_transport()
+    }
+
     fn terminate_transport(&mut self) -> Result<(), LocalRunnerError> {
         if self.transport_terminated {
             return Ok(());
@@ -1441,6 +1484,45 @@ fn verify_suspend_response(
     Ok(())
 }
 
+fn live_snapshot_requests(
+    snapshot: &Value,
+    active_turn_id: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, String>, LocalRunnerError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LiveRequest {
+        request_id: String,
+        r#type: String,
+        turn_id: String,
+    }
+    let requests = snapshot["pendingRuntimeRequests"]
+        .as_array()
+        .ok_or_else(|| {
+            LocalRunnerError::invalid("ACPX live request snapshot omitted its pending callbacks")
+        })?;
+    if requests.len() > 1_024 {
+        return Err(LocalRunnerError::invalid(
+            "ACPX live request snapshot exceeds its request bound",
+        ));
+    }
+    let mut live = std::collections::BTreeMap::new();
+    for value in requests {
+        let request: LiveRequest = serde_json::from_value(value.clone()).map_err(|_| {
+            LocalRunnerError::invalid("ACPX live request snapshot callback is invalid")
+        })?;
+        validate_text(&request.request_id, MAX_ID_CHARS, "live callback id")?;
+        if !matches!(request.r#type.as_str(), "input" | "permission")
+            || Some(request.turn_id.as_str()) != active_turn_id
+            || live.insert(request.request_id, request.r#type).is_some()
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX live request snapshot callback binding is invalid",
+            ));
+        }
+    }
+    Ok(live)
+}
+
 fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
     if value.trim().is_empty()
         || value.chars().count() > max_chars
@@ -1532,6 +1614,45 @@ fn with_cleanup_error(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_request_snapshot_requires_current_unique_typed_callbacks() {
+        use super::*;
+        let request = json!({"requestId":"input-1","type":"input","turnId":"turn-1"});
+        let snapshot = json!({"pendingRuntimeRequests":[request.clone(),
+            {"requestId":"permission-1","type":"permission","turnId":"turn-1"}]});
+        let live = live_snapshot_requests(&snapshot, Some("turn-1")).unwrap();
+        assert_eq!(live.get("input-1").map(String::as_str), Some("input"));
+        assert_eq!(
+            live.get("permission-1").map(String::as_str),
+            Some("permission")
+        );
+        for invalid in [
+            json!({}),
+            json!({"pendingRuntimeRequests":null}),
+            json!({"pendingRuntimeRequests":[request.clone(),request.clone()]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"","type":"input","turnId":"turn-1"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"tool","turnId":"turn-1"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"input","turnId":"turn-2"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"input","turnId":"turn-1","extra":true}]}),
+        ] {
+            assert!(
+                live_snapshot_requests(&invalid, Some("turn-1")).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(live_snapshot_requests(&snapshot, None).is_err());
+        assert!(live_snapshot_requests(
+            &json!({"pendingRuntimeRequests":vec![request;1_025]}),
+            Some("turn-1")
+        )
+        .is_err());
+        assert!(
+            live_snapshot_requests(&json!({"pendingRuntimeRequests":[]}), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn turn_controls_require_exact_live_pi_capability_fields() {
         use super::*;

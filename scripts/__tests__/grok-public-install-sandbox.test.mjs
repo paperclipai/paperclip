@@ -38,6 +38,33 @@ test('only the scripts-disabled dependency download gets network access', () => 
   assert.ok(values(args, '--env').includes('npm_config_ignore_scripts=true'));
 });
 
+test('Pi assembly gets bounded scratch capacity while preserving sandbox restrictions', () => {
+  const args = grokConsumerDockerArgs({ ...paths, download: true, temporarySizeMiB: 2048, command: ['node', '/consumer/node_modules/paperclipai/dist/index.js', 'runtime', 'setup', 'pi'] });
+  assert.deepEqual(values(args, '--tmpfs'), ['/tmp:rw,nosuid,nodev,noexec,size=2048m,mode=1777']);
+  assert.deepEqual(values(args, '--memory'), ['3g']);
+  assert.ok(args.includes('--read-only'));
+  assert.deepEqual(values(args, '--cap-drop'), ['ALL']);
+  assert.deepEqual(values(args, '--security-opt'), ['no-new-privileges']);
+  for (const temporarySizeMiB of [0, 255, 2049, Infinity, '2048']) {
+    assert.throws(() => grokConsumerDockerArgs({ ...paths, temporarySizeMiB, command: ['node'] }), /bounded/);
+  }
+});
+
+test('only an offline runtime probe can execute its verified scratch snapshot', () => {
+  const command = ['node', '/packages/pi-public-install-probe.mjs', '/consumer/node_modules/@paperclipai/server'];
+  const args = grokConsumerDockerArgs({ ...paths, command, temporarySizeMiB: 2048, temporaryExecutable: true });
+  assert.deepEqual(values(args, '--tmpfs'), ['/tmp:rw,nosuid,nodev,exec,size=2048m,mode=1777']);
+  assert.deepEqual(values(args, '--network'), ['none']);
+  assert.deepEqual(values(args, '--user'), ['1001:1001']);
+  assert.ok(args.includes('--read-only'));
+  assert.deepEqual(values(args, '--cap-drop'), ['ALL']);
+  assert.deepEqual(values(args, '--security-opt'), ['no-new-privileges']);
+  assert.throws(() => grokConsumerDockerArgs({ ...paths, command, download: true, temporaryExecutable: true }), /offline/);
+  assert.throws(() => grokConsumerDockerArgs({ ...paths, command, temporaryExecutable: 'true' }), /offline/);
+  const source = readFileSync(new URL('../verify-grok-npm-install.mjs', import.meta.url), 'utf8');
+  assert.ok(source.includes("temporarySizeMiB: 2048, temporaryExecutable: true"));
+});
+
 test('the separately provisioned executable is exposed read-only to the offline probe', () => {
   const prerequisite = '/private/staging/native/grok';
   const args = grokConsumerDockerArgs({ ...paths, prerequisite, command: ['node', '/packages/probe.mjs', 'present'] });

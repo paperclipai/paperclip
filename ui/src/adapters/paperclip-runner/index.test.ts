@@ -1,7 +1,95 @@
 import { describe, expect, it } from "vitest";
 import { paperclipRunnerUIAdapter } from "./index";
+import { createPiProfileExtensionAdapter, PI_NOTICE_METHOD } from "../../../../packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter";
+import { transcriptToTaskChatItems } from "../../components/task-chat/transcript-adapter";
+
+const piFailure = (overrides: Record<string, unknown> = {}, eventOverrides: Record<string, unknown> = {}) => ({
+  type: "paperclip.prp.event",
+  event: {
+    runId: "run-1", turnId: "turn-1", normalizedSessionId: "session-1",
+    eventType: "provider.notice.recorded",
+    payload: {
+      schema: "paperclip.provider.notice.v1", noticeId: "notice-1", category: "pi.runtime_failure",
+      severity: "error", summary: "Pi process exited with code 4", scope: "session",
+      recoverable: false, userActionable: false,
+      details: [{ name: "source.method", value: PI_NOTICE_METHOD },
+        { name: "source.nativeEvent", value: "runtime_failure" }, { name: "source.sessionId", value: "session-1" },
+        { name: "reason", value: "native_process_exited" }],
+      ...overrides,
+    },
+    ...eventOverrides,
+  },
+});
 
 describe("paperclip runner transcript projection", () => {
+  it("keeps both pinned Pi failure facts while rendering one consecutive diagnostic", async () => {
+    const adapter = createPiProfileExtensionAdapter({ workspacePath: "/fixture", sessionId: "session-1", turnId: "turn-1" });
+    const notice = { sessionId: "session-1", category: "runtime_failure", severity: "error",
+      summary: "Pi process exited with code 4", details: { reason: "native_process_exited" } };
+    const raw = [...await adapter.notification(PI_NOTICE_METHOD, notice),
+      ...await adapter.notification(PI_NOTICE_METHOD, structuredClone(notice))];
+    expect(raw).toHaveLength(2);
+    expect(raw[0]!.payload.noticeId).not.toBe(raw[1]!.payload.noticeId);
+    const before = structuredClone(raw);
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const entries = raw.flatMap(event => parse(JSON.stringify({ type: "paperclip.prp.event", event: {
+      runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", ...event,
+    } }), "2026-10-03T07:00:00.000Z"));
+    expect(entries).toHaveLength(1);
+    expect(transcriptToTaskChatItems(entries, { runId: "run-1", agentName: "Pi", running: false }))
+      .toEqual([expect.objectContaining({ kind: "protocol", family: "provider_notice",
+        details: expect.arrayContaining([{ label: "Severity", value: "error", mono: false }]) })]);
+    expect(raw).toEqual(before);
+  });
+
+  it("preserves different failure details, severity, authority and run/turn/session scope", () => {
+    const changed = [
+      piFailure({ summary: "Provider request failed" }),
+      piFailure({ severity: "warning" }),
+      piFailure({ recoverable: true }),
+      piFailure({ userActionable: true }),
+      piFailure({ details: piFailure().event.payload.details.map(detail => detail.name === "reason"
+        ? { ...detail, value: "provider_http_429" } : detail) }),
+      piFailure({ details: piFailure().event.payload.details.map(detail => detail.name === "source.sessionId"
+        ? { ...detail, value: "session-2" } : detail) }),
+      piFailure({}, { runId: "run-2" }),
+      piFailure({}, { turnId: "turn-2" }),
+      piFailure({}, { normalizedSessionId: "session-2" }),
+      piFailure({}, { runId: undefined }),
+      piFailure({}, { turnId: undefined }),
+    ];
+    for (const event of changed) {
+      const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+      expect(parse(JSON.stringify(piFailure()), "first")).toHaveLength(1);
+      expect(parse(JSON.stringify(event), "second")).toHaveLength(1);
+    }
+  });
+
+  it("starts a new diagnostic after retry activity, another event, or parser reset", () => {
+    const parser = paperclipRunnerUIAdapter.createStdoutParser!();
+    const parse = (event: unknown) => parser.parseLine(JSON.stringify(event), "2026-10-03T07:00:00.000Z");
+    expect(parse(piFailure())).toHaveLength(1);
+    expect(parse(piFailure({ noticeId: "notice-2" }))).toEqual([]);
+    for (const intervening of [piFailure({ category: "pi.auto_retry_start" }),
+      piFailure({}, { eventType: "item.delta", payload: { kind: "agentMessage", text: "Retrying" } }),
+      { type: "other" }]) {
+      parse(intervening);
+      expect(parse(piFailure())).toHaveLength(1);
+    }
+    parser.reset();
+    expect(parse(piFailure())).toHaveLength(1);
+  });
+
+  it("never coalesces other providers or unscoped/unsupported notices", () => {
+    for (const event of [piFailure({ category: "other.runtime_failure" }),
+      piFailure({ details: [] }), piFailure({}, { normalizedSessionId: undefined }),
+      piFailure({}, { runId: undefined }), piFailure({}, { turnId: undefined })]) {
+      const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+      expect(parse(JSON.stringify(event), "first")).toHaveLength(1);
+      expect(parse(JSON.stringify(event), "second")).toHaveLength(1);
+    }
+  });
+
   it("renders committed PRP semantic tool items with the existing chat parts", () => {
     const started = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
       type: "paperclip.prp.event",

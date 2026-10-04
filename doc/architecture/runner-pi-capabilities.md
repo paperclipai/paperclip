@@ -8,8 +8,9 @@ reasoning-mode selection and rejects previous profile identities. It is a new
 qualification candidate; profile-12 results below remain historical evidence.
 
 Pi's new field also changes four shared files covered by Copilot's source
-identity. Copilot therefore advances to a still-unqualified profile v13 without
-changing its executable or model. Pi's profile-13 identity and native closure
+identity. The subsequent live callback snapshot changes the shared sidecar again,
+so Copilot now uses still-unqualified profile v14 without changing its executable
+or model. Pi's profile-13 identity and native closure
 remain unchanged. Final artifacts must bind the corrected source; the initial
 ARM startup and 61 contract passes alone do not establish production readiness.
 
@@ -1148,3 +1149,28 @@ separately built and verified Linux provider pack in its runner image; running
 local setup does not install or qualify a remote image. Published-tar local and
 Daytona startup evidence must bind the final installation candidate, with no
 candidate qualification flags, before a production-readiness claim.
+
+
+## Cold process admission budget
+
+Pi cold `session.open`, including process replacement and durable reopen, has a
+60-second admission budget. The controller shares one deadline across its cold
+open/recovery command and provider identity barriers (`session.open`, replacement
+`run.attach`, and replacement `runner.drain`). A live adopted runner keeps the
+ordinary 30-second waits. Rust gives only Pi's sidecar `session.open` request the
+60-second budget; initialize, attach, turn start and other sidecar commands stay
+at 30 seconds. Inner ACP handshake (30 seconds), post-admission verification
+(8 seconds), cancellation (2 seconds), and close (7 seconds) are unchanged.
+
+Timeout still poisons and retires the Rust sidecar process group. Closing the
+controller during its startup wait rejects that wait and uses the existing owned
+process cleanup. Callers must await transport close in their cleanup path.
+This is trusted controller timing policy, outside the immutable Pi wrapper/profile
+closure; it does not change profile 13, runtime 1.0.0, or the explicit model.
+
+The credential-free closed-startup regression requires the real
+`session_ensure_failed` rejection within 60 seconds, with no prompt, no provider
+identity and confirmed cleanup. Its child watchdog is 80 seconds (20 seconds for
+cleanup after admission), inside a 90-second test timeout. Failed evidence stays
+in its reported temporary directory. These margins do not extend production
+command deadlines or qualify a target platform without a fresh run.

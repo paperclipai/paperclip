@@ -1,6 +1,6 @@
 import { assertRemoteNativeEvidencePrerequisites } from "./prerequisites.js";
 import { describe, expect, it } from "vitest";
-import { runnerMatrix, runnerSuites, extendedHarnessProfiles, extendedHarnessFileTask } from "./catalog.js";
+import { runnerMatrix, runnerSuites, extendedHarnessProfiles, extendedHarnessFileTask, daytonaWarmContinuityTask } from "./catalog.js";
 import { buildRunnerE2EProcessEnvironment, buildPaperclipServerEnvironment } from "./harness-env.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { findSecretLeak, redactText } from "./redaction.js";
@@ -53,6 +53,24 @@ describe("extended ACP harness qualification", () => {
       expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cell, suite: { ...cell.suite, manualOnly: false } }])).toThrow("explicit");
     }
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(cell => cell.suite.id === "rich-acp-warm-continuity")).toBe(false);
+  });
+  it("separates ACP process continuity from managed-home checkpoint writes", () => {
+    for (const cell of runnerMatrix.filter(cell => cell.suite.id === "rich-acp-warm-continuity")) {
+      const prompts = [cell.task.buildPrompt("nonce"), ...cell.task.buildFollowupMessages!("nonce")];
+      expect(prompts).toHaveLength(3);
+      for (const [index, prompt] of prompts.entries()) {
+        expect(prompt).toContain(`warm Daytona continuity turn ${index + 1} of 3`);
+        expect(prompt).toContain("daytona-warm-nonce.txt");
+        expect(prompt).not.toContain("AGENT_HOME");
+        expect(prompt).not.toContain("notes/");
+      }
+      expect(cell.task).toMatchObject({ turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } });
+    }
+    const managed = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    expect(managed.every(prompt => prompt.includes("AGENT_HOME") && prompt.includes("notes/warm-memory.txt"))).toBe(true);
+    expect(managed[0]).toContain("8388608 bytes");
+    expect(managed[1]).toContain("Delete notes/delete-me.txt");
+    expect(managed[2]).toContain("Verify notes/delete-me.txt is absent");
   });
   it("admits native qualification only for its matching provider and explicit suite", () => {
     for (const suiteId of ["cursor-native", "pi-native", "copilot-protection"]) {

@@ -332,6 +332,42 @@ describe("native runner file handoff", () => {
     }
   });
 
+  it.each([
+    "Use native write/read file tools. Write memory/pi-native.txt inside AGENT_HOME. This is personal memory, not a task deliverable.",
+    "Use native write to copy bytes into pi-agent-memory-proof.txt. This is an internal assertion file, not a deliverable.",
+    "Attempt native write once to /outside/pi-unassigned.txt. This intentionally unassigned root must be denied.",
+    "Write internal-proof.txt; then check it exists. This is an internal verification file, not a deliverable.",
+    "Attempt native write to /outside/probe.txt and create no files. This negative test must be denied.",
+    "Write internal-proof.txt and return it in chat. This is an internal verification file, not a deliverable.",
+    "Write internal-proof.txt and send it as a code block in your response. This is an internal verification file, not a deliverable.",
+  ])("accepts an internal file outcome without treating it as published output: %s", async objective => {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .resolves.toContain("Completion report accepted");
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it.each([
+    "Write report.pdf; write internal-proof.txt. This is an internal verification file, not a deliverable.",
+    "Write report.pdf and attempt native write to /outside/probe.txt; this negative test must be denied.",
+    "Write report.txt and attach it. This is an internal verification file, not a deliverable.",
+    "Write report.txt and send it to me. This is an internal verification file, not a deliverable.",
+    "Write report.txt. This is an internal verification file, not a deliverable. Send it as a download link in your response.",
+  ])("still requires publication when the task also asks for internal or denied writes: %s", async objective => {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("prepares one verified same-run attachment and replays without duplicates", async () => {
     const body = Buffer.from("native runner file handoff\n", "utf8");
     await mkdir(path.join(workspaceRoot, "out"), { recursive: true });

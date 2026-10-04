@@ -51,6 +51,8 @@ import {
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
@@ -1833,12 +1835,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         startSlotMs,
         timelineAnchors,
       );
+      const runtimeRequests = runtimeRequestSegmentContext(entries, {
+        runId: source.id, agentName: meta?.agentName, running: false,
+      });
       const projectedSegments = segments.map((segment) => {
-        const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+        const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
           runId: source.id,
           agentName: meta?.agentName,
           running: false,
-        });
+        }), segment.entries, runtimeRequests);
         const parsed =
           source.id === planDocumentSourceRunId && planTurnItem
             ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
@@ -1979,13 +1984,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           startSlotMs,
           timelineAnchors,
         );
+        const runtimeRequests = runtimeRequestSegmentContext(entries, {
+          runId: liveRun.id, agentName: liveRun.agentName, running: true,
+        });
         for (const [segmentIndex, segment] of segments.slice(0, -1).entries()) {
           if (segment.entries.length === 0) continue;
-          const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+          const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
             runId: liveRun.id,
             agentName: liveRun.agentName,
             running: false,
-          });
+          }), segment.entries, runtimeRequests);
           const parsed =
             liveRun.id === planDocumentSourceRunId && planTurnItem
               ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
@@ -2212,7 +2220,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // A fresh array is produced on every render. Track every presentation field
   // that can change without changing the entry count or text length so channel,
   // lifecycle, result status, and usage-only updates invalidate the projection.
-  const tailEntryContentKey = tailEntries.reduce((key, entry) => {
+  const tailEntryContentKey = tailAllEntries.reduce((key, entry) => {
     const textIdentity = "text" in entry ? entry.text : "";
     const contentIdentity = "content" in entry ? entry.content : "";
     const channelIdentity = "channel" in entry ? (entry.channel ?? "") : "";
@@ -2224,8 +2232,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       entry.kind === "result"
         ? `${entry.subtype}:${entry.inputTokens}:${entry.outputTokens}:${entry.cachedTokens}:${entry.costUsd}`
         : "";
-    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}`;
-  }, String(tailEntries.length));
+    const requestIdentity = entry.kind === "runtime_request" ? JSON.stringify(entry) : "";
+    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}:${requestIdentity}`;
+  }, String(tailAllEntries.length));
   const tailContentKey = `${tailSegmentStartMs ?? "run-start"}:${tailEntryContentKey}`;
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
@@ -2302,11 +2311,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailItems = useMemo(
     () => {
       if (!tailRunId) return [];
-      const parsed = transcriptToTaskChatItems(tailEntries, {
+      const runtimeRequests = runtimeRequestSegmentContext(tailAllEntries, {
+        runId: tailRunId, agentName: tailAgentName, running: tailStreaming,
+      });
+      const parsed = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(tailEntries, {
         runId: tailRunId,
         agentName: tailAgentName,
         running: tailStreaming,
-      });
+      }), tailEntries, runtimeRequests, tailStreaming);
       return tailPlanItem
         ? embedPlanDocumentAtWriteBoundary(parsed, tailPlanItem)
         : parsed;

@@ -43,8 +43,8 @@ it("admits Pi live sessions without candidate opt-in while preserving the exact 
   const session = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
   try {
     expect(session.snapshot().config.acpxProfile).toMatchObject({
-      agent: "pi", agentProfileVersion: 13,
-      commandDigest: "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+      agent: "pi", agentProfileVersion: 14,
+      commandDigest: "sha256:f35145437eeb355ed37bc5a4fa93d7ede561d9c45daf311979b46890b808ddd4",
     });
     await expect(service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "another-model" }))
       .rejects.toThrow("requires exact model");
@@ -1813,6 +1813,9 @@ describe("Capability live runnerd and Codex session", () => {
       sessionId: binding.sessionId,
       attemptId: "attempt-resumed",
       resumeOf: "attempt-killed",
+      // Only the killed attempt deliberately uses the short timeout. Allow
+      // durable disk writes to complete during the resumed successful turn.
+      turnTimeoutMs: 5_000,
     });
     expect(resumed.snapshot().providerThreadId).toBe(state.threadId);
     expect(resumed.snapshot().attempts).toMatchObject([

@@ -209,7 +209,7 @@ impl AcpxProviderDescriptor {
                 "0.0.33",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("1.0.0"),
-                "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+                "sha256:f35145437eeb355ed37bc5a4fa93d7ede561d9c45daf311979b46890b808ddd4",
             ),
             "cursor" => (
                 self.model.as_str(),
@@ -217,7 +217,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:1df2a15b93bc3a14fa47fa3315344ba023fe2412048047cdc6f32096a6336564",
+                "sha256:13207d7b6afcfe681d4fe9098655df056c2cf87e03f5141e961cd01c32c5bdd2",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -225,7 +225,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1",
+                "sha256:8faf47520f156c62c79ea6ca7d1d90a85ddc9a6621f798bd14e87bc6c643bd04",
             ),
             "grok" => (
                 "grok-4.7",
@@ -733,6 +733,33 @@ fn validate_pending_runtime_requests(
     Ok(())
 }
 
+fn attested_pending_runtime_requests(
+    pending: &BTreeMap<String, Value>,
+    provider: &crate::acpx_provider_state::AcpxProviderState,
+    live: &BTreeMap<String, String>,
+    durable_turn_id: &str,
+) -> Vec<Value> {
+    pending
+        .values()
+        .filter(|request| {
+            let id = request["requestId"].as_str().unwrap_or("");
+            // Canonical requests bind the durable PRP turn. The sidecar
+            // separately attests the provider-assigned turn.
+            request["turnId"].as_str() == Some(durable_turn_id)
+                && if request["type"] == "input" {
+                    provider
+                        .pending_provider_input_request_id(id)
+                        .and_then(|provider_id| live.get(provider_id))
+                        .is_some_and(|kind| kind == "input")
+                } else {
+                    provider.pending_permission(id).is_some()
+                        && live.get(id).is_some_and(|kind| kind == "permission")
+                }
+        })
+        .cloned()
+        .collect()
+}
+
 pub struct AcpxCommandExecutor {
     state_dir: PathBuf,
     context: AcpxEventProjectionContext,
@@ -744,6 +771,28 @@ pub struct AcpxCommandExecutor {
     #[cfg(test)]
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
+}
+
+// The durable command's turn and the live provider callback have separate IDs.
+// Legacy direct callers use turnId for both; an explicit provider binding must
+// never fall back to the durable ID if it is malformed.
+fn turn_control_provider_turn_id(payload: &Value) -> Result<&str, DurableRunnerError> {
+    let durable_turn_id = payload
+        .get("turnId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.turnId is required"))?;
+    let provider_turn_id = match payload.get("providerTurnId") {
+        None => durable_turn_id,
+        Some(value) => value.as_str().ok_or_else(|| {
+            DurableRunnerError::invalid("turn.steer payload.providerTurnId must be a string")
+        })?,
+    };
+    if !is_stable_id(provider_turn_id, DURABLE_STABLE_ID_CHARS) {
+        return Err(DurableRunnerError::invalid(
+            "turn.steer provider turn identity is invalid",
+        ));
+    }
+    Ok(provider_turn_id)
 }
 
 impl AcpxCommandExecutor {
@@ -1463,10 +1512,7 @@ impl AcpxCommandExecutor {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.text is required"))?;
-        let turn_id = payload
-            .get("turnId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.turnId is required"))?;
+        let turn_id = turn_control_provider_turn_id(payload)?;
         let mode = match payload.get("mode") {
             None => "steer",
             Some(Value::String(mode)) => mode.as_str(),
@@ -1572,25 +1618,33 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .and_then(|state| state.active_turn_id.clone());
-        let Some(turn_id) = turn_id else {
+        let stop_idle_pi = turn_id.is_none()
+            && self.session.is_some()
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.descriptor.agent == "pi");
+        if turn_id.is_none() && !stop_idle_pi {
             return Ok(CommandExecution::result(json!({
                 "status": "already_settled",
                 "reason": reason,
             })));
-        };
+        }
         let provider_lifetime_fence_candidates = {
             let session = self
                 .session
                 .as_mut()
                 .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?;
             let candidates = session.identity().provider_lifetime_fence_candidates;
-            session
-                .terminate_active_turn_for_suspension(&turn_id)
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!(
-                        "failed to terminate ACPX turn at the suspension boundary: {error}"
-                    ))
-                })?;
+            match turn_id.as_deref() {
+                Some(turn_id) => session.terminate_active_turn_for_suspension(turn_id),
+                None => session.terminate_idle_for_suspension(),
+            }
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to terminate ACPX provider at the suspension boundary: {error}"
+                ))
+            })?;
             candidates
         };
         // Process-group termination reaps the sidecar leader and its ordinary
@@ -1762,6 +1816,40 @@ impl AcpxCommandExecutor {
         })))
     }
 
+    fn snapshot_live_requests(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        let session = self.session.as_mut().ok_or_else(|| {
+            DurableRunnerError::invalid("ACPX request snapshot requires the surviving provider")
+        })?;
+        let live_requests = session.verify_live_request_snapshot().map_err(|error| {
+            DurableRunnerError::invalid(format!("ACPX live request snapshot failed: {error}"))
+        })?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))?;
+        if state.provider_exit_unconfirmed
+            || state.lifecycle == "closed"
+            || state.identity.as_ref() != Some(session.identity())
+            || state.active_turn_id.as_deref() != session.state().active_turn_id()
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX live request snapshot lost its provider binding",
+            ));
+        }
+        validate_pending_runtime_requests(&state.pending_runtime_requests)?;
+        let requests = attested_pending_runtime_requests(
+            &state.pending_runtime_requests,
+            session.state(),
+            &live_requests,
+            &self.context.turn_id,
+        );
+        let mut snapshot = self.snapshot()?;
+        snapshot.result["pendingRuntimeRequests"] = json!(requests);
+        snapshot.result["runtimeRequestsLive"] = json!(true);
+        snapshot.result["runtimeRequestTurnId"] = json!(self.context.turn_id);
+        Ok(snapshot)
+    }
+
     fn close_session(&mut self, reason: &str) -> Result<CommandExecution, DurableRunnerError> {
         if let Some(session) = self.session.as_mut() {
             session.shutdown(reason).map_err(|error| {
@@ -1793,6 +1881,15 @@ impl AcpxCommandExecutor {
     }
 
     fn suspend(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.provider_exit_unconfirmed)
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX provider lifetime cleanup is not yet proven",
+            ));
+        }
         if let Some(session) = self.session.as_mut() {
             let identity = session.suspend("runner.suspend").map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to suspend ACPX provider: {error}"))
@@ -2041,6 +2138,15 @@ impl CommandExecutor for AcpxCommandExecutor {
             "turn.stop" => self.stop_turn_for_suspension(&command.command_type),
             "request.resolve" => self.resolve_request(&command.payload),
             "semantic_tool.result" => self.deliver_tool_result(&command.payload),
+            "session.snapshot"
+                if command
+                    .payload
+                    .get("includePendingRuntimeRequests")
+                    .and_then(Value::as_bool)
+                    == Some(true) =>
+            {
+                self.snapshot_live_requests()
+            }
             "session.snapshot" => self.snapshot(),
             "session.close" | "session.destroy" => self.close_session(&command.command_type),
             "runner.suspend" => self.suspend(),
@@ -2387,6 +2493,84 @@ mod tests {
     }
 
     #[test]
+    fn live_request_snapshot_preserves_durable_turn_and_provider_callback_bindings() {
+        use crate::acpx_provider_state::AcpxProviderState;
+        use crate::acpx_sidecar_transport::AcpxSidecarEvent;
+        use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
+        let mut provider = AcpxProviderState::new("run-1").unwrap();
+        provider.begin_turn("provider-turn-1").unwrap();
+        let mut projection = context();
+        projection.turn_id = "durable-turn-1".into();
+        projection.provider_turn_id = Some("provider-turn-1".into());
+        let mut pending = BTreeMap::new();
+        for (sequence, event_type, payload) in [
+            (
+                1,
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                json!({"requestId":"raw input / 1","questionSet":pending_input_request("unused")["input"]}),
+            ),
+            (
+                2,
+                GeneratedAcpxSidecarEventType::RuntimePermissionRequested,
+                json!({"requestId":"permission-1","kind":"execute","title":"Run?","choices":[{"key":"decline","label":"Decline"}]}),
+            ),
+        ] {
+            let event = AcpxSidecarEvent {
+                sequence,
+                event_type,
+                run_id: Some("run-1".into()),
+                turn_id: Some("provider-turn-1".into()),
+                payload,
+            };
+            for event in provider.accept_event(&event).unwrap() {
+                for normalized in project_acpx_state_event(&projection, &event).unwrap() {
+                    if normalized.event_type == "runtime_request.created" {
+                        let request = normalized.payload["request"].clone();
+                        pending.insert(request["requestId"].as_str().unwrap().to_owned(), request);
+                    }
+                }
+            }
+        }
+        validate_pending_runtime_requests(&pending).unwrap();
+        let live = BTreeMap::from([
+            ("raw input / 1".into(), "input".into()),
+            ("permission-1".into(), "permission".into()),
+        ]);
+        let requests =
+            attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1");
+        assert_eq!(requests.len(), 2);
+        assert!(requests
+            .iter()
+            .all(|request| request["turnId"] == "durable-turn-1"));
+        assert!(requests
+            .iter()
+            .any(|request| request["requestId"] != "raw input / 1" && request["type"] == "input"));
+        assert!(
+            attested_pending_runtime_requests(&pending, &provider, &live, "provider-turn-1")
+                .is_empty()
+        );
+        assert!(attested_pending_runtime_requests(
+            &pending,
+            &provider,
+            &BTreeMap::new(),
+            "durable-turn-1"
+        )
+        .is_empty());
+        provider.complete_permission("permission-1").unwrap();
+        let input_id = requests
+            .iter()
+            .find(|request| request["type"] == "input")
+            .unwrap()["requestId"]
+            .as_str()
+            .unwrap();
+        provider.complete_input(input_id).unwrap();
+        assert!(
+            attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn durable_runtime_ledger_retains_only_unsettled_requests_and_rejects_forged_types() {
         let operations = Vec::new();
         let tool_set = AuthorizedToolSet {
@@ -2689,6 +2873,31 @@ mod tests {
     }
 
     #[test]
+    fn turn_control_uses_the_explicit_live_provider_binding() {
+        let command = json!({"turnId":"durable-turn", "providerTurnId":"provider-turn"});
+        assert_eq!(
+            turn_control_provider_turn_id(&command).unwrap(),
+            "provider-turn"
+        );
+        let legacy = json!({"turnId":"provider-turn"});
+        assert_eq!(
+            turn_control_provider_turn_id(&legacy).unwrap(),
+            "provider-turn"
+        );
+        for malformed in [
+            Value::Null,
+            json!(false),
+            json!(1),
+            json!(""),
+            json!("bad\0id"),
+        ] {
+            let command = json!({"turnId":"provider-turn", "providerTurnId":malformed});
+            assert!(turn_control_provider_turn_id(&command).is_err());
+        }
+        assert!(turn_control_provider_turn_id(&json!({"providerTurnId":"provider-turn"})).is_err());
+    }
+
+    #[test]
     fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
         let directory = temporary_directory("retained-terminal-suffix");
         let config = test_config(&directory, None);
@@ -2822,7 +3031,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:1df2a15b93bc3a14fa47fa3315344ba023fe2412048047cdc6f32096a6336564",
+                "sha256:13207d7b6afcfe681d4fe9098655df056c2cf87e03f5141e961cd01c32c5bdd2",
                 None,
                 None,
                 "explicit-model",
@@ -2831,7 +3040,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1",
+                "sha256:8faf47520f156c62c79ea6ca7d1d90a85ddc9a6621f798bd14e87bc6c643bd04",
                 None,
                 None,
                 "explicit-model",
@@ -2840,7 +3049,7 @@ mod tests {
                 "pi",
                 "pi-acp",
                 "0.0.33",
-                "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+                "sha256:f35145437eeb355ed37bc5a4fa93d7ede561d9c45daf311979b46890b808ddd4",
                 Some("@earendil-works/pi-coding-agent"),
                 Some("1.0.0"),
                 "openrouter/deepseek/deepseek-v4-flash-0731",

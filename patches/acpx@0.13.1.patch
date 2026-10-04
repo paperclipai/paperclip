@@ -20,10 +20,9 @@ index 5e2113ac0..45aff03c3 100644
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5..6eba74345 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
-@@ -1068,12 +1068,14 @@ function serializeSessionRecordForDisk(record) {
+@@ -1068,12 +1068,14 @@
  		last_agent_disconnect_reason: canonical.lastAgentDisconnectReason,
  		protocol_version: canonical.protocolVersion,
  		agent_capabilities: canonical.agentCapabilities,
@@ -38,7 +37,7 @@ index d454fd7c5..6eba74345 100644
  		acpx: canonical.acpx,
  		imported_from: canonical.importedFrom ? {
  			record_id: canonical.importedFrom.recordId,
-@@ -1239,7 +1241,8 @@ function parseRequestTokenUsage(raw) {
+@@ -1239,7 +1241,8 @@
  	for (const [key, value] of Object.entries(record)) {
  		const parsed = parseTokenUsage(value);
  		if (parsed == null) return null;
@@ -48,7 +47,7 @@ index d454fd7c5..6eba74345 100644
  	}
  	return usage;
  }
-@@ -1325,6 +1328,93 @@ function isAgentMessage$1(raw) {
+@@ -1325,6 +1328,93 @@
  function isConversationMessage(raw) {
  	return raw === "Resume" || isUserMessage$1(raw) || isAgentMessage$1(raw);
  }
@@ -142,7 +141,7 @@ index d454fd7c5..6eba74345 100644
  function parseConversationRecord(record) {
  	if (!hasValidConversationCore(record)) return;
  	const title = parseConversationTitle(record.title);
-@@ -1339,7 +1429,8 @@ function parseConversationRecord(record) {
+@@ -1339,7 +1429,8 @@
  		updated_at: record.updated_at,
  		cumulative_token_usage: cumulativeTokenUsage ?? {},
  		cumulative_cost: cumulativeCost,
@@ -152,7 +151,7 @@ index d454fd7c5..6eba74345 100644
  	};
  }
  const INVALID_VALUE = Symbol("invalid");
-@@ -1541,12 +1632,14 @@ function parseSessionRecord(raw) {
+@@ -1541,12 +1632,14 @@
  		lastAgentDisconnectReason: optionals.lastAgentDisconnectReason,
  		protocolVersion: typeof record.protocol_version === "number" ? record.protocol_version : void 0,
  		agentCapabilities: asRecord$4(record.agent_capabilities),
@@ -167,7 +166,7 @@ index d454fd7c5..6eba74345 100644
  		acpx: parseAcpxState(record.acpx),
  		importedFrom: metadata.importedFrom
  	};
-@@ -1661,8 +1754,9 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+@@ -1661,8 +1754,9 @@
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -178,7 +177,7 @@ index d454fd7c5..6eba74345 100644
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
  	"acpx.desired_config_options",
-@@ -3104,10 +3198,10 @@ function authEnvKey(methodId) {
+@@ -3104,10 +3198,10 @@
  	authEnvKeyCache.set(methodId, key);
  	return key;
  }
@@ -191,7 +190,7 @@ index d454fd7c5..6eba74345 100644
  	if (typeof value === "string" && value.trim().length > 0) return value;
  }
  function protectedEnvKey(key) {
-@@ -3135,8 +3229,21 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3135,8 +3229,21 @@
  	}
  	return protectedKeys;
  }
@@ -215,7 +214,7 @@ index d454fd7c5..6eba74345 100644
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -3178,10 +3285,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -3178,10 +3285,10 @@
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -228,7 +227,7 @@ index d454fd7c5..6eba74345 100644
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3961,10 +4068,13 @@ function resolveClientCapabilities(params) {
+@@ -3961,10 +4068,13 @@
  			...params.elicitationModes.includes("url") ? { url: {} } : {}
  		} } : {}
  	};
@@ -244,7 +243,7 @@ index d454fd7c5..6eba74345 100644
  	};
  }
  function hasResponseField(response, field) {
-@@ -4067,6 +4177,27 @@ function createNdJsonMessageStream(agentCommand, output, input) {
+@@ -4067,6 +4177,27 @@
  		} })
  	};
  }
@@ -272,7 +271,7 @@ index d454fd7c5..6eba74345 100644
  var AcpClient = class {
  	options;
  	connection;
-@@ -4105,7 +4236,9 @@ var AcpClient = class {
+@@ -4105,7 +4236,9 @@
  			cwd: asAbsoluteCwd(options.cwd),
  			authPolicy: options.authPolicy ?? "skip",
  			permissionPolicy: snapshotPermissionPolicy(options.permissionPolicy),
@@ -283,7 +282,7 @@ index d454fd7c5..6eba74345 100644
  		};
  		this.eventHandlers = {
  			onAcpMessage: this.options.onAcpMessage,
-@@ -4216,9 +4349,21 @@ var AcpClient = class {
+@@ -4216,9 +4349,21 @@
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -305,7 +304,7 @@ index d454fd7c5..6eba74345 100644
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -4226,6 +4371,7 @@ var AcpClient = class {
+@@ -4226,6 +4371,7 @@
  		const output = Readable.toWeb(child.stdout);
  		const stream = this.createTappedStream(createNdJsonMessageStream(this.options.agentCommand, input, output));
  		const connection = this.createConnection(stream, launch);
@@ -313,7 +312,7 @@ index d454fd7c5..6eba74345 100644
  		connection.signal.addEventListener("abort", () => {
  			this.recordAgentExit("connection_close", child.exitCode ?? null, child.signalCode ?? null);
  		}, { once: true });
-@@ -4253,7 +4399,12 @@ var AcpClient = class {
+@@ -4253,7 +4399,12 @@
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -327,7 +326,7 @@ index d454fd7c5..6eba74345 100644
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4279,10 +4430,17 @@ var AcpClient = class {
+@@ -4279,10 +4430,17 @@
  	}
  	async spawnAgentProcess(plan) {
  		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
@@ -347,7 +346,7 @@ index d454fd7c5..6eba74345 100644
  		try {
  			await waitForSpawn$1(spawnedChild);
  		} catch (error) {
-@@ -4293,10 +4451,10 @@ var AcpClient = class {
+@@ -4293,10 +4451,10 @@
  	createConnection(stream, launch) {
  		const app = client({ name: "acpx" }).onNotification(methods.client.session.update, async ({ params }) => {
  			await this.handleSessionUpdate(params);
@@ -361,7 +360,7 @@ index d454fd7c5..6eba74345 100644
  		}).onRequest(methods.client.fs.readTextFile, async ({ params }) => {
  			return await this.handleReadTextFile(params);
  		}).onRequest(methods.client.fs.writeTextFile, async ({ params }) => {
-@@ -4312,6 +4470,11 @@ var AcpClient = class {
+@@ -4312,6 +4470,11 @@
  		}).onRequest(methods.client.terminal.release, async ({ params }) => {
  			return await this.handleReleaseTerminal(params);
  		});
@@ -373,7 +372,7 @@ index d454fd7c5..6eba74345 100644
  		if (launch.devinAcp) app.onRequest("_cognition.ai/request_diagnostics", (params) => {
  			return params && typeof params === "object" && !Array.isArray(params) ? params : {};
  		}, async () => ({}));
-@@ -4333,12 +4496,12 @@ var AcpClient = class {
+@@ -4333,12 +4496,12 @@
  	async initializeProtocolConnection(connection, launch) {
  		const initializePromise = connection.initialize({
  			protocolVersion: PROTOCOL_VERSION,
@@ -388,7 +387,7 @@ index d454fd7c5..6eba74345 100644
  			clientInfo: resolveClientInfo(launch.devinAcp)
  		});
  		const initialized = launch.geminiAcp ? await withTimeout(initializePromise, resolveGeminiAcpStartupTimeoutMs()) : await initializePromise;
-@@ -4358,6 +4521,49 @@ var AcpClient = class {
+@@ -4358,6 +4521,49 @@
  		throw normalizedError;
  	}
  	createTappedStream(base) {
@@ -438,7 +437,7 @@ index d454fd7c5..6eba74345 100644
  		const onAcpMessage = () => this.eventHandlers.onAcpMessage;
  		const onAcpOutputMessage = () => this.eventHandlers.onAcpOutputMessage;
  		const elicitationRequestIds = /* @__PURE__ */ new Set();
-@@ -4367,8 +4573,12 @@ var AcpClient = class {
+@@ -4367,8 +4573,12 @@
  		const shouldSuppressInboundReplaySessionUpdate = (message) => {
  			return this.suppressReplaySessionUpdateMessages && isSessionUpdateNotification(message);
  		};
@@ -452,7 +451,7 @@ index d454fd7c5..6eba74345 100644
  			if (requestId !== void 0) {
  				elicitationRequestIds.add(requestId);
  				return;
-@@ -4379,6 +4589,7 @@ var AcpClient = class {
+@@ -4379,6 +4589,7 @@
  			}
  		};
  		return {
@@ -460,7 +459,7 @@ index d454fd7c5..6eba74345 100644
  			readable: new ReadableStream({ async start(controller) {
  				const reader = base.readable.getReader();
  				try {
-@@ -4386,16 +4597,27 @@ var AcpClient = class {
+@@ -4386,16 +4597,27 @@
  						const { value, done } = await reader.read();
  						if (done) break;
  						if (!value) continue;
@@ -490,7 +489,7 @@ index d454fd7c5..6eba74345 100644
  				const promptOwner = promptRequestOwner(message);
  				if (promptOwner) bindPromptOwner(promptOwner);
  				const id = responseId(message);
-@@ -4403,10 +4625,20 @@ var AcpClient = class {
+@@ -4403,10 +4625,20 @@
  					onAcpOutputMessage()?.("outbound", message);
  					onAcpMessage()?.("outbound", message);
  				}
@@ -511,7 +510,7 @@ index d454fd7c5..6eba74345 100644
  					writer.releaseLock();
  				}
  			} })
-@@ -4422,7 +4654,10 @@ var AcpClient = class {
+@@ -4422,7 +4654,10 @@
  			const createPromise = this.runConnectionRequest(() => connection.newSession({
  				cwd: sessionCwd,
  				mcpServers: this.options.mcpServers ?? [],
@@ -523,7 +522,21 @@ index d454fd7c5..6eba74345 100644
  			}));
  			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
  		} catch (error) {
-@@ -4864,7 +5099,7 @@ var AcpClient = class {
+@@ -4589,6 +4824,13 @@
+ 		} catch (error) {
+ 			throw maybeWrapSessionControlError("session/set_config_option", error, `for "${configId}"="${value}"`);
+ 		}
++	}
++	async requestExtension(method, params) {
++		closedExtensionMethods([method]);
++		const payload = boundedExtensionRecord(params);
++		const connection = this.getConnection();
++		const result = await this.runConnectionRequest(() => connection.extMethod(method, payload));
++		return boundedExtensionRecord(result);
+ 	}
+ 	async setSessionModel(sessionId, modelId, controlOverride) {
+ 		const control = this.resolveModelControl(sessionId, controlOverride);
+@@ -4864,7 +5106,7 @@
  	}
  	selectAuthMethod(methods) {
  		for (const method of methods) {
@@ -532,7 +545,7 @@ index d454fd7c5..6eba74345 100644
  			if (envCredential) return {
  				methodId: method.id,
  				credential: envCredential,
-@@ -4890,7 +5125,7 @@ var AcpClient = class {
+@@ -4890,7 +5132,7 @@
  	}
  	readAgentSpecificEnvCredential(methodId) {
  		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
@@ -541,7 +554,7 @@ index d454fd7c5..6eba74345 100644
  		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
  	}
  	selectAgentManagedAuthMethod(methodId) {
-@@ -4915,9 +5150,9 @@ var AcpClient = class {
+@@ -4915,9 +5157,9 @@
  		await connection.authenticate({ methodId: selected.methodId });
  		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
  	}
@@ -553,7 +566,7 @@ index d454fd7c5..6eba74345 100644
  		if (hostResponse) return hostResponse;
  		const { response, recorded } = await this.resolvePermissionRequestFromMode(params);
  		if (!recorded) {
-@@ -4926,14 +5161,81 @@ var AcpClient = class {
+@@ -4926,14 +5168,81 @@
  		}
  		return response;
  	}
@@ -637,7 +650,7 @@ index d454fd7c5..6eba74345 100644
  		})).then((response) => ({
  			kind: "response",
  			response
-@@ -4970,7 +5272,7 @@ var AcpClient = class {
+@@ -4970,7 +5279,7 @@
  	isElicitationSessionCancelling(sessionId) {
  		return this.closing || this.cancellingSessionIds.has(sessionId);
  	}
@@ -646,7 +659,7 @@ index d454fd7c5..6eba74345 100644
  		if (!this.options.onPermissionRequest) return;
  		const signal = this.cancellationSignalForSession(params.sessionId);
  		try {
-@@ -4978,7 +5280,7 @@ var AcpClient = class {
+@@ -4978,7 +5287,7 @@
  				sessionId: params.sessionId,
  				raw: params,
  				inferredKind: inferToolKind(params)
@@ -655,7 +668,7 @@ index d454fd7c5..6eba74345 100644
  			return this.hostPermissionDecisionResponse(params, signal, decision);
  		} catch (error) {
  			return this.hostPermissionErrorResponse(params, signal, error);
-@@ -5028,6 +5330,12 @@ var AcpClient = class {
+@@ -5028,6 +5337,12 @@
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -668,7 +681,7 @@ index d454fd7c5..6eba74345 100644
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -5239,6 +5547,7 @@ function applyConversation(record, conversation) {
+@@ -5239,6 +5554,7 @@
  	record.cumulative_token_usage = conversation.cumulative_token_usage;
  	record.cumulative_cost = conversation.cumulative_cost;
  	record.request_token_usage = conversation.request_token_usage;
@@ -676,7 +689,7 @@ index d454fd7c5..6eba74345 100644
  }
  //#endregion
  //#region src/runtime/engine/session-options.ts
-@@ -5701,7 +6010,8 @@ function cloneSessionConversation(conversation) {
+@@ -5701,7 +6017,8 @@
  		updated_at: conversation.updated_at,
  		cumulative_token_usage: deepClone(conversation.cumulative_token_usage ?? {}),
  		cumulative_cost: cloneUsageCost(conversation.cumulative_cost),
@@ -686,7 +699,7 @@ index d454fd7c5..6eba74345 100644
  	};
  }
  function cloneUsageCost(cost) {
-@@ -5771,10 +6081,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
+@@ -5771,10 +6088,20 @@
  	trimConversationForRuntime(conversation);
  	return acpx;
  }
@@ -709,7 +722,7 @@ index d454fd7c5..6eba74345 100644
  	updateConversationTimestamp(conversation, timestamp);
  	trimConversationForRuntime(conversation);
  	return true;
-@@ -6435,6 +6755,27 @@ async function withConnectedSession(options) {
+@@ -6435,6 +6762,27 @@
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -737,7 +750,7 @@ index d454fd7c5..6eba74345 100644
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,7 +6785,23 @@ async function runPromptTurn(params) {
+@@ -6444,7 +6792,23 @@
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});

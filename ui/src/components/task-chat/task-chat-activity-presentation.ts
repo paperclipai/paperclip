@@ -41,6 +41,12 @@ export interface TaskChatActivityPresentation {
   detail?: string;
 }
 
+export function providerNoticeSeverity(item: TaskChatProviderActivityItem): "info" | "warning" | "error" {
+  const severity = item.details.find((entry) => entry.label === "Severity")?.value;
+  if (item.status === "failed" || severity === "error") return "error";
+  return severity === "info" ? "info" : "warning";
+}
+
 function providerDetail(item: TaskChatProviderActivityItem, ...labels: string[]): string | undefined {
   return item.details.find((entry) => labels.includes(entry.label))?.value;
 }
@@ -136,7 +142,7 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
     case "wait":
       return { icon: Clock3, runningLabel: "Waiting", completedLabel: "Finished waiting", failedLabel: "Wait failed", interruptedLabel: "Wait stopped", detail };
     case "provider_notice":
-      return { icon: item.status !== "failed" && providerDetail(item, "Severity") === "info" ? Info : AlertTriangle, runningLabel: "Provider notice", completedLabel: "Provider notice", failedLabel: "Provider error", interruptedLabel: "Provider notice", detail };
+      return { icon: providerNoticeSeverity(item) === "info" ? Info : AlertTriangle, runningLabel: "Provider notice", completedLabel: "Provider notice", failedLabel: "Provider error", interruptedLabel: "Provider notice", detail };
   }
 }
 

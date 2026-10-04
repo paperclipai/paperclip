@@ -89,6 +89,22 @@ describe("NativeExecutionInputV1", () => {
     expect(composeNativeSystemInstructions(parsed.runtimeContext, "Follow sibling.md")).toBe(
       `${PAPERCLIP_EXECUTION_PROMPT}\n\nFollow sibling.md\n\nRead-only instruction sibling root: /runtime/instructions`,
     );
+    const agentFilesContext = {
+      ...parsed.runtimeContext,
+      instructions: {
+        ...parsed.runtimeContext.instructions,
+        workingCopy: { kind: "agent_files" as const, rootPath: "/runtime/current-agent-copy", entryPath: "AGENTS.md" },
+      },
+    };
+    const agentFilesInstructions = composeNativeSystemInstructions(agentFilesContext, "Preserve my personal notes.");
+    expect(agentFilesInstructions).toContain("AGENT_HOME) is /runtime/current-agent-copy.");
+    expect(agentFilesInstructions).toContain("its absolute path may change between turns");
+    expect(agentFilesInstructions).toContain("use the current $AGENT_HOME environment variable instead of an absolute agent-directory path from an earlier turn");
+    expect(agentFilesInstructions).toContain("All supported files and subfolders there are restored across tasks and sessions");
+    expect(agentFilesInstructions).toContain("Write task deliverables in the task working directory");
+    expect(agentFilesInstructions).toContain("Preserve my personal notes.");
+    expect(agentFilesInstructions).toMatch(/Read-only instruction sibling root: \/runtime\/instructions$/);
+    expect(composeNativeSystemInstructions(parsed.runtimeContext, "Follow sibling.md")).not.toContain("$AGENT_HOME");
     expect(canonicalNativeRuntimeContextDigest({
       ...context,
       mcp: { ...context.mcp, bindingId: "native-mcp:run-2" },
@@ -328,7 +344,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 14, 1.5, "13", null]) {
+    for (const unsupportedVersion of [0, 16, 1.5, "14", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
@@ -505,7 +521,7 @@ describe("native task context ownership", () => {
     });
   }
 
-  it.each(["off", "low", "high", "max"])("requires exact Pi13 thinking level %s in native input", piThinkingLevel => {
+  it.each(["off", "low", "high", "max"])("requires exact current Pi thinking level %s in native input", piThinkingLevel => {
     const { qualificationModel, reportedModelId: _reported, permissionPolicy: _permission, modelPolicy: _policy, qualificationStatus: _status, ...profile } = QUALIFIED_ACPX_PROFILES.pi;
     const value = { ...currentInput(), session: { ...currentInput().session, driverKind: "acpx_runtime" }, provider: { kind: "acpx", agent: "pi", model: qualificationModel, permissionMode: "approve-all", piThinkingLevel, profile } };
     expect(parseNativeExecutionInput(value).provider).toEqual(value.provider);

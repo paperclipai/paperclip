@@ -1,3 +1,4 @@
+import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import {
   chmod,
   cp,
@@ -22,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ControlPlanePort } from "../contracts/control-plane-port.js";
 import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
 import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
@@ -705,6 +706,9 @@ it("identifies an active provider turn that must stop before suspension", () => 
     activeProviderTurnId: null,
     providerSettled: true,
   });
+  expect(runnerdRecoveryInternals.providerDrainStateFromSnapshot({
+    activeProviderTurnId: null, pendingEvents: [], providerExitUnconfirmed: true,
+  })).toEqual({ pendingEventCount: 0, activeProviderTurnId: null, providerSettled: false });
 });
 
 it.each([
@@ -715,6 +719,7 @@ it.each([
   { pendingEvents: [], activeProviderTurnId: 1 },
   { pendingEvents: [], activeTurnId: "" },
   { pendingEvents: [], ambiguousTurnStartPending: "false" },
+  { pendingEvents: [], providerExitUnconfirmed: "false" },
 ])(
   "does not treat a malformed provider snapshot as drained (%j)",
   (snapshot) => {
@@ -6289,6 +6294,75 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
+  const cliRoot = join(root, "dist/cli");
+  await mkdir(cliRoot, { recursive: true });
+  const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
+  const journal = join(root, "commands.ndjson");
+  const fixture = await readFile(fileURLToPath(new URL("./fixtures/fake-pi-warm-sidecar.cjs", import.meta.url)), "utf8");
+  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000 })));
+  const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
+    runnerBinary: defaultCapabilityRunnerdBinary(), stateDirectory: root, runnerFilesystemRoot: root,
+    providerNodeCommand: process.execPath, providerNodeCommandSha256: digest(process.execPath),
+    acpxSidecarPath: sidecarPath, acpxSidecarSha256: digest(sidecarPath),
+    providerPackAuthorityDigest: `sha256:${"d".repeat(64)}`,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    environment: { PATH: "/usr/bin:/bin" },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [{ type: "inputText", text: "Completion report accepted." }],
+  }));
+  let failure: unknown;
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      dynamicTools: codexSemanticToolSpecs(),
+      completionContract: { revision: "warm-pi-contract", criterionIds: [] },
+    });
+    const runnerPid = bundle.evidence().runnerPid;
+    const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
+    const completeTurn = async () => {
+      await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Complete the fixture turn." }] });
+      for (let index = 0; index < 64; index += 1) {
+        const next = await Promise.race([
+          notifications.next(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Fixture completion timed out")), 5_000)),
+        ]);
+        if (next.value?.method === "turn/completed") return;
+      }
+      throw new Error("Fixture turn did not complete");
+    };
+    await completeTurn();
+    const started = Date.now();
+    await bundle.transport.attachRun!({ runId: "run-pi-warm-second", turnId: "turn-pi-warm-second", itemId: "item-pi-warm-second" });
+    expect(Date.now() - started).toBeGreaterThan(30_000);
+    await completeTurn();
+    expect(bundle.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    const commands = (await readFile(journal, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(commands.filter((entry) => entry.event === "spawn")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.open")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.resumed)).toHaveLength(1);
+    expect(commands.filter((entry) => entry.command === "turn.start")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.close")).toHaveLength(1);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await bundle.transport.close();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure, cleanupError], "Warm attachment and strict cleanup failed");
+      throw cleanupError;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 75_000);
+
 it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-warm-reattach-before-probe-"),
@@ -7468,12 +7542,14 @@ it("surfaces a runner exit while provider-ingress readiness is still pending", a
 
 it("rejects the notification stream promptly when runnerd exits after accepting a turn", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
+  const diagnostics: string[] = [];
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
     stateDirectory,
     closeGraceMs: 400,
+    onDiagnostic: (message) => diagnostics.push(message),
   });
   bundle.transport.setServerRequestHandler(async () => ({
     success: true,
@@ -7528,6 +7604,12 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       );
       expect(runnerState.lifecycle).not.toBe("suspended");
+      const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
+      expect(settlement).toBeDefined();
+      expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
+        runnerSuspended: false,
+        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+      });
     } finally {
       await rm(stateDirectory, { recursive: true, force: true });
     }
@@ -7796,4 +7878,70 @@ it.each([undefined, "medium", "minimal", "xhigh", null])("rejects non-exact Pi t
 });
 it("rejects Pi thinking settings on a different transport provider", () => {
   expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
+});
+
+
+describe("cold process admission budget", () => {
+  it("bounds Pi cold startup and recovery at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
+  });
+  it("preserves live adoption and every other provider at 30 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
+    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+      expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
+    }
+    for (const provider of ["codex", "opencode", undefined]) {
+      expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
+    }
+  });
+});
+
+
+it("shares Pi's absolute cold deadline across recovery barriers and rejects a late ACK", async () => {
+  vi.useFakeTimers();
+  try {
+    const deadline = Date.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+    let status = "pending";
+    const wait = (type: string) => waitForRunnerCommand({
+      type, deadline, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed",
+    });
+    const attached = wait("run.attach");
+    await vi.advanceTimersByTimeAsync(40_000);
+    status = "completed";
+    await vi.advanceTimersByTimeAsync(10);
+    await attached;
+    status = "pending";
+    const drain = wait("runner.drain");
+    const rejection = expect(drain).rejects.toThrow("runner.drain timed out");
+    await vi.advanceTimersByTimeAsync(20_000);
+    await rejection;
+    status = "completed";
+    await expect(wait("session.open")).rejects.toThrow("session.open timed out");
+  } finally { vi.useRealTimers(); }
+});
+
+it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {
+  vi.useFakeTimers();
+  try {
+    let closed = false;
+    let status = "pending";
+    const input = {
+      deadline: Date.now() + 60_000, isClosed: () => closed,
+      throwIfFailed: () => undefined, command: () => ({ status }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed",
+    };
+    const opening = waitForRunnerCommand({ ...input, type: "session.open", abortOnClose: true });
+    const rejection = expect(opening).rejects.toThrow("closed while waiting for session.open");
+    closed = true;
+    await vi.advanceTimersByTimeAsync(10);
+    await rejection;
+    // A late open ACK cannot revive the cancelled waiter, but cleanup still owns the process.
+    const drain = waitForRunnerCommand({ ...input, type: "runner.drain", abortOnClose: false });
+    await vi.advanceTimersByTimeAsync(10);
+    status = "completed";
+    await vi.advanceTimersByTimeAsync(10);
+    await drain;
+  } finally { vi.useRealTimers(); }
 });

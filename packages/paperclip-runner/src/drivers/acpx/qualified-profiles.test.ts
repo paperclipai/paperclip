@@ -63,8 +63,11 @@ describe("qualified ACPX profiles", () => {
   });
 });
 
-it("binds Cursor v10 to native instructions, tool identity, closures and the exact ACPX guard patch", () => {
-  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v10-identity.json", import.meta.url), "utf8"));
+it("binds Cursor v11 to native instructions, tool identity, closures and the exact ACPX guard patch", () => {
+  const prior = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v10-identity.json", import.meta.url), "utf8"));
+  const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/cursor-acp/profile-v11-identity.json", import.meta.url), "utf8"));
+  expect(Object.keys(identity.declaration).filter(key => JSON.stringify(identity.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort()).toEqual(["acpxPatchSha256", "agentProfileVersion"]);
+  expect(QUALIFIED_ACPX_PROFILES.cursor.qualificationStatus).toBe("pending");
   const distribution = JSON.parse(readFileSync(new URL("../../../cursor-distributions.json", import.meta.url), "utf8"));
   expect(identity.declaration.distribution).toEqual(distribution);
   expect(identity.declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");

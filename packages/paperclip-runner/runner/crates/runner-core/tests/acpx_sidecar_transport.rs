@@ -300,3 +300,32 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
         sidecar.shutdown().unwrap();
     }
 }
+
+#[test]
+fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
+    let mut sidecar = AcpxSidecarTransport::start_for_agent(
+        &AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".to_owned(), "silent".to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(30),
+            shutdown_grace: Duration::from_millis(50),
+        },
+        "pi",
+    )
+    .unwrap();
+    let started = Instant::now();
+    let error = sidecar
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(sidecar
+        .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+        .unwrap_err()
+        .to_string()
+        .contains("unavailable"));
+    sidecar
+        .shutdown()
+        .expect("timeout cleanup remains idempotent");
+}

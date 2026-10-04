@@ -235,6 +235,7 @@ describe("TaskChatProtocolActivityRow", () => {
     ["info", "informational", "Provider update", "lucide-info"],
     ["warning", "informational", "Warning", "lucide-triangle-alert"],
     ["error", "failed", "Error", "lucide-triangle-alert"],
+    ["error", "informational", "Error", "lucide-triangle-alert"],
     ["info", "failed", "Error", "lucide-triangle-alert"],
   ] as const)("renders %s/%s notice severity without hiding its summary", (severity, status, label, icon) => {
     const summary = "Pi estimates this turn at $0.000617. Billing cost is unverified.";

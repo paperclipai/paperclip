@@ -114,6 +114,14 @@ a deletion through public file APIs. Native turns 2 and 3 must copy/hash only th
 changed memory file, with a saved receipt and the same provider PID. Journal and
 Git stress fixtures retain fixed external bundles as controls. Keep the stable-PID
 oracle strict; `instruction-persistence` also covers cold restarts and quota handling.
+The explicit `rich-acp-warm-continuity` fixture uses the workspace-only prompt:
+ACP providers retain their unchanged AGENT_HOME and must preserve the same native
+session, runner instance, provider session, PID, and process start fingerprint.
+It does not request personal-file edits, because changed ACP agent files require
+provider retirement before collection. Pi's separate `agent-files-fresh-run`
+case retains changed-home save and fresh-task restoration coverage. This split
+does not weaken the stable-process oracle or change the Codex checkpoint fixture.
+
 Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent
@@ -309,6 +317,12 @@ no database writes, private hooks, or fabricated provider results are allowed.
 `native-pending-controller-restart` restarts the public controller while one Pi
 input callback remains unanswered. It requires the same durable interaction,
 request, live run, native session, turn and producer before and after restart.
+For local execution, the public run's exact PID, process group and start identity
+must identify an already-observed durable runner under this controller. The test
+preserves only that runner tree during restart, checks the same live identity
+afterward, and keeps the old process owner for complete final cleanup alongside
+the replacement controller. Other controller children are retired normally.
+Remote execution does not infer local process authority from remote PIDs.
 Only then does the browser submit previously undisclosed text. One durable
 resolution, one original successful turn and independently read exact workspace
 JSON prove delivery. A replacement run, replay, cancellation, expiry, rewritten
@@ -383,13 +397,18 @@ macOS runs metadata negatives and explicitly skips this Linux-only calibration.
 That calibration and the earlier fake-Pi wrapper/bridge tests do not count as the
 real paid Product lifecycle proof. This new candidate cell remains unqualified.
 
+The pending-question controller-restart browser matcher accepts only the retained
+issue's UUID or public identifier and the exact retained interaction ID. The UI
+normally posts with the public identifier. Durable request, run, turn, session,
+producer and single-delivery assertions remain required after submission.
+
 ## Pi active controls
 
 The explicit-only `pi-controls` suite adds `pending-permission-stop` and
 `same-turn-steering` on local and Daytona, each with one provider run, a
 120-second active-turn timeout and a 300-second attempt budget. These four
 control cases retain their behavior; the current matrix totals 26 Pi cells.
-Pi 1/profile 12 and coverage revisions intentionally change the affected suite
+Pi 1/profile 13 and coverage revisions intentionally change the affected suite
 fingerprints, so older qualification receipts cannot be reused. Catalog presence and
 deterministic calibration do not constitute paid qualification.
 
@@ -402,6 +421,12 @@ identity mapping. Pi does not emit Cursor/Copilot diagnostic notices; those
 notices are never synthesized. Earlier native reads can provide orientation;
 other native operations cannot substitute for the observed write.
 
+Native tool arguments can arrive after the start event. An earlier null target
+is allowed only until the same execution first supplies the exact expected
+path. Missing targets, conflicting paths, another execution's path, or a later
+loss of the proven path fail. The original start and permission rows remain
+bound by retained hashes through control dispatch and settlement.
+
 Stop awaits the pending evidence write and rereads that boundary before sending
 one caller UUID to the public cancel API. It requires the original request's
 normalized cancellation closure, a cancelled terminal, and the same-scope
@@ -412,9 +437,11 @@ Only after cancellation does it attempt a stale **decline**, which must return
 cancelled run and no automatic continuation.
 
 Steering submits a random marker only in a browser comment after the permission
-is pending, then clicks that comment's production Steer button. It records the
-exact public POST's queue/revision/run binding and requires the saved run
-acknowledgment plus the Product facade's same-turn acknowledgment item. The raw
+is pending, binds the queued comment to the exact body submitted by the
+production Markdown editor, then clicks that comment's production Steer button. It records the
+exact public POST's queue/revision/run binding. A rejected public POST ends the
+journey before any denial. Success requires the saved run acknowledgment plus
+the Product facade's same-turn acknowledgment item. The raw
 Rust `acpx-control-*` transport echo is suppressed by the facade;
 `CodexHarnessSession.steer` emits the durable correlated item after the command
 acknowledges. A deterministic calibration invokes that actual producer. The

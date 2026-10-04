@@ -172,10 +172,16 @@ export async function runPiControlsFlow(input: {
       await input.evidence("pi-control-pending.json", pending);
       const marker = `PI-STEER-${randomBytes(16).toString("hex")}`;
       const message = `After the actual native denial, complete this negative test. Do not write or invoke any other native tool. ${piNativeFinish(marker)}`;
+      const commentRoutes = new Set([issue.id, issue.identifier].filter(Boolean).map(id => `/api/issues/${id}/comments`));
+      const submitted = page.waitForRequest(request => commentRoutes.has(new URL(request.url()).pathname) && request.method() === "POST");
       await submitTaskReply(page, message);
+      // The production rich-text editor serializes plain input as Markdown.
+      // Bind the queued comment to the exact body actually sent by the browser.
+      const submittedBody = (await submitted).postDataJSON()?.body;
+      check("browser-steering-content", typeof submittedBody === "string" && submittedBody.startsWith("After the actual native denial, complete this negative test. Do not write or invoke any other native tool. ") && submittedBody.includes(marker), "Browser submitted the hidden instruction while permission remains pending");
       const queue = await pollUntil({ label: "Pi browser comment queued for steering", deadlineAt: input.deadlineAt, intervalMs: 200,
-        load: () => api.get<Row>(`/api/issues/${issue.id}/queued-comments`), accept: q => q.steeringDisposition === "available" && q.entries?.some((entry: Row) => entry.comment.body === message) });
-      const entries = queue.entries.filter((entry: Row) => entry.comment.body === message);
+        load: () => api.get<Row>(`/api/issues/${issue.id}/queued-comments`), accept: q => q.steeringDisposition === "available" && q.entries?.some((entry: Row) => entry.comment.body === submittedBody) });
+      const entries = queue.entries.filter((entry: Row) => entry.comment.body === submittedBody);
       check("one-browser-steering-message", entries.length === 1 && queue.entries.length === 1 && queue.targetRunId === pending.scope.runId, "One browser-originated comment targets the pending run");
       const commentId = entries[0].comment.id, queueId = queue.queueId;
       assertSamePiPending(pending, observePiControlPending({ ...await load(), scope: scope() }));
@@ -183,8 +189,11 @@ export async function runPiControlsFlow(input: {
       const route = `/api/issues/${issue.id}/queued-comments/${commentId}/steer`;
       const posted = page.waitForRequest(request => new URL(request.url()).pathname === route && request.method() === "POST");
       await page.getByTestId(`task-chat-queued-steer-${commentId}`).click();
-      const body = (await posted).postDataJSON();
+      const steeringRequest = await posted;
+      const body = steeringRequest.postDataJSON();
       check("exact-browser-steer", body.queueId === queueId && body.revision === queue.revision && body.targetRunId === pending.scope.runId, "Browser steers the exact queued comment into the active run");
+      const response = await steeringRequest.response();
+      if (!response?.ok()) throw new Error(`Pi native steering rejected: HTTP ${response?.status() ?? "missing"}`);
       steered = { pending, commentId, queueId, marker };
       await pollUntil({ label: "Pi same-turn steering acknowledgement", deadlineAt: input.deadlineAt, intervalMs: 200, load,
         accept: state => { assertSamePiPending(pending, observePiControlPending({ ...state, scope: scope() })); readPiSteeringAcknowledgement({ ...state, ...steered! }); return true; } });

@@ -1,3 +1,4 @@
+import { parseRestartRunnerIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
@@ -229,6 +230,7 @@ async function waitForHealthToStop() {
 
 interface RestartRequest {
   requestId: string;
+  preserveRunner?: RestartRunnerIdentity;
 }
 
 async function readRestartRequest(): Promise<RestartRequest | null> {
@@ -254,7 +256,8 @@ async function readRestartRequest(): Promise<RestartRequest | null> {
   ) {
     return null;
   }
-  return { requestId };
+  const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
+  return { requestId, ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }) };
 }
 
 async function writeRestartAck(
@@ -276,12 +279,13 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer(requestId: string) {
+async function restartServer({ requestId, preserveRunner }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
   if (!previous) throw new Error("No Paperclip server is available to restart");
-  await stopServer(previous);
+  if (preserveRunner) await stopServer.forRestart(previous, preserveRunner);
+  else await stopServer(previous);
   if (child === previous) child = null;
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
@@ -331,13 +335,12 @@ async function supervise() {
     const request = await readRestartRequest();
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
-      await restartServer(request.requestId);
+      await restartServer(request);
     }
     await delay(200);
   }
 
-  const running = child;
-  if (running) await stopServer(running, shutdownSignal ?? "SIGTERM");
+  await stopServer.stopAll(shutdownSignal ?? "SIGTERM");
 }
 
 let exitCode = 0;
@@ -356,15 +359,10 @@ try {
       );
     }
   }
-  const running = child;
-  if (running) {
-    try {
-      await stopServer(running);
-    } catch (stopError) {
-      appendLog(
-        `Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`,
-      );
-    }
+  try {
+    await stopServer.stopAll();
+  } catch (stopError) {
+    appendLog(`Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`);
   }
 }
 

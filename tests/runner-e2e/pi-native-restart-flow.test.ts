@@ -18,7 +18,7 @@ function fixture(adapter = "acpx-runtime-sidecar") {
       normalizedSessionId: "session", sourceInstanceId: "runner", sourceSeq, sourceEventId: `runner:run:${sourceSeq}`, payload } },
   });
   const state = { issue: { id: "issue", companyId: "company", status: "in_progress" },
-    runs: [{ id: "run", companyId: "company", nativeIssueId: "issue", runtimeMode: "native", status: "running", nativeSessionId: "session", runnerInstanceId: "runner" } as Row],
+    runs: [{ id: "run", companyId: "company", nativeIssueId: "issue", runtimeMode: "native", status: "running", nativeSessionId: "session", runnerInstanceId: "runner", processPid: 200, processGroupId: 200, processStartedAt: "2026-10-02T13:55:27.000Z" } as Row],
     interactions: [{ id: "interaction", companyId: "company", issueId: "issue", kind: "ask_user_questions", status: "pending", result: null,
       sourceRunId: "run", continuationPolicy: "none", resolverPolicy: "human_only", idempotencyKey: "paperclip-runner-question:run:request",
       payload: { runtimeRequestId: "request", questionSet } } as Row] };
@@ -164,16 +164,20 @@ it.each([null, {}, { status: "answered", value: "guess" }, { status: "cancelled"
   },
 );
 
-async function flow(failure?: "replaced" | "wrong-file" | "missing-resolution") {
+async function flow(failure?: "replaced" | "wrong-file" | "missing-resolution" | "replaced-runner", issueRef = "issue") {
   const f = fixture(), evidence = new Map<string, any>(), checkpoints: string[] = [];
+  Object.assign(f.state.issue, { identifier: "RUN-1" });
   let answer = "", restarts = 0, submissions = 0, proof: unknown, resolvePost: ((value: unknown) => void) | undefined;
   let postPredicate: ((value: any) => boolean) | undefined;
   const composer: any = { count: () => 1, filter: () => composer, locator: () => composer, first: () => composer,
     fill: async (value: string) => { expect(restarts).toBe(1); answer = value; } };
   const button: any = { count: () => 1, filter: () => button, click: async () => {
     expect(restarts).toBe(1); expect(answer).toMatch(/^PI-RESTART-[a-f0-9]{32}$/); submissions++;
-    const request = { url: () => "http://fixture/api/issues/issue/interactions/interaction/respond", method: () => "POST",
+    const request = { url: () => `http://fixture/api/issues/${issueRef}/interactions/interaction/respond`, method: () => "POST",
       postDataJSON: () => ({ answers: [{ questionId: "answer", optionIds: [], otherText: answer }] }) };
+    expect(postPredicate!({ ...request, url: () => "http://fixture/api/issues/OTHER-1/interactions/interaction/respond" })).toBe(false);
+    expect(postPredicate!({ ...request, url: () => `http://fixture/api/issues/${issueRef}/interactions/other/respond` })).toBe(false);
+    expect(postPredicate!({ ...request, method: () => "GET" })).toBe(false);
     expect(postPredicate!(request)).toBe(true); resolvePost!(request); proof = f.finish(answer);
     if (failure === "missing-resolution") f.events.splice(1, 1);
   } };
@@ -181,23 +185,25 @@ async function flow(failure?: "replaced" | "wrong-file" | "missing-resolution") 
     waitForRequest: (predicate: (value: any) => boolean) => { postPredicate = predicate; return new Promise(resolve => { resolvePost = resolve; }); } };
   const result = runPiPendingControllerRestart({ page, companyId: "company", deadlineAt: Date.now() + 1000,
     load: async () => structuredClone(f.state), events: async () => structuredClone(f.events),
-    restart: async () => {
+    restart: async identity => {
+      expect(identity).toEqual({ processPid: 200, processGroupId: 200, processStartedAt: "2026-10-02T13:55:27.000Z" });
       expect(submissions).toBe(0); expect(f.state.runs[0]!.status).toBe("running"); expect(f.state.interactions[0]!.status).toBe("pending");
       expect(answer).toBe(""); restarts++; checkpoints.push("restart");
       if (failure === "replaced") f.state.interactions[0]!.id = "replacement";
+      if (failure === "replaced-runner") f.state.runs[0]!.processPid = f.state.runs[0]!.processGroupId = 201;
     },
     settle: async () => structuredClone(f.state), readProof: async () => failure === "wrong-file" ? { status: "answered", value: "guess" } : proof,
     capture: async id => { checkpoints.push(id); }, evidence: async (name, data) => { evidence.set(name, structuredClone(data)); },
   });
   if (failure) await expect(result).rejects.toThrow("Pi native restart");
   else expect((await result).every(check => check.passed)).toBe(true);
-  expect(restarts).toBe(1); expect(submissions).toBe(failure === "replaced" ? 0 : 1);
+  expect(restarts).toBe(1); expect(submissions).toBe(["replaced", "replaced-runner"].includes(failure ?? "") ? 0 : 1);
   expect(checkpoints.slice(0, 3)).toEqual(["pi-restart-pending", "restart", "reload"]);
   expect(evidence.has("pi-native-restart-before.json")).toBe(true);
   expect(evidence.has("pi-native-restart-after.json")).toBe(true);
   expect(evidence.has("pi-native-restart-checks.json")).toBe(true);
   expect(JSON.stringify(evidence.get("pi-native-restart-before.json"))).not.toContain("PI-RESTART-");
-  if (failure !== "replaced") expect(evidence.has("pi-native-restart-final.json")).toBe(true);
+  if (!["replaced", "replaced-runner"].includes(failure ?? "")) expect(evidence.has("pi-native-restart-final.json")).toBe(true);
 }
-it("restarts while unanswered, reloads, then submits hidden text through the exact browser route", () => flow());
-it.each(["replaced", "wrong-file", "missing-resolution"] as const)("retains evidence and fails whole flow on %s", failure => flow(failure));
+it.each(["issue", "RUN-1"])("restarts while unanswered and submits through the exact %s browser route", issueRef => flow(undefined, issueRef));
+it.each(["replaced", "wrong-file", "missing-resolution", "replaced-runner"] as const)("retains evidence and fails whole flow on %s", failure => flow(failure));

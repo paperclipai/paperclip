@@ -1,3 +1,4 @@
+import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { observeRunProcesses, createDeniedTargetFixture, bindDeniedTargetPrompt } from "./copilot-local-fixtures.js";
 import { hasDeliveredPiDenial, piPermissionRequests, hasPiRemoteRetirement, hasUnchangedPiRemoteTarget } from "./pi-native-evidence.js";
 import { randomBytes } from "node:crypto";
@@ -25,7 +26,7 @@ type Check = { id: string; passed: boolean; detail: string };
 
 export async function runPiNativeFlow(input: {
   page: Page; api: RunnerApi; fixtures: LiveFixtureValues; execution: MatrixExecution; nonce: string;
-  workspacePath: string; deadlineAt: number; restart(): Promise<void>;
+  workspacePath: string; deadlineAt: number; restart(preserveRunner?: RestartRunnerIdentity): Promise<void>;
   observe(issue: Row, runs: Row[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, data: unknown): Promise<void>;
@@ -112,7 +113,7 @@ export async function runPiNativeFlow(input: {
       await create(execution.task.buildTitle(nonce), execution.task.buildPrompt(nonce), { targets: ["pi-native-restart-answer.json"] });
       checks.push(...await runPiPendingControllerRestart({
         page, companyId: fixtures.company.id, deadlineAt: input.deadlineAt, load, events,
-        restart: input.restart, settle: () => settle(1), capture: input.capture, evidence: input.evidence,
+        preserveLocalRunner: !remote, restart: input.restart, settle: () => settle(1), capture: input.capture, evidence: input.evidence,
         readProof: async () => {
           if (remote) await finishRemote("native-restart-final");
           return JSON.parse(await readWorkspace("pi-native-restart-answer.json"));

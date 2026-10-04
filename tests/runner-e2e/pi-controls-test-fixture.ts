@@ -48,11 +48,17 @@ export function piControlFixture(target = "target.txt") {
     run.resultJson.queuedSteeringAcknowledgements = { [commentId]: { status: "acknowledged", queueId, turnId: "turn", acknowledgedAt: "2026-10-01T00:00:01Z" } };
     append("item.completed", { kind: "steering_acknowledgement", status: "acknowledged", mode: "steer", text: "Steering acknowledged for the active turn." }, { itemId: `turn:steer:${commentId}` });
   }
-  function finish() {
+  function finish(finalMarker = marker) {
     append("runtime_request.resolved", { requestId: "request", turnId: "turn", action: "decline" });
     append("tool.execution.completed", { ...tool, status: "failed", output: "Pi operation was denied or cancelled" });
     append("turn.completed", { status: "completed", error: null });
     run.status = "succeeded"; issue.status = "done";
+    append("run.result.accepted", { result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: finalMarker } }, {
+      sourceKind: "control_plane", sourceInstanceId: "source:control", sourceSeq: 1, sourceEventId: "source:control:run:1",
+    });
+    append("run.terminal", { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" }, {
+      sourceKind: "control_plane", sourceInstanceId: "source:control", sourceSeq: 2, sourceEventId: "source:control:run:2",
+    });
   }
   return { scope, events, run, issue, state, pending, row, append, request, tool, cancel, responses, steer, finish, marker, commentId, queueId };
 }

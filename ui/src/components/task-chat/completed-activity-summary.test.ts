@@ -173,4 +173,17 @@ describe("completedActivitySummary", () => {
     }]).icon).toBe(AlertTriangle);
   });
 
+  it("groups distinct notices and keeps a later error visible beside actual work", () => {
+    const notices = ["info", "info", "warning", "error"].map((severity, index) => ({
+      ...provider("provider_notice", "informational"),
+      id: `notice-${index}`,
+      summary: `Distinct provider message ${index}`,
+      details: [{ label: "Severity", value: severity }],
+    }));
+    const result = completedActivitySummary([tool("bash"), ...notices]);
+    expect(result.label).toBe("Provider error reported, ran commands");
+    expect(result.fullLabel).toBe(result.label);
+    expect(result.label).not.toContain("Distinct provider message");
+  });
+
 });

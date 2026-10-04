@@ -106,13 +106,22 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     // Build each private parent once. Level ordering prevents child creation
     // from racing its parent; batches bound work and drain before any cleanup.
     const parentLevels = new Map<number, Set<string>>();
+    let previousParts: string[] = [];
+    const parentPaths = [packageRoot];
     for (const entry of entries) {
       const parts = entry.path.split("/");
-      for (let depth = 1; depth < parts.length; depth++) {
-        const path = join(packageRoot, ...parts.slice(0, depth));
+      let shared = 0;
+      // Canonical sorted paths keep each parent prefix contiguous. Reuse the
+      // previous entry's joined parents instead of rebuilding every prefix.
+      while (shared < parts.length - 1 && shared < previousParts.length - 1 && parts[shared] === previousParts[shared]) shared++;
+      parentPaths.length = shared + 1;
+      for (let depth = shared + 1; depth < parts.length; depth++) {
+        const path = join(parentPaths[depth - 1]!, parts[depth - 1]!);
+        parentPaths.push(path);
         const level = parentLevels.get(depth) ?? new Set<string>();
         level.add(path); parentLevels.set(depth, level); directories.add(path);
       }
+      previousParts = parts;
     }
     const directoryBatch = async (paths: string[], operation: (path: string) => Promise<unknown>): Promise<void> => {
       for (let start = 0; start < paths.length; start += NATIVE_DIRECTORY_CONCURRENCY) {
@@ -154,16 +163,26 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     let activeBytes = 0;
     let failed = false;
     let failure: unknown;
+    // Only the admission loop waits for capacity. Notify that waiter once per
+    // completion instead of attaching Promise.race handlers to every active
+    // copy on each admission (including long-lived large-file reads).
+    let capacityAvailable: (() => void) | undefined;
     for (const entry of entries) {
       while (!failed && (active.size >= NATIVE_COPY_CONCURRENCY
         || (active.size > 0 && activeBytes + entry.size > NATIVE_COPY_BUFFER_BYTES))) {
-        await Promise.race(active);
+        await new Promise<void>(resolve => { capacityAvailable = resolve; });
       }
       if (failed) break;
       activeBytes += entry.size;
       const copying = copyEntry(entry).catch(error => {
         if (!failed) { failed = true; failure = error; }
-      }).finally(() => { activeBytes -= entry.size; active.delete(copying); });
+      }).finally(() => {
+        activeBytes -= entry.size;
+        active.delete(copying);
+        const notify = capacityAvailable;
+        capacityAvailable = undefined;
+        notify?.();
+      });
       active.add(copying);
     }
     await Promise.all(active);

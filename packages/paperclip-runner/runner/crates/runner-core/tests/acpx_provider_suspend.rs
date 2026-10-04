@@ -77,6 +77,20 @@ fn reaps_an_active_provider_generation_at_the_suspension_boundary() {
 }
 
 #[test]
+fn idle_suspension_cannot_retire_an_active_turn() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    let error = session.terminate_idle_for_suspension().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("settled turn and no pending requests"));
+    assert_eq!(session.state().active_turn_id(), Some("turn-1"));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn fails_closed_when_the_suspension_acknowledgement_does_not_match() {
     for mode in ["suspend-wrong-ack", "suspend-wrong-identity"] {
         let mut session = AcpxProviderSession::start(&config(mode)).unwrap();

@@ -94,6 +94,39 @@ async function output(child: ChildProcess): Promise<{ text: string; error: strin
 }
 
 describe("native ACPX execution closure", () => {
+  it("reuses shared parent prefixes with exactly the original levels, insertion order and sorted batches", async () => {
+    const declaration = await fixture();
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    const deep = Array.from({ length: 36 }, (_, index) => `d${index}`).join("/");
+    const paths = ["plain", "a-/one", "a.b/two", "a/a", "a/b/a", "a/b/c/a", "a/b/c/b", "a/bb/a", "a/c/a", "a0/a", "space dir/@scope/pkg/a", "space dir/@scope/pkg/b", "日本/é/a", `${deep}/a`, `${deep}/b`, `${deep}/more/c`];
+    for (const path of paths) {
+      await mkdir(join(declaration.distributionRoot, dirname(path)), { recursive: true });
+      await writeFile(join(declaration.distributionRoot, path), path, { mode: 0o600 });
+      entries.push({ path, sha256: hash(path), size: Buffer.byteLength(path), executable: false });
+    }
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    const creatingStart = vi.mocked(mkdir).mock.calls.length;
+    const sealingStart = vi.mocked(chmod).mock.calls.length;
+    const created = await createNativeAcpxDistributionSnapshot({ ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) }, entries);
+    try {
+      const root = created.snapshot.roots[0]!;
+      const levels = new Map<number, Set<string>>();
+      const directories = new Set([dirname(root), root]);
+      // Frozen reference: the original repeated-prefix planner.
+      for (const entry of entries) {
+        const parts = entry.path.split("/");
+        for (let depth = 1; depth < parts.length; depth++) {
+          const path = join(root, ...parts.slice(0, depth));
+          const level = levels.get(depth) ?? new Set<string>();
+          level.add(path); levels.set(depth, level); directories.add(path);
+        }
+      }
+      const expectedCreation = [root, ...[...levels.keys()].sort((a, b) => a - b).flatMap(depth => [...levels.get(depth)!].sort())];
+      expect(vi.mocked(mkdir).mock.calls.slice(creatingStart)).toEqual(expectedCreation.map(path => [path, { mode: 0o700 }]));
+      expect(vi.mocked(chmod).mock.calls.slice(sealingStart)).toEqual([...directories].map(path => [path, 0o500]));
+      for (const path of directories) expect((await stat(path)).mode & 0o777).toBe(0o500);
+    } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
+  });
   it("rejects paths, ordering, oversized files and altered manifest pins", () => {
     const entry = { path: "runtime", sha256: "a".repeat(64), size: 10, executable: true };
     for (const entries of [[{ ...entry, path: "../escape" }], [{ ...entry, path: "/absolute" }], [entry, entry], [{ ...entry, size: 2 ** 40 }], [{ ...entry, unknown: 1 }]]) {
@@ -220,6 +253,56 @@ describe("native ACPX execution closure", () => {
     const evil = await fixture({ node: true, script: `require(${JSON.stringify(outside)});` });
     const denied = await output((await (await verifyNativeAcpxInstallation(evil)).openCommand()).spawn());
     expect(denied.code).not.toBe(0); expect(denied.error).toContain("escaped its closed distribution");
+  }, 30_000);
+  it.each([false, true])("runs real Node module hooks with interleaved formats and tamper=%s", async tamper => {
+    const script = tamper ? `
+      const fs = require("node:fs");
+      const { registerHooks } = require("node:module");
+      const { fileURLToPath } = require("node:url");
+      registerHooks({ resolve(specifier, context, next) {
+        const result = next(specifier, context);
+        if (result.url.endsWith("/value.mjs")) {
+          const path = fileURLToPath(result.url);
+          fs.chmodSync(path, 0o600);
+          fs.writeFileSync(path, 'console.log("tampered-code-executed");export default 99;');
+        }
+        return result;
+      }});
+      import("./value.mjs").then(() => { process.exitCode = 9; })
+        .catch(error => { console.error(error.message); process.exitCode = 17; });
+    ` : `
+      const resolved = require.resolve("./value.cjs");
+      require("node:fs");
+      const commonjs = require(resolved);
+      const json = require("./value.json");
+      import("./value.mjs").then(module => {
+        console.log(JSON.stringify([commonjs, json.value, module.default, require(resolved)]));
+      }).catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const declaration = await fixture({ node: true, script });
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    for (const [path, source] of Object.entries({
+      "value.cjs": "module.exports = 17;",
+      "value.json": '{"value":31}',
+      "value.mjs": "export default 23;",
+    })) {
+      await writeFile(join(declaration.distributionRoot, path), source, { mode: 0o600 });
+      entries.push({ path, sha256: hash(source), size: Buffer.byteLength(source), executable: false });
+    }
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+    const lease = await (await verifyNativeAcpxInstallation({ ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) })).openCommand();
+    try {
+      const result = await output(lease.spawn());
+      if (tamper) {
+        expect(result.code, result.error).toBe(17);
+        expect(result.error).toContain("digest mismatch");
+        expect(result.text).not.toContain("tampered-code-executed");
+      } else {
+        expect(result.code, result.error).toBe(0);
+        expect(result.text).toBe("[17,31,23,17]\n");
+      }
+    } finally { await lease.close(); }
   }, 30_000);
   it("creates each private parent once and seals every directory before returning", async () => {
     const { declaration, entries } = await directoryFixture();

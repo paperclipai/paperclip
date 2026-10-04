@@ -1,3 +1,4 @@
+import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
 import { runPiControlsFlow } from "./pi-controls-flow.js";
 import { runCursorNativeFlow } from "./cursor-native-flow.js";
@@ -227,6 +228,7 @@ async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
   deadlineAt: number;
+  preserveRunner?: RestartRunnerIdentity;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -237,7 +239,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId }),
+    JSON.stringify({ requestId: input.requestId, ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}) }),
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryRequestPath, requestPath);
@@ -976,7 +978,7 @@ for (const execution of executions) {
       } else if (execution.task.flow === "pi_native") {
         const story = await runPiNativeFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `pi-native-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          restart: preserveRunner => restartIsolatedPaperclipServer({ api, requestId: `pi-native-${nonce}`, deadlineAt: startedAtMs + deadlineMs, preserveRunner }),
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),

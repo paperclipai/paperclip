@@ -47,23 +47,23 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
     acpxVersion: QUALIFIED_ACPX_VERSION,
     agent: "pi",
-    agentProfileVersion: 13,
+    agentProfileVersion: 14,
     agentServerPackage: "pi-acp",
     agentServerVersion: "0.0.33",
     agentRuntimePackage: "@earendil-works/pi-coding-agent",
     agentRuntimeVersion: "1.0.0",
     commandDigest:
-      "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+      "sha256:f35145437eeb355ed37bc5a4fa93d7ede561d9c45daf311979b46890b808ddd4",
     qualificationModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     reportedModelId: "openrouter/deepseek/deepseek-v4-flash-0731",
     permissionPolicy: "interactive",
   },
   cursor: {
     driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
-    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 10,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 11,
     agentServerPackage: "cursor-agent", agentServerVersion: "2026.09.26-dd393fe",
     agentRuntimePackage: null, agentRuntimeVersion: null,
-    commandDigest: "sha256:1df2a15b93bc3a14fa47fa3315344ba023fe2412048047cdc6f32096a6336564",
+    commandDigest: "sha256:13207d7b6afcfe681d4fe9098655df056c2cf87e03f5141e961cd01c32c5bdd2",
     // Authenticated discovery has not established a qualification model. Never
     // turn this empty declaration into a default; callers must select an ID.
     qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",
@@ -71,10 +71,10 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
   },
   copilot: {
     driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
-    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "copilot", agentProfileVersion: 13,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "copilot", agentProfileVersion: 15,
     agentServerPackage: "@github/copilot", agentServerVersion: "1.0.88",
     agentRuntimePackage: null, agentRuntimeVersion: null,
-    commandDigest: "sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1",
+    commandDigest: "sha256:8faf47520f156c62c79ea6ca7d1d90a85ddc9a6621f798bd14e87bc6c643bd04",
     // Authenticated discovery has not established a qualification model. Never
     // turn this empty declaration into a default; callers must select an ID.
     qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",

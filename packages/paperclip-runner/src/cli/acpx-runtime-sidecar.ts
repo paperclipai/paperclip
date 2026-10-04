@@ -517,19 +517,22 @@ async function dispatch(
   }
   if (request.command === "session.snapshot") {
     const activeHost = requireHost();
+    const status = sanitizeRuntimeStatus(await readSidecarHostStatusWithin(activeHost));
     return {
       identity: acpxProviderSessionIdentity(
         activeHost.identity(),
         activeHost.binding(),
       ),
-      status: sanitizeRuntimeStatus(
-        await readSidecarHostStatusWithin(activeHost),
-      ),
+      status,
       runId,
       turnId,
       sequence,
       pendingToolCount: tools.size,
       pendingInputCount: inputs.size,
+      pendingRuntimeRequests: [
+        ...Array.from(inputs, ([requestId, pending]) => ({ requestId, type: "input", turnId: pending.turnId })),
+        ...Array.from(permissions, ([requestId, pending]) => ({ requestId, type: "permission", turnId: pending.turnId })),
+      ],
     };
   }
   if (request.command === "session.goal.get") {

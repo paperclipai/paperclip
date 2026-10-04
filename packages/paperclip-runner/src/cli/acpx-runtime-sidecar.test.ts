@@ -11,6 +11,47 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+describe("live sidecar pending request snapshots", () => {
+  it("attests current callback identities after the live status barrier without exposing forms", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf('  if (request.command === "session.snapshot") {');
+    const end = source.indexOf('  if (request.command === "session.goal.get") {', start);
+    expect(start).toBeGreaterThan(0);
+    const inputs = new Map([['input-1', { turnId: 'turn-1', questionSet: { private: 'hidden form' } }]]);
+    const permissions = new Map([['permission-1', { turnId: 'turn-1', normalized: { private: 'hidden permission' } }]]);
+    const host = { identity: () => 'identity', binding: () => 'binding' };
+    const readStatus = vi.fn(async () => {
+      inputs.delete('input-1');
+      inputs.set('input-2', { turnId: 'turn-1', questionSet: { private: 'new hidden form' } });
+      return { live: true };
+    });
+    const run = new Function('requireHost', 'readSidecarHostStatusWithin', 'sanitizeRuntimeStatus', 'acpxProviderSessionIdentity', 'inputs', 'permissions', `
+      const request={command:"session.snapshot"}, tools=new Map(), runId="run-1", turnId="turn-1", sequence=7;
+      ${stripTypeScriptTypes(`async function readSnapshot() { ${source.slice(start, end)} }`)}
+      return readSnapshot;
+    `)(() => host, readStatus, (value: unknown) => value, () => ({ kind: 'acpx' }), inputs, permissions);
+    const snapshot = await run();
+    expect(readStatus).toHaveBeenCalledExactlyOnceWith(host);
+    expect(snapshot).toMatchObject({ runId: 'run-1', turnId: 'turn-1', pendingRuntimeRequests: [
+      { requestId: 'input-2', type: 'input', turnId: 'turn-1' },
+      { requestId: 'permission-1', type: 'permission', turnId: 'turn-1' },
+    ] });
+    expect(JSON.stringify(snapshot)).not.toContain('hidden');
+  });
+
+  it("rejects the snapshot when its provider status cannot be verified", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf('  if (request.command === "session.snapshot") {');
+    const end = source.indexOf('  if (request.command === "session.goal.get") {', start);
+    const run = new Function('requireHost', 'readSidecarHostStatusWithin', 'sanitizeRuntimeStatus', `
+      const request={command:"session.snapshot"};
+      ${stripTypeScriptTypes(`async function readSnapshot() { ${source.slice(start, end)} }`)}
+      return readSnapshot;
+    `)(() => ({}), async () => { throw new Error('provider process lost'); }, (value: unknown) => value);
+    await expect(run()).rejects.toThrow('provider process lost');
+  });
+});
+
 import { deliverAcpxResponse } from "../drivers/acpx/response-delivery.js";
 import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";

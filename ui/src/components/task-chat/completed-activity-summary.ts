@@ -5,7 +5,7 @@ import {
   type ToolFamily,
   type ToolIcon,
 } from "./tool-taxonomy";
-import { protocolActivityPresentation } from "./task-chat-activity-presentation";
+import { protocolActivityPresentation, providerNoticeSeverity } from "./task-chat-activity-presentation";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 const labels: Record<ToolFamily, string> = {
@@ -42,6 +42,12 @@ export function completedActivitySummary(items: Activity[]) {
     completed: boolean;
     order: number;
   }> = [];
+  const notices: Array<{
+    summary: string | undefined;
+    severity: "info" | "warning" | "error";
+    icon: ToolIcon;
+    order: number;
+  }> = [];
   for (const [order, item] of items.entries()) {
     if (item.kind === "tool") {
       const p = toolActivityPresentation({
@@ -71,7 +77,7 @@ export function completedActivitySummary(items: Activity[]) {
           // Reuse only the normalized notice text already available in the row.
           const summary = item.summary?.trim()
             || item.details.find((entry) => entry.label === "Summary")?.value.trim();
-          add(summary || "Received a provider update", p.icon, order);
+          notices.push({ summary, severity: providerNoticeSeverity(item), icon: p.icon, order });
           continue;
         }
         const family =
@@ -99,6 +105,21 @@ export function completedActivitySummary(items: Activity[]) {
         add(label, p.icon, order);
       }
     }
+  }
+  if (notices.length) {
+    const strongest = notices.find((notice) => notice.severity === "error")
+      ?? notices.find((notice) => notice.severity === "warning")
+      ?? notices[0]!;
+    const label = notices.length === 1
+      ? strongest.summary || "Received a provider update"
+      : strongest.severity === "error"
+        ? "Provider error reported"
+        : strongest.severity === "warning"
+          ? "Provider warning reported"
+          : "Received provider updates";
+    // One notice category leaves room for actual work. Keep warnings and errors
+    // visible when the compact label truncates other activity categories.
+    add(label, strongest.icon, strongest.severity === "info" ? notices[0]!.order : -1);
   }
   const completedFamilies = new Set(
     tools.filter((tool) => tool.completed).map((tool) => tool.family),

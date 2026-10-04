@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { createPiLaunchSpec } from "./pi-acp-runtime.js";
 import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { readNativeSemanticReceipt, type SemanticToolResult } from "../semantic-tool-receipt.js";
 import { validateAcpxRichEvent } from "./profile-extensions.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -917,6 +919,74 @@ describe("ACPX runtime host", () => {
       }
       await host.close({ reason: "registered copy test complete" });
     }
+  });
+
+  it("reopens Pi with the current registered home in a resumed child shell after prior copies are removed", async () => {
+    const fixture = await hostFixture();
+    const root = await realpath(fixture.root);
+    const copies = await realpath(await mkdtemp(join(tmpdir(), "paperclip-pi-home-probe-")));
+    temporaryDirectories.push(copies);
+    const sessionHome = join(root, "pi-session-home");
+    await mkdir(join(sessionHome, "sessions"), { recursive: true });
+    const sessionPath = join(sessionHome, "sessions", "retained.jsonl");
+    await writeFile(sessionPath, "retained provider session");
+    const entrypoint = join(root, "inspect-launch.cjs");
+    const extension = join(root, "extension.js");
+    await writeFile(extension, "");
+    // The child replaces only the provider/model boundary. Its shell inherits
+    // the actual production launch spec, including the registered AGENT_HOME.
+    await writeFile(entrypoint, `
+      const { execFileSync } = require("node:child_process");
+      const shell = execFileSync("/bin/bash", ["--noprofile", "--norc", "-c",
+        'printf "%s\\n" "$AGENT_HOME"; cat "$AGENT_HOME/notes/warm-memory.txt"'],
+        { encoding: "utf8", env: process.env });
+      console.log(JSON.stringify({ shell,
+        configuration: JSON.parse(process.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION),
+        arguments: process.argv.slice(2) }));
+    `);
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    const observed: Array<{ shell: string; configuration: { agentHome: string; instructions: string }; arguments: string[] }> = [];
+    const dependencies = fixture.dependencies({ openRuntime: async launch => {
+      const spec = createPiLaunchSpec({ cwd: fixture.options.workingDirectory, sessionPath }, {
+        ...launch.launchEnvironment,
+        PAPERCLIP_PI_NODE_EXECUTABLE: process.execPath,
+        PAPERCLIP_PI_ENTRYPOINT: entrypoint,
+        PAPERCLIP_PI_EXTENSION_PATH: extension,
+        PI_CODING_AGENT_DIR: sessionHome,
+      });
+      observed.push(JSON.parse(execFileSync(spec.command, spec.args, {
+        cwd: fixture.options.workingDirectory, env: spec.env, encoding: "utf8", timeout: 5_000,
+      })));
+      return runtimePort({
+        getStatus: async () => ({ models: { currentModelId: model } }),
+        identity: async () => ({ acpxRecordId: "same-record", backendSessionId: "same-session", agentSessionId: "same-session", piThinkingLevel: "low" }),
+      });
+    } });
+    let priorHome = "/unregistered-ambient-home";
+    for (const turn of [1, 2, 3]) {
+      const agentHome = join(copies, `turn-${turn}`);
+      await mkdir(join(agentHome, "notes"), { recursive: true });
+      await writeFile(join(agentHome, "notes", "warm-memory.txt"), `T${turn}\n`);
+      const instructions = `For this turn, AGENT_HOME is ${agentHome}.`;
+      const runtimeContext = { instructions: { workingCopy: { kind: "agent_files", rootPath: agentHome, entryPath: "AGENTS.md" } }, skills: [], mcp: { bindingId: null } } as unknown as NativeRuntimeContextSnapshot;
+      const host = await AcpxRuntimeHost.open({
+        ...fixture.options, agent: "pi", model, piThinkingLevel: "low", permissionMode: "approve-all",
+        providerPolicy: { readOnly: false }, runtimeContext, systemInstructions: instructions,
+        environment: { OPENROUTER_API_KEY: "test-only", AGENT_HOME: priorHome, PAPERCLIP_PI_AGENT_HOME: priorHome },
+      }, dependencies);
+      try {
+        expect(observed.at(-1)).toMatchObject({
+          shell: `${agentHome}\nT${turn}\n`, configuration: { agentHome, instructions },
+          arguments: expect.arrayContaining(["--session", sessionPath]),
+        });
+      } finally {
+        await host.close({ reason: "credential-free home probe complete" });
+      }
+      await rm(agentHome, { recursive: true });
+      priorHome = agentHome;
+    }
+    expect(observed).toHaveLength(3);
+    expect(await readFile(sessionPath, "utf8")).toBe("retained provider session");
   });
 
   it("selects and verifies Claude's qualified reported model", async () => {

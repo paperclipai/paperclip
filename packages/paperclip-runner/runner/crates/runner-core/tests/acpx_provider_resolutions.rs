@@ -108,6 +108,32 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
 }
 
 #[test]
+fn live_callback_snapshot_checks_the_surviving_sidecar_and_upstream_input_id() {
+    for mode in ["resolutions", "resolutions-projected-id"] {
+        let mut session = started(mode);
+        let live = session.verify_live_request_snapshot().unwrap();
+        let provider_id = if mode == "resolutions-projected-id" {
+            "input / réquest"
+        } else {
+            "input-1"
+        };
+        assert_eq!(live.get(provider_id).map(String::as_str), Some("input"));
+        assert_eq!(live.len(), 1);
+        session.shutdown("test complete").unwrap();
+        assert!(session.verify_live_request_snapshot().is_err());
+    }
+    for mode in [
+        "resolutions-snapshot-wrong-session",
+        "resolutions-snapshot-wrong-turn",
+        "resolutions-snapshot-missing-callbacks",
+    ] {
+        let mut session = started(mode);
+        assert!(session.verify_live_request_snapshot().is_err(), "{mode}");
+        session.shutdown("test complete").unwrap();
+    }
+}
+
+#[test]
 fn projected_request_id_resolves_the_exact_upstream_sidecar_request() {
     let mut session = AcpxProviderSession::start(&config("resolutions-projected-id")).unwrap();
     session

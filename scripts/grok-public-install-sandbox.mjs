@@ -7,9 +7,15 @@ export const GROK_PUBLIC_INSTALL_LIFECYCLE = [
   'npm', 'rebuild', '--offline', '--ignore-scripts=false', '--dangerously-allow-all-scripts',
 ];
 
-export function grokConsumerDockerArgs({ assets, consumer, cache, command, uid, gid, download = false, prerequisite }) {
+export function grokConsumerDockerArgs({ assets, consumer, cache, command, uid, gid, download = false, prerequisite, temporarySizeMiB = 256, temporaryExecutable = false }) {
   if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) {
     throw new Error('Public-install verification requires an unprivileged host user');
+  }
+  if (!Number.isSafeInteger(temporarySizeMiB) || temporarySizeMiB < 256 || temporarySizeMiB > 2048) {
+    throw new Error('Public-install temporary storage must be bounded between 256 and 2048 MiB');
+  }
+  if (typeof temporaryExecutable !== 'boolean' || (temporaryExecutable && download)) {
+    throw new Error('Executable runtime snapshots require an offline verification sandbox');
   }
   return [
     'run', '--rm', '--platform', 'linux/amd64',
@@ -17,7 +23,7 @@ export function grokConsumerDockerArgs({ assets, consumer, cache, command, uid, 
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--pids-limit', '256', '--memory', '3g',
     '--network', download ? 'bridge' : 'none',
-    '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777',
+    '--tmpfs', `/tmp:rw,nosuid,nodev,${temporaryExecutable ? 'exec' : 'noexec'},size=${temporarySizeMiB}m,mode=1777`,
     '--env', 'HOME=/tmp', '--env', 'npm_config_cache=/cache',
     '--env', 'npm_config_nodedir=/usr/local',
     '--env', 'npm_config_audit=false', '--env', 'npm_config_fund=false',

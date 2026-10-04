@@ -7,7 +7,7 @@ import { COPILOT_VERSION, materializePinnedCopilotBinary, resolveCopilotDistribu
 
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 384 * 1024 * 1024;
-const PROFILE_DIGEST = "sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1";
+const PROFILE_DIGEST = "sha256:8faf47520f156c62c79ea6ca7d1d90a85ddc9a6621f798bd14e87bc6c643bd04";
 
 /** Build-time only; outputRoot is the exact runner-owned platform asset directory. */
 export async function buildPinnedCopilotDistribution({ outputRoot, platform = process.platform, architecture = process.arch }, { fetchImpl = fetch } = {}) {

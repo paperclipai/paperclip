@@ -1622,6 +1622,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
+    return setupFollowUpMessageId;
   }
 
   async function configuredSlackEndpoint(
@@ -27525,8 +27526,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
         trigger: "direct_message",
       });
-      await qualifySetupRoundTrip(service, endpoint.id, userId);
+      const setupMessageId = await qualifySetupRoundTrip(service, endpoint.id, userId);
       await service.test(endpoint.id, "owner-user");
+      if (provider === "telegram") {
+        // Setup dispatches receipt cleanup asynchronously. Finish it before
+        // measuring reaction removals owned by this fixture's working run.
+        await service.processPendingReceiptReactions();
+        await waitForProcessedReceiptRemoval(endpoint.id, {
+          threadId: thread.thread.id,
+          messageId: setupMessageId,
+          emoji: "eyes",
+        });
+      }
       const [conversation] = await service.listConversations(endpoint.id);
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({

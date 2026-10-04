@@ -16,8 +16,35 @@ function cancelled() {
   const binding = { pending, caller: piControlCaller, cancellationRequestId: piCancellationId, dispatchMonotonicNs: String(BigInt(pending.observedMonotonicNs) + 1n) };
   return { f, binding, read: () => readPiStopSettlement({ ...f.state(), ...binding }) };
 }
+function streamedWrite() {
+  const f = piControlFixture();
+  f.events.pop();
+  event(f.events[0]!).payload = { ...f.tool, target: null, inputUpdated: false };
+  f.append("tool.execution.progressed", { ...f.tool, target: null, inputUpdated: true });
+  f.append("tool.execution.progressed", { ...f.tool, inputUpdated: true });
+  f.append("runtime_request.created", { request: f.request });
+  return f;
+}
 describe("Pi pending control identity", () => {
   it("accepts Pi native permission/start without invented provider notices", () => expect(piControlFixture().pending()).toMatchObject({ toolCallId: "pi-tool", executionId: "pi-tool", turnId: "turn" }));
+  it("accepts streamed arguments only after the same execution proves its exact path", () => {
+    const f = streamedWrite();
+    expect(f.pending()).toMatchObject({ startedSourceSeq: 1, requestSourceSeq: 4 });
+  });
+  it.each([
+    ["no complete target", (f: ReturnType<typeof streamedWrite>) => { event(f.events[2]!).payload.target = null; }],
+    ["conflicting partial target", f => { event(f.events[1]!).payload.target = "other.txt"; }],
+    ["target lost after admission", f => { f.append("tool.execution.progressed", { ...f.tool, target: null }); }],
+    ["different execution supplied target", f => { event(f.events[2]!).payload.executionId = "other"; }],
+    ["terminal before target", f => { f.events[1]!.eventType = event(f.events[1]!).eventType = "tool.execution.completed"; event(f.events[1]!).payload.status = "failed"; }],
+  ] satisfies Array<[string, (f: ReturnType<typeof streamedWrite>) => void]>)("rejects streamed write with %s", (_name, mutate) => {
+    const f = streamedWrite(); mutate(f); expect(() => f.pending()).toThrow();
+  });
+  it("retains the partial start hash through actual callback cancellation", () => {
+    const f = streamedWrite(), pending = f.pending(); f.cancel();
+    expect(readPiStopSettlement({ ...f.state(), pending, caller: piControlCaller, cancellationRequestId: piCancellationId,
+      dispatchMonotonicNs: String(BigInt(pending.observedMonotonicNs) + 1n) })).toMatchObject({ normalCompletionAccepted: false });
+  });
   it("admits permission-first ACP only after both canonical boundaries exist", () => {
     const f = piControlFixture(); f.events.reverse();
     f.events.forEach((r, i) => { r.seq = event(r).sourceSeq = i + 1; event(r).sourceEventId = `source:run:${i + 1}`; });
@@ -84,6 +111,35 @@ function steered() {
   return { f, binding, ack, read: () => readPiSteeringSettlement({ ...f.state(), ...binding }) };
 }
 describe("Pi same-turn steering", () => {
+  function withControlSettlement() {
+    return steered();
+  }
+  it("keeps exact runner proof when the control plane records result and terminal events", () => {
+    expect(withControlSettlement().read()).toMatchObject({ nativeFollowUpTested: false });
+  });
+  it.each([
+    ["foreign control producer", (s: ReturnType<typeof withControlSettlement>) => { event(s.f.events.at(-1)!).sourceInstanceId = "foreign:control"; event(s.f.events.at(-1)!).sourceEventId = "foreign:control:run:2"; }],
+    ["foreign control turn", s => { event(s.f.events.at(-1)!).turnId = "foreign"; }],
+    ["foreign control session", s => { event(s.f.events.at(-1)!).normalizedSessionId = "foreign"; }],
+    ["unknown control event", s => { s.f.events.at(-1)!.eventType = event(s.f.events.at(-1)!).eventType = "runtime_request.resolved"; }],
+    ["reordered control sequence", s => { event(s.f.events.at(-1)!).sourceSeq = 1; event(s.f.events.at(-1)!).sourceEventId = "source:control:run:1"; }],
+    ["duplicate control terminal", s => { s.f.append("run.terminal", { schema: "paperclip.prp.terminal.v1" }, { sourceKind: "control_plane", sourceInstanceId: "source:control", sourceSeq: 3, sourceEventId: "source:control:run:3" }); }],
+    ["unbound control result", s => { event(s.f.events.at(-2)!).payload.result.schema = "foreign"; }],
+    ["both control records missing", s => { s.f.events.splice(-2); }],
+    ["accepted result missing", s => { s.f.events.splice(-2, 1); }],
+    ["control terminal missing", s => { s.f.events.pop(); }],
+    ["wrong control summary", s => { event(s.f.events.at(-2)!).payload.result.summary = "Finished"; }],
+    ["unfinished control result", s => { event(s.f.events.at(-2)!).payload.result.reportedWorkDisposition = "in_progress"; }],
+    ["failed control terminal", s => { event(s.f.events.at(-1)!).payload.runTerminalState = "failed"; }],
+    ["interrupted control turn", s => { event(s.f.events.at(-1)!).payload.turnTerminalState = "interrupted"; }],
+    ["unfinished control terminal", s => { event(s.f.events.at(-1)!).payload.reportedWorkDisposition = "in_progress"; }],
+    ["control terminal before runner completion", s => {
+      for (const row of s.f.events.slice(3, 6)) row.seq += 2;
+      s.f.events.at(-2)!.seq = 4; s.f.events.at(-1)!.seq = 5;
+    }],
+  ] satisfies Array<[string, (s: ReturnType<typeof withControlSettlement>) => void]>)("rejects %s", (_name, mutate) => {
+    const s = withControlSettlement(); mutate(s); expect(s.read).toThrow();
+  });
   it("calibrates against the actual Product ACP facade producer, not Rust's raw transport echo", async () => {
     const f = piControlFixture(), pending = f.pending(), calls: Row[] = [];
     // Only the transport and event sink are doubles. Run the actual public
@@ -129,11 +185,13 @@ describe("Pi controls catalog admission", () => {
     expect(() => assertRemoteNativeEvidencePrerequisites(cells, {})).toThrow();
   });
   it("pins the Pi 1 profile and versioned coverage while retaining active Stop identity", () => {
-    // Pi 1/profile 13 changes profile-bearing definitions. Coverage v4/v2 adds
+    // Pi 1/profile 14 changes profile-bearing definitions. Coverage v4/v2 adds
     // provider death, pending restart and the strict file oracle; no runtime admission is promoted.
     const pi = runnerMatrix.find(c => c.profile.qualificationCandidate === "pi")!.profile;
     expect(pi.modelQualification?.qualificationId).toBe("pi:0.0.33:1.0.0:openrouter");
-    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 4, profileVersion: 13 });
+    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 4, profileVersion: 14 });
+    expect(runnerSuites.find(s => s.id === "pi-controls")!.definitionMetadata).toMatchObject({ version: 6, profileVersion: 14,
+      controlPlaneSettlement: "required-scoped-result-and-terminal-after-runner" });
     expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 2 });
     for (const cell of runnerMatrix.filter(cell => cell.profile.qualificationCandidate === "pi")) {
       const agent = cell.profile.buildAgent({ environmentId: "environment", environmentFixtureId: cell.environment.id, workspacePath: "/workspace", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "synthetic", version: "latest" } } });
@@ -141,9 +199,9 @@ describe("Pi controls catalog admission", () => {
     }
     const hashes = Object.fromEntries(runnerSuites.filter(s => ["pi-native", "native-active-stop", "extended-harnesses", "rich-acp-warm-continuity"].includes(s.id)).map(s => [s.id, suiteDefinitionHash(s)]));
     expect(hashes).toEqual({
-      "pi-native": "5038d59a5176ca215bc29b2d532c1d51d134442b046dd230c1e060050109964d",
+      "pi-native": "00f1ec9adc5980c6d147fbc8a4992ff76fb2327ad8d8dc1fc8516a69d4131bd1",
       "native-active-stop": "99682b2b106d816a011834fae5a944ed7729958893709d5b83a19b6f595e7e4d",
-      "rich-acp-warm-continuity": "3000c64a9879b95926add1d822530c8812b70a223e94219766554d9c0092eedf",
+      "rich-acp-warm-continuity": "036c0faebc2f6eee5cd22ea38887c9c22650a83561fd08ee83473a565b11bb00",
       "extended-harnesses": "9814841e571cb8bb1dc5188a8577245896e0ce8c851294ac5dea9e3d42689db6",
     });
     expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(22);

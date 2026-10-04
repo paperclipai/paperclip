@@ -78,12 +78,23 @@ pub struct AcpxSidecarEvent {
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
+    session_open_timeout: Duration,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+}
+
+// A fresh Pi process verifies and copies its native closure before ACP admission.
+// Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
+    if agent == "pi" {
+        Duration::from_secs(60)
+    } else {
+        ordinary
+    }
 }
 
 impl AcpxSidecarTransport {
@@ -137,7 +148,9 @@ impl AcpxSidecarTransport {
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
         keys.extend_from_slice(credential_keys);
-        Self::start_with_environment_keys(config, &keys)
+        let mut transport = Self::start_with_environment_keys(config, &keys)?;
+        transport.session_open_timeout = session_open_timeout(agent, config.request_timeout);
+        Ok(transport)
     }
 
     fn start_with_environment_keys(
@@ -164,6 +177,7 @@ impl AcpxSidecarTransport {
         Ok(Self {
             process,
             request_timeout: config.request_timeout,
+            session_open_timeout: config.request_timeout,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
@@ -171,6 +185,14 @@ impl AcpxSidecarTransport {
             stderr_categories: BTreeSet::new(),
             poisoned: false,
         })
+    }
+
+    fn command_timeout(&self, command: GeneratedAcpxSidecarCommand) -> Duration {
+        if command == GeneratedAcpxSidecarCommand::SessionOpen {
+            self.session_open_timeout
+        } else {
+            self.request_timeout
+        }
     }
 
     pub fn process_id(&self) -> u32 {
@@ -268,7 +290,8 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let deadline = Instant::now() + self.request_timeout;
+        let timeout = self.command_timeout(command);
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -767,6 +790,18 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+        let ordinary = Duration::from_secs(30);
+        assert_eq!(
+            session_open_timeout("pi", ordinary),
+            Duration::from_secs(60)
+        );
+        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+            assert_eq!(session_open_timeout(agent, ordinary), ordinary);
+        }
+    }
+
     use super::*;
 
     #[test]

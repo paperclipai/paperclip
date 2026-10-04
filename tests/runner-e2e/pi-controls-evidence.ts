@@ -19,20 +19,24 @@ const hash = (v: unknown) => `sha256:${createHash("sha256").update(canonicalJson
 function requireProof(value: unknown, reason: string): asserts value { if (!value) throw new Error(`Pi controls: ${reason}`); }
 const terminalTypes = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 const closureTypes = new Set(["runtime_request.resolved", "runtime_request.cancelled", "runtime_request.expired"]);
+const controlSettlementTypes = new Set(["run.result.accepted", "run.terminal"]);
 
 /** Consume the actual Product projection. Pi does not emit Cursor/Copilot native
  * diagnostic notices; never manufacture those to reuse another provider's oracle. */
 function origin(events: readonly unknown[], scope: PiControlScope) {
   requireProof(Object.values(scope).every(id) && events.length > 0 && events.length <= 20_000, "bounded exact scope required");
-  const rows = events.map(rec).filter(row => rec(row.payload).prpEvent !== undefined).map(row => ({ row, event: rec(rec(row.payload).prpEvent) })).sort((a, b) => a.row.seq - b.row.seq);
+  const projected = events.map(rec).filter(row => rec(row.payload).prpEvent !== undefined).map(row => ({ row, event: rec(rec(row.payload).prpEvent) })).sort((a, b) => a.row.seq - b.row.seq);
   const seqs = new Set<number>(), sourceIds = new Set<string>(), last = new Map<string, number>();
-  for (const { row, event: e } of rows) {
+  for (const { row, event: e } of projected) {
     requireProof(row.companyId === scope.companyId && row.runId === scope.runId && isValidNativePrpEnvelope(e, row.protocolSchemaVersion)
-      && e.sourceKind === "runner" && e.runId === scope.runId && e.eventType === row.eventType && Number.isSafeInteger(row.seq) && row.seq > 0 && !seqs.has(row.seq)
+      && (e.sourceKind === "runner" || (e.sourceKind === "control_plane" && controlSettlementTypes.has(e.eventType)))
+      && e.runId === scope.runId && e.eventType === row.eventType && Number.isSafeInteger(row.seq) && row.seq > 0 && !seqs.has(row.seq)
       && id(e.sourceInstanceId) && Number.isSafeInteger(e.sourceSeq) && e.sourceSeq > (last.get(e.sourceInstanceId) ?? 0)
       && e.sourceEventId === `${e.sourceInstanceId}:${e.runId}:${e.sourceSeq}` && !sourceIds.has(e.sourceEventId), "foreign, duplicate or reordered event");
     seqs.add(row.seq); sourceIds.add(e.sourceEventId); last.set(e.sourceInstanceId, e.sourceSeq);
   }
+  const rows = projected.filter(x => x.event.sourceKind === "runner");
+  const control = projected.filter(x => x.event.sourceKind === "control_plane");
   const created = rows.filter(x => x.event.eventType === "runtime_request.created");
   requireProof(created.length === 1, "one native permission required");
   const card = created[0]!, request = rec(rec(card.event.payload).request);
@@ -42,20 +46,38 @@ function origin(events: readonly unknown[], scope: PiControlScope) {
     && Array.isArray(request.choices) && request.choices.some((c: Row) => c.key === "decline"), "native permission identity missing");
   const stream = (event: Row) => event.turnId === card.event.turnId && event.normalizedSessionId === card.event.normalizedSessionId && event.sourceInstanceId === card.event.sourceInstanceId;
   requireProof(rows.filter(x => x.event.turnId != null).every(x => stream(x.event)), "foreign turn, session or producer");
+  // Product settlement adds a separate control-plane producer after the runner
+  // terminal. Validate those records without using them as native tool proof.
+  const terminals = rows.filter(x => terminalTypes.has(x.event.eventType));
+  requireProof(control.length <= 2 && new Set(control.map(x => x.event.eventType)).size === control.length
+    && control.every(x => terminals.length === 1 && x.row.seq > terminals[0]!.row.seq
+      && x.event.sourceInstanceId === `${card.event.sourceInstanceId}:control`
+      && x.event.turnId === card.event.turnId && x.event.normalizedSessionId === card.event.normalizedSessionId
+      && (x.event.eventType === "run.result.accepted"
+        ? rec(rec(x.event.payload).result).schema === "paperclip.run_result.v1"
+        : rec(x.event.payload).schema === "paperclip.prp.terminal.v1"))
+    && (control.length !== 2 || (control[0]!.event.eventType === "run.result.accepted" && control[1]!.event.eventType === "run.terminal")),
+  "foreign, duplicate or premature control-plane settlement");
   const executionId = bootstrapReadExecutionId(request.details.toolCallId);
   const native = rows.filter(x => x.event.eventType.startsWith("tool.execution.") && rec(x.event.payload).transport === "builtin");
   const write = native.filter(x => rec(x.event.payload).executionId === executionId);
   const started = write.filter(x => x.event.eventType === "tool.execution.started");
+  // Pi streams native tool arguments. The start and early progress rows can
+  // have no path yet; the pending permission is admissible only after this
+  // same execution provides the exact target. Conflicting paths and loss of a
+  // previously known path still fail, including after denial or cancellation.
+  const targetIndex = write.findIndex(x => x.event.payload.target === scope.target);
   requireProof(started.length === 1 && write.filter(x => x.event.eventType === "tool.execution.completed").length <= 1
-    && write[0] === started[0]
-    && write.every(x => ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"].includes(x.event.eventType)
+    && write[0] === started[0] && targetIndex >= 0
+    && write.every((x, index) => ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"].includes(x.event.eventType)
       && x.event.payload.schema === "paperclip.tool.execution.v1" && x.event.payload.name === "write" && x.event.payload.operation === "edit"
-      && x.event.payload.target === scope.target && x.event.payload.status === (x.event.eventType === "tool.execution.completed" ? "failed" : "running")), "exact native write lifecycle missing");
+      && (x.event.payload.target === scope.target || (index < targetIndex && x.event.payload.target === null && x.event.eventType !== "tool.execution.completed"))
+      && x.event.payload.status === (x.event.eventType === "tool.execution.completed" ? "failed" : "running")), "exact native write lifecycle missing");
   requireProof(!write.some((x, index) => x.event.eventType === "tool.execution.completed" && index !== write.length - 1), "write activity after terminal");
   // Read-only orientation/bootstrap can precede the write. Never exempt another
   // edit, shell execution, or unknown native operation as an alleged bootstrap.
   requireProof(native.every(x => rec(x.event.payload).executionId === executionId || (x.event.payload.operation === "read" && x.row.seq < Math.min(card.row.seq, started[0]!.row.seq))), "extra native operation");
-  return { rows, card, request, started: started[0]!, executionId, stream };
+  return { rows, control, card, request, started: started[0]!, executionId, stream };
 }
 export function observePiControlPending(input: PiControlState & { scope: PiControlScope }): PiControlPending {
   const { run, issue, scope } = input, p = origin(input.events, scope);
@@ -116,6 +138,11 @@ export function readPiSteeringAcknowledgement(input: PiControlState & { pending:
 }
 export function readPiSteeringSettlement(input: PiControlState & { pending: PiControlPending; commentId: string; queueId: string; marker: string; finalMessage: string }) {
   const ack = readPiSteeringAcknowledgement(input), p = retained(input), b = input.pending;
+  const accepted = rec(rec(p.control[0]?.event.payload).result), terminalResult = rec(p.control[1]?.event.payload);
+  requireProof(p.control.length === 2 && p.control[0]!.event.eventType === "run.result.accepted" && p.control[1]!.event.eventType === "run.terminal"
+    && accepted.reportedWorkDisposition === "done" && accepted.summary === input.marker
+    && terminalResult.runTerminalState === "succeeded" && terminalResult.turnTerminalState === "completed" && terminalResult.reportedWorkDisposition === "done",
+  "complete matching control-plane settlement required");
   const closed = p.rows.filter(x => closureTypes.has(x.event.eventType)), terminal = p.rows.filter(x => terminalTypes.has(x.event.eventType));
   const failed = p.rows.filter(x => x.event.eventType === "tool.execution.completed" && x.event.payload.executionId === b.executionId);
   requireProof(closed.length === 1 && closed[0]!.event.eventType === "runtime_request.resolved" && closed[0]!.event.payload.requestId === b.requestId && closed[0]!.event.payload.turnId === b.turnId

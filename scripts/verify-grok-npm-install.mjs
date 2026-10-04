@@ -30,6 +30,7 @@ try {
     }
   }
   visit('@paperclipai/server');
+  visit('paperclipai');
   // Match release.sh's unified versioning in temporary staging directories.
   // Source manifests remain untouched, including independently versioned SDKs.
   run(process.execPath, [join(repo, 'scripts/build-standalone-public-packages.mjs')], repo);
@@ -115,6 +116,23 @@ try {
   run(process.execPath, [join(repo, 'packages/paperclip-runner/scripts/provision-grok.mjs'), prerequisite]);
   isolated(['node', '/packages/probe.mjs', 'present'], { prerequisite });
   console.log(JSON.stringify({ schema: 'paperclip.grok.public-npm-install.v1', sourceRevision, releaseVersion, lifecycleScriptsEnabled: true, lifecycleSentinelVerified: true, lifecycleNetwork: 'none', consumerImage: GROK_PUBLIC_INSTALL_IMAGE, consumerUid, consumerLockPreserved: true, cleanNpmInstall: true, packageCount: needed.size, builtinLauncherPresent: true, separateGrokPackage: false, npmProvisionedBinary: false, missingPrerequisiteRejected: true, provisionedBinaryVerified: true, commandLeaseVerified: true, providerCalls: 0 }));
+  // Exercise Pi's public CLI and installed server, never a private workspace
+  // package or binary override. Public dependency downloads are explicit and
+  // isolated; the actual admission probe runs without a network or credentials.
+  const piProbe = join(assets, 'pi-public-install-probe.mjs');
+  cpSync(join(repo, 'scripts/pi-public-install-probe.mjs'), piProbe); chmodSync(piProbe, 0o644);
+  // Pi assembles a bundled runtime in scratch space before atomic publication.
+  // Keep the existing sandbox and memory bound; only this download needs more
+  // temporary capacity than the smaller offline lifecycle probes.
+  const setup = isolated(['node', '/consumer/node_modules/paperclipai/dist/index.js', 'runtime', 'setup', 'pi'], { download: true, temporarySizeMiB: 2048 }).toString();
+  const receipt = JSON.parse(setup.trim());
+  assert.equal(receipt.status, 'installed_verified');
+  assert.equal(receipt.target, 'linux-x64');
+  assert.equal(readFileSync(join(consumer, 'package-lock.json'), 'utf8'), consumerLock, 'Pi setup must preserve the consumer dependency graph');
+  // Verified launch leases also materialize the runtime in private scratch.
+  // Docker defaults tmpfs to noexec. The offline admission probe must execute
+  // its verified private snapshot while keeping lifecycle/download scratch noexec.
+  console.log(isolated(['node', '/packages/pi-public-install-probe.mjs', '/consumer/node_modules/@paperclipai/server'], { temporarySizeMiB: 2048, temporaryExecutable: true }).toString().trim());
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

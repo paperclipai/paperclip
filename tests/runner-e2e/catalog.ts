@@ -1090,7 +1090,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Pending native-write Stop and browser-originated same-turn steering, with exact control receipts and independent retirement/no-effect evidence.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "pi"),
     environments: runnerEnvironments, tasks: piControlTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion,
+    definitionMetadata: { version: 6, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion,
+      nativeArguments: "streamed-until-exact-target",
+      controlPlaneSettlement: "required-scoped-result-and-terminal-after-runner",
+      steeringComment: "exact-browser-submitted-markdown",
+      steeringDispatch: "require-public-api-acceptance",
       pending: "paperclip.e2e.pi-control-pending.v1", stop: "paperclip.e2e.pi-stop-settlement.v1", steering: "paperclip.e2e.pi-steering-settlement.v1",
       permissionPolicy: "approve-reads", lifecycle: "per_turn", normalCompletionProvesStop: false, nativeFollowUp: "not-covered", providerDeath: "not-covered",
       remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false },
@@ -1133,9 +1137,15 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       return { ...agent, adapterConfig: { ...agent.adapterConfig as Record<string, unknown>, lifecycleMode: "warm", idleTimeoutMs: 300_000 } };
     } })),
     environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: [{ ...daytonaWarmContinuityTask, turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } }],
+    // ACP collects changed agent files only after provider retirement. Keep this
+    // process-continuity fixture on workspace writes; Codex retains its separate
+    // managed-home checkpoint fixture, and Pi covers saved files in a fresh run.
+    tasks: [{ ...daytonaWarmContinuityTask,
+      buildPrompt: nonce => warmTurnInstructions(1, nonce),
+      buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
+      turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } }],
     expectedMatrixSize: 6,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start" },
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start", agentFiles: "unchanged-home-process-continuity" },
   },
   {
     id: "blocker-guidance", label: "Direct blocker handling", manualOnly: true,

@@ -25,6 +25,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--profile-digest")
         .map(|pair| pair[1].as_str())
         .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
+    let suspend_delay_ms = args
+        .windows(2)
+        .find(|pair| pair[0] == "--suspend-delay-ms")
+        .map(|pair| pair[1].parse::<u64>())
+        .transpose()?;
+    let mut opened_identity: Option<Value> = None;
+    let lifetime_fence_candidates = args
+        .windows(2)
+        .find(|pair| pair[0] == "--lifetime-fence-ports")
+        .map(|pair| {
+            pair[1]
+                .split(',')
+                .map(str::parse::<u16>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![60001, 60002, 60003]);
+    let lifetime_fence_candidates: [u16; 3] = lifetime_fence_candidates
+        .try_into()
+        .map_err(|_| "lifetime fence requires three ports")?;
     // Only the receiver-admission fixture writes this task-owned command journal.
     let mut admission_journal = if matches!(mode, "admission-tool" | "admission-tool-oversized") {
         let path = args
@@ -64,7 +84,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         && request["params"]["result"] == json!({"id":"issue-1"})
                         && request["params"]["error"].is_null()}})
             } else {
-                bootstrap_success(id, command, &request, mode, profile_digest)
+                bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                )
             };
             write_json(&mut stdout, &response)?;
             if command == "turn.start" {
@@ -122,7 +149,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if command == "permission.resolve" {
             write_json(
                 &mut stdout,
-                &bootstrap_success(id, command, &request, mode, profile_digest),
+                &bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                ),
             )?;
             continue;
         }
@@ -287,6 +321,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "resolutions-error-redaction"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
+            | "resolutions-snapshot-wrong-session"
+            | "resolutions-snapshot-wrong-turn"
+            | "resolutions-snapshot-missing-callbacks"
             | "suspend"
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
@@ -306,10 +343,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                write_json(
-                    &mut stdout,
-                    &bootstrap_success(id, command, &request, mode, profile_digest),
-                )?;
+                let mut response = bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                );
+                if command == "session.open" {
+                    opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "session.suspend" {
+                    if let Some(delay_ms) = suspend_delay_ms {
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                        response["result"]["identity"] = opened_identity.clone().unwrap();
+                    }
+                }
+                write_json(&mut stdout, &response)?;
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -679,15 +730,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start"
-                    && matches!(
-                        mode,
-                        "resolutions"
-                            | "resolutions-error-redaction"
-                            | "resolutions-projected-id"
-                            | "resolutions-wrong-ack"
-                    )
-                {
+                if command == "turn.start" && mode.starts_with("resolutions") {
                     for (event_type, payload) in [
                         (
                             "runtime.tool_called",
@@ -758,6 +801,7 @@ fn bootstrap_success(
     request: &Value,
     mode: &str,
     profile_digest: &str,
+    lifetime_fence_candidates: [u16; 3],
 ) -> Value {
     if command == "permission.resolve" {
         if mode.starts_with("permissions-") {
@@ -813,7 +857,7 @@ fn bootstrap_success(
                         "bootstrap-alias-pi-thinking" => json!("medium"),
                         _ => params.get("piThinkingLevel").cloned().unwrap_or(Value::Null),
                     },
-                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
+                    "providerLifetimeFenceCandidates": lifetime_fence_candidates,
                 },
                 "status": {},
                 "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade")},
@@ -834,6 +878,22 @@ fn bootstrap_success(
         "turn.cancel" => {
             json!({"cancelled":mode != "turns-wrong-cancel", "sessionClosed":matches!(mode, "turns-retired" | "turns-retired-terminal-first")})
         }
+        "session.snapshot" => json!({
+            "identity": {
+                "kind":"acpx", "normalizedSessionId":"session-1",
+                "acpxRecordId":if mode == "resolutions-snapshot-wrong-session" {"other-record"} else {"record-1"},
+                "backendSessionId":"backend-1", "agentSessionId":"agent-1",
+                "profileDigest":profile_digest, "workspaceDigest":format!("sha256:{}", "2".repeat(64)),
+                "requestedModel":"gpt-5.6-sol", "effectiveModel":"gpt-5.6-sol",
+                "permissionMode":"approve-reads", "providerLifetimeFenceCandidates":lifetime_fence_candidates
+            },
+            "runId":"run-1",
+            "turnId":if mode == "resolutions-snapshot-wrong-turn" {"other-turn"} else {"turn-1"},
+            "pendingRuntimeRequests":if mode == "resolutions-snapshot-missing-callbacks" {Value::Null} else {
+                json!([{"requestId":if mode == "resolutions-projected-id" {PROJECTED_INPUT_PROVIDER_ID} else {"input-1"},
+                    "type":"input","turnId":"turn-1"}])
+            }
+        }),
         "session.suspend" => json!({
             "suspended":mode != "suspend-wrong-ack",
             "identity": if mode == "suspend-missing-identity" { Value::Null } else { json!({
@@ -847,7 +907,7 @@ fn bootstrap_success(
                 "requestedModel": "gpt-5.6-sol",
                 "effectiveModel": "gpt-5.6-sol",
                 "permissionMode": "approve-reads",
-                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
+                "providerLifetimeFenceCandidates": lifetime_fence_candidates,
             })},
         }),
         "tool.resolve" => json!({
