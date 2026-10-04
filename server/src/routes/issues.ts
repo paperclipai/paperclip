@@ -2028,6 +2028,32 @@ const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set([
   "revision_requested",
 ]);
 
+const REVIEW_VERDICT_SATISFYING_KINDS = new Set([
+  "request_confirmation",
+  "request_checkbox_confirmation",
+]);
+
+// Fail-closed: only an ACCEPTED verdict satisfies a review path. A
+// request_changes / send_back / expired verdict records that the judgement
+// happened and went against the work, so it must never unlock in_review.
+const REVIEW_VERDICT_SATISFYING_STATUSES = new Set(["accepted"]);
+
+function hasSatisfiedReviewVerdict(
+  interactions: Array<{ kind: string; status: string }>,
+): boolean {
+  return interactions.some(
+    (interaction) =>
+      REVIEW_VERDICT_SATISFYING_KINDS.has(interaction.kind) &&
+      REVIEW_VERDICT_SATISFYING_STATUSES.has(String(interaction.status)),
+  );
+}
+
+export function __hasSatisfiedReviewVerdictForTests(
+  interactions: Array<{ kind: string; status: string }>,
+): boolean {
+  return hasSatisfiedReviewVerdict(interactions);
+}
+
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
@@ -4635,6 +4661,12 @@ export function issueRoutes(
 
     if (pendingInteractions.length > 0) return null;
     if (await hasQueuedInteractionResponse(db, input.existing.companyId, input.existing.id, input.existing.assigneeAgentId)) return null;
+    // A recorded, accepted review verdict is itself a satisfied review path.
+    // The judgement already happened and it is auditable in the issue history,
+    // so restoring a blocked issue to in_review does not have to manufacture a
+    // new request. Without this, an issue whose review is complete and
+    // accepted cannot leave `blocked` on the agent-authored path at all.
+    if (hasSatisfiedReviewVerdict(interactions)) return null;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(
       input.existing.id,
@@ -4655,6 +4687,7 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
+        "recorded_accepted_review_verdict",
       ],
     });
   }
