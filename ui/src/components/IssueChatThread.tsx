@@ -5492,6 +5492,7 @@ const IssueChatComposer = forwardRef<
         mentions={mentions}
         onSubmit={handleSubmit}
         submitKey={submitKey}
+        submitDisabled={!canSubmit}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {

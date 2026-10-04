@@ -106,6 +106,11 @@ interface MarkdownEditorProps {
    * the autocomplete menu takes Return or the caret is in a code block.
    */
   submitKey?: SubmitKeyMode;
+  /**
+   * True while the owner cannot send (upload pending, conversation paused, …).
+   * Plain Return then stays a line break instead of being swallowed.
+   */
+  submitDisabled?: boolean;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -592,6 +597,26 @@ export function shouldAcceptAutocompleteKey(
   return trigger === "mention" || (trigger === "skill" && skillEnterArmed);
 }
 
+/**
+ * Whether a plain Return should call `onSubmit` in `"enter"` send-key mode.
+ * Return stays with the editor while an autocomplete menu is open (even when
+ * no slash option is armed yet), inside code blocks, and while sending is
+ * blocked, so it is never swallowed without a send.
+ */
+export function shouldSubmitOnPlainReturn({
+  submitKey,
+  autocompleteOpen,
+  inCodeBlock,
+  submitDisabled,
+}: {
+  submitKey: SubmitKeyMode;
+  autocompleteOpen: boolean;
+  inCodeBlock: boolean;
+  submitDisabled: boolean;
+}): boolean {
+  return submitKey === "enter" && !autocompleteOpen && !inCodeBlock && !submitDisabled;
+}
+
 export function isSameAutocompleteSession(
   left: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
   right: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
@@ -725,6 +750,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   actionCommands = [],
   onSubmit,
   submitKey = "mod-enter",
+  submitDisabled = false,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1433,13 +1459,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }
         }
 
-        // Plain Return submits in "enter" mode once autocomplete has passed on
-        // it; code blocks keep Return as a newline.
+        // Plain Return submits in "enter" mode unless the editor still owns it.
         if (
           onSubmit
-          && submitKey === "enter"
           && isSubmitKeyEvent(e, submitKey)
-          && !(e.target instanceof Element && e.target.closest(".cm-editor"))
+          && shouldSubmitOnPlainReturn({
+            submitKey,
+            autocompleteOpen: mentionActive,
+            inCodeBlock: e.target instanceof Element && Boolean(e.target.closest(".cm-editor")),
+            submitDisabled,
+          })
         ) {
           e.preventDefault();
           e.stopPropagation();

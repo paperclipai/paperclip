@@ -15,8 +15,7 @@ import {
   type MentionOption,
   placeCaretAfterMentionAnchor,
   placeCaretAtEditableEnd,
-  shouldAcceptAutocompleteKey,
-} from "./MarkdownEditor";
+  shouldAcceptAutocompleteKey, shouldSubmitOnPlainReturn } from "./MarkdownEditor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
@@ -1310,6 +1309,35 @@ describe("MarkdownEditor", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     press({ metaKey: true });
     expect(onSubmit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+  it("keeps plain Return with the editor while autocomplete is open, in code, or while sending is blocked", () => {
+    const base = { submitKey: "enter" as const, autocompleteOpen: false, inCodeBlock: false, submitDisabled: false };
+    expect(shouldSubmitOnPlainReturn(base)).toBe(true);
+    // An open slash menu with no armed option must not send the draft.
+    expect(shouldSubmitOnPlainReturn({ ...base, autocompleteOpen: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, inCodeBlock: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, submitDisabled: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, submitKey: "mod-enter" })).toBe(false);
+  });
+
+  it('submitKey="enter": Return is not swallowed while sending is blocked', async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey="enter" submitDisabled />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => {
+      editable.dispatchEvent(event);
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
     await act(async () => root.unmount());
   });
 

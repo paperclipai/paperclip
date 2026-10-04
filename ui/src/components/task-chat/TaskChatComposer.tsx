@@ -830,6 +830,16 @@ export function TaskChatComposer({
   }, [queuedEdit, takeoverVisible]);
 
   const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
+  // Same conditions that disable the Send button; the editor keeps Return as a
+  // line break while they hold.
+  const sendBlocked =
+    disabled ||
+    (Boolean(pause) && !canResetPausedConversation) ||
+    submitting ||
+    !!uncertainSubmission ||
+    uploadPending ||
+    uploadFailed ||
+    (body.trim().length === 0 && attachedRefs.length === 0);
 
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
@@ -1287,6 +1297,7 @@ export function TaskChatComposer({
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               submitKey={submitKey}
+              submitDisabled={sendBlocked}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
               }
@@ -1491,17 +1502,7 @@ export function TaskChatComposer({
               <button
                 type="button"
                 onClick={() => void (showStop ? stopControl.stop() : submit())}
-                disabled={
-                  showStop
-                    ? disabled || stopControl.stopping
-                    : disabled ||
-                      (Boolean(pause) && !canResetPausedConversation) ||
-                      submitting ||
-                      !!uncertainSubmission ||
-                      uploadPending ||
-                      uploadFailed ||
-                      (body.trim().length === 0 && attachedRefs.length === 0)
-                }
+                disabled={showStop ? disabled || stopControl.stopping : sendBlocked}
                 title={
                   showStop
                     ? stopControl.stopping
