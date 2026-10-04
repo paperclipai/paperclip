@@ -5,7 +5,7 @@ import {
   CircleCheck,
   SquarePen,
   Users,
-  MessageSquare,
+  MessageCircle,
   Inbox,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -67,7 +67,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
     ] : [
       { type: "link", to: "/dashboard", label: "Home", icon: House },
       ...(agentChatEnabled
-        ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageSquare } as MobileNavItem]
+        ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
         : []),
       { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
       {

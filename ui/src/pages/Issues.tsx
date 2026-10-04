@@ -115,9 +115,10 @@ function StreamlinedTasks() {
   const definition = taskView(view);
 
   // Make the resolved view addressable without dropping the params that
-  // brought the user here.
+  // brought the user here — and correct a requested view that was overridden
+  // (an inbox view carrying an organization filter opens All tasks).
   useEffect(() => {
-    if (normalizeTaskViewKey(requestedView)) return;
+    if (normalizeTaskViewKey(requestedView) === view) return;
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.set(TASK_VIEW_PARAM, view);
