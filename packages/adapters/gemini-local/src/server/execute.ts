@@ -64,6 +64,7 @@ import {
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
   parseGeminiJsonl, createGeminiJsonlParser,
+  parseGeminiProcessOutput,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 import {
@@ -663,7 +664,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await accountingLog.flush();
     return {
       proc,
-      parsed: parseGeminiJsonl(proc.stdout),
+      parsed: parseGeminiProcessOutput(proc),
     };
   };
 
@@ -677,7 +678,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: string;
         errorCode?: string | null;
       };
-      parsed: ReturnType<typeof parseGeminiJsonl>;
+      parsed: ReturnType<typeof parseGeminiProcessOutput>;
     },
     clearSessionOnMissingSession = false,
     isRetry = false,

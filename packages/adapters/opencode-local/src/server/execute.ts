@@ -53,7 +53,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser, parseOpenCodeProcessOutput } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -695,7 +695,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parseOpenCodeJsonl(proc.stdout);
+      // Parse the redaction-aware control output when present.
+      const parsed = parseOpenCodeProcessOutput(proc);
       if (hasAccounting) {
         const retained = consumeAccounting("");
         parsed.usage = retained.usage;
@@ -710,7 +711,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        parsed: ReturnType<typeof parseOpenCodeProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {

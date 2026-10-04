@@ -290,6 +290,13 @@ export interface AdapterExecutionTargetProcessOptions {
    * long-lived command. The host still gates this on provider capabilities. */
   useSession?: boolean;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /**
+   * Ordered sanitized control records, never literal log chunks. Forwarded to
+   * `runChildProcess` for local/SSH targets. The sandbox runner has no control
+   * channel, so this stays unforwarded there and MUST NOT be reconstructed
+   * from opaque display logs.
+   */
+  onControlOutput?: (stream: "stdout" | "stderr", records: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   /** Trusted invocation observation, not a turn completion callback. Called only
@@ -963,6 +970,7 @@ export async function runAdapterExecutionTargetProcess(
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
     onLog: options.onLog,
+    onControlOutput: options.onControlOutput,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,

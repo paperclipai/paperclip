@@ -632,7 +632,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       });
       return {
         proc,
-        parsed: parseGrokJsonl(proc.stdout),
+        parsed: parseGrokProcessOutput(proc),
       };
     };
 
@@ -645,7 +645,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
           stdout: string;
           stderr: string;
         };
-        parsed: ReturnType<typeof parseGrokJsonl>;
+        parsed: ReturnType<typeof parseGrokProcessOutput>;
       },
       clearSessionOnMissingSession = false,
       isRetry = false,

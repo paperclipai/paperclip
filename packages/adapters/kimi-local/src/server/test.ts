@@ -24,7 +24,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveKimiExecutionEngineForRun, testKimiAcpEnvironment } from "./acp.js";
-import { detectKimiAuthRequired, parseKimiJsonl } from "./parse.js";
+import { detectKimiAuthRequired, parseKimiProcessOutput } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -289,7 +289,7 @@ export async function testEnvironment(
           onLog: async () => {},
         },
       );
-      const parsed = parseKimiJsonl(probe.stdout);
+      const parsed = parseKimiProcessOutput(probe);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authMeta = detectKimiAuthRequired({
         stdout: probe.stdout,

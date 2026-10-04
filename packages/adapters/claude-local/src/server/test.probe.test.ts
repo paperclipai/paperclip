@@ -14,7 +14,13 @@ const {
   probeResult,
 } = vi.hoisted(() => {
   const probeResult: {
-    value: { exitCode: number; stdout: string; stderr: string };
+    value: {
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      timedOut?: boolean;
+      controlOutput?: { stdout: string; stderr: string } | null;
+    };
     throwError: Error | null;
   } = {
     value: { exitCode: 1, stdout: "", stderr: "" },
@@ -30,9 +36,10 @@ const {
       return {
         exitCode: probeResult.value.exitCode,
         signal: null,
-        timedOut: false,
+        timedOut: probeResult.value.timedOut ?? false,
         stdout: probeResult.value.stdout,
         stderr: probeResult.value.stderr,
+        controlOutput: probeResult.value.controlOutput,
         pid: 123,
         startedAt: new Date().toISOString(),
       };
@@ -479,6 +486,116 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
     expect(JSON.stringify(result.checks)).not.toContain('"subtype":"init"');
+  });
+});
+
+describe("claude CLI hello probe control output", () => {
+  const hello = '{"type":"result","subtype":"success","is_error":false,"result":"hello","num_turns":7}';
+  const runProbe = () => testEnvironment({
+    companyId: "company-1",
+    adapterType: "claude_local",
+    config: { engine: "cli", command: "claude" },
+    executionTarget: sandboxTarget,
+    environmentName: "Daytona",
+  });
+
+  it("parses control-valid hello when literal numeric redaction corrupts display JSON", async () => {
+    const display = hello.replace('"num_turns":7', '"num_turns":[REDACTED]');
+    expect(() => JSON.parse(display)).toThrow();
+    probeResult.value = {
+      exitCode: 0,
+      stdout: display,
+      stderr: "",
+      controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    const result = await runProbe();
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed" }));
+    expect(result.checks.some(check => check.code === "claude_hello_probe_unexpected_output")).toBe(false);
+  });
+
+  it.each([
+    ["auth", "Please run claude login", "fatal: unknown failure", "claude_hello_probe_auth_required"],
+    ["quota", "Claude usage limit reached", "Please run claude login", "claude_hello_probe_usage_limited"],
+    ["transient", "API Error: 529 overloaded_error", "Claude usage limit reached", "claude_hello_probe_transient_upstream"],
+  ])("prefers control stdout and stderr for %s classification", async (_kind, controlText, displayText, code) => {
+    for (const stream of ["stdout", "stderr"] as const) {
+      probeResult.value = {
+        exitCode: 1,
+        stdout: displayText,
+        stderr: displayText,
+        controlOutput: { stdout: "", stderr: "", [stream]: controlText },
+      };
+
+      const result = await runProbe();
+      const probeChecks = result.checks.filter(check => check.code.startsWith("claude_hello_probe_"));
+
+      expect(probeChecks.map(check => check.code), stream).toEqual([code]);
+      expect(result.checks.some(check => check.code === "adapter_auth_missing"), stream).toBe(code === "claude_hello_probe_auth_required");
+    }
+  });
+
+  it.each([
+    ["auth", "Please run claude login"],
+    ["quota", "Claude usage limit reached"],
+    ["transient", "API Error: 529 overloaded_error"],
+  ])("does not resurrect display %s classification when controls are empty", async (_kind, displayText) => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: `${hello}\n${displayText}`,
+      stderr: displayText,
+      controlOutput: { stdout: "", stderr: "" },
+    };
+
+    const result = await runProbe();
+
+    expect(result.checks.filter(check => check.code.startsWith("claude_hello_probe_")).map(check => check.code)).toEqual(["claude_hello_probe_failed"]);
+    expect(result.checks.some(check => check.code === "adapter_auth_missing")).toBe(false);
+  });
+
+  it("does not accept a display hello when present controls are empty", async () => {
+    probeResult.value = {
+      exitCode: 0, stdout: hello, stderr: "", controlOutput: { stdout: "", stderr: "" },
+    };
+
+    const result = await runProbe();
+
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_unexpected_output" }));
+    expect(result.checks.some(check => check.code === "claude_hello_probe_passed")).toBe(false);
+  });
+
+  it.each([undefined, null])("keeps legacy hello without control output (%s)", async controlOutput => {
+    probeResult.value = { exitCode: 0, stdout: hello, stderr: "", controlOutput };
+
+    const result = await runProbe();
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed" }));
+  });
+
+  it("leaves an unchanged positive control healthy", async () => {
+    probeResult.value = {
+      exitCode: 0, stdout: hello, stderr: "", controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    const result = await runProbe();
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed" }));
+  });
+
+  it.each([
+    [1, false, "claude_hello_probe_failed"],
+    [0, true, "claude_hello_probe_timed_out"],
+  ])("retains original process exit/timeout metadata (%s, %s)", async (exitCode, timedOut, code) => {
+    probeResult.value = {
+      exitCode, timedOut, stdout: "", stderr: "", controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    const result = await runProbe();
+
+    expect(result.checks.filter(check => check.code.startsWith("claude_hello_probe_")).map(check => check.code)).toEqual([code]);
   });
 });
 

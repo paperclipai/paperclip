@@ -144,6 +144,14 @@ export function parseKimiJsonl(stdout: string): ParsedKimiJsonl {
   };
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseKimiProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}): ParsedKimiJsonl {
+  return parseKimiJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export interface KimiRuntimeEvent {
   eventType: string;
   message?: string;

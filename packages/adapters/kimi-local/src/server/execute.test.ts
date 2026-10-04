@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -83,6 +84,47 @@ const KIMI_STDOUT = [
     command: "kimi -r session_abc-123",
   }),
 ].join("\n");
+
+type RuntimeEvent = Parameters<NonNullable<AdapterExecutionContext["onEvent"]>>[0];
+
+/** Keep Kimi's real caller/forwarder, replacing only its executable with a tiny Node producer. */
+function useRealNodeChild(chunks: string[], onResolved?: () => void) {
+  const observed = {
+    controls: [] as Array<{ stream: "stdout" | "stderr"; records: string }>,
+    errors: [] as unknown[],
+    result: null as Awaited<ReturnType<typeof runChildProcess>> | null,
+  };
+  runProcessMock.mockImplementation(async (
+    runId: string,
+    _target: unknown,
+    _command: string,
+    _args: string[],
+    options: Parameters<typeof runChildProcess>[3],
+  ) => {
+    const source = `
+      const chunks = ${JSON.stringify(chunks)};
+      (async () => {
+        for (const chunk of chunks) {
+          process.stdout.write(chunk);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      })().catch(() => { process.exitCode = 1; });
+    `;
+    observed.result = await runChildProcess(runId, process.execPath, ["-e", source], {
+      ...options,
+      timeoutSec: 5,
+      graceSec: 1,
+      onLogError: (error) => { observed.errors.push(error); },
+      onControlOutput: async (stream, records) => {
+        observed.controls.push({ stream, records });
+        await options.onControlOutput?.(stream, records);
+      },
+    });
+    onResolved?.();
+    return observed.result;
+  });
+  return observed;
+}
 
 describe("kimi_local execute", () => {
   beforeEach(() => {
@@ -173,9 +215,14 @@ describe("kimi_local execute", () => {
         tool_calls: [{ type: "function", id: "t1", function: { name: "Bash", arguments: "{}" } }],
       })}\n`;
     runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
-      // Split mid-line so the wrapper's newline buffering is exercised across chunks.
+      // Display chunks are independent from the producer's complete control records.
       await options.onLog("stdout", stream.slice(0, 20));
       await options.onLog("stdout", stream.slice(20));
+      expect(events).toEqual([]);
+      await options.onControlOutput("stderr", stream);
+      expect(events).toEqual([]);
+      await options.onControlOutput("stdout", stream);
+      expect(events.map((event) => event.eventType)).toEqual(["assistant", "assistant", "tool_call"]);
       return { exitCode: 0, signal: null, timedOut: false, stdout: stream, stderr: "" };
     });
 
@@ -193,20 +240,182 @@ describe("kimi_local execute", () => {
   it("forwards the final stdout line to onEvent even without a trailing newline", async () => {
     const root = await makeTempRoot();
     const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
-    // Kimi can close stdout after a valid event with no trailing newline; the
-    // forwarder must flush it so the last tool call reaches live status.
+    // The process producer flushes the final complete record at EOF; the
+    // forwarder consumes it once even though it has no trailing newline.
     const stream = `${JSON.stringify({
       role: "assistant",
       tool_calls: [{ type: "function", id: "t9", function: { name: "Read", arguments: "{}" } }],
     })}`;
     runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
       await options.onLog("stdout", stream);
+      expect(events).toEqual([]);
+      await options.onControlOutput("stdout", stream);
+      expect(events).toHaveLength(1);
       return { exitCode: 0, signal: null, timedOut: false, stdout: stream, stderr: "" };
     });
 
     await execute(makeContext(root, { onEvent: async (event) => { events.push(event); } }));
 
     expect(events).toContainEqual({ eventType: "tool_call", stream: "stdout", payload: { toolName: "Read" } });
+  });
+
+  it("does not synthesize live events from a display-only producer or its final capture", async () => {
+    const root = await makeTempRoot();
+    const events: RuntimeEvent[] = [];
+    const display = `${JSON.stringify({ role: "assistant", content: "display only" })}\n`;
+    const logs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      await options.onLog("stdout", display);
+      return { exitCode: 0, signal: null, timedOut: false, stdout: display, stderr: "" };
+    });
+
+    const result = await execute(makeContext(root, {
+      onLog: async (stream, chunk) => { if (stream === "stdout") logs.push(chunk); },
+      onEvent: async (event) => { events.push(event); },
+    }));
+
+    expect(logs.join("")).toBe(display);
+    expect(result.summary).toBe("display only");
+    expect(events).toEqual([]);
+  });
+
+  it("uses real child control records when numeric masking invalidates display JSON; delivers ordered events once before process resolution", async () => {
+    const root = await makeTempRoot();
+    const secret = "123456";
+    const first = JSON.stringify({
+      role: "assistant",
+      content: "numeric event",
+      ignored: Number(secret),
+      tool_calls: [{ type: "function", id: "first", function: { name: "Bash", arguments: "{}" } }],
+    });
+    const second = JSON.stringify({ role: "assistant", content: "unaffected event" });
+    const final = JSON.stringify({
+      role: "assistant",
+      tool_calls: [{ type: "function", id: "last", function: { name: "Read", arguments: "{}" } }],
+    });
+    const events: RuntimeEvent[] = [];
+    const logs: string[] = [];
+    let processResolved = false;
+    let eventsAtProcessResolution: RuntimeEvent[] = [];
+    const child = useRealNodeChild([
+      first.slice(0, first.indexOf(secret) + 3),
+      first.slice(first.indexOf(secret) + 3) + "\n" + second + "\n" + final.slice(0, 17),
+      final.slice(17),
+    ], () => {
+      eventsAtProcessResolution = [...events];
+      processResolved = true;
+    });
+
+    const result = await execute(makeContext(root, {
+      config: { cwd: root, env: { KIMI_API_KEY: secret } },
+      onLog: async (stream, chunk) => { if (stream === "stdout") logs.push(chunk); },
+      onEvent: async (event) => {
+        expect(processResolved).toBe(false);
+        // A slow sink must also finish before the real process promise resolves.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(processResolved).toBe(false);
+        events.push(event);
+      },
+    }));
+
+    const expected = [
+      { eventType: "assistant", stream: "stdout", message: "numeric event", payload: { content: "numeric event" } },
+      { eventType: "tool_call", stream: "stdout", payload: { toolName: "Bash" } },
+      { eventType: "assistant", stream: "stdout", message: "unaffected event", payload: { content: "unaffected event" } },
+      { eventType: "tool_call", stream: "stdout", payload: { toolName: "Read" } },
+    ];
+    expect(events).toEqual(expected);
+    expect(eventsAtProcessResolution).toEqual(expected);
+    expect(processResolved).toBe(true);
+    expect(child.errors).toEqual([]);
+    expect(result.exitCode).toBe(0);
+    const display = logs.join("");
+    expect(display).toBe(child.result?.stdout);
+    expect(display).toContain('"ignored":***REDACTED***');
+    expect(() => JSON.parse(display.split("\n")[0]!)).toThrow();
+    const controls = child.controls.map(({ records }) => records).join("");
+    expect(controls.split("\n").map((line) => JSON.parse(line))).toEqual([
+      { ...JSON.parse(first), ignored: 0 }, JSON.parse(second), JSON.parse(final),
+    ]);
+    expect(controls.endsWith(final)).toBe(true);
+    for (const boundary of [display, controls, JSON.stringify(events), JSON.stringify(result)]) {
+      expect(boundary).not.toContain(secret);
+    }
+  });
+
+  it("masks a whole affected string token in real child control events without changing literal display masking", async () => {
+    const root = await makeTempRoot();
+    const secret = "synthetic-kimi-string-secret";
+    const line = JSON.stringify({ role: "assistant", content: `prefix-${secret}-suffix` });
+    const logs: string[] = [];
+    const events: RuntimeEvent[] = [];
+    const child = useRealNodeChild([line.slice(0, line.indexOf(secret) + 7), line.slice(line.indexOf(secret) + 7) + "\n"]);
+
+    const result = await execute(makeContext(root, {
+      config: { cwd: root, env: { KIMI_API_KEY: secret } },
+      onLog: async (stream, chunk) => { if (stream === "stdout") logs.push(chunk); },
+      onEvent: async (event) => { events.push(event); },
+    }));
+
+    expect(logs.join("")).toBe(`${JSON.stringify({ role: "assistant", content: "prefix-***REDACTED***-suffix" })}\n`);
+    expect(child.controls.map(({ records }) => records).join("")).toBe(
+      `${JSON.stringify({ role: "assistant", content: "***REDACTED***" })}\n`,
+    );
+    expect(events).toEqual([
+      { eventType: "assistant", stream: "stdout", message: "***REDACTED***", payload: { content: "***REDACTED***" } },
+    ]);
+    expect(result.summary).toBe("***REDACTED***");
+    expect(child.errors).toEqual([]);
+    for (const boundary of [logs.join(""), JSON.stringify(child.controls), JSON.stringify(events), JSON.stringify(result)]) {
+      expect(boundary).not.toContain(secret);
+    }
+  });
+
+  it("suppresses a malformed quote-bearing original even if literal display masking repairs it into an event, then recovers", async () => {
+    const root = await makeTempRoot();
+    const secret = 'broken"quotation';
+    const malformed = `{"role":"assistant","content":"${secret}"}`;
+    const genuine = JSON.stringify({ role: "assistant", content: "genuine following record" });
+    expect(() => JSON.parse(malformed)).toThrow();
+    const events: RuntimeEvent[] = [];
+    const logs: string[] = [];
+    const child = useRealNodeChild([malformed.slice(0, 37), malformed.slice(37) + "\n" + genuine]);
+
+    const result = await execute(makeContext(root, {
+      config: { cwd: root, env: { KIMI_API_KEY: secret } },
+      onLog: async (stream, chunk) => { if (stream === "stdout") logs.push(chunk); },
+      onEvent: async (event) => { events.push(event); },
+    }));
+
+    expect(JSON.parse(logs.join("").split("\n")[0]!)).toEqual({ role: "assistant", content: "***REDACTED***" });
+    expect(child.controls.map(({ records }) => records).join("")).toBe(`***REDACTED***\n${genuine}`);
+    expect(events).toEqual([
+      { eventType: "assistant", stream: "stdout", message: "genuine following record", payload: { content: "genuine following record" } },
+    ]);
+    expect(child.errors).toEqual([]);
+    expect(result.summary).toBe("genuine following record");
+    for (const boundary of [logs.join(""), JSON.stringify(child.controls), JSON.stringify(events), JSON.stringify(result)]) {
+      expect(boundary).not.toContain(secret);
+    }
+  });
+
+  it("runs the real child control-output path harmlessly when onEvent is absent", async () => {
+    const root = await makeTempRoot();
+    const secret = "123456";
+    const line = JSON.stringify({ role: "assistant", content: "no live sink needed", ignored: Number(secret) });
+    const child = useRealNodeChild([line]);
+    const logs: string[] = [];
+
+    const result = await execute(makeContext(root, {
+      config: { cwd: root, env: { KIMI_API_KEY: secret } },
+      onLog: async (stream, chunk) => { if (stream === "stdout") logs.push(chunk); },
+    }));
+
+    expect(result).toMatchObject({ exitCode: 0, summary: "no live sink needed", errorMessage: null });
+    expect(child.errors).toEqual([]);
+    expect(child.controls).toEqual([{ stream: "stdout", records: JSON.stringify({ role: "assistant", content: "no live sink needed", ignored: 0 }) }]);
+    expect(logs.join("")).toContain('"ignored":***REDACTED***');
+    expect(JSON.stringify(child.controls) + logs.join("") + JSON.stringify(result)).not.toContain(secret);
   });
 
   it("passes -m only when a model is configured", async () => {
