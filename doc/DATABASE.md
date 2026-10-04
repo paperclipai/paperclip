@@ -262,7 +262,7 @@ pnpm --filter @paperclipai/db backfill:cost-event-rate-card
 pnpm --filter @paperclipai/db backfill:cost-event-rate-card --apply
 ```
 
-Like `pnpm db:migrate`, the script uses `DATABASE_URL` when it is set and otherwise connects to the embedded PostgreSQL instance for your active Paperclip config/instance.
+The script resolves its database the same way `pnpm db:migrate` does, in this order: the `DATABASE_URL` environment variable, then `DATABASE_URL` in the Paperclip `.env` file, then `database.connectionString` when the active config sets `database.mode` to `postgres`, and only then the embedded PostgreSQL instance for your active Paperclip config/instance. It prints the source it picked (`Backfilling via ...`) before doing anything, so check that line on the dry run before running `--apply`.
 
 The script never changes `cost_cents`, writes `rate_card_cents = NULL` with `pricing_methodology = 'unpriced'` for models the rate card cannot price, and is idempotent. Rows the migration flagged as `pre_cache_write_aware` keep that flag, because their cache-write tokens were folded into `input_tokens` and the rate-card figure is only a lower bound.
 
