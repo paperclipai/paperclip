@@ -140,6 +140,15 @@ choices, item verdicts, suggested tasks, tool reviews, runtime questions, and ph
 the bottom navigation. The normal message composer remains usable below the
 pending card.
 
+Use **Composer → New task** to review task creation through the production
+`TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
+and send control are shared with task chat. Project sits in the bottom toolbar
+immediately before the assignee. Task creation uses the selected company and has
+no separate heading or settings control.
+Stories cover empty and prefilled drafts, sub-tasks, planning, files, saving,
+retryable failures, creation, light theme, and mobile. Story submissions use local
+fixtures and never start an agent.
+
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
