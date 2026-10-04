@@ -2052,6 +2052,15 @@ function isReviewVerdictInteraction(interaction: {
 // Fail-closed: only the LATEST verdict satisfies a review path, and only when
 // it was accepted. An older acceptance must not survive a newer rejection,
 // because the newer verdict is the decision that still stands.
+function verdictTimestamp(value: Date | string | undefined): number {
+  if (value === undefined || value === null) return Number.NEGATIVE_INFINITY;
+  // Rows arrive from the database as a Date. A Date must be compared as a
+  // number: its String form starts with a weekday, so it does not sort by
+  // time. Accept an ISO string as well, for callers that already have one.
+  const parsed = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
 function hasSatisfiedReviewVerdict(
   interactions: Array<{
     kind: string;
@@ -2064,8 +2073,8 @@ function hasSatisfiedReviewVerdict(
   const verdicts = interactions.filter(isReviewVerdictInteraction);
   if (verdicts.length === 0) return false;
   const latest = verdicts.reduce((newest, candidate) => {
-    const newestAt = newest.createdAt ? String(newest.createdAt) : "";
-    const candidateAt = candidate.createdAt ? String(candidate.createdAt) : "";
+    const newestAt = verdictTimestamp(newest.createdAt);
+    const candidateAt = verdictTimestamp(candidate.createdAt);
     if (candidateAt !== newestAt) return candidateAt > newestAt ? candidate : newest;
     // Same timestamp, or no timestamp at all. listForIssue orders by
     // createdAt ASC then id ASC, so the later entry in the array is the newer

@@ -131,4 +131,56 @@ describe("recorded review verdicts as a satisfied in_review review path", () => 
       ]),
     ).toBe(true);
   });
+
+  // Rows arrive from the database as a Date object, not an ISO string. A Date
+  // String form starts with a weekday and does not sort by time, so a string
+  // comparison picks the wrong record here.
+  describe("with Date timestamps, as the database returns them", () => {
+    it("rejects an April acceptance superseded by a May rejection", () => {
+      expect(
+        hasSatisfiedReviewVerdict([
+          confirmation("accepted", { createdAt: new Date("2026-04-01T00:00:00Z") }),
+          confirmation("rejected", { createdAt: new Date("2026-05-01T00:00:00Z") }),
+        ]),
+      ).toBe(false);
+    });
+
+    it("rejects an acceptance superseded by a rejection in a later month", () => {
+      // "Thu Jan 01 ..." sorts above "Wed Dec 31 ..." as text, so a text
+      // comparison keeps the January rejection. The January acceptance is the
+      // newer row and must win.
+      expect(
+        hasSatisfiedReviewVerdict([
+          confirmation("rejected", { createdAt: new Date("2025-12-31T00:00:00Z") }),
+          confirmation("accepted", { createdAt: new Date("2026-01-01T00:00:00Z") }),
+        ]),
+      ).toBe(true);
+    });
+
+    it("orders across a year boundary", () => {
+      expect(
+        hasSatisfiedReviewVerdict([
+          confirmation("accepted", { createdAt: new Date("2025-12-31T23:00:00Z") }),
+          confirmation("rejected", { createdAt: new Date("2026-01-01T01:00:00Z") }),
+        ]),
+      ).toBe(false);
+    });
+
+    it("accepts a single accepted verdict with a Date timestamp", () => {
+      expect(
+        hasSatisfiedReviewVerdict([
+          confirmation("accepted", { createdAt: new Date("2026-04-01T00:00:00Z") }),
+        ]),
+      ).toBe(true);
+    });
+  });
+
+  it("treats a missing or unparseable timestamp as the oldest row", () => {
+    expect(
+      hasSatisfiedReviewVerdict([
+        confirmation("accepted", { createdAt: "not-a-date" }),
+        confirmation("rejected", { createdAt: "2026-02-01T00:00:00.000Z" }),
+      ]),
+    ).toBe(false);
+  });
 });
