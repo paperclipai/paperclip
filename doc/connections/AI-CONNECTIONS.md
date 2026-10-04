@@ -376,8 +376,9 @@ Local installations do not need a sandbox to connect a subscription. Connections
 onboarding, and agent setup share `LocalProviderLoginInstructions` and
 `useLocalAiLogin`. In local-trusted mode, Claude checks the operator’s existing
 Claude Code login. Authenticated self-hosted users instead get a separate
-`CLAUDE_CONFIG_DIR` for `claude auth login`; checking and saving only read that
-attempt’s credential files, never the server operator’s account or Keychain.
+`CLAUDE_CONFIG_DIR` for `claude auth login`; checking and saving read only that
+attempt’s credential files or its own suffixed Keychain item, never the server
+operator’s account or the default Keychain item.
 
 Codex and Grok start a separate terminal sign-in for each connection or reconnect.
 The shared component shows a server-generated command with a fresh `CODEX_HOME`
@@ -399,10 +400,18 @@ subsequently update only that grant. Reconnect preserves IDs and access settings
 Starting an isolated attempt requires normal company-scoped AI-connection creation
 permission. Checks, completion, cancellation, and resumption are owner-bound.
 Authenticated users cannot import host credentials or use another user’s attempt.
-Claude Keychain reads remain limited to the explicit local-trusted default-home import. A failed verification creates
-no healthy connection. Preview-era Codex/Grok managed connections without the
-isolated-subscription marker require reconnect before another managed execution;
-unmanaged legacy agents retain their existing authentication paths.
+Claude Keychain reads happen in three places, each bound to one item. The
+local-trusted default-home import reads the operator’s default login from the
+unsuffixed `Claude Code-credentials` item. An isolated attempt reads only the
+suffixed item of its own `CLAUDE_CONFIG_DIR`. The subscription quota poll behind
+Audit > Costs runs as the server process; on macOS it reads the default item when
+the default auth home holds no credentials file and `CLAUDE_CONFIG_DIR` is not set.
+That is the login the poll’s `claude` CLI fallback already exercised on the same
+account, so the read adds no access; the poll returns percentages only, never the
+credential. A failed verification creates no healthy connection. Preview-era
+Codex/Grok managed connections without the isolated-subscription marker require
+reconnect before another managed execution; unmanaged legacy agents retain their
+existing authentication paths.
 
 ## Verification
 

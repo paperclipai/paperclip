@@ -32,11 +32,17 @@ afterEach(() => {
   resetClaudeQuotaFailureLogForTests();
 });
 
+/** The child's stdin pipe: a stream that records writes and can report a broken pipe. */
+class FakeStdin extends EventEmitter {
+  write = vi.fn();
+  end = vi.fn();
+}
+
 /** A stand-in for the `script` pty wrapper around `claude`. Tests feed it terminal output and watch the keystrokes it receives. */
 class FakeClaudeCli extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
-  stdin = { write: vi.fn(), end: vi.fn() };
+  stdin = new FakeStdin();
   kill = vi.fn(() => true);
   // No pid: the default process-group kill must never reach a real process from a test.
   pid: number | undefined = undefined;
@@ -138,6 +144,20 @@ describe("REPL state detection", () => {
   });
   it("treats a usage load failure as a finished panel", () => {
     expect(claudeCliUsagePanelLooksComplete(PROMPT + "Failed to load usage data")).toBe(true);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + "Settings: Usage\r\nToken has expired\r\n")).toBe(true);
+  });
+  it("waits for every row that has started to show its value", () => {
+    const sessionRow = "Current session\r\n71% used\r\nResets 3pm (Europe/Lisbon)\r\n";
+    const weekRow = "Current week (all models)\r\n12% used\r\nResets Oct 8 at 9am (Europe/Lisbon)\r\n";
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow)).toBe(false);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow + "Current week (all models)\r\n")).toBe(false);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow + weekRow)).toBe(true);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow + weekRow + "Current week (Fable)\r\n")).toBe(false);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow + weekRow + "Extra usage\r\n")).toBe(false);
+    expect(claudeCliUsagePanelLooksComplete(PROMPT + sessionRow + weekRow + "Extra usage\r\nExtra usage not enabled\r\n")).toBe(true);
+  });
+  it("stays complete when a redraw repeats a label whose value it already holds", () => {
+    expect(claudeCliUsagePanelLooksComplete(USAGE_PANEL_2_1_289 + "Current week (all models)\r\n")).toBe(true);
   });
 });
 
@@ -158,6 +178,15 @@ describe("parseClaudeCliUsageText on a Claude Code 2.1.289 capture", () => {
       ["Current session", 61],
       ["Current week (all models)", 15],
       ["Current week (Fable)", 21],
+    ]);
+  });
+  it("keeps a row's last value when a redraw repeats its label before the new value lands", () => {
+    const halfDrawn = USAGE_PANEL_2_1_289 + "Current week (all models)\r\nCurrent week (Fable)\r\n";
+    const windows = parseClaudeCliUsageText(halfDrawn);
+    expect(windows.map((window) => [window.label, window.usedPercent, window.detail])).toEqual([
+      ["Current session", 59, "Resets 3:09pm (America/Cuiaba)"],
+      ["Current week (all models)", 15, "Resets Oct 11 at 7:59am (America/Cuiaba)"],
+      ["Current week (Fable)", 21, "Resets Oct 11 at 7:59am (America/Cuiaba) ↓"],
     ]);
   });
 });
@@ -209,6 +238,66 @@ describe("captureClaudeCliUsageText", () => {
     expect(text).toContain("Current session");
     expect(text).toContain("Extra usage not enabled");
     expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("keeps the panel open while a row is still loading", async () => {
+    vi.useFakeTimers();
+    const cli = new FakeClaudeCli();
+    const capture = captureClaudeCliUsageText({ spawn: () => cli.asChild(), kill: vi.fn(), settleMs: 400, exitGraceMs: 500 });
+    cli.print(BANNER + PROMPT);
+    cli.print("Settings:  Status   Config   Usage\r\nCurrent session\r\n71% used\r\nResets 3pm (Europe/Lisbon)\r\n\r\nCurrent week (all models)\r\n");
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The weekly row has no value yet: no Escape, however long the pause.
+    expect(cli.typed()).toEqual(["/usage\r"]);
+
+    cli.print("12% used\r\nResets Oct 8 at 9am (Europe/Lisbon)\r\n\r\nExtra usage\r\n");
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Extra usage has started but shows nothing yet.
+    expect(cli.typed()).toEqual(["/usage\r"]);
+
+    cli.print("Extra usage not enabled • /extra-usage to enable\r\n");
+    await vi.advanceTimersByTimeAsync(399);
+    expect(cli.typed()).toEqual(["/usage\r"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cli.typed()).toEqual(["/usage\r", ESC]);
+    cli.emit("close", 0);
+    const windows = parseClaudeCliUsageText(await capture);
+    expect(windows.map((window) => [window.label, window.usedPercent])).toEqual([
+      ["Current session", 71],
+      ["Current week (all models)", 12],
+      ["Extra usage", null],
+    ]);
+  });
+
+  it("restarts the quiet time when the panel redraws", async () => {
+    vi.useFakeTimers();
+    const cli = new FakeClaudeCli();
+    const capture = captureClaudeCliUsageText({ spawn: () => cli.asChild(), kill: vi.fn(), settleMs: 400, exitGraceMs: 500 });
+    cli.print(BANNER + PROMPT + USAGE_PANEL);
+    await vi.advanceTimersByTimeAsync(300);
+    // A redraw repeats the label; its new value is on its way.
+    cli.print("Current session\r\n");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(cli.typed()).toEqual(["/usage\r"]);
+    cli.print("72% used\r\n");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(cli.typed()).toEqual(["/usage\r", ESC]);
+    cli.emit("close", 0);
+    const windows = parseClaudeCliUsageText(await capture);
+    expect(windows.find((window) => window.label === "Current session")?.usedPercent).toBe(72);
+  });
+
+  it("survives a broken pipe on the CLI's stdin", async () => {
+    const cli = new FakeClaudeCli();
+    const capture = captureClaudeCliUsageText({ spawn: () => cli.asChild(), kill: vi.fn() });
+    cli.print(BANNER + PROMPT);
+    expect(cli.typed()).toEqual(["/usage\r"]);
+    // The REPL exited as the keystroke was written. Node reports that on the
+    // stream; with no listener the emit would throw and take the server down.
+    expect(() => cli.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }))).not.toThrow();
+    cli.emit("close", 1);
+    const error = (await capture.then(() => null, (reason: unknown) => reason)) as ClaudeCliUsageProbeError;
+    expect(error.reason).toBe("exited_before_usage");
   });
 
   it("returns the captured panel even when the CLI ignores Ctrl-C", async () => {

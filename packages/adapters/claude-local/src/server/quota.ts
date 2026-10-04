@@ -395,34 +395,23 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   return windows;
 }
 
-function usageOutputLooksComplete(text: string): boolean {
-  const normalized = normalizeForLabelSearch(text);
-  if (
-    normalized.includes("failedtoloadusagedata")
-    || normalized.includes("tokenexpired")
-    || normalized.includes("authenticationerror")
-    || normalized.includes("ratelimited")
-  ) {
-    return true;
-  }
-  return normalized.includes("currentsession")
-    && (normalized.includes("currentweek") || normalized.includes("extrausage"))
-    && /[0-9]{1,3}(?:\.[0-9]+)?%/i.test(text);
-}
-
+/**
+ * The message the panel shows instead of usage rows, if any. Matched on text
+ * with all non-alphanumerics removed, so `token_expired`, `Token has expired`
+ * and the spaceless pty rendering all count.
+ */
 function extractUsageError(text: string): string | null {
-  const lower = text.toLowerCase();
-  const compact = lower.replace(/\s+/g, "");
-  if (lower.includes("token_expired") || lower.includes("token has expired")) {
+  const compact = normalizeForLabelSearch(text);
+  if (compact.includes("tokenexpired") || compact.includes("tokenhasexpired")) {
     return "Claude CLI token expired. Run `claude login` to refresh.";
   }
-  if (lower.includes("authentication_error")) {
+  if (compact.includes("authenticationerror")) {
     return "Claude CLI authentication error. Run `claude login`.";
   }
-  if (lower.includes("rate_limit_error") || lower.includes("rate limited") || compact.includes("ratelimited")) {
+  if (compact.includes("ratelimiterror") || compact.includes("ratelimited")) {
     return "Claude CLI usage endpoint is rate limited right now. Please try again later.";
   }
-  if (lower.includes("failed to load usage data") || compact.includes("failedtoloadusagedata")) {
+  if (compact.includes("failedtoloadusagedata")) {
     return "Claude CLI could not load usage data. Open the CLI and retry `/usage`.";
   }
   return null;
@@ -507,20 +496,18 @@ export class ClaudeCliUsagePanelError extends Error {
   }
 }
 
-export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
-  const cleaned = trimToLatestUsagePanel(cleanTerminalText(text)) ?? cleanTerminalText(text);
-  const usageError = extractUsageError(cleaned);
-  if (usageError) throw new ClaudeCliUsagePanelError(usageError);
+interface UsagePanelSection {
+  label: string;
+  lines: string[];
+}
 
-  const lines = cleaned
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  const sections: Array<{ label: string; lines: string[] }> = [];
-  let current: { label: string; lines: string[] } | null = null;
-
-  for (const line of lines) {
+/** Split cleaned panel text into its rows: each quota label with the lines drawn under it. */
+function splitUsagePanelSections(cleaned: string): UsagePanelSection[] {
+  const sections: UsagePanelSection[] = [];
+  let current: UsagePanelSection | null = null;
+  for (const rawLine of cleaned.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
     if (isQuotaLabel(line)) {
       if (current) sections.push(current);
       current = { label: canonicalQuotaLabel(line), lines: [] };
@@ -529,22 +516,44 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
     if (current) current.lines.push(line);
   }
   if (current) sections.push(current);
+  return sections;
+}
 
-  // The REPL redraws the panel as data arrives, so a capture can hold the same
-  // row more than once. The last drawing of a row is the current one.
+/**
+ * One window per row label, in the order the labels first appeared. The REPL
+ * redraws the panel as data arrives, so a capture can hold the same row more
+ * than once, and a redraw can repeat a label before its new value line has
+ * landed. The last drawing that carries a value is the current one; a drawing
+ * without one keeps the value seen before it, so a valid quota is never shown
+ * as unavailable because of a half-drawn row.
+ */
+function collectUsagePanelWindows(cleaned: string): QuotaWindow[] {
   const windowsByLabel = new Map<string, QuotaWindow>();
-  for (const section of sections) {
-    const usedPercent = section.lines.map(percentFromLine).find((value) => value != null) ?? null;
+  for (const section of splitUsagePanelSections(cleaned)) {
+    const previous = windowsByLabel.get(section.label);
     windowsByLabel.set(section.label, {
       label: section.label,
-      usedPercent,
+      usedPercent: section.lines.map(percentFromLine).find((value) => value != null) ?? previous?.usedPercent ?? null,
       resetsAt: null,
       valueLabel: null,
-      detail: formatClaudeCliDetail(section.label, section.lines),
+      detail: formatClaudeCliDetail(section.label, section.lines) ?? previous?.detail ?? null,
     });
   }
-  const windows = [...windowsByLabel.values()];
+  return [...windowsByLabel.values()];
+}
 
+/** A row has rendered once its percentage is there, or, for Extra usage, its status line. */
+function usagePanelWindowHasValue(window: QuotaWindow): boolean {
+  if (window.usedPercent != null) return true;
+  return normalizeForLabelSearch(window.label) === "extrausage" && window.detail != null;
+}
+
+export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
+  const cleaned = trimToLatestUsagePanel(cleanTerminalText(text)) ?? cleanTerminalText(text);
+  const usageError = extractUsageError(cleaned);
+  if (usageError) throw new ClaudeCliUsagePanelError(usageError);
+
+  const windows = collectUsagePanelWindows(cleaned);
   if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) {
     throw new Error("Could not parse Claude CLI usage output.");
   }
@@ -599,7 +608,7 @@ export interface ClaudeCliUsageProbeOptions {
   promptTimeoutMs?: number;
   /** How long to wait for the usage panel after `/usage` is typed. Default 8s. */
   usageTimeoutMs?: number;
-  /** Quiet time after the panel looks complete, so trailing lines land in the capture. Default 400ms. */
+  /** Quiet time during which the panel must look complete before it is closed; a chunk of output restarts it. Default 750ms. */
   settleMs?: number;
   /** How long the CLI may take to exit after Escape and Ctrl-C before it is killed. Default 1.5s. */
   exitGraceMs?: number;
@@ -613,7 +622,8 @@ export interface ClaudeCliUsageProbeOptions {
 
 const DEFAULT_PROMPT_TIMEOUT_MS = 10_000;
 const DEFAULT_USAGE_TIMEOUT_MS = 8_000;
-const DEFAULT_SETTLE_MS = 400;
+/** A pause of up to this long between two drawings of the panel extends the capture rather than ending it. */
+const DEFAULT_SETTLE_MS = 750;
 const DEFAULT_EXIT_GRACE_MS = 1_500;
 /** Gap between the keystrokes that close the panel and exit the REPL, so a terminal key parser never reads Escape + Ctrl-C as one chord. */
 const CLOSE_KEYSTROKE_GAP_MS = 120;
@@ -685,14 +695,19 @@ export function detectClaudeCliStartupBlocker(cleanedText: string): "trust_promp
 }
 
 /**
- * True once the `/usage` panel has rendered a percentage under its first
- * label. The REPL footer shows a percentage of its own before the panel opens,
- * so the percentage must follow the `Current session` label in the stream.
+ * True once the `/usage` panel has rendered every row it has started: the
+ * `Current session` row, at least one weekly or Extra usage row, and a value
+ * under each label. A label whose value has not landed yet leaves the panel
+ * incomplete. The REPL footer shows a percentage of its own before the panel
+ * opens, so a percentage counts only when it follows a row label. A usage
+ * error shown in place of the rows is a finished panel too.
  */
 export function claudeCliUsagePanelLooksComplete(cleanedText: string): boolean {
-  if (!usageOutputLooksComplete(cleanedText)) return false;
   if (extractUsageError(cleanedText)) return true;
-  return /current\s*session[\s\S]{0,600}?\d{1,3}(?:\.\d+)?\s*%/i.test(cleanedText);
+  const windows = collectUsagePanelWindows(cleanedText);
+  if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) return false;
+  if (!windows.some((window) => normalizeForLabelSearch(window.label) !== "currentsession")) return false;
+  return windows.every(usagePanelWindowHasValue);
 }
 
 function describeSpawnFailure(error: unknown): string {
@@ -731,6 +746,16 @@ export async function captureClaudeCliUsageText(options: ClaudeCliUsageProbeOpti
       reject(new ClaudeCliUsageProbeError("spawn_error", describeSpawnFailure(error), cwd));
       return;
     }
+
+    // A keystroke written to a REPL that has just exited surfaces as an
+    // asynchronous `error` on the pipe, not as a throw from `write()`. With no
+    // listener, Node treats it as an uncaught exception and the server dies.
+    // Every such case ends with the child's `close` event, which settles the
+    // result, so the stream error itself needs no handling.
+    const ignoreStreamError = () => {};
+    child.stdin?.on("error", ignoreStreamError);
+    child.stdout?.on("error", ignoreStreamError);
+    child.stderr?.on("error", ignoreStreamError);
 
     type Phase = "waiting_for_prompt" | "waiting_for_usage" | "closing";
     let phase: Phase = "waiting_for_prompt";
@@ -824,9 +849,14 @@ export async function captureClaudeCliUsageText(options: ClaudeCliUsageProbeOpti
         return;
       }
 
-      if (phase === "waiting_for_usage" && claudeCliUsagePanelLooksComplete(cleaned)) {
-        // Let the rest of the panel (reset times, extra usage) arrive before closing it.
+      if (phase === "waiting_for_usage") {
+        // The panel closes only after `settleMs` of quiet during which every
+        // row it has started carries a value. Each chunk restarts that wait,
+        // so a row that is still loading or a redraw in progress extends the
+        // capture instead of cutting it short.
         cancel(settleTimer);
+        settleTimer = null;
+        if (!claudeCliUsagePanelLooksComplete(cleaned)) return;
         settleTimer = after(settleMs, () => {
           cancel(phaseDeadline);
           closePanelAndExit();
