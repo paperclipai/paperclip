@@ -116,6 +116,28 @@ describe("SendKeyMenu", () => {
     expect(menu()).toBeNull();
   });
 
+  it("does not send on the finger lift after a long press opens the menu", () => {
+    const onSend = vi.fn();
+    act(() => root.render(<Harness onSend={onSend} />));
+    act(() => {
+      anchor().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    expect(menu()).not.toBeNull();
+    const send = () => container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    act(() => {
+      send().click();
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    // The next deliberate tap sends again.
+    act(() => {
+      anchor().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+    act(() => {
+      send().click();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
   it("opens on right-click", () => {
     act(() => root.render(<Harness onSend={() => {}} />));
     act(() => {

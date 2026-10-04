@@ -22,8 +22,8 @@ interface SendKeyMenuProps {
 }
 
 /**
- * Wraps a composer's send button. Resting the mouse on it for ~0.5 s or a
- * right-click opens a small menu to choose whether Return or Cmd/Ctrl+Return
+ * Wraps a composer's send button. Resting the mouse on it for ~0.5 s, a
+ * right-click, or a touch long press (the browser's contextmenu) opens a small menu to choose whether Return or Cmd/Ctrl+Return
  * sends. The choice applies to every composer that reads the preference. Once
  * the mouse has left both the button and the menu for ~0.5 s, the menu closes.
  */
@@ -36,6 +36,8 @@ export function SendKeyMenu({
   const [open, setOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A touch long press fires contextmenu; the click on finger lift is not a send.
+  const swallowClickRef = useRef(false);
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -103,11 +105,22 @@ export function SendKeyMenu({
             clearTimer();
             if (open) scheduleClose();
           }}
-          onClickCapture={clearTimer}
+          onPointerDown={() => {
+            swallowClickRef.current = false;
+          }}
+          onClickCapture={(event) => {
+            clearTimer();
+            if (swallowClickRef.current) {
+              swallowClickRef.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
           onContextMenu={(event) => {
             if (disabled) return;
             event.preventDefault();
             clearTimer();
+            swallowClickRef.current = true;
             setOpen(true);
           }}
         >
