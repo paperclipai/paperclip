@@ -553,9 +553,10 @@ export function companyService(db: Db) {
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
-        // costEvents/financeEvents reference heartbeatRuns via FK; must delete before heartbeatRuns
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        // financeEvents.costEventId -> costEvents.id, and both reference heartbeatRuns via FK:
+        // delete financeEvents first, then costEvents, then heartbeatRuns.
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));

@@ -12,7 +12,9 @@ import {
   companySkillVersions,
   companySkills,
   companyMemberships,
+  costEvents,
   createDb,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
@@ -914,6 +916,68 @@ describeEmbeddedPostgres("companyService", () => {
     expect(archiveActivity[0]).toMatchObject({
       details: { agentsPaused: 1, runsCancelled: 1 },
     });
+  });
+
+  it("remove() deletes finance_events before cost_events and heartbeat_runs without FK errors", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const costEventId = randomUUID();
+    const financeEventId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Remove Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      status: "succeeded",
+    });
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      model: "test-model",
+      costCents: 12,
+      occurredAt: new Date(),
+    });
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      costEventId,
+      eventKind: "inference_charge",
+      biller: "anthropic",
+      amountCents: 12,
+      occurredAt: new Date(),
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.id, financeEventId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.id, costEventId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 
   it("getById returns null (not a query error) for non-UUID refs", async () => {
