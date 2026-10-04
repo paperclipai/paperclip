@@ -1132,6 +1132,21 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("does not move blocked issues with a board unblockDescriptor to todo via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("blocked"),
+      unblockDescriptor: { owner: "board", action: "Answer the pending confirmation" },
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "checking in" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  }, 60_000);
+
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -1879,6 +1894,28 @@ describe.sequential("issue comment reopen routes", () => {
       ),
     );
   });
+
+  it("does not move blocked issues with a board unblockDescriptor to todo via the PATCH comment path", async () => {
+    const issue = {
+      ...makeIssue("blocked"),
+      unblockDescriptor: { owner: "board", action: "Answer the pending confirmation" },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "checking in" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  }, 60_000);
 
   it("moves in-progress issues with a scheduled retry back to todo via the PATCH comment path", async () => {
     const issue = {

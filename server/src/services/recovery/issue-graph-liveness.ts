@@ -188,15 +188,42 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
-function monitorFromIssue(issue: IssueLivenessIssueInput) {
+function monitorFromIssue(issue: Pick<IssueLivenessIssueInput, "executionPolicy" | "executionState">) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
   return { policyMonitor, stateMonitor };
 }
 
-export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
+function latestMonitorNextCheckAtMs(
+  issue: Pick<IssueLivenessIssueInput, "monitorNextCheckAt" | "executionPolicy" | "executionState">,
+) {
+  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  const candidates = [
+    readDateMs(issue.monitorNextCheckAt),
+    readDateMs(policyMonitor?.nextCheckAt),
+    readDateMs(stateMonitor?.nextCheckAt),
+  ].filter((value): value is number => value !== null);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+export function hasHumanOrBoardUnblockWaitingPath(descriptor: unknown): boolean {
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) return false;
+  const owner = (descriptor as { owner?: unknown }).owner;
+  if (owner === "board") return true;
+  if (!owner || typeof owner !== "object" || Array.isArray(owner)) return false;
+  const userId = (owner as { userId?: unknown }).userId;
+  return typeof userId === "string" && userId.length > 0;
+}
+
+export function hasScheduledIssueMonitorPath(
+  issue: Pick<
+    IssueLivenessIssueInput,
+    "monitorNextCheckAt" | "executionPolicy" | "executionState" | "monitorAttemptCount"
+  >,
+  now: Date | string | number,
+) {
   const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
-  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  const nextCheckAtMs = latestMonitorNextCheckAtMs(issue);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
   const { policyMonitor, stateMonitor } = monitorFromIssue(issue);

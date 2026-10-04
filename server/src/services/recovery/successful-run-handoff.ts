@@ -7,6 +7,10 @@ import {
   type IssueCommentPresentation,
   type RunLivenessState,
 } from "@paperclipai/shared";
+import {
+  hasHumanOrBoardUnblockWaitingPath,
+  hasScheduledIssueMonitorPath,
+} from "./issue-graph-liveness.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import {
   agentLinkRow,
@@ -379,12 +383,28 @@ function isChatDrivenWake(run: HeartbeatRunRow, issue: IssueRow) {
     });
 }
 
+function isCommentOnlyDetectedProgress(summary: string | null) {
+  if (!summary) return false;
+  return /^(?:run produced concrete action evidence:\s*)?\d+\s+issue comment\(s\)\s*$/i.test(
+    summary.trim(),
+  );
+}
+
 function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
 }) {
   if (input.livenessState && PRODUCTIVE_SUCCESS_LIVENESS_STATES.has(input.livenessState)) return true;
   return Boolean(input.detectedProgressSummary);
+}
+
+function issueHasLiveScheduledMonitor(issue: IssueRow | null) {
+  if (!issue) return false;
+  return hasScheduledIssueMonitorPath(issue, Date.now());
+}
+
+function issueHasDurableBoardOrMonitorWait(issue: IssueRow) {
+  return issueHasLiveScheduledMonitor(issue) || hasHumanOrBoardUnblockWaitingPath(issue.unblockDescriptor);
 }
 
 export function buildSuccessfulRunHandoffInstruction(input: {
@@ -513,6 +533,16 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasActiveRoutineContinuation) {
     return { kind: "skip", reason: "active routine continuation owns the next action" };
   }
+  const hasLiveScheduledMonitor = input.hasPersistedMonitor || issueHasLiveScheduledMonitor(issue);
+  if (
+    isCommentOnlyDetectedProgress(input.detectedProgressSummary) &&
+    issueHasDurableBoardOrMonitorWait(issue)
+  ) {
+    return {
+      kind: "skip",
+      reason: "comment-only progress does not own the next action while a durable waiting path exists",
+    };
+  }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
@@ -521,7 +551,7 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasPendingInteractionOrApproval) {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
-  if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
+  if (hasLiveScheduledMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };

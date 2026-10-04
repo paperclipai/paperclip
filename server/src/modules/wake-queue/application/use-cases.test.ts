@@ -572,6 +572,31 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("promoted");
   });
 
+  it("does not reopen a blocked issue that still has a board unblock descriptor", async () => {
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "user",
+      deferredCommentIds: ["human-follow-up"],
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, {
+        ...ISSUE,
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Answer the pending confirmation" },
+      }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("promoted");
+  });
+
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
     const commentIds = ["accepted-agent-feedback"];
     const queue = [wakeCandidate({

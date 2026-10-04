@@ -507,6 +507,7 @@ import {
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  hasScheduledIssueMonitorPath,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   RUN_LIVENESS_CONTINUATION_REASON,
@@ -13724,7 +13725,7 @@ export function heartbeatService(
       hasPendingInteractionOrApproval: Boolean(
         pendingInteraction || pendingApproval,
       ),
-      hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasPersistedMonitor: issue ? hasScheduledIssueMonitorPath(issue, Date.now()) : false,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),

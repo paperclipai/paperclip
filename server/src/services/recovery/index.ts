@@ -14,6 +14,8 @@ export type {
 } from "./origins.js";
 export {
   classifyIssueGraphLiveness,
+  hasHumanOrBoardUnblockWaitingPath,
+  hasScheduledIssueMonitorPath,
 } from "./issue-graph-liveness.js";
 export type {
   IssueGraphLivenessInput,
