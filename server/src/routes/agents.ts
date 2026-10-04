@@ -166,6 +166,7 @@ import {
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
+import { withConfigurationAccess } from "../services/agent-configuration-view.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import {
@@ -1660,7 +1661,9 @@ export function agentRoutes(
     ]);
 
     const baseAgent = redactAgentRowForResponse(
-      options?.restricted ? redactForRestrictedAgentView(agent) : agent,
+      options?.restricted
+        ? redactForRestrictedAgentView(agent)
+        : withFullConfigurationAccess(agent),
     );
 
     return {
@@ -3121,11 +3124,14 @@ export function agentRoutes(
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
-    return {
-      ...agent,
-      adapterConfig: {},
-      runtimeConfig: {},
-    };
+    return withConfigurationAccess(agent, "redacted");
+  }
+
+  function withFullConfigurationAccess(
+    agent: Awaited<ReturnType<typeof svc.getById>>,
+  ) {
+    if (!agent) return null;
+    return withConfigurationAccess(agent, "full");
   }
 
   // Single presenter for every response that emits a raw agent row. Restricted
@@ -4058,11 +4064,15 @@ export function agentRoutes(
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
+if (canReadConfigs) {
+      res.json(
+        result.map((agent) => redactAgentRowForResponse(withFullConfigurationAccess(agent))),
+      );
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(
+      result.map((agent) => redactAgentRowForResponse(redactForRestrictedAgentView(agent))),
+    );
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
