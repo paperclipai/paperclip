@@ -160,10 +160,19 @@ but remains bounded by the longest collected value, as with display carry.
 A record whose opening was clipped is suppressed
 through its newline; its fragment is not a new event. Kimi live assistant/tool events
 consume this callback only, while display `onLog` remains unchanged. Small stable
-records are forwarded live, not reconstructed by replaying final capture. Opaque
-sandbox producers do not supply this provenance callback: their display-only logs
-are not used to synthesize Kimi events. This limitation does not extend redaction
-to independent provider capture or tail implementations.
+records are forwarded live, not reconstructed by replaying final capture.
+
+Sandbox-backed runs have no control channel from the runner, so the sandbox branch
+builds the same `onControlOutput` records itself. It feeds the raw streamed bytes
+(tail chunks, or the runner's own `onLog` chunks when no tail is attached) into one
+sanitized control stream per pipe, never the display `onLog` text. Records are
+delivered in arrival order through a single chain, ahead of the process result.
+Without a tail, a pipe that streamed nothing is covered once from the runner's
+final output; a pipe that did stream is not replayed, so no record is emitted twice. A failing event
+sink logs a warning and does not fail the run. This extends control sanitization
+to the sandbox branch only. It does not extend redaction to independent provider
+capture or tail implementations, and the display logs they produce keep their own
+behavior.
 
 This boundary does not scrub child-created sidecars, provider-owned transcripts,
 historical files, independent sandbox/remote capture implementations, values
