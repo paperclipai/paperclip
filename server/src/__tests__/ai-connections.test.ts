@@ -411,24 +411,66 @@ describe("managed AI connections", () => {
     expect(connections.map((connection) => connection.id)).toEqual([first.connectionId]);
   });
 
-  it("keeps the provider application active when a new account races the removal of the last one", async () => {
-    const raceCompanyId = randomUUID();
-    await db.insert(companies).values({ id: raceCompanyId, name: "Racing provider app", issuePrefix: "AIR" });
-    await db.insert(companyMemberships).values({ companyId: raceCompanyId, principalId: "dave", principalType: "user", status: "active", membershipRole: "member" });
-    const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
-    let last = await service.save(raceCompanyId, "dave", { ...account, name: "Initial" }, "fixture-initial");
-    for (let round = 0; round < 8; round += 1) {
-      const [, next] = await Promise.all([
-        toolAccessService(db).archiveConnection(last.connectionId, raceCompanyId),
-        service.save(raceCompanyId, "dave", { ...account, name: `Round ${round}` }, `fixture-${round}`),
-      ]);
+  it.each(["removal first", "connect first"] as const)(
+    "keeps the provider application active when a removal and a new account contend for it (%s)",
+    async (order) => {
+      const raceCompanyId = randomUUID();
+      await db.insert(companies).values({ id: raceCompanyId, name: `Racing provider app (${order})`, issuePrefix: order === "removal first" ? "ARR" : "ARC" });
+      await db.insert(companyMemberships).values({ companyId: raceCompanyId, principalId: "dave", principalType: "user", status: "active", membershipRole: "member" });
+      const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
+      const initial = await service.save(raceCompanyId, "dave", { ...account, name: "Initial" }, `fixture-initial-${order}`);
+      const [initialConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, initial.connectionId));
+      const applicationId = initialConnection!.applicationId;
+
+      // Hold the application row lock so both operations queue behind it in a known order.
+      // Postgres grants a row lock to its waiters in arrival order.
+      const lockWaiters = async () => {
+        const rows = await db.execute(sql`select count(*)::int as count from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`);
+        return Number((rows as unknown as Array<{ count: number }>)[0]?.count ?? 0);
+      };
+      const waitForLockWaiters = async (count: number, label: string) => {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if ((await lockWaiters()) >= count) return;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        throw new Error(`${label} did not wait for the provider application lock`);
+      };
+      let lockHeld!: () => void;
+      let releaseLock!: () => void;
+      const held = new Promise<void>((resolve) => (lockHeld = resolve));
+      const released = new Promise<void>((resolve) => (releaseLock = resolve));
+      const holder = db.transaction(async (tx) => {
+        await tx.select({ id: toolApplications.id }).from(toolApplications).where(eq(toolApplications.id, applicationId)).for("update");
+        lockHeld();
+        await released;
+      });
+      await held;
+
+      const removal = () => toolAccessService(db).archiveConnection(initial.connectionId, raceCompanyId);
+      const connect = () => service.save(raceCompanyId, "dave", { ...account, name: "Next" }, `fixture-next-${order}`);
+      let removed: Promise<unknown>;
+      let connected: Promise<{ connectionId: string }>;
+      if (order === "removal first") {
+        removed = removal();
+        await waitForLockWaiters(1, "The removal");
+        connected = connect();
+        await waitForLockWaiters(2, "The connect");
+      } else {
+        connected = connect();
+        await waitForLockWaiters(1, "The connect");
+        removed = removal();
+        await waitForLockWaiters(2, "The removal");
+      }
+      releaseLock();
+      await holder;
+      const [, next] = await Promise.all([removed, connected]);
+
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, next.connectionId));
-      const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection!.applicationId));
-      expect(connection!.status).toBe("active");
-      expect(app?.status).toBe("active");
-      last = next;
-    }
-  });
+      const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationId));
+      expect(connection).toMatchObject({ applicationId, status: "active" });
+      expect(app).toMatchObject({ status: "active", archivedAt: null });
+    },
+  );
 
   it("preserves connection identity and defaults through reconnect; revocation wins over older attempts", async () => {
     const current = await service.select({ ...input, userId: "bob" });
