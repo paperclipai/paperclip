@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  ClaudeCliUsageProbeError,
   captureClaudeCliUsageText,
   fetchClaudeCliQuota,
   fetchClaudeQuota,
@@ -49,7 +50,7 @@ async function main() {
     if (!token) {
       result.oauth = {
         ok: false,
-        error: "No Claude OAuth access token found in local credentials files.",
+        error: "No Claude OAuth access token found in the local credentials files or the macOS Keychain.",
         windows: [],
       };
     } else {
@@ -87,6 +88,10 @@ async function main() {
         ok: false,
         error: stringifyError(error),
         windows: [],
+        // With --raw-cli, show what the REPL rendered before the probe gave up.
+        ...(args.includeRawCli && error instanceof ClaudeCliUsageProbeError && error.transcript
+          ? { reason: error.reason, rawText: error.transcript }
+          : {}),
       };
     }
   }

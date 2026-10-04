@@ -25,9 +25,18 @@ export {
   fetchClaudeCliQuota,
   captureClaudeCliUsageText,
   parseClaudeCliUsageText,
+  describeClaudeQuotaHint,
+  ClaudeCliUsagePanelError,
+  ClaudeCliUsageProbeError,
+  ClaudeUsageApiError,
   toPercent,
   fetchWithTimeout,
   claudeConfigDir,
+} from "./quota.js";
+export type {
+  ClaudeCliUsageProbeFailure,
+  ClaudeCliUsageProbeOptions,
+  ReadClaudeTokenOptions,
 } from "./quota.js";
 // The Claude `setup-token` login parser. It reads the interactive login output
 // and returns the authorization URL and the browser-code prompt, or the minted
