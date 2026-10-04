@@ -337,6 +337,8 @@ export const queryKeys = {
         "plugin-operations",
         originKindPrefix,
       ] as const,
+    listParticipatedByAgent: (companyId: string, agentId: string) =>
+      ["issues", companyId, "participated-by-agent", agentId] as const,
     listByParent: (companyId: string, parentId: string) =>
       ["issues", companyId, "parent", parentId] as const,
     listCreatedFromIssue: (companyId: string, issueId: string) =>
@@ -570,6 +572,8 @@ export const queryKeys = {
         groupBy ?? "none",
         groupIssueId ?? "",
       ] as const,
+    byAgent: (companyId: string, agentId: string) =>
+      ["artifacts", companyId, "by-agent", agentId] as const,
   },
   budgets: {
     overview: (companyId: string) =>
