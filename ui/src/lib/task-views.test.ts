@@ -73,13 +73,19 @@ describe("task views registry (PAP-670)", () => {
 describe("resolveInitialTaskView", () => {
   it("prefers an explicit ?view=", () => {
     expect(resolveInitialTaskView("blocked", false, "done")).toBe("blocked");
-    expect(resolveInitialTaskView("blocked", true, "done")).toBe("blocked");
+    expect(resolveInitialTaskView("backlog", true, "done")).toBe("backlog");
   });
 
   it("falls back to the last-used view on a bare /issues", () => {
     expect(resolveInitialTaskView(null, false, "backlog")).toBe("backlog");
     expect(resolveInitialTaskView("nonsense", false, "backlog")).toBe("backlog");
     expect(resolveInitialTaskView(null, false, DEFAULT_TASK_VIEW)).toBe("mine");
+  });
+
+  it("opens All tasks when an explicit inbox view carries an organization filter", () => {
+    // Inbox views can't apply ?participantAgentId= and friends.
+    expect(resolveInitialTaskView("mine", true, "mine")).toBe("all");
+    expect(resolveInitialTaskView("everything", true, "mine")).toBe("all");
   });
 
   it("opens All tasks for an organization-scoped deep link so its filter is not silently dropped", () => {

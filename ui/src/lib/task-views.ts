@@ -145,6 +145,8 @@ export function resolveInitialTaskView(
   lastUsed: TaskViewKey,
 ): TaskViewKey {
   const explicit = normalizeTaskViewKey(requested);
-  if (explicit) return explicit;
-  return hasOrganizationScopedParam ? "all" : lastUsed;
+  // Inbox views can't apply organization filters, so a link carrying one
+  // opens All tasks rather than silently dropping the filter.
+  if (hasOrganizationScopedParam && (!explicit || taskView(explicit).surface === "inbox")) return "all";
+  return explicit ?? lastUsed;
 }

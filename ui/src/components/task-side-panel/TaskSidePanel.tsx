@@ -296,11 +296,17 @@ export function TaskSidePanel({
     let tabs = restored?.tabs ?? (conversationAgentId
       ? [taskPanelAgentTasksTab()]
       : issue.conversationAgentId ? [taskPanelArtifactsTab()] : [taskPanelPropertiesTab()]);
-    // A tab saved while Agent Chat was on has nothing to render without it.
-    if (!conversationAgentId) tabs = tabs.filter((tab) => tab.payload.kind !== "agent-tasks");
+    // A tab saved while Agent Chat was on has nothing to render without it;
+    // a chat left with no tabs falls back to its Agent-Chat-off default.
+    if (!conversationAgentId) {
+      const kept = tabs.filter((tab) => tab.payload.kind !== "agent-tasks");
+      if (kept.length === 0 && tabs.length > 0 && issue.conversationAgentId) tabs = [taskPanelArtifactsTab()];
+      else tabs = kept;
+    }
     // Chats used to open on Artifacts by default; move an untouched default
-    // onto the agent's tasks instead of keeping the retired layout forever.
-    if (conversationAgentId && tabs.length === 1 && tabs[0]!.id === "artifacts") {
+    // onto the agent's tasks. An Artifacts tab the user chose to keep stays.
+    if (conversationAgentId && !restoredRef.current?.userInteracted
+      && tabs.length === 1 && tabs[0]!.id === "artifacts") {
       tabs = [taskPanelAgentTasksTab()];
     }
     if (!initialSubtasksAvailableRef.current) {

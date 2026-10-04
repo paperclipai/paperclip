@@ -114,12 +114,6 @@ function StreamlinedTasks() {
   const view = resolveInitialTaskView(requestedView, hasOrganizationScopedParam, lastUsedView);
   const definition = taskView(view);
 
-  // Only an explicit choice is remembered — a deep link's implied view is not
-  // the user's preference.
-  useEffect(() => {
-    if (normalizeTaskViewKey(requestedView)) saveLastTaskView(view);
-  }, [requestedView, view]);
-
   // Make the resolved view addressable without dropping the params that
   // brought the user here.
   useEffect(() => {

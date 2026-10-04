@@ -7,6 +7,7 @@ import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
+  taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
@@ -241,6 +242,37 @@ describe("TaskSidePanel", () => {
     expect(selected?.textContent).toContain("Tasks");
     expect(container.textContent).toContain("Agent tasks agent-1 excluding task-1");
     expect(container.textContent).not.toContain("Artifacts content");
+  });
+
+  it("keeps an Artifacts-only layout the user chose", async () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelArtifactsTab()], activeTabId: "artifacts" },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: false,
+      updatedAt: 1,
+    });
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+    expect(Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["artifacts"]);
+  });
+
+  it("falls back to Artifacts when Agent Chat is off and only the Tasks tab was saved", async () => {
+    agentChat.enabled = false;
+    try {
+      writeTaskSidePanelState("user-1", "company-1", "task-1", {
+        state: { tabs: [taskPanelAgentTasksTab()], activeTabId: "agent-tasks" },
+        launcherOpen: false,
+        userInteracted: true,
+        autoPlanHandled: false,
+        updatedAt: 1,
+      });
+      await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
+      expect(container.textContent).toContain("Artifacts content");
+    } finally {
+      agentChat.enabled = true;
+    }
   });
 
   it("moves a chat's stored Artifacts-only default onto the agent's tasks", async () => {

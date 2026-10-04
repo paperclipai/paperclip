@@ -146,6 +146,8 @@ export function AgentTasksPanel({
 
   const activeFilterCount = countActiveIssueFilters(filters);
   const total = (tasksQuery.data ?? []).filter((task) => task.id !== excludeIssueId).length;
+  // Search and filters run on the most recently updated tasks only.
+  const capped = (tasksQuery.data?.length ?? 0) >= AGENT_TASK_LIMIT;
 
   return (
     <section className="flex flex-col gap-3" aria-label="Agent tasks">
@@ -212,11 +214,15 @@ export function AgentTasksPanel({
       ) : total === 0 ? (
         <PanelMessage>This agent hasn't worked on any tasks yet.</PanelMessage>
       ) : visible.length === 0 ? (
-        <PanelMessage>No tasks match these filters.</PanelMessage>
+        <PanelMessage>
+          {capped
+            ? `No tasks match these filters among the ${AGENT_TASK_LIMIT} most recently updated.`
+            : "No tasks match these filters."}
+        </PanelMessage>
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((task) => <AgentTaskCard key={task.id} task={task} />)}
-          {(tasksQuery.data?.length ?? 0) >= AGENT_TASK_LIMIT ? (
+          {capped ? (
             <p className="px-1 text-xs text-muted-foreground">
               Showing the {AGENT_TASK_LIMIT} most recently updated tasks.
             </p>

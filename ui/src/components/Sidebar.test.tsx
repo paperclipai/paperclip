@@ -421,6 +421,21 @@ describe("Sidebar", () => {
   });
 
   describe("with Combined Inbox + Task List on (PAP-670)", () => {
+    it("keeps the Inbox row in the legacy shell, which has no merged Tasks page", async () => {
+      mockInboxBadge.inbox = 7;
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true, enableStreamlinedUi: false });
+      const root = await renderSidebar();
+
+      const inboxLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/inbox");
+      expect(inboxLink?.textContent).toContain("7");
+      const tasksLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/issues");
+      expect(tasksLink?.textContent).not.toContain("7");
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
     it("drops the Inbox row and moves its unread badge onto Tasks", async () => {
       mockInboxBadge.inbox = 7;
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true });

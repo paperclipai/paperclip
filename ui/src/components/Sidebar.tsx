@@ -95,7 +95,9 @@ export function Sidebar({ children }: { children?: ReactNode }) {
   // Workspaces leaves to make room. Combined Inbox + Task List: Inbox becomes
   // views inside Tasks, so its row goes and its badge rides on Tasks.
   const chatRail = agentChatEnabled && streamlinedUiEnabled;
-  const combinedInboxTasks = experimentalSettings?.enableCombinedInboxTasks === true;
+  // The merged Tasks page only exists in the streamlined shell, so the legacy
+  // shell keeps its Inbox row even with the flag on.
+  const combinedInboxTasks = streamlinedUiEnabled && experimentalSettings?.enableCombinedInboxTasks === true;
   const showWorkspacesLink = !chatRail && experimentalSettings?.enableIsolatedWorkspaces === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
   const showStatusCards = experimentalSettings?.enableStatusCards === true;
