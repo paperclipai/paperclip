@@ -292,6 +292,12 @@ function makeSandboxHarness(options: {
   finalStdout: string;
   finalStderr?: string;
   useTail: boolean;
+  /** Emit runner onLog chunks without awaiting (plugin-route fan-out). */
+  unawaited?: boolean;
+  /** Settle delay before the fake runner returns (lets sinks catch up). */
+  settleMs?: number;
+  /** Runs after streaming, before the fake runner returns its batch. */
+  onBeforeReturn?: () => void | Promise<void>;
 }): SandboxHarness {
   let sink: ((stream: ControlPipe, chunk: string) => Promise<void>) | null = null;
   const suffixStdout = options.suffixStdout ?? "";
@@ -307,11 +313,19 @@ function makeSandboxHarness(options: {
             for (const item of options.streamed) {
               await sink?.(item.stream, item.chunk);
             }
+          } else if (options.unawaited) {
+            // Mirrors the plugin route: fire-and-forget fan-out, never awaited.
+            for (const item of options.streamed) {
+              void input.onLog?.(item.stream, item.chunk);
+              await new Promise((resolve) => setTimeout(resolve, 1));
+            }
+            await new Promise((resolve) => setTimeout(resolve, options.settleMs ?? 50));
           } else {
             for (const item of options.streamed) {
               await input.onLog?.(item.stream, item.chunk);
             }
           }
+          await options.onBeforeReturn?.();
           return {
             exitCode: 0,
             signal: null,
@@ -475,5 +489,212 @@ describe("execution-target sandbox control-output forwarding (fake runner, no ho
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(`${body}\n`);
     expect(logs.join("")).toContain(body);
+  });
+
+  it("streams stdout live while stderr arrives only in the final batch, each exactly once", async () => {
+    // Mixed pipes: stdout streams through runner onLog, stderr never streams.
+    // The stdout half must not be duplicated by the fallback (dedupe guard)
+    // and the stderr half must still arrive (fallback covers both pipes).
+    // The stderr final is unterminated, so it only arrives via the flush.
+    const s1 = sandboxAssistant("mixed-streamed");
+    const e1 = sandboxAssistant("mixed-batch-first");
+    const e2 = sandboxAssistant("mixed-batch-last");
+    const harness = makeSandboxHarness({
+      streamed: [{ stream: "stdout", chunk: `${s1}\n` }],
+      finalStdout: `${s1}\n`,
+      finalStderr: `${e1}\n${e2}`,
+      useTail: false,
+    });
+    const byPipe: Record<ControlPipe, string[]> = { stdout: [], stderr: [] };
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions(),
+        onControlOutput: async (stream, records) => {
+          byPipe[stream].push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(parseControlRecords(byPipe.stdout.join(""))).toEqual([JSON.parse(s1)]);
+    expect(parseControlRecords(byPipe.stderr.join(""))).toEqual([
+      JSON.parse(e1),
+      JSON.parse(e2),
+    ]);
+  });
+
+  it("isolates a throwing event sink: warns, keeps the run green, delivers later records", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const one = sandboxAssistant("sink-one");
+      const two = sandboxAssistant("sink-two");
+      const three = sandboxAssistant("sink-three");
+      const harness = makeSandboxHarness({
+        streamed: [
+          { stream: "stdout", chunk: `${one}\n` },
+          { stream: "stdout", chunk: `${two}\n` },
+          { stream: "stdout", chunk: three },
+        ],
+        finalStdout: `${one}\n${two}\n${three}`,
+        useTail: true,
+      });
+      const seen: string[] = [];
+      let calls = 0;
+      const result = await runAdapterExecutionTargetProcess(
+        randomUUID(),
+        harness.target,
+        "agent-cli",
+        ["--json"],
+        {
+          ...baseOptions(),
+          onControlOutput: async (stream, records) => {
+            if (stream !== "stdout") return;
+            calls += 1;
+            if (calls === 1) throw new Error("sink boom");
+            seen.push(records);
+          },
+          runLogTail: harness.runLogTail,
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(warn).toHaveBeenCalled();
+      // The first record is lost with its failed delivery; everything after
+      // the failure still arrives, including the EOF flush.
+      expect(parseControlRecords(seen.join("")).map((r) => (r as { content: string }).content)).toEqual([
+        "sink-two",
+        "sink-three",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("delivers live records before the runner returns, not only at exit", async () => {
+    // Deferring every control record until after execute() resolves would
+    // still pass an exit-time assertion; this pins liveness by snapshotting
+    // what the sink had seen while the runner was still running.
+    const first = sandboxAssistant("live-before-exit");
+    const streamedStdout = `${first}\n`;
+    const byPipe: Record<ControlPipe, string[]> = { stdout: [], stderr: [] };
+    const snapshots: string[] = [];
+    const harness = makeSandboxHarness({
+      streamed: [{ stream: "stdout", chunk: streamedStdout }],
+      finalStdout: streamedStdout,
+      useTail: true,
+      onBeforeReturn: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        snapshots.push(byPipe.stdout.join(""));
+      },
+    });
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions(),
+        onControlOutput: async (stream, records) => {
+          byPipe[stream].push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(snapshots).toHaveLength(1);
+    expect(parseControlRecords(snapshots[0])).toEqual([JSON.parse(first)]);
+  });
+
+  it("flushes an unterminated stderr EOF record on the tail path", async () => {
+    // The EOF flush must cover stderr too: an unterminated stderr record has
+    // no complete line for push() to emit, so only flush() delivers it.
+    const eof = sandboxAssistant("stderr-eof-last");
+    const harness = makeSandboxHarness({
+      streamed: [{ stream: "stderr", chunk: eof }],
+      finalStdout: "",
+      finalStderr: eof,
+      useTail: true,
+    });
+    const byPipe: Record<ControlPipe, string[]> = { stdout: [], stderr: [] };
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions(),
+        onControlOutput: async (stream, records) => {
+          byPipe[stream].push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(parseControlRecords(byPipe.stderr.join(""))).toEqual([JSON.parse(eof)]);
+    expect(byPipe.stdout.join("")).toBe("");
+  });
+
+  it("keeps arrival order and redaction under unawaited fan-out with uneven display latency", async () => {
+    // P8 regression: the runner fans onLog out unawaited while the display
+    // sink resolves unevenly (first call slower). Control delivery must
+    // follow chunk arrival, not onLog resolution, or the split secret
+    // redaction garbles across reordered lines.
+    const secret = "p8-fanout-secret-XYZ789";
+    const live = sandboxAssistant(`live ${secret} event`);
+    const after = sandboxAssistant("fanout-after");
+    const cut = live.indexOf(secret) + 10;
+    const seen: string[] = [];
+    const preReturn: string[] = [];
+    const harness = makeSandboxHarness({
+      streamed: [
+        { stream: "stdout", chunk: live.slice(0, cut) },
+        { stream: "stdout", chunk: `${live.slice(cut)}\n${after}\n` },
+      ],
+      finalStdout: `${live}\n${after}\n`,
+      useTail: false,
+      unawaited: true,
+      settleMs: 120,
+      // The settle window elapses while the runner is still running, so a
+      // snapshot here pins live (not exit-time) delivery on the no-tail path.
+      onBeforeReturn: async () => {
+        preReturn.push(seen.join(""));
+      },
+    });
+    let calls = 0;
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions({ CLIENT_SECRET: secret }),
+        // Uneven display latency: the first onLog call resolves slower.
+        onLog: async () => {
+          calls += 1;
+          if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 40));
+        },
+        onControlOutput: async (stream, records) => {
+          if (stream === "stdout") seen.push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    const joined = seen.join("");
+    expect(joined).not.toContain(secret);
+    expect(parseControlRecords(joined)).toEqual([
+      { role: "assistant", content: "***REDACTED***" },
+      JSON.parse(after),
+    ]);
+    // Live, not exit-time: both records were already delivered while the
+    // runner was still settling, before it returned its batch.
+    expect(preReturn).toHaveLength(1);
+    expect(parseControlRecords(preReturn[0])).toEqual([
+      { role: "assistant", content: "***REDACTED***" },
+      JSON.parse(after),
+    ]);
   });
 });

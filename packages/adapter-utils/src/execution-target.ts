@@ -948,12 +948,19 @@ export async function runAdapterExecutionTargetProcess(
         );
       }
     };
+    // Arrival-order delivery: runners may call onLog without awaiting it, and
+    // display sinks have uneven latency, so push synchronously and deliver
+    // through one chain instead of ordering by onLog resolution.
+    let controlDelivery: Promise<void> = Promise.resolve();
     const forwardSandboxChunk = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
+      const records = liveControl?.[stream].push(chunk) ?? "";
+      if (records) {
+        controlDelivery = controlDelivery.then(() => forwardSandboxControls(stream, records));
+      }
       if (chunk) {
         streamedControlChars[stream] += chunk.length;
         await options.onLog(stream, chunk);
       }
-      await forwardSandboxControls(stream, liveControl?.[stream].push(chunk) ?? "");
     };
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
@@ -1009,6 +1016,7 @@ export async function runAdapterExecutionTargetProcess(
         }
       }
       if (liveControl) {
+        await controlDelivery;
         for (const stream of ["stdout", "stderr"] as const) {
           await forwardSandboxControls(stream, liveControl[stream].flush());
         }
