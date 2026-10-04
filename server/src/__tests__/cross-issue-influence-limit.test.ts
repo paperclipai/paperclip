@@ -10,30 +10,36 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  checkedOutIssueId: string | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  const resolved = <T,>(value: T) => ({ then: (resolve: (rows: T[]) => unknown) => resolve(value) });
+  const runRow = {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    responsibleUserId: "user-1",
+    contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+    ...runOverrides,
+  };
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
-            return {
-              then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
-            };
+            return resolved([{ count: observedCount }]);
           }
-          return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
+          // One chainable covers both remaining shapes: the run lock (`.for`)
+          // and the checked-out-issue anchor lookup (`.orderBy().limit()`).
+          const chainable = {
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              resolve(runOverrides === null ? [] : [runRow]),
+            for: () => chainable,
+            orderBy: () => chainable,
+            limit: () => resolved(checkedOutIssueId ? [{ id: checkedOutIssueId }] : []),
           };
+          return chainable;
         },
       }),
     }),
@@ -212,5 +218,31 @@ describe("cross-issue influence limit rollout", () => {
       details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
+  });
+
+  it("does not charge a heartbeat run for writing to the issue it has checked out", async () => {
+    const checkedOut = "55555555-5555-4555-8555-555555555555";
+    const fake = counterDb(0, { contextSnapshot: {} }, checkedOut);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: checkedOut,
+      kind: "comment",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still charges a heartbeat run for writing to an issue it has not checked out", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, "55555555-5555-4555-8555-555555555555");
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "66666666-6666-4666-8666-666666666666",
+      kind: "update",
+    })).resolves.toMatchObject({ count: 1, allowed: true });
   });
 });

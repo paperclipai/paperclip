@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, desc, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -41,6 +41,36 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+/**
+ * A run's anchor may live on the issue it holds checked out rather than in
+ * its context snapshot. Timer heartbeats start unanchored — the scheduler
+ * wakes them with no task — and they pick work up from the inbox and then
+ * check it out, so the checkout row is the only place that names the issue.
+ * Without this fallback every heartbeat run fails closed and the whole timer
+ * path loses the ability to comment on or update any issue.
+ */
+async function readCheckedOutIssueId(
+  tx: Db,
+  input: { companyId: string; runId: string },
+): Promise<string | null> {
+  const row = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        or(
+          eq(issues.checkoutRunId, input.runId),
+          eq(issues.executionRunId, input.runId),
+        ),
+      ),
+    )
+    .orderBy(desc(issues.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row?.id ?? null;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -109,7 +139,9 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    const sourceIssueId =
+      readRunSourceIssueId(run.contextSnapshot) ??
+      (await readCheckedOutIssueId(tx, { companyId: input.companyId, runId: input.runId }));
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||
