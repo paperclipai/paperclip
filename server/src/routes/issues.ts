@@ -2033,23 +2033,56 @@ const REVIEW_VERDICT_SATISFYING_KINDS = new Set([
   "request_checkbox_confirmation",
 ]);
 
-// Fail-closed: only an ACCEPTED verdict satisfies a review path. A
-// request_changes / send_back / expired verdict records that the judgement
-// happened and went against the work, so it must never unlock in_review.
-const REVIEW_VERDICT_SATISFYING_STATUSES = new Set(["accepted"]);
+// A tool-action or secret-proposal confirmation is not a review decision. The
+// pending review check below already excludes those payloads, so the recorded
+// verdict check must exclude them too, or a resolved tool card would read as
+// an approval.
+function isReviewVerdictInteraction(interaction: {
+  kind: string;
+  status: string;
+  payload?: unknown;
+}): boolean {
+  if (!REVIEW_VERDICT_SATISFYING_KINDS.has(interaction.kind)) return false;
+  if (!interaction.payload || typeof interaction.payload !== "object") return true;
+  const payload = interaction.payload as Record<string, unknown>;
+  return !("toolAction" in payload && payload.toolAction !== undefined) &&
+    !("secretProposal" in payload && payload.secretProposal !== undefined);
+}
 
+// Fail-closed: only the LATEST verdict satisfies a review path, and only when
+// it was accepted. An older acceptance must not survive a newer rejection,
+// because the newer verdict is the decision that still stands.
 function hasSatisfiedReviewVerdict(
-  interactions: Array<{ kind: string; status: string }>,
+  interactions: Array<{
+    kind: string;
+    status: string;
+    payload?: unknown;
+    createdAt?: Date | string;
+    id?: string;
+  }>,
 ): boolean {
-  return interactions.some(
-    (interaction) =>
-      REVIEW_VERDICT_SATISFYING_KINDS.has(interaction.kind) &&
-      REVIEW_VERDICT_SATISFYING_STATUSES.has(String(interaction.status)),
-  );
+  const verdicts = interactions.filter(isReviewVerdictInteraction);
+  if (verdicts.length === 0) return false;
+  const latest = verdicts.reduce((newest, candidate) => {
+    const newestAt = newest.createdAt ? String(newest.createdAt) : "";
+    const candidateAt = candidate.createdAt ? String(candidate.createdAt) : "";
+    if (candidateAt !== newestAt) return candidateAt > newestAt ? candidate : newest;
+    // Same timestamp, or no timestamp at all. listForIssue orders by
+    // createdAt ASC then id ASC, so the later entry in the array is the newer
+    // row. Keep it.
+    return candidate;
+  });
+  return String(latest.status) === "accepted";
 }
 
 export function __hasSatisfiedReviewVerdictForTests(
-  interactions: Array<{ kind: string; status: string }>,
+  interactions: Array<{
+    kind: string;
+    status: string;
+    payload?: unknown;
+    createdAt?: Date | string;
+    id?: string;
+  }>,
 ): boolean {
   return hasSatisfiedReviewVerdict(interactions);
 }
