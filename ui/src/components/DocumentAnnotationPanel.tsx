@@ -24,6 +24,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, relativeTime } from "@/lib/utils";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import { useCopyToast } from "@/lib/use-copy-action";
+import { isSubmitKeyEvent, useResolvedSubmitKey } from "@/lib/submitKeyPreference";
+import { SendKeyMenu } from "./SendKeyMenu";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PendingAnchor } from "./DocumentAnnotationLayer";
@@ -107,6 +109,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const submitKey = useResolvedSubmitKey("mod-enter");
   const bodyTestId = props.isMobile ? "document-annotation-panel" : undefined;
   const annotationTarget = useMemo<DocumentAnnotationTarget>(() => {
     if (props.target) return props.target;
@@ -266,7 +269,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
             value={composerValue}
             onChange={(event) => setComposerValue(event.target.value)}
             onKeyDown={(event) => {
-              if (isSubmitShortcut(event)) {
+              if (isSubmitKeyEvent(event, submitKey)) {
                 event.preventDefault();
                 const body = composerValue.trim();
                 if (
@@ -295,19 +298,21 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
             >
               Cancel
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={
-                createThread.isPending
-                || !composerValue.trim()
-                || props.newCommentDisabled
-                || !props.baseRevisionId
-              }
-              onClick={() => createThread.mutate(composerValue.trim())}
-            >
-              {createThread.isPending ? "Posting…" : "Comment"}
-            </Button>
+            <SendKeyMenu mode={submitKey}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={
+                  createThread.isPending
+                  || !composerValue.trim()
+                  || props.newCommentDisabled
+                  || !props.baseRevisionId
+                }
+                onClick={() => createThread.mutate(composerValue.trim())}
+              >
+                {createThread.isPending ? "Posting…" : "Comment"}
+              </Button>
+            </SendKeyMenu>
           </div>
         </div>
       ) : null}
@@ -332,6 +337,7 @@ export function ThreadCard(props: {
 }) {
   const { thread } = props;
   const latestComment = thread.comments[thread.comments.length - 1];
+  const submitKey = useResolvedSubmitKey("mod-enter");
 
   return (
     <li>
@@ -376,7 +382,7 @@ export function ThreadCard(props: {
               value={props.replyDraft}
               onChange={(event) => props.onReplyChange(event.target.value)}
               onKeyDown={(event) => {
-                if (isSubmitShortcut(event)) {
+                if (isSubmitKeyEvent(event, submitKey)) {
                   event.preventDefault();
                   if (props.replyDraft.trim() && !props.pendingReply) {
                     props.onSubmitReply();
@@ -406,14 +412,16 @@ export function ThreadCard(props: {
                   </>
                 )}
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={!props.replyDraft.trim() || props.pendingReply}
-                onClick={props.onSubmitReply}
-              >
-                {props.pendingReply ? "Sending…" : "Reply"}
-              </Button>
+              <SendKeyMenu mode={submitKey} disablePortal>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!props.replyDraft.trim() || props.pendingReply}
+                  onClick={props.onSubmitReply}
+                >
+                  {props.pendingReply ? "Sending…" : "Reply"}
+                </Button>
+              </SendKeyMenu>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -492,11 +500,6 @@ function CommentRow({
       <MarkdownBody className="text-sm leading-6">{comment.body}</MarkdownBody>
     </div>
   );
-}
-
-/** ⌘/Ctrl + Enter submits the composer or reply. */
-function isSubmitShortcut(event: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
-  return event.key === "Enter" && (event.metaKey || event.ctrlKey);
 }
 
 function resolveAuthor(

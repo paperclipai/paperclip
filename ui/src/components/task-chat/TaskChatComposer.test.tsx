@@ -953,7 +953,9 @@ describe("TaskChatComposer", () => {
       currentAssigneeValue="agent:codex" />);
 
     const actions = container.querySelector<HTMLElement>('[data-testid="task-chat-composer-actions"]')!;
-    expect(actions.lastElementChild?.lastElementChild).toBe(sendButton());
+    const sendSlot = actions.lastElementChild?.lastElementChild;
+    expect(sendSlot?.getAttribute("data-testid")).toBe("send-key-menu-anchor");
+    expect(sendSlot?.firstElementChild).toBe(sendButton());
     expect(actions.firstElementChild?.contains(sendButton())).toBe(false);
     expect(actions.lastElementChild?.querySelector('[data-testid="task-chat-composer-assignee"]')).not.toBeNull();
     expect(actions.querySelector('[data-testid="task-chat-composer-assignee"] [data-slot="agent-avatar"] img')).not.toBeNull();

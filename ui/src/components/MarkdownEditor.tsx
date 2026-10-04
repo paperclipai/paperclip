@@ -58,6 +58,7 @@ import {
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
+import { isSubmitKeyEvent, type SubmitKeyMode } from "../lib/submitKeyPreference";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
@@ -96,8 +97,15 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Capability-aware action commands supplied by the owning composer. */
   actionCommands?: SlashCommandOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on the submit key (Cmd/Ctrl+Enter by default, see `submitKey`). */
   onSubmit?: () => void;
+  /**
+   * Which key calls `onSubmit`. Message composers pass the user's send-key
+   * preference; other editors keep the default `"mod-enter"`. In `"enter"`
+   * mode Return submits and Shift+Return inserts a line break, except while
+   * the autocomplete menu takes Return or the caret is in a code block.
+   */
+  submitKey?: SubmitKeyMode;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -716,6 +724,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1343,7 +1352,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && isSubmitKeyEvent(event, submitKey)) {
               event.preventDefault();
               onSubmit();
             }
@@ -1368,8 +1377,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // Cmd/Ctrl+Enter to submit (in either send-key mode)
+        if (onSubmit && (e.metaKey || e.ctrlKey) && isSubmitKeyEvent(e, submitKey)) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1422,6 +1431,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Plain Return submits in "enter" mode once autocomplete has passed on
+        // it; code blocks keep Return as a newline.
+        if (
+          onSubmit
+          && submitKey === "enter"
+          && isSubmitKeyEvent(e, submitKey)
+          && !(e.target instanceof Element && e.target.closest(".cm-editor"))
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
         }
       }}
       onDragEnter={(evt) => {

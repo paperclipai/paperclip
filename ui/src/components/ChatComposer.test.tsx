@@ -4,6 +4,7 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer, type ChatComposerProps } from "./ChatComposer";
+import { setSubmitKeyPreference } from "../lib/submitKeyPreference";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,6 +38,7 @@ describe("ChatComposer", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -134,6 +136,57 @@ describe("ChatComposer", () => {
       input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true }));
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  it('the saved "enter" preference overrides a mod-enter default', () => {
+    setSubmitKeyPreference("enter");
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness onSubmit={onSubmit} initial="hi" submitKey="mod-enter" />);
+    });
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, shiftKey: true }));
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(sendButton().title).toBe("Send message (Return)");
+    act(() => root.unmount());
+  });
+
+  it('the saved "mod-enter" preference overrides an enter default, and updates live', () => {
+    setSubmitKeyPreference("mod-enter");
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness onSubmit={onSubmit} initial="hi" submitKey="enter" />);
+    });
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    act(() => setSubmitKeyPreference("enter"));
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  it("does not submit on Enter while an IME composition is active", () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness onSubmit={onSubmit} initial="hi" submitKey="enter" />);
+    });
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }));
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 

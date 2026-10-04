@@ -1231,6 +1231,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    submitProps: { onSubmit?: () => void; submitKey?: "enter" | "mod-enter" } = {},
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -1240,6 +1241,7 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          {...submitProps}
         />,
       );
     });
@@ -1270,6 +1272,63 @@ describe("MarkdownEditor", () => {
     expect(menu).toBeTruthy();
     return { option: option!, root, menu: menu! };
   }
+
+  async function renderSubmitEditor(submitKey?: "enter" | "mod-enter") {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey={submitKey} />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const press = (init: KeyboardEventInit) =>
+      act(() => {
+        editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init }));
+      });
+    return { onSubmit, root, press };
+  }
+
+  it("submits only on Cmd/Ctrl+Enter by default", async () => {
+    const { onSubmit, root, press } = await renderSubmitEditor();
+    press({});
+    press({ shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    press({ metaKey: true });
+    press({ ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+  it('submitKey="enter": Return submits, Shift+Return and IME composition do not', async () => {
+    const { onSubmit, root, press } = await renderSubmitEditor("enter");
+    press({ shiftKey: true });
+    press({ isComposing: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    press({});
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    press({ metaKey: true });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+  it('submitKey="enter": Return picks the open mention instead of submitting', async () => {
+    const handleChange = vi.fn();
+    const onSubmit = vi.fn();
+    const { root } = await openMentionMenuFor(handleChange, undefined, "Paperclip App", {
+      onSubmit,
+      submitKey: "enter",
+    });
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    act(() => {
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-testid="mention-autocomplete-menu"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
 
   it("accepts mention selection from a touch tap", async () => {
     const handleChange = vi.fn();
