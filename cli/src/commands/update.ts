@@ -67,11 +67,12 @@ async function runPreUpdateBackup(options: UpdateOptions, backup: () => Promise<
   }
 }
 
-async function restartActiveManagedService(expectedVersion: string): Promise<boolean> {
+export async function restartActiveManagedService(expectedVersion: string): Promise<boolean> {
   const instanceId = resolvePaperclipInstanceId();
   const detection = await detectServiceManager({ instanceId });
   if (!detection.supported || !(await detection.manager.status()).active) return false;
-  await restartManagedService({ instanceId, expectedVersion });
+  // Auto-update is the hottest restart path; drain in-flight runs like `service restart --wait`.
+  await restartManagedService({ instanceId, expectedVersion, waitForDrain: true });
   return true;
 }
 
