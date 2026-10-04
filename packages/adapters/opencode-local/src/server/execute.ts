@@ -320,6 +320,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
+  // Keep the spawned process POSIX cwd in sync with the resolved execution
+  // directory. Node's child_process.spawn({ cwd }) does not rewrite PWD, and
+  // OpenCode resolves its shell/session working directory from PWD, so a stale
+  // inherited PWD would silently redirect tool execution (e.g. to the server
+  // root) even though the process was spawned in the right directory. Local
+  // targets only: for remote execution the local path is meaningless on the
+  // remote host, which resolves its own cwd from the remote workspace.
+  if (!executionTargetIsRemote && cwd.trim().length > 0) {
+    env.PWD = cwd;
+  }
   // Prevent OpenCode from writing an opencode.json config file into the
   // project working directory (which would pollute the git repo).  Model
   // selection is already handled via the --model CLI flag.  Set after the

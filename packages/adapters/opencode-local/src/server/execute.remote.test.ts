@@ -335,6 +335,66 @@ describe("opencode remote execution", () => {
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 
+  it("does not send the local workspace cwd as PWD for remote SSH execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-pwd-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    // A stale local PWD must never be replaced with the local workspace path
+    // for remote targets: the remote host resolves its own cwd from the
+    // remote workspace, and a local path would be meaningless there.
+    const previousPwd = process.env.PWD;
+    process.env.PWD = path.join(rootDir, "stale-local-root");
+    try {
+      await execute({
+        runId: "run-ssh-pwd",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Builder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "opencode",
+          model: "opencode/gpt-5-nano",
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        onLog: async () => {},
+      });
+      const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
+        | [string, string, string[], { env: Record<string, string> }]
+        | undefined;
+      expect(runCall?.[3].env.PWD).not.toBe(workspaceDir);
+    } finally {
+      if (previousPwd === undefined) delete process.env.PWD;
+      else process.env.PWD = previousPwd;
+    }
+  });
+
   it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-resume-"));
     cleanupDirs.push(rootDir);

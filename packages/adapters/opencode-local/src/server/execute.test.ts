@@ -247,6 +247,123 @@ describe("OpenCode local skill injection", () => {
   });
 });
 
+describe("spawned process working directory", () => {
+  it("sets PWD to the resolved workspace cwd so OpenCode shell tools run there", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-pwd-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "opencode");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
+    await fs.chmod(commandPath, 0o755);
+    // Simulate a stale server PWD: Node's spawn({ cwd }) does not rewrite it,
+    // and OpenCode resolves shell cwd from PWD, so the adapter must override it.
+    const previousPwd = process.env.PWD;
+    process.env.PWD = path.join(root, "stale-server-root");
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({
+      stdout: JSON.stringify({
+        type: "text",
+        sessionID: "session-pwd",
+        part: { text: "done" },
+      }),
+    }));
+    try {
+      const result = await execute({
+        runId: "run-pwd",
+        agent: {
+          id: "agent-pwd",
+          companyId: "company-1",
+          name: "OpenCode",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          model: "openai/gpt-5",
+          env: {},
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspace,
+            source: "task_session",
+            workspaceId: "ws-pwd",
+            repoUrl: null,
+            repoRef: null,
+          },
+        },
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const executionCall = runProcessMock.mock.calls.at(-1)!;
+      const options = executionCall[4] as { cwd: string; env: Record<string, string> };
+      expect(options.cwd).toBe(workspace);
+      expect(options.env.PWD).toBe(workspace);
+    } finally {
+      if (previousPwd === undefined) delete process.env.PWD;
+      else process.env.PWD = previousPwd;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the spawn cwd for PWD when no workspace cwd is provided", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-pwd-fallback-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "opencode");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
+    await fs.chmod(commandPath, 0o755);
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({
+      stdout: JSON.stringify({
+        type: "text",
+        sessionID: "session-pwd-fallback",
+        part: { text: "done" },
+      }),
+    }));
+    try {
+      const result = await execute({
+        runId: "run-pwd-fallback",
+        agent: {
+          id: "agent-pwd-fallback",
+          companyId: "company-1",
+          name: "OpenCode",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "openai/gpt-5",
+          env: {},
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const executionCall = runProcessMock.mock.calls.at(-1)!;
+      const options = executionCall[4] as { cwd: string; env: Record<string, string> };
+      expect(options.cwd).toBe(workspace);
+      expect(options.env.PWD).toBe(workspace);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
