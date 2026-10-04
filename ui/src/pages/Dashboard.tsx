@@ -26,7 +26,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 
 import { ActivityRow } from "../components/ActivityRow";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { cn, asFiniteNumber, formatCents } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
@@ -431,7 +431,9 @@ export function Dashboard() {
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                    ? // A fresh workspace's summary can carry a non-finite
+                      // utilization (backend division, #14429); fall back to 0%.
+                      `${asFiniteNumber(data.costs.monthUtilizationPercent, 0)}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
                 </span>
               }

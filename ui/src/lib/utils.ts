@@ -34,10 +34,15 @@ export function asFiniteNumber(value: unknown, fallback: number) {
 }
 
 export function formatCents(cents: number): string {
+  // A summary payload can carry null/undefined/NaN on a workspace with no
+  // completed runs yet (#14429); Intl would then render "$NaN" forever after.
+  if (!Number.isFinite(cents)) return "$0.00";
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
+  // `undefined.toLocaleString` is the exact crash in #14429 — coerce instead.
+  if (!Number.isFinite(n)) return "0";
   return n.toLocaleString("en-US", options);
 }
 
@@ -94,6 +99,8 @@ export function relativeTime(date: Date | string): string {
 }
 
 export function formatTokens(n: number): string {
+  // Same degenerate-payload guard as formatCents (#14429).
+  if (!Number.isFinite(n)) return "0";
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
