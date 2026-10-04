@@ -231,3 +231,249 @@ describe("execution-target control-output SSH forwarding (source-confirmed, no h
     }
   });
 });
+
+// Sandbox live control records (Greptile P2 on #14390): the sandbox runner
+// has no control channel, so runAdapterExecutionTargetProcess rebuilds the
+// ordered sanitized records from the raw streamed bytes. All secrets below
+// are synthetic and credential-free.
+const sandboxAssistant = (content: string) => JSON.stringify({ role: "assistant", content });
+const sandboxTool = (name: string, content: string) =>
+  JSON.stringify({ role: "tool", name, content });
+
+function parseControlRecords(joined: string): unknown[] {
+  // Trailing newlines are normal in streamed controls; a bare split("\n")
+  // yields a final empty string that JSON.parse chokes on, so filter first.
+  return joined
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+interface SandboxHarness {
+  target: {
+    kind: "remote";
+    transport: "sandbox";
+    remoteCwd: string;
+    runner: {
+      execute: (input: {
+        onLog?: (stream: ControlPipe, chunk: string) => Promise<void>;
+      }) => Promise<{
+        exitCode: number;
+        signal: null;
+        timedOut: boolean;
+        stdout: string;
+        stderr: string;
+        pid: null;
+        startedAt: string;
+      }>;
+    };
+  };
+  runLogTail: {
+    create: () => {
+      wrapCommand: (command: string, args: string[]) => { command: string; args: string[] };
+      start: (onLog: (stream: ControlPipe, chunk: string) => Promise<void>) => void;
+      finish: (finalBatch: { stdout: string; stderr: string }) => Promise<void>;
+      abort: () => Promise<void>;
+    };
+  } | null;
+}
+
+/**
+ * Fake sandbox pair mirroring the production topology: the tail handle
+ * captures the streaming sink at start(); the fake runner emits incremental
+ * chunks through that sink during execute() (tail path) or through the
+ * runner-level onLog (no-tail path), then returns the full batched result.
+ * The finish() suffix covers bytes the poll loop had not streamed yet.
+ */
+function makeSandboxHarness(options: {
+  streamed: Array<{ stream: ControlPipe; chunk: string }>;
+  suffixStdout?: string;
+  suffixStderr?: string;
+  finalStdout: string;
+  finalStderr?: string;
+  useTail: boolean;
+}): SandboxHarness {
+  let sink: ((stream: ControlPipe, chunk: string) => Promise<void>) | null = null;
+  const suffixStdout = options.suffixStdout ?? "";
+  const suffixStderr = options.suffixStderr ?? "";
+  return {
+    target: {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: {
+        execute: async (input) => {
+          if (options.useTail) {
+            for (const item of options.streamed) {
+              await sink?.(item.stream, item.chunk);
+            }
+          } else {
+            for (const item of options.streamed) {
+              await input.onLog?.(item.stream, item.chunk);
+            }
+          }
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: options.finalStdout,
+            stderr: options.finalStderr ?? "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          };
+        },
+      },
+    },
+    runLogTail: options.useTail
+      ? {
+          create: () => ({
+            wrapCommand: (command: string, args: string[]) => ({ command, args }),
+            start: (onLog) => {
+              sink = onLog;
+            },
+            finish: async () => {
+              if (suffixStdout) await sink?.("stdout", suffixStdout);
+              if (suffixStderr) await sink?.("stderr", suffixStderr);
+            },
+            abort: async () => {},
+          }),
+        }
+      : null,
+  };
+}
+
+describe("execution-target sandbox control-output forwarding (fake runner, no host execution)", () => {
+  it("delivers sanitized assistant/tool events before exit on the tail path with a chunk-split secret", async () => {
+    const secret = "s3cr3t-sync-token-abc";
+    const first = sandboxAssistant("streamed-first");
+    const live = sandboxAssistant(`live ${secret} event`);
+    const tool = sandboxTool("read", "ok");
+    const eofRecord = sandboxAssistant("eof-last");
+    // Split the secret across two streamed chunks so the test exercises the
+    // cross-chunk carry; the streamed text ends with a trailing newline and
+    // the EOF record arrives unterminated via the finish() suffix.
+    const cut = live.indexOf(secret) + 4;
+    const streamedStdout = `${first}\n${live.slice(0, cut)}`;
+    const streamedRest = `${live.slice(cut)}\n${tool}\n`;
+    const harness = makeSandboxHarness({
+      streamed: [
+        { stream: "stdout", chunk: streamedStdout },
+        { stream: "stderr", chunk: '{"role":"assistant","content":"stderr-note"}\n' },
+        { stream: "stdout", chunk: streamedRest },
+      ],
+      suffixStdout: eofRecord,
+      finalStdout: `${streamedStdout}${streamedRest}${eofRecord}`,
+      finalStderr: '{"role":"assistant","content":"stderr-note"}\n',
+      useTail: true,
+    });
+    const logs: string[] = [];
+    const byPipe: Record<ControlPipe, string[]> = { stdout: [], stderr: [] };
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions({ CLIENT_SECRET: secret }),
+        onLog: async (stream, chunk) => {
+          logs.push(`${stream}:${chunk}`);
+        },
+        onControlOutput: async (stream, records) => {
+          byPipe[stream].push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    // Display bytes pass through untouched on the sandbox path (sandbox
+    // display capture is outside the redaction claim); control records must
+    // never carry the literal secret. Per-pipe byte order is preserved even
+    // though the stderr chunk interleaves between the two stdout halves, so
+    // the raw stdout halves (which split the secret) rejoin exactly.
+    const stdoutLogs = logs
+      .filter((entry) => entry.startsWith("stdout:"))
+      .map((entry) => entry.slice("stdout:".length))
+      .join("");
+    expect(stdoutLogs).toBe(`${streamedStdout}${streamedRest}${eofRecord}`);
+    expect(stdoutLogs).toContain(secret);
+    const stdoutControls = byPipe.stdout.join("");
+    expect(stdoutControls).not.toContain(secret);
+    expect(parseControlRecords(stdoutControls)).toEqual([
+      JSON.parse(first),
+      // The whole affected string token is replaced, not the secret
+      // substring: control redaction keeps the record valid, never patched.
+      { role: "assistant", content: "***REDACTED***" },
+      JSON.parse(tool),
+      JSON.parse(eofRecord),
+    ]);
+    // Control output redacts the value while display keeps it: the split is
+    // the point, so the two views must differ exactly on the secret.
+    expect(stdoutControls).toContain("***REDACTED***");
+    // The stderr pipe stays independent and ordered.
+    expect(parseControlRecords(byPipe.stderr.join(""))).toEqual([
+      { role: "assistant", content: "stderr-note" },
+    ]);
+  });
+
+  it("falls back to the final batch for a pipe that never streamed, without duplicating streamed pipes", async () => {
+    const secret = "batched-fallback-token-99";
+    const first = sandboxAssistant("batched-first");
+    const second = sandboxAssistant(`batched ${secret} second`);
+    // The runner never calls onLog: the whole output arrives only in the
+    // batched result, so the fallback must still deliver sanitized records
+    // before exit.
+    const harness = makeSandboxHarness({
+      streamed: [],
+      finalStdout: `${first}\n${second}\n`,
+      useTail: false,
+    });
+    const byPipe: Record<ControlPipe, string[]> = { stdout: [], stderr: [] };
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions({ CLIENT_SECRET: secret }),
+        onControlOutput: async (stream, records) => {
+          byPipe[stream].push(records);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    const stdoutControls = byPipe.stdout.join("");
+    expect(stdoutControls).not.toContain(secret);
+    expect(parseControlRecords(stdoutControls)).toEqual([
+      JSON.parse(first),
+      { role: "assistant", content: "***REDACTED***" },
+    ]);
+  });
+
+  it("leaves display behavior unchanged when no onControlOutput is subscribed", async () => {
+    const body = `${sandboxAssistant("plain")}\n${sandboxAssistant("records")}`;
+    const harness = makeSandboxHarness({
+      streamed: [{ stream: "stdout", chunk: `${body}\n` }],
+      finalStdout: `${body}\n`,
+      finalStderr: "warn\n",
+      useTail: true,
+    });
+    const logs: string[] = [];
+    const result = await runAdapterExecutionTargetProcess(
+      randomUUID(),
+      harness.target,
+      "agent-cli",
+      ["--json"],
+      {
+        ...baseOptions(),
+        onLog: async (stream, chunk) => {
+          logs.push(`${stream}:${chunk}`);
+        },
+        runLogTail: harness.runLogTail,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(`${body}\n`);
+    expect(logs.join("")).toContain(body);
+  });
+});
