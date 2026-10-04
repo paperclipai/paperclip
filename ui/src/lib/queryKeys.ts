@@ -157,6 +157,14 @@ export const queryKeys = {
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
+    coverage: (companyId: string, query: { q?: string; missingOnly?: boolean } = {}) =>
+      [
+        "company-skills",
+        companyId,
+        "coverage",
+        query.q ?? "",
+        query.missingOnly ? "missing" : "all",
+      ] as const,
     listRecent: (companyId: string) =>
       ["company-skills", companyId, "recent-updated"] as const,
     detail: (companyId: string, skillId: string) =>

@@ -1785,9 +1785,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:install-a-skill-into-the-company:65",
+      "id": "skill:skills/paperclip/references/company-skills.md:install-a-skill-into-the-company:66",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:65",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:66",
       "title": "Install A Skill Into The Company",
       "expectedSemantics": "Skill guidance headed “Install A Skill Into The Company”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1796,13 +1796,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:65"
+        "skill:skills/paperclip/references/company-skills.md:66"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:app-shipped-catalog:75",
+      "id": "skill:skills/paperclip/references/company-skills.md:app-shipped-catalog:76",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:75",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:76",
       "title": "App-shipped catalog",
       "expectedSemantics": "Skill guidance headed “App-shipped catalog”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1811,13 +1811,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:75"
+        "skill:skills/paperclip/references/company-skills.md:76"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:external-source-import:101",
+      "id": "skill:skills/paperclip/references/company-skills.md:external-source-import:102",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:101",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:102",
       "title": "External source import",
       "expectedSemantics": "Skill guidance headed “External source import”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1826,13 +1826,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:101"
+        "skill:skills/paperclip/references/company-skills.md:102"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:source-types-in-order-of-preference:105",
+      "id": "skill:skills/paperclip/references/company-skills.md:source-types-in-order-of-preference:106",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:105",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:106",
       "title": "Source types (in order of preference)",
       "expectedSemantics": "Skill guidance headed “Source types (in order of preference)”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1841,13 +1841,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:105"
+        "skill:skills/paperclip/references/company-skills.md:106"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:example-skills-sh-import-preferred:116",
+      "id": "skill:skills/paperclip/references/company-skills.md:example-skills-sh-import-preferred:117",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:116",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:117",
       "title": "Example: skills.sh import (preferred)",
       "expectedSemantics": "Skill guidance headed “Example: skills.sh import (preferred)”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1856,13 +1856,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:116"
+        "skill:skills/paperclip/references/company-skills.md:117"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:example-github-import:138",
+      "id": "skill:skills/paperclip/references/company-skills.md:example-github-import:139",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:138",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:139",
       "title": "Example: GitHub import",
       "expectedSemantics": "Skill guidance headed “Example: GitHub import”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1871,13 +1871,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:138"
+        "skill:skills/paperclip/references/company-skills.md:139"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:inspect-what-was-installed:164",
+      "id": "skill:skills/paperclip/references/company-skills.md:inspect-what-was-installed:165",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:164",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:165",
       "title": "Inspect What Was Installed",
       "expectedSemantics": "Skill guidance headed “Inspect What Was Installed”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1886,13 +1886,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:164"
+        "skill:skills/paperclip/references/company-skills.md:165"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:assign-skills-to-an-existing-agent:181",
+      "id": "skill:skills/paperclip/references/company-skills.md:assign-skills-to-an-existing-agent:192",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:181",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:192",
       "title": "Assign Skills To An Existing Agent",
       "expectedSemantics": "Skill guidance headed “Assign Skills To An Existing Agent”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1901,13 +1901,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:181"
+        "skill:skills/paperclip/references/company-skills.md:192"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:include-skills-during-hire-or-create:216",
+      "id": "skill:skills/paperclip/references/company-skills.md:include-skills-during-hire-or-create:227",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:216",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:227",
       "title": "Include Skills During Hire Or Create",
       "expectedSemantics": "Skill guidance headed “Include Skills During Hire Or Create”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1916,13 +1916,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:216"
+        "skill:skills/paperclip/references/company-skills.md:227"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/company-skills.md:notes:256",
+      "id": "skill:skills/paperclip/references/company-skills.md:notes:267",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/company-skills.md:256",
+      "sourceAnchor": "skills/paperclip/references/company-skills.md:267",
       "title": "Notes",
       "expectedSemantics": "Skill guidance headed “Notes”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1931,7 +1931,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/company-skills.md:256"
+        "skill:skills/paperclip/references/company-skills.md:267"
       ]
     },
     {

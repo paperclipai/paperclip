@@ -127,6 +127,53 @@ export interface CompanySkillUsageAgent {
   versionId: string | null;
 }
 
+export interface CompanySkillCoverageQuery {
+  q?: string;
+  missingOnly?: boolean;
+  skillKey?: string;
+  agentId?: string;
+}
+
+export interface CompanySkillCoverageSkill {
+  id: string;
+  key: string;
+  name: string;
+  slug: string;
+}
+
+export interface CompanySkillCoverageAgent {
+  id: string;
+  name: string;
+  urlKey: string;
+  role: string;
+  adapterType: string;
+  syncMode: "unsupported" | "persistent" | "ephemeral";
+}
+
+export interface CompanySkillCoverageCell {
+  agentId: string;
+  skillKey: string;
+  desired: boolean;
+  versionId: string | null;
+  actualState: string | null;
+  syncMode: "unsupported" | "persistent" | "ephemeral";
+}
+
+export interface CompanySkillCoverageSummary {
+  agentCount: number;
+  skillCount: number;
+  desiredCellCount: number;
+  gapCount: number;
+  unsupportedAgentCount: number;
+}
+
+export interface CompanySkillCoverageResponse {
+  skills: CompanySkillCoverageSkill[];
+  agents: CompanySkillCoverageAgent[];
+  cells: CompanySkillCoverageCell[];
+  summary: CompanySkillCoverageSummary;
+}
+
 export interface CompanySkillDetail extends CompanySkill {
   attachedAgentCount: number;
   usedByAgents: CompanySkillUsageAgent[];

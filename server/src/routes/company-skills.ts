@@ -24,6 +24,7 @@ import {
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
   companySkillListQuerySchema,
+  companySkillCoverageQuerySchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectScanRequestSchema,
   companySkillRenameSchema,
@@ -63,6 +64,7 @@ import {
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import {
   normalizeSkillPolicySourceLocator,
+  type CompanySkillCoverageResponse,
   type SkillPolicyAction,
   type SkillPolicyDecision,
   type SkillPolicyEvaluationResource,
@@ -247,6 +249,77 @@ export function companySkillRoutes(db: Db) {
     if (!policyDecision.allowed) {
       throw forbidden("Skill action denied by company policy", toSkillPolicyDenialResponse(policyDecision));
     }
+  }
+
+  function emptySkillCoverageResponse(): CompanySkillCoverageResponse {
+    return {
+      skills: [],
+      agents: [],
+      cells: [],
+      summary: {
+        agentCount: 0,
+        skillCount: 0,
+        desiredCellCount: 0,
+        gapCount: 0,
+        unsupportedAgentCount: 0,
+      },
+    };
+  }
+
+  async function filterCoverageForActor(
+    req: Request,
+    companyId: string,
+    coverage: CompanySkillCoverageResponse,
+  ): Promise<CompanySkillCoverageResponse> {
+    if (req.actor.type === "board") return coverage;
+    if (coverage.agents.length === 0) {
+      return coverage.cells.length === 0 ? coverage : emptySkillCoverageResponse();
+    }
+
+    const companyConfigDecision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "company", companyId },
+    });
+    const canReadCompanyConfigs = companyConfigDecision.allowed;
+    const visible = await Promise.all(coverage.agents.map(async (agent) => {
+      const readDecision = await access.decide({
+        actor: req.actor,
+        action: "agent:read",
+        resource: { type: "agent", companyId, agentId: agent.id },
+      });
+      if (!readDecision.allowed) return false;
+      if (canReadCompanyConfigs) return true;
+      const configDecision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:read",
+        resource: { type: "agent", companyId, agentId: agent.id },
+      });
+      return configDecision.allowed;
+    }));
+    const allowedIds = new Set(
+      coverage.agents.filter((_, index) => visible[index]).map((agent) => agent.id),
+    );
+    if (allowedIds.size === coverage.agents.length) return coverage;
+
+    const agents = coverage.agents.filter((agent) => allowedIds.has(agent.id));
+    const cells = coverage.cells.filter((cell) => allowedIds.has(cell.agentId));
+    if (agents.length === 0 || cells.length === 0) return emptySkillCoverageResponse();
+
+    const skillKeys = new Set(cells.map((cell) => cell.skillKey));
+    const skills = coverage.skills.filter((skill) => skillKeys.has(skill.key));
+    return {
+      skills,
+      agents,
+      cells,
+      summary: {
+        agentCount: agents.length,
+        skillCount: skills.length,
+        desiredCellCount: cells.filter((cell) => cell.desired).length,
+        gapCount: cells.filter((cell) => !cell.desired).length,
+        unsupportedAgentCount: agents.filter((agent) => agent.syncMode === "unsupported").length,
+      },
+    };
   }
 
   async function assertCanOrchestrateSkillTestHarness(
@@ -447,6 +520,18 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(await svc.categoryCounts(companyId));
+  });
+
+  router.get("/companies/:companyId/skills/coverage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const query = companySkillCoverageQuerySchema.parse({
+      q: firstQueryString(req.query.q),
+      missingOnly: firstQueryString(req.query.missingOnly),
+      skillKey: firstQueryString(req.query.skillKey),
+      agentId: firstQueryString(req.query.agentId),
+    });
+    res.json(await filterCoverageForActor(req, companyId, await svc.coverage(companyId, query)));
   });
 
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentSkillSyncModeSchema } from "./adapter-skills.js";
 
 export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
@@ -112,6 +113,58 @@ export const companySkillListQuerySchema = z.object({
   include: z.array(companySkillListIncludeSchema).optional(),
   folderId: z.string().guid().optional(),
   includeSubtree: z.boolean().optional(),
+});
+
+export const companySkillCoverageQuerySchema = z.object({
+  q: z.string().min(1).optional(),
+  missingOnly: z.preprocess(
+    (value) => (value === "true" ? true : value === "false" ? false : value),
+    z.boolean().optional().default(false),
+  ),
+  skillKey: z.string().min(1).optional(),
+  agentId: z.string().guid().optional(),
+});
+
+export const companySkillCoverageSkillSchema = z.object({
+  id: z.string().guid(),
+  key: z.string().min(1),
+  name: z.string().min(1),
+  slug: z.string().min(1),
+});
+
+export const companySkillCoverageAgentSchema = z.object({
+  id: z.string().guid(),
+  name: z.string().min(1),
+  urlKey: z.string().min(1),
+  role: z.string().min(1),
+  adapterType: z.string().min(1),
+  syncMode: agentSkillSyncModeSchema,
+});
+
+export const companySkillCoverageCellSchema = z.object({
+  agentId: z.string().guid(),
+  skillKey: z.string().min(1),
+  desired: z.boolean(),
+  versionId: z.string().guid().nullable(),
+  actualState: z.string().nullable().describe(
+    "Runtime adapter skill state is not probed on coverage reads; this field stays null.",
+  ),
+  syncMode: agentSkillSyncModeSchema,
+});
+
+export const companySkillCoverageSummarySchema = z.object({
+  agentCount: z.number().int().nonnegative(),
+  skillCount: z.number().int().nonnegative(),
+  desiredCellCount: z.number().int().nonnegative(),
+  gapCount: z.number().int().nonnegative(),
+  unsupportedAgentCount: z.number().int().nonnegative(),
+});
+
+export const companySkillCoverageResponseSchema = z.object({
+  skills: z.array(companySkillCoverageSkillSchema),
+  agents: z.array(companySkillCoverageAgentSchema),
+  cells: z.array(companySkillCoverageCellSchema),
+  summary: companySkillCoverageSummarySchema,
 });
 
 export const companySkillCategoryCountSchema = z.object({

@@ -90,6 +90,8 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillUpdateHoldReason,
   CompanySkillUsageAgent,
+  CompanySkillCoverageQuery,
+  CompanySkillCoverageResponse,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
@@ -107,6 +109,7 @@ import {
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { findActiveServerAdapter } from "../adapters/index.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
@@ -2346,6 +2349,29 @@ function resolveDesiredSkillEntries(
   return Array.from(out.values());
 }
 
+function declaredSkillSyncMode(adapterType: string): "unsupported" | "persistent" | "ephemeral" {
+  const adapter = findActiveServerAdapter(adapterType);
+  if (!adapter?.listSkills && !adapter?.syncSkills) return "unsupported";
+  if (adapter.acp?.skillsMode === "ephemeral") return "ephemeral";
+  if (adapter.acp?.skillsMode === "unsupported") return "unsupported";
+  return "persistent";
+}
+
+function emptySkillCoverage(): CompanySkillCoverageResponse {
+  return {
+    skills: [],
+    agents: [],
+    cells: [],
+    summary: {
+      agentCount: 0,
+      skillCount: 0,
+      desiredCellCount: 0,
+      gapCount: 0,
+      unsupportedAgentCount: 0,
+    },
+  };
+}
+
 function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
   if ((skill.sourceType !== "local_path" && skill.sourceType !== "catalog") || !skill.sourceLocator) return null;
   const resolved = path.resolve(skill.sourceLocator);
@@ -3523,6 +3549,129 @@ export function companySkillService(db: Db) {
       actualState: null,
       versionId: desiredEntry.versionId ?? null,
     }));
+  }
+
+  async function coverage(
+    companyId: string,
+    query: CompanySkillCoverageQuery = {},
+  ): Promise<CompanySkillCoverageResponse> {
+    await ensureSkillInventoryCurrent(companyId);
+    const referenceSkills = await listReferenceTargets(companyId);
+    const skillRows = await db
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        name: companySkills.name,
+        slug: companySkills.slug,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId))
+      .orderBy(asc(companySkills.name), asc(companySkills.key));
+    const agentRows = await agents.list(companyId);
+
+    if (skillRows.length === 0 || agentRows.length === 0) {
+      return emptySkillCoverage();
+    }
+
+    let skills = skillRows.map((row) => ({
+      id: row.id,
+      key: row.key,
+      name: row.name,
+      slug: row.slug,
+    }));
+    if (query.skillKey) {
+      skills = skills.filter((skill) => skill.key === query.skillKey);
+    }
+
+    let selectedAgents = query.agentId
+      ? agentRows.filter((agent) => agent.id === query.agentId)
+      : agentRows;
+
+    const q = query.q?.trim().toLowerCase() ?? "";
+    if (q) {
+      const skillHits = skills.filter((skill) => (
+        skill.name.toLowerCase().includes(q) || skill.key.toLowerCase().includes(q)
+      ));
+      const agentHits = selectedAgents.filter((agent) => (
+        agent.name.toLowerCase().includes(q) || (agent.role ?? "").toLowerCase().includes(q)
+      ));
+      if (skillHits.length > 0 && agentHits.length > 0) {
+        skills = skillHits;
+        selectedAgents = agentHits;
+      } else if (skillHits.length > 0) {
+        skills = skillHits;
+      } else if (agentHits.length > 0) {
+        selectedAgents = agentHits;
+      } else {
+        return emptySkillCoverage();
+      }
+    }
+
+    if (skills.length === 0 || selectedAgents.length === 0) {
+      return emptySkillCoverage();
+    }
+
+    const coverageAgents = selectedAgents
+      .slice()
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        urlKey: agent.urlKey,
+        role: agent.role,
+        adapterType: agent.adapterType,
+        syncMode: declaredSkillSyncMode(agent.adapterType),
+      }));
+
+    const desiredByAgentId = new Map<string, Map<string, string | null>>();
+    for (const agent of selectedAgents) {
+      const entries = resolveDesiredSkillEntries(
+        referenceSkills,
+        agent.adapterConfig as Record<string, unknown>,
+      );
+      desiredByAgentId.set(
+        agent.id,
+        new Map(entries.map((entry) => [entry.key, entry.versionId ?? null])),
+      );
+    }
+
+    const cells = coverageAgents.flatMap((agent) => {
+      const desired = desiredByAgentId.get(agent.id) ?? new Map();
+      return skills.map((skill) => {
+        const versionId = desired.get(skill.key);
+        const isDesired = versionId !== undefined;
+        return {
+          agentId: agent.id,
+          skillKey: skill.key,
+          desired: isDesired,
+          versionId: isDesired ? versionId : null,
+          actualState: null,
+          syncMode: agent.syncMode,
+        };
+      });
+    });
+
+    const summary = {
+      agentCount: coverageAgents.length,
+      skillCount: skills.length,
+      desiredCellCount: cells.filter((cell) => cell.desired).length,
+      gapCount: cells.filter((cell) => !cell.desired).length,
+      unsupportedAgentCount: coverageAgents.filter((agent) => agent.syncMode === "unsupported").length,
+    };
+
+    if (!query.missingOnly) {
+      return { skills, agents: coverageAgents, cells, summary };
+    }
+
+    const gapCells = cells.filter((cell) => !cell.desired);
+    const agentIds = new Set(gapCells.map((cell) => cell.agentId));
+    const skillKeys = new Set(gapCells.map((cell) => cell.skillKey));
+    return {
+      skills: skills.filter((skill) => skillKeys.has(skill.key)),
+      agents: coverageAgents.filter((agent) => agentIds.has(agent.id)),
+      cells: gapCells,
+      summary,
+    };
   }
 
   async function versionCount(companyId: string, skillId: string) {
@@ -7237,6 +7386,7 @@ export function companySkillService(db: Db) {
       return resolveRequestedSkillEntriesOrThrow(db, companyId, skills, requestedSelections, options);
     },
     categoryCounts,
+    coverage,
     detail,
     forkPrecheck,
     listVersions,

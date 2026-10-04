@@ -26,6 +26,7 @@ import { AgentSkillRow, type AgentSkillRowData } from "./AgentSkillRow";
 import { filterAgentSkills } from "./agent-skill-filter";
 import { buildAgentSkillSourceMeta } from "./agent-skill-source";
 import { AgentSkillReleasePicker, releaseShortLabel } from "./AgentSkillReleasePicker";
+import { SKILLS_NAVIGATION_HREFS } from "../skills/skills-navigation";
 
 const MATERIALIZATION_NOTE =
   "Enabled skills are materialized into the stable Paperclip-managed prompt bundle on the agent's next run.";
@@ -436,6 +437,12 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                 Browse skills store
               </Link>
             </Button>
+            <Link
+              to={SKILLS_NAVIGATION_HREFS.coverage}
+              className="text-sm text-muted-foreground no-underline hover:underline"
+            >
+              Coverage
+            </Link>
           </div>
         </div>
 

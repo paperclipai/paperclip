@@ -3,6 +3,8 @@ import {
   catalogSkillFileDetailSchema,
   catalogSkillListQuerySchema,
   companySkillAuditResultSchema,
+  companySkillCoverageQuerySchema,
+  companySkillCoverageResponseSchema,
   companySkillInstallCatalogResultSchema,
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
@@ -179,5 +181,54 @@ describe("company skill catalog validators", () => {
     expect(companySkillInstallUpdateSchema.parse({ force: true })).toEqual({ force: true });
     expect(companySkillResetSchema.parse(undefined)).toEqual({});
     expect(companySkillResetSchema.parse({ force: true })).toEqual({ force: true });
+  });
+});
+
+describe("company skill coverage validators", () => {
+  it("defaults missingOnly to false and coerces query strings", () => {
+    expect(companySkillCoverageQuerySchema.parse({})).toEqual({ missingOnly: false });
+    expect(companySkillCoverageQuerySchema.parse({ missingOnly: "true" })).toEqual({ missingOnly: true });
+    expect(companySkillCoverageQuerySchema.parse({ missingOnly: "false" })).toEqual({ missingOnly: false });
+    expect(companySkillCoverageQuerySchema.parse({ missingOnly: true, q: "cto" })).toEqual({
+      missingOnly: true,
+      q: "cto",
+    });
+  });
+
+  it("accepts a coverage response with null actualState", () => {
+    expect(companySkillCoverageResponseSchema.parse({
+      skills: [{
+        id: "00000000-0000-4000-8000-000000000001",
+        key: "github-pr-workflow",
+        name: "GitHub PR workflow",
+        slug: "github-pr-workflow",
+      }],
+      agents: [{
+        id: "00000000-0000-4000-8000-000000000002",
+        name: "CTO",
+        urlKey: "cto",
+        role: "engineer",
+        adapterType: "claude_local",
+        syncMode: "persistent",
+      }],
+      cells: [{
+        agentId: "00000000-0000-4000-8000-000000000002",
+        skillKey: "github-pr-workflow",
+        desired: true,
+        versionId: null,
+        actualState: null,
+        syncMode: "persistent",
+      }],
+      summary: {
+        agentCount: 1,
+        skillCount: 1,
+        desiredCellCount: 1,
+        gapCount: 0,
+        unsupportedAgentCount: 0,
+      },
+    })).toMatchObject({
+      cells: [{ actualState: null, desired: true }],
+      summary: { gapCount: 0 },
+    });
   });
 });
