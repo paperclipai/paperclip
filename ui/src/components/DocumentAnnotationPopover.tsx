@@ -5,8 +5,6 @@ import { Textarea } from "@/components/ui/textarea";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import type { CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
-import { isSubmitKeyEvent, useResolvedSubmitKey } from "@/lib/submitKeyPreference";
-import { SendKeyMenu } from "./SendKeyMenu";
 import type { AnnotationAnchorRect, PendingAnchor } from "./DocumentAnnotationLayer";
 import { useCopyAnnotationLink, ThreadCard, truncate } from "./DocumentAnnotationPanel";
 
@@ -34,7 +32,6 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [composer, setComposer] = useState("");
   const [reply, setReply] = useState("");
-  const submitKey = useResolvedSubmitKey("mod-enter");
   const target = useMemo(() => props.target, [props.target]);
   const { createThread, addReply, updateStatus, mutationError } = useDocumentAnnotationMutations({
     target,
@@ -100,7 +97,7 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
             value={composer}
             onChange={(event) => setComposer(event.target.value)}
             onKeyDown={(event) => {
-              if (isSubmitKeyEvent(event, submitKey)) {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
                 submitComposer();
               }
@@ -111,11 +108,9 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
           />
           <div className="mt-2 flex justify-end gap-2">
             <Button type="button" size="sm" variant="ghost" onClick={props.onClose}>Cancel</Button>
-            <SendKeyMenu mode={submitKey} disablePortal>
-              <Button type="button" size="sm" disabled={!composer.trim() || createThread.isPending || props.newCommentDisabled || !props.baseRevisionId} onClick={submitComposer}>
-                {createThread.isPending ? "Posting…" : "Comment"}
-              </Button>
-            </SendKeyMenu>
+            <Button type="button" size="sm" disabled={!composer.trim() || createThread.isPending || props.newCommentDisabled || !props.baseRevisionId} onClick={submitComposer}>
+              {createThread.isPending ? "Posting…" : "Comment"}
+            </Button>
           </div>
         </div>
       ) : props.thread ? (

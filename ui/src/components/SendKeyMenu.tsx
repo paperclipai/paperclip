@@ -9,7 +9,6 @@ import {
 } from "@/lib/submitKeyPreference";
 
 export const SEND_KEY_MENU_HOVER_DELAY_MS = 500;
-export const SEND_KEY_MENU_LONG_PRESS_MS = 600;
 export const SEND_KEY_MENU_CLOSE_DELAY_MS = 500;
 
 interface SendKeyMenuProps {
@@ -19,28 +18,24 @@ interface SendKeyMenuProps {
   children: ReactNode;
   /** Skip the menu, e.g. while the button acts as Stop. */
   disabled?: boolean;
-  /** Render the menu in place, for hosts that close on pointerdown outside themselves. */
-  disablePortal?: boolean;
   className?: string;
 }
 
 /**
- * Wraps a composer's send button. Resting the mouse on it (~0.5 s), a
- * right-click, or a long press opens a small menu to choose whether Return or
- * Cmd/Ctrl+Return sends. The choice applies to every message composer. Once the
- * mouse has left both the button and the menu for ~0.5 s, the menu closes.
+ * Wraps a composer's send button. Resting the mouse on it for ~0.5 s or a
+ * right-click opens a small menu to choose whether Return or Cmd/Ctrl+Return
+ * sends. The choice applies to every composer that reads the preference. Once
+ * the mouse has left both the button and the menu for ~0.5 s, the menu closes.
  */
 export function SendKeyMenu({
   mode,
   children,
   disabled = false,
-  disablePortal = false,
   className,
 }: SendKeyMenuProps) {
   const [open, setOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const swallowClickRef = useRef(false);
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -108,36 +103,11 @@ export function SendKeyMenu({
             clearTimer();
             if (open) scheduleClose();
           }}
-          onPointerDown={(event) => {
-            swallowClickRef.current = false;
-            if (event.pointerType === "mouse") {
-              clearTimer();
-              return;
-            }
-            if (disabled) return;
-            startTimer(SEND_KEY_MENU_LONG_PRESS_MS, () => {
-              swallowClickRef.current = true;
-            });
-          }}
-          onPointerUp={(event) => {
-            if (event.pointerType !== "mouse") clearTimer();
-          }}
-          onPointerCancel={clearTimer}
-          onClickCapture={(event) => {
-            clearTimer();
-            if (swallowClickRef.current) {
-              // The finger lifting after a long press is not a send.
-              swallowClickRef.current = false;
-              event.preventDefault();
-              event.stopPropagation();
-            }
-          }}
+          onClickCapture={clearTimer}
           onContextMenu={(event) => {
             if (disabled) return;
             event.preventDefault();
             clearTimer();
-            // Touch browsers fire contextmenu mid long-press; the lift is not a send.
-            swallowClickRef.current = true;
             setOpen(true);
           }}
         >
@@ -151,7 +121,6 @@ export function SendKeyMenu({
           role="menu"
           aria-label="Send key"
           data-testid="send-key-menu"
-          disablePortal={disablePortal}
           className="w-56 p-1"
           onMouseEnter={cancelClose}
           onMouseLeave={scheduleClose}

@@ -11,13 +11,6 @@ import {
 } from "react";
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
-import {
-  isSubmitKeyEvent,
-  submitShortcutLabel,
-  useResolvedSubmitKey,
-  type SubmitKeyMode,
-} from "../lib/submitKeyPreference";
-import { SendKeyMenu } from "./SendKeyMenu";
 
 /**
  * Shared chat composer (PAP-95a / PAP-96).
@@ -58,12 +51,11 @@ export interface ChatComposerProps {
   /** Shows the send button in a busy state and blocks resubmission. */
   submitting?: boolean;
   /**
-   * Default send-key behavior, used until the user picks one from the send
-   * button's menu (that browser-wide choice then wins).
+   * Send-key behavior.
    * - `"enter"`: Enter submits, Shift+Enter inserts a newline (conference room default today).
    * - `"mod-enter"`: Cmd/Ctrl+Enter submits, Enter inserts a newline (recommended unified default).
    */
-  submitKey?: SubmitKeyMode;
+  submitKey?: "enter" | "mod-enter";
   /** Collapse to a single visual line — strips newlines and disables wrapping (conference room). */
   singleLine?: boolean;
   /** Visual tone. Task issue modes tint the box for planning and ask flows. */
@@ -152,7 +144,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const isAsk = tone === "ask";
   const isPlanning = tone === "planning";
   const canSend = !disabled && !submitting && value.trim().length > 0;
-  const effectiveSubmitKey = useResolvedSubmitKey(submitKey);
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => textareaRef.current?.focus(),
@@ -173,7 +164,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }
 
   function handleKeyDown(evt: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if (!isSubmitKeyEvent(evt, effectiveSubmitKey)) return;
+    if (evt.key !== "Enter") return;
+    const wantsSubmit =
+      submitKey === "mod-enter"
+        ? evt.metaKey || evt.ctrlKey
+        : !evt.shiftKey && !evt.metaKey && !evt.ctrlKey;
+    if (!wantsSubmit) return;
     evt.preventDefault();
     if (canSend) onSubmit();
   }
@@ -361,25 +357,23 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
         {trailingTools}
 
-        <SendKeyMenu mode={effectiveSubmitKey}>
-          <button
-            type="button"
-            onClick={() => {
-              if (canSend) onSubmit();
-            }}
-            disabled={!canSend}
-            aria-label={sendLabel}
-            title={`${sendLabel} (${submitShortcutLabel(effectiveSubmitKey)})`}
-            className={cn(
-              "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:pointer-events-none",
-              canSend
-                ? "bg-foreground text-background hover:opacity-90"
-                : "bg-accent text-muted-foreground",
-            )}
-          >
-            {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-          </button>
-        </SendKeyMenu>
+        <button
+          type="button"
+          onClick={() => {
+            if (canSend) onSubmit();
+          }}
+          disabled={!canSend}
+          aria-label={sendLabel}
+          title={sendLabel}
+          className={cn(
+            "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed",
+            canSend
+              ? "bg-foreground text-background hover:opacity-90"
+              : "bg-accent text-muted-foreground",
+          )}
+        >
+          {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+        </button>
       </div>
     </div>
   );
