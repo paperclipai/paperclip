@@ -194,10 +194,11 @@ describe("Codex app-server Codex driver", () => {
     },
   );
 
-  it("persists and verifies the tagged runnerd provider identity on recovery", async () => {
+  it.each([undefined, "agent", "plan", "ask"] as const)("persists and verifies the tagged runnerd provider identity including mode %s on recovery", async (cursorMode) => {
     const providerIdentity = {
       kind: "acpx",
       normalizedSessionId: "normalized-tagged-recovery",
+      ...(cursorMode === undefined ? {} : { cursorMode }),
       acpxRecordId: "acpx-record-1",
       backendSessionId: "backend-session-1",
       agentSessionId: "agent-session-1",

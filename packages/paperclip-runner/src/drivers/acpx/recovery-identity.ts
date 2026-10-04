@@ -1,3 +1,4 @@
+import { resolveCursorSessionMode, type CursorSessionMode } from "./cursor-mode.js";
 import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -19,6 +20,7 @@ export interface AcpxRecoveryBinding {
   requestedModel: string;
   effectiveModel: string;
   permissionMode: NativeAcpxPermissionMode;
+  cursorMode?: CursorSessionMode;
   profileSessionKey: string;
 }
 
@@ -33,6 +35,7 @@ export interface AcpxIdentityRecord {
   requestedModel: string;
   effectiveModel: string;
   permissionMode: NativeAcpxPermissionMode;
+  cursorMode?: CursorSessionMode;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -43,9 +46,11 @@ export async function createAcpxRecoveryBinding(input: {
   profile: QualifiedAcpxProfile;
   requestedModel: string;
   permissionMode: NativeAcpxPermissionMode;
+  cursorMode?: CursorSessionMode;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
 }): Promise<AcpxRecoveryBinding> {
   validateIdentity(input.normalizedSessionId, "normalized session");
+  const cursorMode = resolveCursorSessionMode(input.profile.agent, input.cursorMode);
   if (input.providerPolicy !== undefined && typeof input.providerPolicy.readOnly !== "boolean") throw new Error("ACPX recovery requires a valid task execution policy");
   if (input.requestedModel !== input.profile.qualificationModel) {
     throw new Error("ACPX recovery requested an unqualified model");
@@ -89,6 +94,7 @@ export async function createAcpxRecoveryBinding(input: {
       requestedModel: input.requestedModel,
       profileDigest,
       permissionMode: input.permissionMode,
+      ...(cursorMode ? { cursorMode } : {}),
     }),
   ).replace("sha256:", "paperclip-");
   return {
@@ -101,6 +107,7 @@ export async function createAcpxRecoveryBinding(input: {
     requestedModel: input.requestedModel,
     effectiveModel: input.requestedModel,
     permissionMode: input.permissionMode,
+    ...(cursorMode ? { cursorMode } : {}),
     profileSessionKey,
   };
 }
@@ -121,6 +128,7 @@ export function createAcpxIdentityRecord(
     requestedModel: binding.requestedModel,
     effectiveModel: binding.effectiveModel,
     permissionMode: binding.permissionMode,
+    ...(binding.cursorMode ? { cursorMode: binding.cursorMode } : {}),
     providerLifetimeFenceCandidates: Object.freeze([
       ...expected.providerLifetimeFenceCandidates,
     ]) as readonly [number, number, number],
@@ -146,6 +154,7 @@ export function acpxProviderSessionIdentity(
     requestedModel: record.requestedModel,
     effectiveModel: record.effectiveModel,
     permissionMode: record.permissionMode,
+    ...(record.cursorMode ? { cursorMode: record.cursorMode } : {}),
     providerLifetimeFenceCandidates: record.providerLifetimeFenceCandidates,
   };
   verifyExpectedAcpxIdentity(identity, binding, record);
@@ -170,7 +179,8 @@ export function verifyExpectedAcpxIdentity(
     expected.workspaceDigest !== binding.workspaceDigest ||
     expected.requestedModel !== binding.requestedModel ||
     expected.effectiveModel !== binding.effectiveModel ||
-    expected.permissionMode !== binding.permissionMode
+    expected.permissionMode !== binding.permissionMode ||
+    expected.cursorMode !== binding.cursorMode
   ) {
     throw new Error(
       "ACPX recovery identity conflicts with the immutable session configuration",
@@ -189,6 +199,7 @@ export function verifyExpectedAcpxIdentity(
     record.requestedModel !== binding.requestedModel ||
     record.effectiveModel !== binding.effectiveModel ||
     record.permissionMode !== binding.permissionMode ||
+    record.cursorMode !== binding.cursorMode ||
     !sameFenceCandidates(
       record.providerLifetimeFenceCandidates,
       expected.providerLifetimeFenceCandidates,
@@ -213,6 +224,7 @@ function parsePersistedRecord(value: unknown): AcpxIdentityRecord {
     "requestedModel",
     "effectiveModel",
     "permissionMode",
+    "cursorMode",
     "providerLifetimeFenceCandidates",
   ]);
   return validatedRecord(record);
@@ -239,6 +251,7 @@ function validatedRecord(value: Record<string, unknown>): AcpxIdentityRecord {
   if (!isPermissionMode(value.permissionMode)) {
     throw new Error("ACPX identity permission mode is invalid");
   }
+  if (value.cursorMode !== undefined) resolveCursorSessionMode("cursor", value.cursorMode);
   validateFenceCandidates(value.providerLifetimeFenceCandidates);
   return value as unknown as AcpxIdentityRecord;
 }
@@ -267,6 +280,7 @@ function validateExpected(expected: AcpxExpectedSessionIdentity): void {
   ) {
     throw new Error("Expected ACPX permission mode is invalid");
   }
+  if (expected.cursorMode !== undefined) resolveCursorSessionMode("cursor", expected.cursorMode);
   validateFenceCandidates(expected.providerLifetimeFenceCandidates);
 }
 

@@ -78,6 +78,10 @@ export function parseProviderIdentity(
       "ACPX provider identity contains an invalid permission mode",
     );
   }
+  const cursorMode = identity.cursorMode;
+  if (cursorMode !== undefined && cursorMode !== "agent" && cursorMode !== "plan" && cursorMode !== "ask") {
+    throw new Error("ACPX provider identity contains an invalid Cursor mode");
+  }
   const fenceCandidates = identity.providerLifetimeFenceCandidates;
   if (
     !Array.isArray(fenceCandidates) ||
@@ -103,6 +107,7 @@ export function parseProviderIdentity(
     requestedModel: identity.requestedModel as string,
     effectiveModel: identity.effectiveModel as string,
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(cursorMode === undefined ? {} : { cursorMode }),
     providerLifetimeFenceCandidates: fenceCandidates as [
       number,
       number,

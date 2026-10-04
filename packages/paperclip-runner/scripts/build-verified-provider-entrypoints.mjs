@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +8,12 @@ import { build } from "esbuild";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const verifiedProviderEntrypoints = Object.freeze([
+  Object.freeze({
+    name: "provision-cursor",
+    source: resolve(packageRoot, "scripts/provision-cursor.mjs"),
+    output: resolve(packageRoot, "dist/cli/provision-cursor.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/provision-cursor.cjs"),
+  }),
   Object.freeze({
     name: "acpx-runtime-sidecar",
     source: resolve(packageRoot, "src/cli/acpx-runtime-sidecar.ts"),
@@ -53,6 +59,7 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
   if (write) {
     await mkdir(resolve(packageRoot, "dist/providers"), { recursive: true });
     await cp(resolve(packageRoot, "src/providers"), resolve(packageRoot, "dist/providers"), { recursive: true });
+    await copyFile(resolve(packageRoot, "cursor-distributions.json"), resolve(packageRoot, "dist/cursor-distributions.json"));
   }
   const results = [];
   for (const entrypoint of verifiedProviderEntrypoints) {

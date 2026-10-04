@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -61,6 +61,7 @@ pub enum AcpxEventPayload {
         details: Value,
     },
     InputRequested {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
@@ -124,7 +125,32 @@ pub fn decode_acpx_event(
             validate_question_set(&question_set)?;
             let question_set = sanitize_question_set(question_set)?;
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
+            let tool_call_id = if event.payload.get("toolCallId").is_some() {
+                let id =
+                    required_id_with_limit(&event.payload, "toolCallId", "input parent tool", 240)?;
+                if id.len() > 240
+                    || sanitize_value(&json!(id)) != json!(id)
+                    || origin
+                        .as_ref()
+                        .and_then(|v| v.get("provider"))
+                        .and_then(Value::as_str)
+                        != Some("cursor")
+                    || origin
+                        .as_ref()
+                        .and_then(|v| v.get("method"))
+                        .and_then(Value::as_str)
+                        != Some("cursor/create_plan")
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input parent tool identity is invalid",
+                    ));
+                }
+                Some(id)
+            } else {
+                None
+            };
             Ok(AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id: required_id_with_limit(
                     &event.payload,
                     "requestId",

@@ -1,3 +1,6 @@
+import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
+import { readNativeCursorPlanWait } from "./native-cursor-plan-wait.js";
+import { NativeCursorPermissionDeclinedError, readCompletedCursorPermissionDecline } from "./native-cursor-permission-decline.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
@@ -138,7 +141,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
@@ -155,7 +158,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
-import { HttpError } from "../../errors.js";
+import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { resolvePaperclipRunnerBinary } from "./native-codex-runner.js";
 import {
@@ -5272,6 +5275,7 @@ function nativeSessionConfigDigest(
         // without newly required tools.
         nativeToolContractFingerprint:
           nativeToolContractFingerprintForTarget(executionTargetKind),
+        runtimeContract: nativeRuntimeContractForProvider(execution.provider),
       }),
     )
     .digest("hex")}`;
@@ -5491,6 +5495,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.requestedModel !== expectedModel ||
         identity.effectiveModel !== expectedModel ||
         identity.permissionMode !== input.execution.provider.permissionMode ||
+        !acpxRecoveryCursorModeMatches(input.execution.provider, descriptor.cursorMode, identity.cursorMode) ||
         !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
@@ -5575,11 +5580,42 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
   );
 }
 
+/** Closed diagnostic categories; durable state may contain private provider data. */
+export function durableProviderCheckpointFailureReason(execution: NativeExecutionInput, providerState: unknown): string {
+  if (execution.provider.kind !== "acpx") return "identity_binding";
+  const state = record(providerState);
+  if (state.schema !== ACPX_PROVIDER_STATE_SCHEMA) return "state_schema";
+  if (state.lifecycle !== "suspended") return "provider_not_suspended";
+  if (state.providerExitUnconfirmed !== false) return "provider_exit_unconfirmed";
+  if (state.activeTurnId !== null) return "provider_turn_unsettled";
+  if (!acpxRecoveryCursorModeMatches(execution.provider, record(state.descriptor).cursorMode, record(state.identity).cursorMode)) return "cursor_mode_binding";
+  return "identity_binding";
+}
+
+// Recovery consumes observed identities; it must never apply the fresh-config
+// default to a missing persisted mode or allow another provider to carry it.
+function acpxRecoveryCursorModeMatches(
+  provider: NativeExecutionInput["provider"],
+  ...observedModes: unknown[]
+): boolean {
+  const expected = record(provider).cursorMode;
+  if (provider.kind === "acpx" && provider.agent === "cursor") {
+    return (expected === "agent" || expected === "plan" || expected === "ask")
+      && observedModes.every(mode => mode === expected);
+  }
+  return expected === undefined && observedModes.every(mode => mode === undefined);
+}
+
 export function providerSessionIdentityTransitionIsAllowed(input: {
   execution: NativeExecutionInput;
   previous: unknown;
   current: unknown;
 }): boolean {
+  if (input.execution.provider.kind === "acpx" && !acpxRecoveryCursorModeMatches(
+    input.execution.provider,
+    record(record(input.previous).providerSessionIdentity).cursorMode,
+    record(record(input.current).providerSessionIdentity).cursorMode,
+  )) return false;
   if (canonicalJson(input.previous) === canonicalJson(input.current)) {
     return true;
   }
@@ -6025,12 +6061,13 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit";
-  const exhausted = permanentFailure || attempt >= 3;
+  const permissionDeclined = sourceFailureCode === "native_permission_declined";
+  const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
     phase: exhausted
       ? ("terminal_failure" as const)
       : ("retryable_failure" as const),
-    failureCode: permanentFailure
+    failureCode: permanentFailure || permissionDeclined
       ? sourceFailureCode!
       : exhausted
         ? ("native_session_retry_exhausted" as const)
@@ -6067,6 +6104,7 @@ export function nativeSessionRecoveryProjection(input: {
 export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
+  | "native_permission_declined"
   | "native_provider_terminal_failed"
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
@@ -6090,6 +6128,7 @@ export function nativeSessionFailureSourceCode(
   | "native_current_wake_comments_unread"
   | "native_current_wake_comments_changed_after_read"
   | "native_session_interrupted" {
+  if (error instanceof NativeCursorPermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
     // Failed terminals retain their security meaning across the provider facade.
@@ -6568,6 +6607,7 @@ export function cancelNativeSession(
     db: Db;
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
+    cancellationRequestId?: string;
   },
 ): Promise<{
   dispatched: boolean;
@@ -6582,6 +6622,7 @@ export async function cancelNativeSession(
     db: Db;
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
+    cancellationRequestId?: string;
   },
 ): Promise<
   | boolean
@@ -6708,8 +6749,10 @@ export async function cancelNativeSession(
       }
       if (isNativeRunnerOwnershipHeld(lockedRun))
         throw new NativeRunnerOwnershipUnverifiedError();
-      const coordinator = await tx
-        .select({ runId: nativeRunFinalizations.runId })
+      const retryCancellation = lockedRun.status === "failed"
+        || record(record(lockedRun.resultJson).startupCancellation).retryCancellation === true;
+      const coordinatorQuery = tx
+        .select({ runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
         .from(nativeRunFinalizations)
         .where(
           and(
@@ -6717,13 +6760,25 @@ export async function cancelNativeSession(
             eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
             eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
           ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+        );
+      // Recheck after reservation, at the same transaction that records intent
+      // and disables the retry. NOWAIT avoids coordinator -> run lock inversion.
+      const coordinator = await (retryCancellation
+        ? coordinatorQuery.for("update", { noWait: true }) : coordinatorQuery)
+        .limit(1).then((rows) => rows[0] ?? null);
       if (!coordinator)
         throw new Error("native_cancellation_coordinator_missing");
 
       const resultJson = record(lockedRun.resultJson);
+      // A default Stop joins an already reserved caller intent; it cannot
+      // replace that intent while the originating request is still dispatching.
+      const requestedId = options.cancellationRequestId
+        ?? cancellationRequestId(record(resultJson.startupCancellation).cancellationRequestId);
+      if (requestedId) assertCancellationRequest(resultJson, requestedId);
+      if (retryCancellation && !nativeRetryCancellationEligible({
+        runId, companyId: cancellationContext.companyId, issueId: cancellationContext.issueId,
+        resultJson, requestId: requestedId, scope: options.scope ?? "run",
+      }, coordinator)) throw conflict("Native retry is no longer cancellable");
       const existing = record(resultJson.nativeCancellation);
       const existingIntentId =
         typeof existing.intentId === "string" && existing.intentId.length > 0
@@ -6764,7 +6819,9 @@ export async function cancelNativeSession(
         };
       }
 
-      const intentId = `native-cancellation:${randomUUID()}`;
+      const intentId = requestedId
+        ? callerCancellationIntentId(requestedId)
+        : `native-cancellation:${randomUUID()}`;
       const activity = await persistActivity(tx as unknown as Db, {
         companyId: cancellationContext.companyId,
         actorType: "system",
@@ -6851,7 +6908,7 @@ export async function cancelNativeSession(
         priorCoordinatorDecisionId: cancellationContext.coordinatorDecisionId,
         existing: false,
       };
-    });
+    }).catch(rethrowNativeCancellationLockConflict);
     if (intentPublication) publishActivity(intentPublication);
     cancellationIntentId = intent.intentId;
     auditId = intent.auditId;
@@ -8382,6 +8439,14 @@ async function executePaperclipNativeSessionWithinScope(
               if (terminalEvent.eventType !== "turn.completed") return null;
               const governedWait = await resolvePendingGovernedWait();
               if (governedWait) return governedWait;
+              if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor" && input.execution.provider.cursorMode === "plan") {
+                const planWait = await readNativeCursorPlanWait(input.db, input.execution.binding);
+                if (planWait?.source.terminalEventId === terminalEvent.sourceEventId) return planWait.result;
+              }
+              if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor"
+                && await readCompletedCursorPermissionDecline(input.db, input.execution.binding, terminalEvent)) {
+                throw new NativeCursorPermissionDeclinedError();
+              }
               const [conversation] = await input.db
                 .select({ agentId: issues.conversationAgentId })
                 .from(issues)
@@ -8688,7 +8753,7 @@ async function executePaperclipNativeSessionWithinScope(
       // another turn to perform completion bookkeeping.
       const stoppedBeforeFirstTurn = error instanceof Error && error.message === "native_session_cancelled";
       if (protocolIntegrityFailure === null && error instanceof Error &&
-          (stoppedBeforeFirstTurn || error.message === "native_finalization_missing: session returned no semantic result")) {
+          (stoppedBeforeFirstTurn || error instanceof NativeCursorPermissionDeclinedError || error.message === "native_finalization_missing: session returned no semantic result")) {
         const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, input.execution.binding.runId),
           eq(heartbeatRuns.companyId, input.execution.binding.companyId),
@@ -8832,7 +8897,9 @@ async function executePaperclipNativeSessionWithinScope(
               checkpointExists: recoveryEvidence.checkpointExists,
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
-                sourceFailureCode === "native_provider_approval_required"
+                sourceFailureCode === "native_permission_declined"
+                  ? "Cursor permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
+                  : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
@@ -9007,7 +9074,9 @@ async function executePaperclipNativeSessionWithinScope(
               recoveryEvidence.providerSessionEstablished,
           },
           nextAction:
-            sourceFailureCode === "native_provider_approval_required"
+            sourceFailureCode === "native_permission_declined"
+              ? "Cursor permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
+              : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
@@ -9441,6 +9510,10 @@ type RemoteProviderPackManifest = {
     distDigest: string;
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    providers?: Partial<Record<"cursor", {
+      version: string; profileDigest: string; closureDigest: string; qualification: "pending";
+      path: string; sha256: string;
+    }>>;
     candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
       version: string; profileDigest: string; closureDigest: string; qualification: "pending";
       path: string; sha256: string;
@@ -9609,14 +9682,14 @@ export function readRemoteProviderPackManifest(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
   }
-  if (payload.candidateProviders !== undefined) {
-    const candidates = payload.candidateProviders;
+  for (const [inventory, candidates] of [["providers", payload.providers], ["candidateProviders", payload.candidateProviders]] as const) {
+    if (candidates === undefined) continue;
     if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > 3) {
       throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!["cursor", "copilot", "pi"].includes(provider) || !candidate
+      if (!(inventory === "providers" ? ["cursor"] : ["cursor", "copilot", "pi"]).includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
         || candidate.qualification !== "pending" || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
@@ -11039,7 +11112,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
       "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "for(const candidate of Object.values(manifest.payload.candidateProviders||{})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
+      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
       "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
       "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
@@ -11585,7 +11658,7 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
-      throw new Error("runner_harness_state_mismatch: provider_identity_incomplete");
+      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
@@ -12498,6 +12571,7 @@ async function createRunnerdBackendWithinSessionClaim(
               // Read only the server operator environment, never agent/runtime env.
               acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
+              acpxCursorMode: input.execution.provider.cursorMode,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
                 input.execution.schema === "paperclip.native-execution-input.v5",
@@ -12610,6 +12684,7 @@ async function createRunnerdBackendWithinSessionClaim(
             ? input.execution.runtimeContext
             : null,
         runnerRuntimeContext: remoteRuntimeContext,
+        baseInstructions: recoveryContext?.baseInstructions,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
         externallySandboxed: remoteTarget?.transport === "sandbox",

@@ -40,6 +40,7 @@ describe("extended ACP harness qualification", () => {
   it("grades the actual file independently of the model's validation claim", () => {
     const cell = selected.find(cell => cell.task.id === "file-edit-validate")!;
     expect(extendedHarnessFileTask.buildMatchers("nonce", cell)).toContainEqual({ kind: "file_exact", path: "extended-nonce.txt", expected: "verified-nonce\n" });
+    expect(extendedHarnessFileTask.buildMatchers("nonce", cell)).toContainEqual({ kind: "artifact_exact", name: "extended-nonce.txt", expected: "verified-nonce\n", mimeType: "text/plain" });
   });
   it("redacts and detects GitHub credential shapes even without the bound value", () => {
     const token = `github_pat_${"x".repeat(40)}`;

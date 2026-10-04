@@ -401,3 +401,49 @@ fn rejects_payloads_before_decoding_when_scope_or_size_is_invalid() {
     let error = decode_acpx_event(&scope, &oversized).unwrap_err();
     assert!(error.to_string().contains("256 KiB"));
 }
+
+#[test]
+fn native_plan_parent_tool_is_bounded_origin_scoped_and_not_redacted() {
+    let input = json!({"requestId":"input-1","toolCallId":"tool with spaces",
+        "questionSet":{"schema":"paperclip.question_set.v1","questions":[{"id":"q","prompt":"Proceed?","required":true,"answerMode":"text"}]},
+        "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}});
+    let decode = |payload| {
+        decode_acpx_event(
+            &active_scope(),
+            &event(
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                payload,
+            ),
+        )
+    };
+    let AcpxEventPayload::InputRequested { tool_call_id, .. } = decode(input.clone()).unwrap()
+    else {
+        panic!("input expected")
+    };
+    assert_eq!(tool_call_id.as_deref(), Some("tool with spaces"));
+    for bad in [
+        json!(null),
+        json!(""),
+        json!("x".repeat(241)),
+        json!("bad\u{0000}id"),
+        json!(["tool-1"]),
+    ] {
+        let mut changed = input.clone();
+        changed["toolCallId"] = bad;
+        assert!(decode(changed).is_err());
+    }
+    for (field, value) in [("provider", "copilot"), ("method", "cursor/ask_question")] {
+        let mut changed = input.clone();
+        changed["origin"][field] = json!(value);
+        assert!(decode(changed).is_err());
+    }
+    let mut legacy = input;
+    legacy.as_object_mut().unwrap().remove("toolCallId");
+    assert!(matches!(
+        decode(legacy).unwrap(),
+        AcpxEventPayload::InputRequested {
+            tool_call_id: None,
+            ..
+        }
+    ));
+}

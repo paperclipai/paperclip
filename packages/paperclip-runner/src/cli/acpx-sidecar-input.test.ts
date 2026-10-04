@@ -8,6 +8,12 @@ import {
 } from "./acpx-sidecar-input.js";
 
 describe("ACPX sidecar input sequencing", () => {
+  it("classifies a retired tool callback without copying provider text into its identity", () => {
+    const error = Object.assign(new Error("private-token-canary"), { code: "ACPX_TOOL_CALL_STALE" });
+    expect(acpxSidecarErrorCode(error)).toBe("ACPX_TOOL_CALL_STALE");
+    error.code = "ACPX_TOOL_CALL_STALE_EXTRA";
+    expect(acpxSidecarErrorCode(error)).toBe("acpx_sidecar_command_failed");
+  });
   it("drains initialize, session.open, and suspend in input order", async () => {
     const events: string[] = [];
     let pending = Promise.resolve();

@@ -1,3 +1,4 @@
+import { isNativeCursorPlanWaitResult, readNativeCursorPlanWait } from "./native-cursor-plan-wait.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -1274,7 +1275,17 @@ export async function finalizeNativeRun(input: {
       companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
       contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
     }) : null;
+    const cursorPlanWait = isNativeCursorPlanWaitResult(result)
+      ? await readNativeCursorPlanWait(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId })
+      : null;
+    // Loss of the authority behind this server-issued wait must never fall
+    // through to the generic response_wake auto-continuation branch.
+    if (isNativeCursorPlanWaitResult(result) &&
+        (!cursorPlanWait || nativeSha256(cursorPlanWait.result) !== nativeSha256(result))) {
+      throw new Error("native_cursor_plan_wait_authority_lost");
+    }
     const proposedDecision = resolveNativeFinalizerStatus({
+      cursorPlanWaitAuthorized: cursorPlanWait !== null,
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1351,6 +1362,9 @@ export async function finalizeNativeRun(input: {
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
+        requireCursorPlanWaitSource:
+          decision.reasonCode === "native_plan_accepted_waiting_for_continuation"
+            ? cursorPlanWait?.source : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait
             ? boardResponseWait?.source

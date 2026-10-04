@@ -1,5 +1,11 @@
 # Paperclip Daytona runner image
 
+Ordinary provider packs now include pinned Cursor assets for Linux x64; no
+`--candidate-providers=cursor` flag is needed. Cursor admission remains disabled
+until the [production readiness gates](../../doc/plans/2026-10-03-cursor-production-readiness.md)
+pass. The public CLI installation command is `paperclipai runtime setup cursor`;
+it runs explicitly on the execution host and is never an npm installation hook.
+
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
 OpenCode 1.18.32, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP

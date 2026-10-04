@@ -195,6 +195,31 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each([undefined, "plan", "ask"] as const)("requires observed Cursor mode %s in the host identity", async selected => {
+    const fixture = await hostFixture();
+    const mode = selected ?? "agent";
+    const options = { ...fixture.options, agent: "cursor" as const, model: "explicit-test-model", cursorMode: selected, permissionMode: "approve-all" as const, environment: { CURSOR_API_KEY: "test" } };
+    const openRuntime = vi.fn(async (launch: AcpxRuntimePortOpenOptions) => {
+      expect(launch.cursorMode).toBe(mode);
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: options.model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", cursorMode: mode }) });
+    });
+    const host = await AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime }));
+    expect(host.identity().cursorMode).toBe(mode);
+    await host.close({ reason: "mode test complete" });
+  });
+
+  it("rejects missing observed Cursor mode and mode supplied to another provider", async () => {
+    const fixture = await hostFixture();
+    const port = runtimePort({ getStatus: async () => ({ models: { currentModelId: "explicit-test-model" } }) });
+    const openRuntime = vi.fn(async () => port);
+    const options = { ...fixture.options, agent: "cursor" as const, model: "explicit-test-model", permissionMode: "approve-all" as const, environment: { CURSOR_API_KEY: "test" } };
+    await expect(AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime }))).rejects.toThrow(/Cursor mode does not match/);
+    expect(port.close).toHaveBeenCalled();
+    openRuntime.mockClear();
+    await expect(AcpxRuntimeHost.open({ ...options, agent: "codex", model: "gpt-5.6-sol", cursorMode: "plan" }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/only supported/);
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+
   it.each([
     { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
     { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
@@ -1313,7 +1338,7 @@ describe("ACPX runtime host", () => {
         onExtensionRequest,
         onExtensionNotification,
       }),
-    ).toBe(turn);
+    ).toMatchObject({ requestId: turn.requestId, result: turn.result });
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
@@ -1329,7 +1354,7 @@ describe("ACPX runtime host", () => {
     expect(turn.cancel).toHaveBeenCalledWith({ reason: "user interrupt" });
 
     await host.close({ reason: "shutdown" });
-    expect(turn.cancel).toHaveBeenCalledWith({ reason: "shutdown" });
+    expect(turn.cancel.mock.calls.every(([intent]) => intent.reason === "user interrupt")).toBe(true);
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
@@ -1796,6 +1821,7 @@ describe("ACPX runtime host", () => {
 
 function runtimePort(
   input: {
+    identity?: AcpxRuntimePort["identity"];
     getStatus?: AcpxRuntimePort["getStatus"];
     setModel?: NonNullable<AcpxRuntimePort["setModel"]>;
     startTurn?: AcpxRuntimePort["startTurn"];
@@ -1803,11 +1829,11 @@ function runtimePort(
   } = {},
 ): AcpxRuntimePort & { close: ReturnType<typeof vi.fn> } {
   return {
-    identity: async () => ({
+    identity: input.identity ?? (async () => ({
       acpxRecordId: "record-1",
       backendSessionId: "backend-1",
       agentSessionId: "agent-1",
-    }),
+    })),
     getStatus:
       input.getStatus ??
       (async () => ({

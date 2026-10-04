@@ -292,3 +292,5 @@ Cursor, Copilot, GitHub and GH environment variables are stripped from the
 server environment. GitHub PAT shapes are included in retained-evidence scans.
 Candidates have no automatic infrastructure retries; spending must be reconciled
 before a deliberate repeat.
+
+The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.

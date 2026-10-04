@@ -18,7 +18,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseProviderPackArguments, materializeCandidateProviderPack } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -165,14 +166,14 @@ try {
   copyFileSync(process.execPath, stableNodeCommand);
   chmodSync(stableNodeCommand, 0o755);
   const relocatedNode = spawnSync(stableNodeCommand, ["--version"], {
-    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 10_000,
+    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: buildNodeStartupTimeout(),
   });
   if (relocatedNode.status !== 0 || relocatedNode.stdout.trim() !== `v${process.versions.node}`) {
     throw new Error("Provider pack Node is not portable after relocation; build with a standalone Node distribution");
   }
 
   const candidateProviders = {};
-  for (const provider of candidates) {
+  for (const provider of providerPackProviders(process.platform, process.arch, candidates)) {
     const assetPath = `provider-assets/${provider}/${process.platform}-${process.arch}`;
     const metadata = await materializeCandidateProviderPack({ provider, outputRoot: join(temporaryRoot, assetPath) });
     if (typeof metadata?.version !== "string" || !metadata.version || metadata.version.length > 120
@@ -333,7 +334,7 @@ try {
       codex:
         "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
     },
-    ...(candidates.length ? { candidateProviders } : {}),
+    ...providerPackManifestFields(candidateProviders, candidates),
     artifacts: {
       grokLauncher: {
         path: "dist/providers/grok/launcher.cjs",

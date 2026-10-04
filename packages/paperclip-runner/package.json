@@ -61,6 +61,7 @@
     "build:typescript": "pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:binary": "cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/stage-runner-binary.mjs",
+    "stage:release-binaries": "node scripts/stage-release-runner-binaries.mjs",
     "build:provider-pack": "pnpm run build:typescript && node scripts/build-provider-pack.mjs",
     "build:runner-binaries": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:browser": "vite build --config vite.config.ts",

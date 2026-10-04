@@ -764,7 +764,10 @@ Before an access-controlled evidence artifact is uploaded, the launcher:
 7. verifies that a passing attempt has its final-state screenshot.
 
 The temporary Paperclip home, embedded database, raw workspace, master key,
-and unredacted logs are removed after each attempt. Daytona teardown destroys
+and unredacted logs are removed after confirmed cleanup. If process or remote
+cleanup is unconfirmed, the harness retains the owner-only temporary root and
+its recovery database for reconciliation; that private state is never packaged
+as public evidence. Daytona teardown destroys
 the environment and any reusable leases through the public API; provider-side
 auto-stop/archive/delete values remain as cancellation backstops.
 
@@ -1592,3 +1595,24 @@ staff remains a separate follow-up qualification.
 The v3 hiring grader uses turn-accounting v2 in both executable guards. It requires complete per-run public event streams, exact native tool-use/result pairing and canonical execution IDs for completion actions. Only successful known GET issue/document/comment operations, verified reads/discovery, and attributed native chat finish are admitted. Writes, failed mutation attempts, incomplete streams and unknown actions cannot pass. Separate ACPX host request IDs and provider execution IDs are not joined by name/order/count; missing mapping is uncomparable action coverage, not a measured task failure. The original source-read and exact template checks remain unchanged.
 
 The live fixture retries entire bracketed observations, waits for both known task callbacks and attributed replies (including batching), checks untruncated pending-wake diagnostics, and requires two equal settled observations. Silence before outbox enqueue is not delivery. Five-turn generic accounting remains calibrated for no owed notifications; this delegated fixture owes two completions. All actual runs remain counted for usage and cost. Retained original, limited sidecar-v1, initial executable, and stricter v3 assessments remain separately versioned; no models are rerun by the repair.
+
+Recovery-state retention uses raw cleanup results before evidence publication. An owner-only resource-admission marker for Daytona cells also preserves state if the test worker dies before producing a result. Local worker crashes do not imply remote allocation; their process cleanup proof still applies independently. Confirmed bootstrap failures before allocation remove their temporary state and retain their original failure classification.
+
+## Public installed release smoke
+
+Set `PAPERCLIP_RUNNER_E2E_INSTALLED_CLI` to the absolute public consumer's
+`paperclipai/dist/index.js` for an installed-product acceptance run. Install the
+public package graph and run its ordinary `runtime setup cursor` first. The
+supervisor launches that compiled CLI from its own package directory; repository
+server-entry patches, provider-bin shims, loader injection, provider packs and
+native binary overrides are removed from the server environment. Qualification
+admission is rejected, so this path requires production admission. Use the
+existing browser/API cases and encrypted company-secret fixture path.
+
+For a diagnosed failure campaign, `PAPERCLIP_RUNNER_E2E_KEEP_FAILED_PRIVATE=1`
+retains the attempt's owner-only private directory after a failed case even
+when owned cleanup passed. This does not alter the case or cleanup outcome.
+Private traces and database files must not be published. Unconfirmed cleanup
+always preserves recovery state regardless of this optional diagnostic flag.
+
+The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.

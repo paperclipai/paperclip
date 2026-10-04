@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createCapabilityFixtureState } from "../mock-core/capability-control-plane-types.js";
 
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
   evalSessionUsage,
@@ -78,11 +79,50 @@ describe("eval-session request contract", () => {
 
   it("accepts only known diagnostic flags and rejects ambiguous repeated arguments", () => {
     const args = ["--request", "/tmp/request.json", "--output", "/tmp/result.json"];
-    expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toMatchObject({ candidateProfile: "pi" });
+    const expected = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
+    expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi", "--expected-acpx-profile", JSON.stringify(expected)]))
+      .toMatchObject({ candidateProfile: "pi", expectedAcpxProfile: expected });
+    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toThrow("require --expected-acpx-profile");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, or copilot");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile"])).toThrow("missing");
     expect(() => parseEvalSessionCliArgs([...args, "--request", "/tmp/other.json"])).toThrow("duplicate");
     expect(() => parseEvalSessionRequest(request(), { candidateProfile: "pi" })).toThrow("must match");
+    for (const invalid of ["null", "[]", "true", "{", JSON.stringify("text")]) {
+      expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", invalid])).toThrow("JSON object");
+    }
+    expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", " ".repeat(4097)])).toThrow("4096-byte bound");
+  });
+
+  it.each(["cursor"] as const)("rejects stale or incomplete %s identities before runtime construction", async (agent) => {
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-profile-"));
+    const model = "explicit-provider-model";
+    const expected = resolveQualifiedAcpxProfile(agent, model);
+    const requestPath = join(workspace, "request.json");
+    const args = ["--request", requestPath, "--output", join(workspace, "output.json"), "--candidate-profile", agent];
+    const serviceFactory = vi.fn(() => { throw new Error("provider must not start"); });
+    try {
+      await writeFile(requestPath, JSON.stringify(request({ provider: "acpx", acpxAgent: agent, model,
+        runnerd: { path: join(workspace, "missing-runnerd"), sha256: "a".repeat(64) },
+        session: { workingDirectory: workspace },
+      })));
+      const { commandDigest: _removed, ...incomplete } = expected;
+      for (const stale of [
+        {}, incomplete, { ...expected, unexpected: true },
+        { ...expected, agentProfileVersion: expected.agentProfileVersion - 1 },
+        { ...expected, commandDigest: `sha256:${"0".repeat(64)}` },
+        { ...expected, reportedModelId: "another-model" },
+        { ...expected, agentServerVersion: "previous-binary" },
+      ]) {
+        await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(stale)], { serviceFactory }))
+          .rejects.toThrow("does not match the built runner profile");
+      }
+      await expect(runEvalSessionCli(args, { serviceFactory })).rejects.toThrow("require --expected-acpx-profile");
+      // A matching identity reaches the independent runner-binary digest gate.
+      await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(expected)], { serviceFactory }))
+        .rejects.toThrow("ENOENT");
+      expect(serviceFactory).not.toHaveBeenCalled();
+      expect(await readdir(workspace)).toEqual(["request.json"]);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
   it("materializes a production-v3 runtime context for direct live providers", async () => {
@@ -446,7 +486,7 @@ describe("eval-session budget settlement", () => {
       const requestPath = join(workspace, "request.json");
       const outputPath = join(workspace, "output.json");
       await writeFile(requestPath, JSON.stringify(input));
-      const exitCode = await runEvalSessionCli(["--request", requestPath, "--output", outputPath, ...(agent === "grok" ? [] : ["--candidate-profile", "copilot"])], {
+      const exitCode = await runEvalSessionCli(["--request", requestPath, "--output", outputPath, ...(agent === "grok" ? [] : ["--candidate-profile", "copilot", "--expected-acpx-profile", JSON.stringify(resolveQualifiedAcpxProfile("copilot", model))])], {
         serviceFactory: () => ({ create: async () => ({ sendMessage, completeAttempt, shutdown, snapshot: () => snapshot }) }) as never,
       });
       const artifact = JSON.parse(await readFile(outputPath, "utf8"));

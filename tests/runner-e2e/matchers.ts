@@ -27,7 +27,7 @@ export interface MatcherObservation {
   runtimeMode?: string;
   environment?: string;
   files?: Record<string, string>;
-  artifacts?: Array<{ name: string; mimeType?: string }>;
+  artifacts?: Array<{ name: string; mimeType?: string; content?: string; contentVerified?: boolean }>;
   json?: unknown;
 }
 
@@ -132,12 +132,14 @@ export async function evaluateMatcher(
       actual = undefined;
       passed = false;
     }
-  } else if (matcher.kind === "artifact_exists") {
+  } else if (matcher.kind === "artifact_exists" || matcher.kind === "artifact_exact") {
     actual = observation.artifacts ?? [];
     passed = (observation.artifacts ?? []).some(
       (artifact) =>
         artifact.name === matcher.name &&
-        (!matcher.mimeType || artifact.mimeType === matcher.mimeType),
+        (!matcher.mimeType || artifact.mimeType === matcher.mimeType) &&
+        (matcher.kind === "artifact_exists" ||
+          (artifact.contentVerified === true && artifact.content === matcher.expected)),
     );
   } else if (matcher.kind === "json_path") {
     actual = readJsonPath(observation.json, matcher.path);

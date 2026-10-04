@@ -3,6 +3,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   PAPERCLIP_RUNNER_ACPX_PROFILES,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
@@ -119,6 +120,7 @@ export type PaperclipRunnerNativeProviderInput =
       model: string;
       acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
       acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+      acpxSessionMode?: "agent" | "plan" | "ask";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -346,6 +348,14 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   assertPermissionMode(candidate, config);
+  try {
+    resolvePaperclipRunnerCursorMode(candidate, config.acpxAgent, config.acpxSessionMode);
+  } catch (error) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_cursor_mode_invalid",
+      error instanceof Error ? error.message : "Invalid Cursor session mode",
+    );
+  }
   const model = optionalString(config.model);
   if (candidate === "codex") {
     return {
@@ -521,6 +531,9 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       provider: "acpx",
       model: profile.model,
       acpxAgent: profile.acpxAgent,
+      ...(profile.acpxAgent === "cursor" ? {
+        acpxSessionMode: resolvePaperclipRunnerCursorMode("acpx", "cursor", config.acpxSessionMode),
+      } : {}),
       acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
         "acpx",
         config.acpxPermissionMode,

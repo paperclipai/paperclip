@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -52,6 +53,106 @@ describe("Codex ACPX runtime adapter", () => {
     await expect(created.onPermissionRequest!({ sessionId: "forged", raw: {}, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
     pending.settle(); await turn.result; await port.close({ reason: "session checks complete" });
   });
+  it("cancels an outstanding native permission callback on the exact active turn", async () => {
+    const pending = pendingExtensionTurn("turn-1");
+    const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    let callbackSignal!: AbortSignal;
+    const handler = vi.fn((_request, context) => new Promise<{ outcome: "cancel" }>(resolve => {
+      callbackSignal = context.signal;
+      context.signal.addEventListener("abort", () => resolve({ outcome: "cancel" }), { once: true });
+    }));
+    const turn = port.startTurn({ text: "Write", requestId: "turn-1", onPermissionRequest: handler });
+    const permission = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    expect(callbackSignal.aborted).toBe(false);
+    const oldMode = options.permissionMode;
+    options.permissionMode = "approve-all";
+    const expiredContext = new AbortController(); expiredContext.abort();
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: expiredContext.signal })).resolves.toEqual({ outcome: "cancel" });
+    options.permissionMode = oldMode;
+    await turn.cancel();
+    expect(callbackSignal.aborted).toBe(true);
+    await expect(permission).resolves.toEqual({ outcome: "cancel" });
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    expect(handler).toHaveBeenCalledOnce();
+    pending.settle(); await turn.result;
+    // The active-turn pointer has been cleared. Even full-auto policy cannot
+    // authorize a late callback from the retired turn.
+    options.permissionMode = "approve-all";
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    await port.close({ reason: "test complete" });
+  });
+
+  it("fails Cursor adapter admission when the provider never acknowledges instructions", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" };
+    await expect(openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    })).rejects.toThrow("Cursor instruction admission failed");
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalled();
+  });
+  it.each(["valid", "missing", "unsupported"])("cold Cursor adapter admission requires %s load/config and renews only on success", async mode => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "cursor" };
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    vi.mocked(runtime.setConfigOption).mockImplementation(async () => {
+      const guard = created.protocolGuardFactory!();
+      const binding = cursorInstructionBinding(options.systemInstructions);
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: mode === "missing" ? {} : { modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      if (mode === "unsupported") throw new Error("Exact model unsupported");
+    });
+    const opening = openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    if (mode === "valid") {
+      const port = await opening; expect(options.refreshConsumedCommand).toHaveBeenCalledOnce(); await port.close({ reason: "fixture cleanup" });
+    } else {
+      await expect(opening).rejects.toThrow(mode === "missing" ? /Cursor instruction admission failed/ : /Exact model unsupported/);
+      expect(options.refreshConsumedCommand).not.toHaveBeenCalled(); expect(runtime.close).toHaveBeenCalled();
+    }
+    expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "model", value: options.profile.reportedModelId });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
+  it.each(["plan", "ask"] as const)("admission explicitly selects %s and renews temporary command authority", async selected => {
+    const runtime = fakeRuntime(); const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" }; options.cursorMode = selected;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const binding = cursorInstructionBinding(options.systemInstructions);
+    const configs = (mode: string) => [{ id: "mode", currentValue: mode }];
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: configs("agent"), _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: configs(input.key === "mode" ? selected : "agent") } });
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    expect(vi.mocked(runtime.setConfigOption).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
+    expect(options.refreshConsumedCommand).toHaveBeenCalledTimes(2);
+    expect(await port.identity()).toMatchObject({ cursorMode: selected });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "mode fixture cleanup" });
+  });
+
   it("routes only profile-allowed extensions to the owning turn and expires late responses", async () => {
     const runtime = fakeRuntime();
     const first = pendingExtensionTurn("turn-1");
@@ -63,7 +164,14 @@ describe("Codex ACPX runtime adapter", () => {
     options.clientCapabilities = { _meta: { cursor: { test: true } } };
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
-      createRuntime: (value) => { created = value; return runtime; },
+      createRuntime: (value) => {
+        created = value;
+        const guard = value.protocolGuardFactory!();
+        const binding = cursorInstructionBinding(options.systemInstructions);
+        guard("outbound", { id: 0, method: "session/new", params: {} });
+        guard("inbound", { id: 0, result: { sessionId: "backend-1", modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength } } } });
+        return runtime;
+      },
     });
     expect(created.clientCapabilities).toEqual(options.clientCapabilities);
     expect(JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls)).not.toContain("clientCapabilities");
@@ -418,6 +526,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       cumulative_cost: { amount: 0.1, currency: "USD" },
+      messages: [{ User: { id: "prompt", content: [] } }],
+      cursor_prompt_usage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       acpx: {
         current_model_id: "gpt-5.6-sol",
         available_models: ["gpt-5.6-sol"],
@@ -440,6 +550,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       usageCost: { amount: 0.1, currency: "USD" },
+      promptMessageIds: ["prompt"],
+      cursorPromptUsage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],

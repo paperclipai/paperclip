@@ -5,7 +5,7 @@ export interface AcpxCapabilityProfile {
   readonly qualification: "qualified" | "pending";
   readonly models: "explicit-provider-verified" | "exact-qualified";
   readonly permissions: "runner-policy" | "interactive";
-  readonly questions: "form" | "cursor-extension" | "not-exposed";
+  readonly questions: "form" | "cursor-extension" | "semantic-only" | "not-exposed";
   readonly plans: "native" | "cursor-decision" | "semantic-only";
   readonly tools: "authenticated-mcp" | "owned-extension";
   readonly recovery: "session-load" | "unverified";
@@ -43,11 +43,11 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
   },
   cursor: {
     displayName: "Cursor", qualification: "pending", models: "explicit-provider-verified",
-    permissions: "interactive", questions: "cursor-extension", plans: "cursor-decision", tools: "authenticated-mcp",
+    permissions: "interactive", questions: "semantic-only", plans: "cursor-decision", tools: "authenticated-mcp",
     recovery: "session-load", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
     artifacts: "references-pending",
     extensionRequests: ["cursor/ask_question", "cursor/create_plan", "cursor/update_todos", "cursor/task", "cursor/generate_image"],
-    extensionNotifications: ["cursor/update_todos", "cursor/task", "cursor/generate_image"],
+    extensionNotifications: ["cursor/update_todos", "cursor/task", "cursor/generate_image", "cursor/subagent_update"],
   },
   copilot: {
     displayName: "GitHub Copilot", qualification: "pending", models: "explicit-provider-verified",

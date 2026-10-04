@@ -1,8 +1,17 @@
 diff --git a/dist/client-CxNllqui.d.ts b/dist/client-CxNllqui.d.ts
-index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b071ab54a8d 100644
+index 5e2113ac0..45aff03c3 100644
 --- a/dist/client-CxNllqui.d.ts
 +++ b/dist/client-CxNllqui.d.ts
-@@ -135,6 +135,7 @@ declare class AcpClient {
+@@ -120,6 +120,8 @@ declare class AcpClient {
+   private initializeProtocolConnection;
+   private handleInitializeFailure;
+   private createTappedStream;
++  private cursorSubagentStreamOwner;
++  private handleCursorSubagentNotification;
+   createSession(cwd?: string): Promise<SessionCreateResult>;
+   loadSession(sessionId: string, cwd?: string): Promise<SessionLoadResult>;
+   loadSessionWithOptions(sessionId: string, cwd?: string, options?: LoadSessionOptions): Promise<SessionLoadResult>;
+@@ -135,6 +137,7 @@ declare class AcpClient {
    private throwPromptPermissionFailureIfPresent;
    setSessionMode(sessionId: string, modeId: string): Promise<void>;
    setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<SetSessionConfigOptionResponse>;
@@ -11,10 +20,10 @@ index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b07
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d2e777e9e 100644
+index d454fd7c5..6eba74345 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
-@@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
+@@ -1068,12 +1068,14 @@ function serializeSessionRecordForDisk(record) {
  		last_agent_disconnect_reason: canonical.lastAgentDisconnectReason,
  		protocol_version: canonical.protocolVersion,
  		agent_capabilities: canonical.agentCapabilities,
@@ -22,7 +31,14 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		title: canonical.title,
  		messages: canonical.messages,
  		updated_at: canonical.updated_at,
-@@ -1239,7 +1240,8 @@ function parseRequestTokenUsage(raw) {
+ 		cumulative_token_usage: canonical.cumulative_token_usage,
+ 		cumulative_cost: canonical.cumulative_cost,
+ 		request_token_usage: canonical.request_token_usage,
++		cursor_prompt_usage: boundCursorPromptUsage(canonical.cursor_prompt_usage, canonical.messages),
+ 		acpx: canonical.acpx,
+ 		imported_from: canonical.importedFrom ? {
+ 			record_id: canonical.importedFrom.recordId,
+@@ -1239,7 +1241,8 @@ function parseRequestTokenUsage(raw) {
  	for (const [key, value] of Object.entries(record)) {
  		const parsed = parseTokenUsage(value);
  		if (parsed == null) return null;
@@ -32,7 +48,111 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	}
  	return usage;
  }
-@@ -1541,6 +1543,7 @@ function parseSessionRecord(raw) {
+@@ -1325,6 +1328,93 @@ function isAgentMessage$1(raw) {
+ function isConversationMessage(raw) {
+ 	return raw === "Resume" || isUserMessage$1(raw) || isAgentMessage$1(raw);
+ }
++function parseCursorPromptUsage(raw) {
++    try {
++        const text = JSON.stringify(raw);
++        if (!text || Buffer.byteLength(text, "utf8") > 16384) return null;
++        const v = JSON.parse(text);
++        const object = (x)=>x !== null && typeof x === "object" && !Array.isArray(x);
++        const exact = (x, keys)=>Object.keys(x).length === keys.length && keys.every((k)=>Object.hasOwn(x, k));
++        const id = (x)=>typeof x === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/.test(x);
++        if (!object(v) || !exact(v, [
++            "request_id",
++            "prompt_message_id",
++            "receipt"
++        ]) || !id(v.request_id) || !id(v.prompt_message_id)) return null;
++        const r = v.receipt;
++        if (!object(r) || !exact(r, [
++            "schema",
++            "source",
++            "promptId",
++            "completeness",
++            "reasons",
++            "observations",
++            "limits",
++            "truncated"
++        ])) return null;
++        if (r.schema !== "paperclip.cursor.native-usage.v1" || r.source !== "native_turn_ended" || r.completeness !== "partial" || typeof r.promptId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(r.promptId) || typeof r.truncated !== "boolean") return null;
++        const reasons = [
++            "native_counter_semantics_unverified",
++            "native_counters_missing",
++            "invalid_native_counter",
++            "multiple_terminal_observations",
++            "native_terminal_not_observed",
++            "observation_limit_reached",
++            "child_run_attribution_unverified"
++        ];
++        if (!Array.isArray(r.reasons) || r.reasons.length > reasons.length || !r.reasons.includes(reasons[0]) || new Set(r.reasons).size !== r.reasons.length || !r.reasons.every((x)=>reasons.includes(x))) return null;
++        if (!object(r.limits) || !exact(r.limits, [
++            "maxObservations",
++            "maxInvocations",
++            "maxBytes"
++        ]) || r.limits.maxObservations !== 64 || r.limits.maxInvocations !== 64 || r.limits.maxBytes !== 16384 || !Array.isArray(r.observations) || r.observations.length > 64) return null;
++        const fields = [
++            "inputTokens",
++            "outputTokens",
++            "cacheReadTokens",
++            "cacheWriteTokens",
++            "reasoningTokens"
++        ];
++        const invocations = new Map();
++        for (const o of r.observations){
++            if (!object(o) || !exact(o, [
++                "invocationId",
++                "role",
++                "nativeRun",
++                "sequence",
++                "counters"
++            ]) || typeof o.invocationId !== "string" || !/^invocation-([1-9]|[1-5][0-9]|6[0-4])$/.test(o.invocationId) || o.role !== "parent" && o.role !== "child" || !Number.isSafeInteger(o.nativeRun) || o.nativeRun < 1 || !Number.isSafeInteger(o.sequence) || o.sequence < 1 || !object(o.counters)) return null;
++            if (!Object.entries(o.counters).every(([k, n])=>fields.includes(k) && Number.isSafeInteger(n) && n >= 0)) return null;
++            const previous = invocations.get(o.invocationId);
++            if (previous && (previous.role !== o.role || previous.nativeRun !== o.nativeRun || o.sequence <= previous.sequence)) return null;
++            invocations.set(o.invocationId, {
++                role: o.role,
++                nativeRun: o.nativeRun,
++                sequence: o.sequence
++            });
++        }
++        return v;
++    } catch  {
++        return null;
++    }
++}
++function boundCursorPromptUsage(raw, messages) {
++ const receipt = parseCursorPromptUsage(raw);
++ if (!receipt || !Array.isArray(messages) || messages.filter(message => message?.User?.id === receipt.prompt_message_id).length !== 1) return undefined;
++ return receipt;
++}
++function recordCursorPromptUsage(conversation, response, requestId, promptMessageId) {
++ // Optional diagnostics cannot affect settlement or standard token/cost accounting.
++ try {
++  if (response.stopReason !== "end_turn" && response.stopReason !== "cancelled") return;
++  const next = boundCursorPromptUsage({request_id: requestId, prompt_message_id: promptMessageId, receipt: response._meta?.paperclipCursorUsage}, conversation.messages);
++  if (!next) return;
++  const previous = parseCursorPromptUsage(conversation.cursor_prompt_usage);
++  if (previous && (previous.request_id === next.request_id || previous.prompt_message_id === next.prompt_message_id || previous.receipt.promptId === next.receipt.promptId)) return;
++  conversation.cursor_prompt_usage = next;
++ } catch {}
++}
++
+ function parseConversationRecord(record) {
+ 	if (!hasValidConversationCore(record)) return;
+ 	const title = parseConversationTitle(record.title);
+@@ -1339,7 +1429,8 @@ function parseConversationRecord(record) {
+ 		updated_at: record.updated_at,
+ 		cumulative_token_usage: cumulativeTokenUsage ?? {},
+ 		cumulative_cost: cumulativeCost,
+-		request_token_usage: requestTokenUsage ?? {}
++		request_token_usage: requestTokenUsage ?? {},
++		cursor_prompt_usage: boundCursorPromptUsage(record.cursor_prompt_usage, record.messages)
+ 	};
+ }
+ const INVALID_VALUE = Symbol("invalid");
+@@ -1541,12 +1632,14 @@ function parseSessionRecord(raw) {
  		lastAgentDisconnectReason: optionals.lastAgentDisconnectReason,
  		protocolVersion: typeof record.protocol_version === "number" ? record.protocol_version : void 0,
  		agentCapabilities: asRecord$4(record.agent_capabilities),
@@ -40,16 +160,25 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		title: conversation.title,
  		messages: conversation.messages,
  		updated_at: conversation.updated_at,
-@@ -1661,7 +1664,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+ 		cumulative_token_usage: conversation.cumulative_token_usage,
+ 		cumulative_cost: conversation.cumulative_cost,
+ 		request_token_usage: conversation.request_token_usage,
++		cursor_prompt_usage: conversation.cursor_prompt_usage,
+ 		acpx: parseAcpxState(record.acpx),
+ 		importedFrom: metadata.importedFrom
+ 	};
+@@ -1661,8 +1754,9 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
  	"RedactedThinking",
  	"ToolUse"
  ]);
 -const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results"]);
 +const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results", "acpx.session_options.env"]);
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
++	"cursor_prompt_usage.receipt",
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -3104,10 +3107,10 @@ function authEnvKey(methodId) {
+ 	"acpx.desired_config_options",
+@@ -3104,10 +3198,10 @@ function authEnvKey(methodId) {
  	authEnvKeyCache.set(methodId, key);
  	return key;
  }
@@ -62,7 +191,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	if (typeof value === "string" && value.trim().length > 0) return value;
  }
  function protectedEnvKey(key) {
-@@ -3135,8 +3138,21 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3135,8 +3229,21 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -86,7 +215,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -3178,10 +3194,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -3178,10 +3285,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -99,7 +228,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3961,10 +3977,13 @@ function resolveClientCapabilities(params) {
+@@ -3961,10 +4068,13 @@ function resolveClientCapabilities(params) {
  			...params.elicitationModes.includes("url") ? { url: {} } : {}
  		} } : {}
  	};
@@ -115,7 +244,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	};
  }
  function hasResponseField(response, field) {
-@@ -4067,6 +4086,27 @@ function createNdJsonMessageStream(agentCommand, output, input) {
+@@ -4067,6 +4177,27 @@ function createNdJsonMessageStream(agentCommand, output, input) {
  		} })
  	};
  }
@@ -143,7 +272,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  var AcpClient = class {
  	options;
  	connection;
-@@ -4105,7 +4145,9 @@ var AcpClient = class {
+@@ -4105,7 +4236,9 @@ var AcpClient = class {
  			cwd: asAbsoluteCwd(options.cwd),
  			authPolicy: options.authPolicy ?? "skip",
  			permissionPolicy: snapshotPermissionPolicy(options.permissionPolicy),
@@ -154,7 +283,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		};
  		this.eventHandlers = {
  			onAcpMessage: this.options.onAcpMessage,
-@@ -4216,9 +4258,21 @@ var AcpClient = class {
+@@ -4216,9 +4349,21 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -176,7 +305,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -4226,6 +4280,7 @@ var AcpClient = class {
+@@ -4226,6 +4371,7 @@ var AcpClient = class {
  		const output = Readable.toWeb(child.stdout);
  		const stream = this.createTappedStream(createNdJsonMessageStream(this.options.agentCommand, input, output));
  		const connection = this.createConnection(stream, launch);
@@ -184,7 +313,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		connection.signal.addEventListener("abort", () => {
  			this.recordAgentExit("connection_close", child.exitCode ?? null, child.signalCode ?? null);
  		}, { once: true });
-@@ -4253,7 +4308,12 @@ var AcpClient = class {
+@@ -4253,7 +4399,12 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -198,7 +327,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4279,10 +4339,17 @@ var AcpClient = class {
+@@ -4279,10 +4430,17 @@ var AcpClient = class {
  	}
  	async spawnAgentProcess(plan) {
  		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
@@ -218,7 +347,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		try {
  			await waitForSpawn$1(spawnedChild);
  		} catch (error) {
-@@ -4293,10 +4360,10 @@ var AcpClient = class {
+@@ -4293,10 +4451,10 @@ var AcpClient = class {
  	createConnection(stream, launch) {
  		const app = client({ name: "acpx" }).onNotification(methods.client.session.update, async ({ params }) => {
  			await this.handleSessionUpdate(params);
@@ -232,7 +361,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		}).onRequest(methods.client.fs.readTextFile, async ({ params }) => {
  			return await this.handleReadTextFile(params);
  		}).onRequest(methods.client.fs.writeTextFile, async ({ params }) => {
-@@ -4312,6 +4379,11 @@ var AcpClient = class {
+@@ -4312,6 +4470,11 @@ var AcpClient = class {
  		}).onRequest(methods.client.terminal.release, async ({ params }) => {
  			return await this.handleReleaseTerminal(params);
  		});
@@ -244,7 +373,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		if (launch.devinAcp) app.onRequest("_cognition.ai/request_diagnostics", (params) => {
  			return params && typeof params === "object" && !Array.isArray(params) ? params : {};
  		}, async () => ({}));
-@@ -4333,12 +4405,12 @@ var AcpClient = class {
+@@ -4333,12 +4496,12 @@ var AcpClient = class {
  	async initializeProtocolConnection(connection, launch) {
  		const initializePromise = connection.initialize({
  			protocolVersion: PROTOCOL_VERSION,
@@ -259,10 +388,23 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			clientInfo: resolveClientInfo(launch.devinAcp)
  		});
  		const initialized = launch.geminiAcp ? await withTimeout(initializePromise, resolveGeminiAcpStartupTimeoutMs()) : await initializePromise;
-@@ -4358,6 +4430,36 @@ var AcpClient = class {
+@@ -4358,6 +4521,49 @@ var AcpClient = class {
  		throw normalizedError;
  	}
  	createTappedStream(base) {
++		// Policy admission is distinct from best-effort observation. Each new
++		// stdio connection gets fresh authority and a violation tears it down.
++		const protocolGuard = this.options.protocolGuardFactory?.();
++		const enforceProtocol = (direction, message) => {
++			try { protocolGuard?.(direction, message); }
++			catch (error) {
++				this.rejectPendingConnectionRequests(error);
++				abortResponseDeliveries();
++				this.activePrompt?.elicitationController.abort(error);
++				try { this.agent?.kill("SIGTERM"); } catch {}
++				throw error;
++			}
++		};
 +		const deliveries = new Map();
 +		const scope = new AbortController();
 +		const abortResponseDeliveries = () => scope.abort(new Error("ACP response connection closed before delivery"));
@@ -296,10 +438,13 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		const onAcpMessage = () => this.eventHandlers.onAcpMessage;
  		const onAcpOutputMessage = () => this.eventHandlers.onAcpOutputMessage;
  		const elicitationRequestIds = /* @__PURE__ */ new Set();
-@@ -4367,8 +4469,9 @@ var AcpClient = class {
+@@ -4367,8 +4573,12 @@ var AcpClient = class {
  		const shouldSuppressInboundReplaySessionUpdate = (message) => {
  			return this.suppressReplaySessionUpdateMessages && isSessionUpdateNotification(message);
  		};
++		const cursorSubagentOwner = { active: null, children: new Map() };
++		this.cursorSubagentStreamOwner = cursorSubagentOwner;
++		const onCursorSubagentNotification = (message) => this.handleCursorSubagentNotification(message, cursorSubagentOwner);
 +		const onExtensionNotification = (message) => this.handleExtensionNotification(message);
  		const observeInbound = (message) => {
 -			const requestId = elicitationRequestId(message);
@@ -307,7 +452,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			if (requestId !== void 0) {
  				elicitationRequestIds.add(requestId);
  				return;
-@@ -4379,6 +4482,7 @@ var AcpClient = class {
+@@ -4379,6 +4589,7 @@ var AcpClient = class {
  			}
  		};
  		return {
@@ -315,25 +460,37 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			readable: new ReadableStream({ async start(controller) {
  				const reader = base.readable.getReader();
  				try {
-@@ -4387,10 +4491,16 @@ var AcpClient = class {
+@@ -4386,16 +4597,27 @@ var AcpClient = class {
+ 						const { value, done } = await reader.read();
  						if (done) break;
  						if (!value) continue;
++						enforceProtocol("inbound", value);
  						observeInbound(value);
 -						if (isExtensionNotification(value)) continue;
++						if (onCursorSubagentNotification(value)) continue;
 +						if (isExtensionNotification(value)) {
 +							onExtensionNotification(value);
 +							continue;
 +						}
  						controller.enqueue(value);
  					}
++					controller.close();
++				} catch (error) {
++					controller.error(error);
  				} finally {
 +					abortResponseDeliveries();
 +					for (const receipt of deliveries.values()) receipt.cleanup();
 +					deliveries.clear();
  					reader.releaseLock();
- 					controller.close();
+-					controller.close();
  				}
-@@ -4403,10 +4513,20 @@ var AcpClient = class {
+ 			} }),
+ 			writable: new WritableStream({ async write(message) {
++				enforceProtocol("outbound", message);
+ 				const promptOwner = promptRequestOwner(message);
+ 				if (promptOwner) bindPromptOwner(promptOwner);
+ 				const id = responseId(message);
+@@ -4403,10 +4625,20 @@ var AcpClient = class {
  					onAcpOutputMessage()?.("outbound", message);
  					onAcpMessage()?.("outbound", message);
  				}
@@ -354,7 +511,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  					writer.releaseLock();
  				}
  			} })
-@@ -4422,7 +4542,10 @@ var AcpClient = class {
+@@ -4422,7 +4654,10 @@ var AcpClient = class {
  			const createPromise = this.runConnectionRequest(() => connection.newSession({
  				cwd: sessionCwd,
  				mcpServers: this.options.mcpServers ?? [],
@@ -366,7 +523,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			}));
  			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
  		} catch (error) {
-@@ -4864,7 +4987,7 @@ var AcpClient = class {
+@@ -4864,7 +5099,7 @@ var AcpClient = class {
  	}
  	selectAuthMethod(methods) {
  		for (const method of methods) {
@@ -375,7 +532,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			if (envCredential) return {
  				methodId: method.id,
  				credential: envCredential,
-@@ -4890,7 +5013,7 @@ var AcpClient = class {
+@@ -4890,7 +5125,7 @@ var AcpClient = class {
  	}
  	readAgentSpecificEnvCredential(methodId) {
  		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
@@ -384,7 +541,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
  	}
  	selectAgentManagedAuthMethod(methodId) {
-@@ -4915,9 +5038,9 @@ var AcpClient = class {
+@@ -4915,9 +5150,9 @@ var AcpClient = class {
  		await connection.authenticate({ methodId: selected.methodId });
  		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
  	}
@@ -396,7 +553,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		if (hostResponse) return hostResponse;
  		const { response, recorded } = await this.resolvePermissionRequestFromMode(params);
  		if (!recorded) {
-@@ -4926,14 +5049,49 @@ var AcpClient = class {
+@@ -4926,14 +5161,81 @@ var AcpClient = class {
  		}
  		return response;
  	}
@@ -423,6 +580,38 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
 +			signal.removeEventListener("abort", onAbort);
 +		}
 +	}
++	handleCursorSubagentNotification(message, owner) {
++		// Keep the SDK's standard union closed. Cursor child transcripts use
++		// their own session IDs and must never be flattened into the parent.
++		const method = "cursor/subagent_update";
++		if (!this.options.extensionMethods.includes(method) || this.options.clientCapabilities?._meta?.subagents !== true) return false;
++		if (message?.method !== "session/update" || "id" in message) return false;
++		const lifecycle = ["subagent_spawned", "subagent_state_update"].includes(message?.params?.update?.sessionUpdate);
++		const active = this.activePrompt;
++		const connection = this.connection;
++		if (this.cursorSubagentStreamOwner !== owner || this.closing || connection?.signal.aborted) return true;
++		if (!active || !connection || active.elicitationController.signal.aborted) return lifecycle || owner.children.has(message?.params?.sessionId);
++		if (owner.active !== active) { owner.active = active; owner.children.clear(); }
++		if (!lifecycle && message?.params?.sessionId === active.sessionId) return false;
++		try {
++			const params = boundedExtensionRecord(message.params);
++			if (lifecycle) {
++				if (params.sessionId !== active.sessionId && !owner.children.has(params.sessionId)) return true;
++				const child = params.update?.subagentSessionId;
++				if (typeof child !== "string" || !child || child.length > 1000 || child === active.sessionId) return true;
++				if (params.update.sessionUpdate === "subagent_spawned") {
++					if (owner.children.has(child) || owner.children.size >= 256) return true;
++					owner.children.set(child, params.sessionId);
++				} else if (owner.children.get(child) !== params.sessionId) return true;
++				this.options.onExtensionNotification?.(method, { sessionId: active.sessionId, parentSessionId: params.sessionId, update: params.update });
++			} else if (owner.children.has(params.sessionId)) {
++				this.options.onExtensionNotification?.(method, { sessionId: active.sessionId, parentSessionId: owner.children.get(params.sessionId), childSessionId: params.sessionId, update: params.update });
++			}
++		} catch {
++			this.log("Cursor child activity notification was rejected");
++		}
++		return true;
++	}
 +	handleExtensionNotification(message) {
 +		if (!this.options.extensionMethods.includes(message.method) || !this.options.onExtensionNotification || this.closing) return;
 +		const active = this.activePrompt;
@@ -448,7 +637,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		})).then((response) => ({
  			kind: "response",
  			response
-@@ -4970,7 +5128,7 @@ var AcpClient = class {
+@@ -4970,7 +5272,7 @@ var AcpClient = class {
  	isElicitationSessionCancelling(sessionId) {
  		return this.closing || this.cancellingSessionIds.has(sessionId);
  	}
@@ -457,7 +646,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		if (!this.options.onPermissionRequest) return;
  		const signal = this.cancellationSignalForSession(params.sessionId);
  		try {
-@@ -4978,7 +5136,7 @@ var AcpClient = class {
+@@ -4978,7 +5280,7 @@ var AcpClient = class {
  				sessionId: params.sessionId,
  				raw: params,
  				inferredKind: inferToolKind(params)
@@ -466,7 +655,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			return this.hostPermissionDecisionResponse(params, signal, decision);
  		} catch (error) {
  			return this.hostPermissionErrorResponse(params, signal, error);
-@@ -5028,6 +5186,12 @@ var AcpClient = class {
+@@ -5028,6 +5330,12 @@ var AcpClient = class {
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -479,7 +668,25 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -5771,10 +5935,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
+@@ -5239,6 +5547,7 @@ function applyConversation(record, conversation) {
+ 	record.cumulative_token_usage = conversation.cumulative_token_usage;
+ 	record.cumulative_cost = conversation.cumulative_cost;
+ 	record.request_token_usage = conversation.request_token_usage;
++	record.cursor_prompt_usage = boundCursorPromptUsage(conversation.cursor_prompt_usage, conversation.messages);
+ }
+ //#endregion
+ //#region src/runtime/engine/session-options.ts
+@@ -5701,7 +6010,8 @@ function cloneSessionConversation(conversation) {
+ 		updated_at: conversation.updated_at,
+ 		cumulative_token_usage: deepClone(conversation.cumulative_token_usage ?? {}),
+ 		cumulative_cost: cloneUsageCost(conversation.cumulative_cost),
+-		request_token_usage: deepClone(conversation.request_token_usage ?? {})
++		request_token_usage: deepClone(conversation.request_token_usage ?? {}),
++		cursor_prompt_usage: boundCursorPromptUsage(conversation.cursor_prompt_usage, conversation.messages)
+ 	};
+ }
+ function cloneUsageCost(cost) {
+@@ -5771,10 +6081,20 @@ function recordSessionUpdate(conversation, state, notification, timestamp = isoN
  	trimConversationForRuntime(conversation);
  	return acpx;
  }
@@ -502,7 +709,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  	updateConversationTimestamp(conversation, timestamp);
  	trimConversationForRuntime(conversation);
  	return true;
-@@ -6435,6 +6609,27 @@ async function withConnectedSession(options) {
+@@ -6435,6 +6755,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -530,12 +737,13 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,7 +6639,22 @@ async function runPromptTurn(params) {
+@@ -6444,7 +6785,23 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		// A failed terminal result may still include authoritative billable usage.
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
++		recordCursorPromptUsage(params.conversation, response, params.requestId, params.promptMessageId);
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
 +		if (terminalFailureCategory !== null) {
 +			// Pass complete provider text to the diagnostic callback. Consumers redact
@@ -554,7 +762,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			stopReason: response.stopReason,
  			source: "rpc"
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415d1fba4bf 100644
+index e8102acb0..377c5d838 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -598,7 +806,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
  } | {
    type: "tool_call";
    text: string;
-@@ -312,7 +323,49 @@ type AcpRuntimeOptions = {
+@@ -312,7 +323,51 @@ type AcpRuntimeOptions = {
    elicitationModes?: readonly AcpElicitationMode[];
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
@@ -634,6 +842,8 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
 +    signal: NodeJS.Signals | null;
 +    exitedAt: string;
 +  }) => void;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
 +  onAcpMessage?: (direction: "inbound" | "outbound", message: unknown) => void;
 +  /** Ephemeral full ACP notification callback; never written to session records. */
 +  onSessionNotification?: (notification: SessionNotification) => void;
@@ -648,7 +858,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
  };
  type AcpFileSessionStoreOptions = {
    stateDir: string;
-@@ -369,6 +422,7 @@ declare class AcpRuntimeManager {
+@@ -369,6 +424,7 @@ declare class AcpRuntimeManager {
    private createAndSaveRuntimeRecord;
    private retainInitializedSessionOwner;
    startTurn(input: {
@@ -656,7 +866,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -414,6 +468,7 @@ declare class AcpRuntimeManager {
+@@ -414,6 +470,7 @@ declare class AcpRuntimeManager {
    private cleanupRuntimeTurn;
    private finalizeRuntimeTurnRecord;
    runTurn(input: {
@@ -665,9 +875,27 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd43b1a0f77 100644
+index a1f4a70a0..a17fce3b3 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
+@@ -153,7 +153,7 @@ function resolveTextChunk(params) {
+ 		const contentType = asTrimmedString(contentRaw.type);
+ 		if (contentType && contentType !== "text") return null;
+ 		const text = asString(contentRaw.text);
+-		if (text && text.length > 0) return {
++		if (typeof text === "string" && (text.length > 0 || origin.messageId)) return {
+ 			type: "text_delta",
+ 			text,
+ 			stream: params.stream,
+@@ -162,7 +162,7 @@ function resolveTextChunk(params) {
+ 		};
+ 	}
+ 	const text = asString(params.payload.text);
+-	if (!text || text.length === 0) return null;
++	if (typeof text !== "string" || (text.length === 0 && !origin.messageId)) return null;
+ 	return {
+ 		type: "text_delta",
+ 		text,
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
  	current_mode_update: (payload) => statusUpdateEvent("current_mode_update", payload),
  	config_option_update: (payload) => statusUpdateEvent("config_option_update", payload),
@@ -712,7 +940,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +840,21 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,22 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -727,6 +955,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
 +			onAgentExit: this.options.onAgentExit,
 +			onAcpMessage: this.options.onAcpMessage,
 +			clientCapabilities: this.options.clientCapabilities,
++			protocolGuardFactory: this.options.protocolGuardFactory,
 +			extensionMethods: this.options.extensionMethods,
 +			onExtensionRequest: this.options.onExtensionRequest,
 +			onExtensionNotification: this.options.onExtensionNotification
@@ -735,7 +964,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +863,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +864,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -752,7 +981,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +909,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +910,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -762,7 +991,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1057,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1058,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -771,7 +1000,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1137,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1138,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -783,7 +1012,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1205,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1206,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -792,7 +1021,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1301,6 +1359,7 @@ var AcpRuntimeManager = class {
+@@ -1301,9 +1360,11 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -800,7 +1029,11 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId,
-@@ -1469,6 +1528,10 @@ var AcpRuntimeManager = class {
++				requestId: task.input.requestId,
+ 				onPromptRequestStarted: () => task.promptStarted.resolve(),
+ 				onElicitation: task.input.onElicitation
+ 			});
+@@ -1469,6 +1530,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -811,7 +1044,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1638,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1640,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -820,7 +1053,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1772,17 @@ var AcpRuntimeManager = class {
+@@ -1707,6 +1774,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -838,7 +1071,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2055,6 +2131,7 @@ var AcpxRuntime = class {
+@@ -2055,6 +2133,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -846,7 +1079,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2087,6 +2164,7 @@ var AcpxRuntime = class {
+@@ -2087,6 +2166,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -854,7 +1087,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2119,6 +2197,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2199,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -870,7 +1103,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd2731855ce2e51 100644
+index c3da16452..40ae05653 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -888,7 +1121,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
  };
  type AcpElicitationResponseMeta = {
    _meta?: Record<string, unknown> | null;
-@@ -116,6 +119,35 @@ type AcpClientOptions = {
+@@ -116,6 +119,37 @@ type AcpClientOptions = {
      };
      env?: Record<string, string>;
    };
@@ -921,10 +1154,12 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
 +    signal: NodeJS.Signals | null;
 +    exitedAt: string;
 +  }) => void;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
-@@ -123,6 +155,8 @@ type AcpClientOptions = {
+@@ -123,6 +157,8 @@ type AcpClientOptions = {
    onPermissionEscalation?: (event: PermissionEscalationEvent) => void;
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
@@ -933,7 +1168,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
    }) => Promise<AcpPermissionDecision | undefined>;
  };
  declare const SESSION_RECORD_SCHEMA: "acpx.session.v1";
-@@ -263,12 +297,15 @@ type SessionRecord = {
+@@ -263,12 +299,16 @@ type SessionRecord = {
    lastAgentDisconnectReason?: string;
    protocolVersion?: number;
    agentCapabilities?: AgentCapabilities;
@@ -947,6 +1182,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd27318
 +  request_token_usage: Record<string, SessionTokenUsage & {
 +    paperclip_pi?: { provenance: "assistant_message_receipts" | "assistant_message_and_compaction_receipts"; cost_usd?: number };
 +  }>;
++  cursor_prompt_usage?: { request_id: string; prompt_message_id: string; receipt: Record<string, unknown> };
    acpx?: SessionAcpxState;
    importedFrom?: SessionImportedFrom;
  };
