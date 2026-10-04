@@ -49,23 +49,24 @@ const mockAccessService = vi.hoisted(() => ({
   listPrincipalGrants: vi.fn(),
   ensureMembership: vi.fn(),
   setPrincipalPermission: vi.fn(),
+  // `agentRoutes` runs two distinct policy decisions: `agent:read` gates the
+  // row, `agent_config:read` gates the config values. These tests need both to
+  // be observable, so the decision is per-action rather than a blanket allow.
+  decide: vi.fn(async () => ({ allowed: true })),
 }));
 
-vi.mock("../services/index.js", () => ({
+// Partial mock: only the services these tests need to control are replaced, so
+// this file does not have to track every export `agentRoutes` imports.
+vi.mock("../services/index.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   agentService: () => mockAgentService,
-  agentInstructionsService: () => ({}),
   accessService: () => mockAccessService,
   approvalService: () => ({}),
   companySkillService: () => ({}),
-  budgetService: () => ({}),
-  heartbeatService: () => ({}),
-  issueApprovalService: () => ({}),
   issueService: () => ({}),
   logActivity: vi.fn(),
   secretService: () => ({}),
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => ({}),
-  instanceSettingsService: {},
 }));
 
 function createDbStub() {
@@ -113,6 +114,11 @@ describe("agent configuration redaction is observable (AI-574)", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.canUser.mockResolvedValue(false);
+    // Default: the agent row is readable, its configuration is not. That is the
+    // restricted case these tests are about.
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "agent:read",
+    }));
   });
 
   it("marks a restricted peer read as redacted and still reports config key names", async () => {
@@ -137,12 +143,20 @@ describe("agent configuration redaction is observable (AI-574)", () => {
   });
 
   it("reports configurationAccess full on an unrestricted read", async () => {
+    // Self-read is never restricted, and it is the case this whole issue is
+    // about: it looks healthy while every peer read looks broken.
+    mockAccessService.decide.mockImplementation(async () => ({ allowed: true }));
+
     const res = await request(createApp(peerActor)).get(`/api/agents/${actorAgentId}`);
 
     expect(res.status).toBe(200);
     expect(res.body.configurationAccess).toBe("full");
-    expect(res.body.adapterConfig).toEqual(makeAgent().adapterConfig);
     expect(res.body.adapterConfigKeys).toEqual(["cwd", "env", "model"]);
+    // Values are visible to a permitted reader, but `env` entries are always
+    // masked on the way out — that is a separate, already-merged control.
+    expect(res.body.adapterConfig.cwd).toBe("/repo");
+    expect(res.body.adapterConfig.model).toBe("gpt-5");
+    expect(JSON.stringify(res.body.adapterConfig.env)).not.toContain("secret-value");
   });
 
   it("marks restricted entries in the agent list too", async () => {

@@ -108,6 +108,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { startAttachmentUploadSpoolSweeper } from "./services/issue-attachment-uploads.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -883,6 +884,10 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  // Reclaims attachment spool directories orphaned by a hard crash. In-flight
+  // uploads are far younger than the sweep threshold, so this cannot race a
+  // live request.
+  const attachmentSpoolSweeper = startAttachmentUploadSpoolSweeper();
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -1940,6 +1945,9 @@ async function startServerWithDatabaseTeardown(
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
     }
+
+    // Reclaim is best-effort; a shutdown path must not throw.
+    attachmentSpoolSweeper.stop();
 
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,

@@ -1,13 +1,24 @@
 import type { StorageProvider as StorageProviderId } from "@paperclipai/shared";
 import type { Readable } from "node:stream";
 
+/**
+ * Upload body. A `Buffer` is used for small in-memory payloads (images, logos,
+ * manifests); a `Readable` is used for large binaries that must never be fully
+ * buffered in the Node heap (video masters, archives).
+ */
+export type UploadBody = Buffer | Readable;
+
 export interface PutObjectInput {
   objectKey: string;
   // Readable bodies stream straight to the backend (contentLength must be the
   // exact byte size); Buffer stays supported for small payloads.
   body: Buffer | Readable;
   contentType: string;
-  contentLength: number;
+  /**
+   * Declared object length. Optional for streamed uploads; when omitted the
+   * provider must be able to write an unknown-length stream.
+   */
+  contentLength?: number;
 }
 
 export interface GetObjectInput {

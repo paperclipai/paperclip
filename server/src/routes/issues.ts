@@ -248,10 +248,16 @@ import {
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
   MAX_ATTACHMENT_BYTES,
+  MAX_ISSUE_ATTACHMENT_BYTES,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
+import {
+  createAttachmentUploadSpooler,
+  createSpooledAttachmentStream,
+  hashSpooledAttachmentFile,
+} from "../services/issue-attachment-uploads.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
@@ -3519,6 +3525,17 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
+  // Issue attachments are the one upload path that spools to disk: their ceiling
+  // is `MAX_ISSUE_ATTACHMENT_BYTES`, and `multer.memoryStorage()` would hold that
+  // much on the Node heap for the whole request. Every other upload path stays
+  // memory-buffered at `MAX_ATTACHMENT_BYTES`.
+  const attachmentSpooler = createAttachmentUploadSpooler();
+  const issueAttachmentUpload = multer({
+    storage: multer.diskStorage({ destination: attachmentSpooler.destination }),
+    // Curl and browser FormData send unlabelled filenames as UTF-8.
+    defParamCharset: "utf8",
+    limits: { fileSize: MAX_ISSUE_ATTACHMENT_BYTES, files: 1 },
+  });
   const svc = issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
@@ -4792,6 +4809,20 @@ export function issueRoutes(
     });
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  /**
+   * Disk-spooled variant of {@link runSingleFileUpload} for issue attachments.
+   * On success `req.file` carries `path`/`size` instead of `buffer`; the caller
+   * must release the spool (`attachmentSpooler.release`) on every exit path.
+   */
+  async function runSingleSpooledAttachmentUpload(req: Request, res: Response) {
+    await new Promise<void>((resolve, reject) => {
+      issueAttachmentUpload.single("file")(req, res, (err: unknown) => {
         if (err) reject(err);
         else resolve();
       });
@@ -18488,13 +18519,17 @@ export function issueRoutes(
       )
         return;
 
+      // The spool directory is created by multer before the size limit is
+      // enforced, so it has to be released on every exit path below — including
+      // the `LIMIT_FILE_SIZE` rejection, where multer never sets `req.file`.
       try {
-        await runSingleFileUpload(req, res, MAX_ATTACHMENT_BYTES);
+        await runSingleSpooledAttachmentUpload(req, res);
       } catch (err) {
+        await attachmentSpooler.release(req);
         if (err instanceof multer.MulterError) {
           if (err.code === "LIMIT_FILE_SIZE") {
             res.status(422).json({
-              error: `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+              error: `Attachment is larger than the ${formatAttachmentSize(MAX_ISSUE_ATTACHMENT_BYTES)} limit`,
             });
             return;
           }
@@ -18504,97 +18539,91 @@ export function issueRoutes(
         throw err;
       }
 
-      const file = (
-        req as Request & {
-          file?: { mimetype: string; buffer: Buffer; originalname: string };
-        }
-      ).file;
-      if (!file) {
-        res.status(400).json({ error: "Missing file field 'file'" });
-        return;
-      }
-      const contentType = normalizeUploadAttachmentContentType({
-        contentType: file.mimetype,
-        originalFilename: file.originalname,
-      });
-      if (file.buffer.length <= 0) {
-        res.status(422).json({ error: "Attachment is empty" });
-        return;
-      }
-
-      const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(
-        req.body ?? {},
-      );
-      if (!parsedMeta.success) {
-        res.status(400).json({
-          error: "Invalid attachment metadata",
-          details: parsedMeta.error.issues,
-        });
-        return;
-      }
-
-      const actor = getActorInfo(req);
-      const stored = await storage.putFile({
-        companyId,
-        namespace: `issues/${issueId}`,
-        originalFilename: file.originalname || null,
-        contentType,
-        body: file.buffer,
-      });
-
-      let attachment: Awaited<ReturnType<typeof svc.createAttachment>>;
       try {
-        attachment = await svc.createAttachment({
-          issueId,
-          issueCommentId: parsedMeta.data.issueCommentId ?? null,
-          provider: stored.provider,
-          objectKey: stored.objectKey,
-          contentType: stored.contentType,
-          byteSize: stored.byteSize,
-          sha256: stored.sha256,
-          originalFilename: stored.originalFilename,
-          createdByAgentId: actor.agentId,
-          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-          createdByRunId: actor.runId,
-        });
-      } catch (err) {
-        // A known 4xx means the registration transaction definitely rejected
-        // the request, so the just-written object is orphaned and safe to
-        // remove. An unexpected/database error is ambiguous: COMMIT may have
-        // succeeded even if the response was lost, and deleting the object in
-        // that case would corrupt a durable attachment row.
-        if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
-          try {
-            await storage.deleteObject(companyId, stored.objectKey);
-          } catch (cleanupErr) {
-            logger.warn(
-              { cleanupErr, companyId, issueId },
-              "failed to remove stored object after attachment registration was rejected",
-            );
+        const file = (
+          req as Request & {
+            file?: {
+              mimetype: string;
+              path: string;
+              size: number;
+              originalname: string;
+            };
           }
+        ).file;
+        if (!file) {
+          res.status(400).json({ error: "Missing file field 'file'" });
+          return;
         }
-        throw err;
-      }
+        const contentType = normalizeUploadAttachmentContentType({
+          contentType: file.mimetype,
+          originalFilename: file.originalname,
+        });
+        if (file.size <= 0) {
+          res.status(422).json({ error: "Attachment is empty" });
+          return;
+        }
 
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.attachment_added",
-        entityType: "issue",
-        entityId: issueId,
-        details: {
-          attachmentId: attachment.id,
-          originalFilename: attachment.originalFilename,
-          contentType: attachment.contentType,
-          byteSize: attachment.byteSize,
-        },
-      });
+        const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(
+          req.body ?? {},
+        );
+        if (!parsedMeta.success) {
+          res.status(400).json({
+            error: "Invalid attachment metadata",
+            details: parsedMeta.error.issues,
+          });
+          return;
+        }
 
-      if (attachment.artifactWorkProductId) {
+        // `PutFileInput` requires an exact size and digest up front for a
+        // streamed body, so hash the spool file with a disk read first. That is a
+        // second pass over the file, not over the heap.
+        const sha256 = await hashSpooledAttachmentFile(file.path);
+
+        const actor = getActorInfo(req);
+        const stored = await storage.putFile({
+          companyId,
+          namespace: `issues/${issueId}`,
+          originalFilename: file.originalname || null,
+          contentType,
+          body: createSpooledAttachmentStream(file.path),
+          byteSize: file.size,
+          sha256,
+        });
+
+        let attachment: Awaited<ReturnType<typeof svc.createAttachment>>;
+        try {
+          attachment = await svc.createAttachment({
+            issueId,
+            issueCommentId: parsedMeta.data.issueCommentId ?? null,
+            provider: stored.provider,
+            objectKey: stored.objectKey,
+            contentType: stored.contentType,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            originalFilename: stored.originalFilename,
+            createdByAgentId: actor.agentId,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+            createdByRunId: actor.runId,
+          });
+        } catch (err) {
+          // A known 4xx means the registration transaction definitely rejected
+          // the request, so the just-written object is orphaned and safe to
+          // remove. An unexpected/database error is ambiguous: COMMIT may have
+          // succeeded even if the response was lost, and deleting the object in
+          // that case would corrupt a durable attachment row.
+          if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+            try {
+              await storage.deleteObject(companyId, stored.objectKey);
+            } catch (cleanupErr) {
+              logger.warn(
+                { cleanupErr, companyId, issueId },
+                "failed to remove stored object after attachment registration was rejected",
+              );
+            }
+          }
+          throw err;
+        }
+
         await logActivity(db, {
           companyId,
           actorType: actor.actorType,
@@ -18602,23 +18631,45 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.work_product_created",
+          action: "issue.attachment_added",
           entityType: "issue",
           entityId: issueId,
           details: {
-            workProductId: attachment.artifactWorkProductId,
-            type: "artifact",
-            provider: "paperclip",
-            source: "run_attachment_upload",
+            attachmentId: attachment.id,
+            originalFilename: attachment.originalFilename,
+            contentType: attachment.contentType,
+            byteSize: attachment.byteSize,
           },
         });
-      }
 
-      const {
-        artifactWorkProductId: _artifactWorkProductId,
-        ...attachmentResponse
-      } = attachment;
-      res.status(201).json(withContentPath(attachmentResponse));
+        if (attachment.artifactWorkProductId) {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.work_product_created",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              workProductId: attachment.artifactWorkProductId,
+              type: "artifact",
+              provider: "paperclip",
+              source: "run_attachment_upload",
+            },
+          });
+        }
+
+        const {
+          artifactWorkProductId: _artifactWorkProductId,
+          ...attachmentResponse
+        } = attachment;
+        res.status(201).json(withContentPath(attachmentResponse));
+      } finally {
+        await attachmentSpooler.release(req);
+      }
     },
   );
 
