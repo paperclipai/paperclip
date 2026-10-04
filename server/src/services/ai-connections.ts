@@ -31,7 +31,7 @@ import {
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
@@ -649,14 +649,20 @@ export function aiConnectionService(db: Db) {
         // counts the remaining connections, so the two cannot interleave.
         .for("update");
       if (!app) throw unprocessable("Could not find the provider application");
-      // Removing the last connection archives the provider application, and the
-      // Connectors page hides archived applications. Reactivate it so the new
-      // account is visible.
-      if (app.status === "archived")
+      // Removing the last connection archives the provider application and sets
+      // archivedAt; the Apps page hides archived applications, so reactivate it to
+      // show the new account. An operator archive through the application update
+      // route leaves archivedAt unset. Keep that decision instead of reversing it.
+      if (app.status === "archived") {
+        if (!app.archivedAt)
+          throw conflict(
+            `An operator archived the ${AI_CONNECTION_CAPABILITIES[input.provider].name} application. Restore the application before you connect an account.`,
+          );
         await tx
           .update(toolApplications)
           .set({ status: "active", archivedAt: null, updatedAt: new Date() })
           .where(eq(toolApplications.id, app.id));
+      }
       if (reconnect)
         await tx
           .update(toolConnections)

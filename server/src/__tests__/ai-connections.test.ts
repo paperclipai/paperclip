@@ -395,6 +395,22 @@ describe("managed AI connections", () => {
     expect(app).toMatchObject({ status: "active", archivedAt: null });
   });
 
+  it("keeps an operator's archive of the provider application and rejects the connect", async () => {
+    const operatorCompanyId = randomUUID();
+    await db.insert(companies).values({ id: operatorCompanyId, name: "Operator-archived provider app", issuePrefix: "AOA" });
+    await db.insert(companyMemberships).values({ companyId: operatorCompanyId, principalId: "erin", principalType: "user", status: "active", membershipRole: "member" });
+    const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
+    const first = await service.save(operatorCompanyId, "erin", { ...account, name: "First" }, "fixture-operator-first");
+    const [firstConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    await toolAccessService(db).updateApplication(firstConnection!.applicationId, { status: "archived" });
+
+    await expect(service.save(operatorCompanyId, "erin", { ...account, name: "Second" }, "fixture-operator-second")).rejects.toThrow("An operator archived");
+    const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, firstConnection!.applicationId));
+    expect(app?.status).toBe("archived");
+    const connections = await db.select().from(toolConnections).where(eq(toolConnections.applicationId, firstConnection!.applicationId));
+    expect(connections.map((connection) => connection.id)).toEqual([first.connectionId]);
+  });
+
   it("keeps the provider application active when a new account races the removal of the last one", async () => {
     const raceCompanyId = randomUUID();
     await db.insert(companies).values({ id: raceCompanyId, name: "Racing provider app", issuePrefix: "AIR" });
