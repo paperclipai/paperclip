@@ -7,6 +7,7 @@ import { completionContracts, heartbeatRuns } from "@paperclipai/db";
 
 import { ensureNativeCompletionContract } from "./completion-contracts.js";
 import { NATIVE_RUNTIME_RESOLVER_VERSION } from "./runtime-mode.js";
+import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -99,7 +100,11 @@ export async function prepareNativeHeartbeatRun(input: {
     const [locked] = await tx
       .select()
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, input.run.id))
+      .where(and(
+        eq(heartbeatRuns.id, input.run.id),
+        eq(heartbeatRuns.companyId, input.run.companyId),
+        eq(heartbeatRuns.agentId, input.run.agentId),
+      ))
       .for("update")
       .limit(1);
     if (!locked) throw new Error("native_runtime_run_missing");
@@ -131,6 +136,17 @@ export async function prepareNativeHeartbeatRun(input: {
           turnId,
           itemId,
           environmentLeaseId,
+          // This server-owned field is never taken from the supplied profile.
+          // Retain malformed evidence too so admission can fail closed later.
+          ...(Object.hasOwn(
+            record(locked.runnerProfileJson),
+            CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
+          )
+            ? {
+              [CHAT_CONTROL_RECOVERY_ADMISSION_KEY]:
+                record(locked.runnerProfileJson)[CHAT_CONTROL_RECOVERY_ADMISSION_KEY],
+            }
+            : {}),
         },
         runnerInstanceId,
         nativeSessionId: normalizedSessionId,

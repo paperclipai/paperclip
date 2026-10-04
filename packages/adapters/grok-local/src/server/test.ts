@@ -12,11 +12,17 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   describeAdapterExecutionTarget,
+  prepareAdapterExecutionTargetRuntime,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { stageGrokHomeForSync } from "./grok-home.js";
+import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { parseGrokJsonl } from "./parse.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
@@ -145,6 +151,45 @@ export async function testEnvironment(
   }
 
   const env = normalizeEnv(config.env);
+  let stagedHome: string | undefined;
+  let runtimeWorkspaceLocalDir: string | undefined;
+  let restore: (() => Promise<void>) | undefined;
+  try {
+    if (config.managedAiConnection && targetIsRemote) {
+      try {
+        const hostHome = env.GROK_HOME;
+        stagedHome = await stageGrokHomeForSync(hostHome, { runId });
+        // `cwd` is the remote target path here, never a host directory, so the
+        // runtime gets an empty host workspace to stage from and the remote
+        // path separately — the same split codex-local and opencode-local
+        // draw. Handing it the remote path as `workspaceLocalDir` made the
+        // host-side ignore scan fail on a directory that does not exist.
+        runtimeWorkspaceLocalDir = await mkdtemp(
+          path.join(os.tmpdir(), `paperclip-grok-envtest-${runId}-`),
+        );
+        const prepared = await prepareAdapterExecutionTargetRuntime({
+          runId, target, adapterKey: "grok",
+          workspaceLocalDir: runtimeWorkspaceLocalDir,
+          workspaceRemoteDir: cwd,
+          assets: [{ key: "home", localDir: stagedHome, followSymlinks: true,
+            restore: async ({ assetDir, readFile }) => { await copyBackGrokAuth({
+              readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+              hostHomeDir: hostHome, log: () => {},
+            }); },
+          }],
+        });
+        env.GROK_HOME = prepared.assetDirs.home;
+        restore = () => prepared.restoreWorkspace(() => {});
+      } catch (err) {
+        // The environment test reports what is wrong with the environment; a
+        // credential-staging failure is a finding, not a crash.
+        checks.push({
+          code: "grok_environment_unprepared",
+          level: "error",
+          message: err instanceof Error ? err.message : "Could not stage the managed account into the environment",
+        });
+      }
+    }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
 
   try {
@@ -164,7 +209,10 @@ export async function testEnvironment(
   }
 
   const canRunProbe =
-    checks.every((check) => check.code !== "grok_cwd_invalid" && check.code !== "grok_command_unresolvable");
+    checks.every((check) =>
+      check.code !== "grok_cwd_invalid" &&
+      check.code !== "grok_command_unresolvable" &&
+      check.code !== "grok_environment_unprepared");
 
   const configuredModel = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
 
@@ -343,4 +391,16 @@ export async function testEnvironment(
     checks,
     testedAt: new Date().toISOString(),
   };
+  } finally {
+    try { await restore?.(); } finally {
+      // Both temporary directories are removed even when one removal fails,
+      // and neither failure turns an answered environment test into a thrown
+      // error: these are best-effort temp directories, and the caller asked
+      // for checks.
+      await Promise.allSettled([
+        stagedHome ? rm(stagedHome, { recursive: true, force: true }) : undefined,
+        runtimeWorkspaceLocalDir ? rm(runtimeWorkspaceLocalDir, { recursive: true, force: true }) : undefined,
+      ]);
+    }
+  }
 }

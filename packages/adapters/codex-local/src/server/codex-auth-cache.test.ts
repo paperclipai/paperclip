@@ -9,6 +9,7 @@ import {
   clearCodexAuthCacheEntry,
   ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
+  isCodexAuthCachePath,
   resolveCodexAuthCacheDir,
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
@@ -83,6 +84,25 @@ describe("codex auth cache store", () => {
       expect(cacheDir).toBe(
         path.resolve(home, "instances", "default", "companies", "company-a", "codex-auth-cache"),
       );
+    });
+
+    it("isCodexAuthCachePath recognizes store entries for any company and rejects everything else", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const cacheDir = resolveCodexAuthCacheDir(env, "company-a");
+      expect(isCodexAuthCachePath(env, cacheDir)).toBe(true);
+      expect(isCodexAuthCachePath(env, path.join(cacheDir, "acct-1"))).toBe(true);
+      expect(isCodexAuthCachePath(env, resolveCodexAuthCacheDir(env, "company-b"))).toBe(true);
+      // The company Codex home and a per-agent home are managed homes, not
+      // store entries — the seeding pass owns them.
+      expect(isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "codex-home"))).toBe(false);
+      expect(
+        isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "agents", "agent-1", "codex-home")),
+      ).toBe(false);
+      // A sibling directory whose name merely STARTS with the store name
+      // stays out, as does anything outside the instance tree.
+      expect(isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "codex-auth-cache-extra"))).toBe(false);
+      expect(isCodexAuthCachePath(env, "/tmp/codex-auth-cache/acct-1")).toBe(false);
     });
 
     it("resolveCodexAuthCacheEntryPath keys the entry by a sanitized account_id and ends with auth.json", async () => {

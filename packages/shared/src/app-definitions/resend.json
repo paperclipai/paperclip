@@ -26,7 +26,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.resend.com/mcp"
+        "serverUrl": "https://mcp.resend.com/mcp",
+        "scopesHint": [
+          "full_access"
+        ]
       },
       "guidanceMd": "Connect Resend in the browser. A Resend account with access to the relevant domains.",
       "riskTier": "S3",

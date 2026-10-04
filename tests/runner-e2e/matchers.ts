@@ -116,6 +116,7 @@ export async function evaluateMatcher(
     passed = actual === matcher.expected;
   } else if (
     matcher.kind === "file_exists" ||
+    matcher.kind === "file_exact" ||
     matcher.kind === "file_contains"
   ) {
     try {
@@ -124,7 +125,9 @@ export async function evaluateMatcher(
         (await readFile(matcher.path, "utf8"));
       passed =
         matcher.kind === "file_exists" ||
-        String(actual).includes(matcher.expected);
+        (matcher.kind === "file_exact"
+          ? String(actual) === matcher.expected
+          : String(actual).includes(matcher.expected));
     } catch {
       actual = undefined;
       passed = false;
@@ -162,4 +165,21 @@ export async function evaluateMatchers(
   return Promise.all(
     matchers.map((matcher) => evaluateMatcher(matcher, observation)),
   );
+}
+
+
+export function persistedFinalRunMessage(
+  comments: Array<{ id: string; createdByRunId?: string | null; body?: string | null }>,
+  run: { id: string; resultJson?: Record<string, unknown> | null },
+): string {
+  const runComments = comments.filter(comment => comment.createdByRunId === run.id);
+  const decision = run.resultJson?.presentationDecision;
+  const selectedId = decision && typeof decision === "object" && !Array.isArray(decision)
+    ? (decision as Record<string, unknown>).commentId : null;
+  // Read the persisted comment selected for the user, not a finish summary or
+  // attachment preparation message. Missing selected evidence must still fail.
+  if (typeof selectedId === "string") {
+    return runComments.find(comment => comment.id === selectedId)?.body ?? "";
+  }
+  return runComments.map(comment => comment.body ?? "").join("\n");
 }

@@ -1,26 +1,32 @@
 // @vitest-environment jsdom
 
-import type { ReactElement } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
 import type {
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
+  TaskBrowser,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -36,6 +42,7 @@ const DIRECT_ADAPTER_TYPES = [
   "http",
   "custom_plugin",
 ] as const;
+const editorCallbacks = vi.hoisted(() => ({ change: (_value: string) => {} }));
 const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
@@ -44,6 +51,7 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
+      hydratedRunIds: transcriptState.hydratedRunIds,
     };
   },
 }));
@@ -53,6 +61,7 @@ vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
+      hydratedRunIds: nativeTranscriptState.hydratedRunIds,
     };
   },
 }));
@@ -84,26 +93,30 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
-    { value }: { value: string },
+    { value, onChange }: { value: string; onChange: (value: string) => void },
     ref: ForwardedRef<unknown>,
   ) {
     useImperativeHandle(ref, () => ({
       insertMarkdown: () => {},
       focus: () => {},
     }));
+    editorCallbacks.change = onChange;
     return <div data-testid="mock-editor">{value}</div>;
   }),
 }));
 
 let container: HTMLDivElement;
 let root: Root | null = null;
+let queryClient: QueryClient;
 
 beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
+  transcriptState.hydratedRunIds = undefined;
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
+  nativeTranscriptState.hydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -112,10 +125,17 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
 });
 
 afterEach(() => {
   flushSync(() => root?.unmount());
+  queryClient.clear();
   root = null;
   container.remove();
   localStorage.clear();
@@ -123,8 +143,316 @@ afterEach(() => {
 });
 
 function render(ui: ReactElement) {
-  flushSync(() => root!.render(<ThemeProvider>{ui}</ThemeProvider>));
+  flushSync(() =>
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>{ui}</ThemeProvider>
+      </QueryClientProvider>,
+    ),
+  );
 }
+
+describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
+  const run = (id: string, status: string, minute: number) => ({
+    runId: id, status, runtimeMode, agentId: "agent", agentName: "Assistant",
+    adapterType: runtimeMode === "native" ? "paperclip_runner" : "claude_local",
+    createdAt: `2025-01-01T10:0${minute}:00Z`, startedAt: `2025-01-01T10:0${minute}:01Z`,
+    finishedAt: `2025-01-01T10:0${minute}:30Z`,
+  });
+  const comment = (id: string, body: string, runId?: string) => ({
+    id, body, runId, companyId: "company", issueId: "issue", authorType: "agent" as const,
+    authorAgentId: "agent", authorUserId: null, presentation: null, metadata: null,
+    createdAt: new Date("2025-01-01T10:00:20Z"), updatedAt: new Date("2025-01-01T10:00:20Z"),
+  });
+  const setTranscript = (id: string) => {
+    const state = runtimeMode === "native" ? nativeTranscriptState : transcriptState;
+    state.transcriptByRun.set(id, [
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:02Z", text: "Inspected the source." },
+      { kind: "tool_call", ts: "2025-01-01T10:00:03Z", name: "Read", input: { path: "README.md" }, toolUseId: "read" },
+      { kind: "tool_result", ts: "2025-01-01T10:00:04Z", toolUseId: "read", content: "Source content" },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "Saved the useful response." },
+    ]);
+  };
+
+  it.each([true, false].flatMap(streamlined => ["done", "cancelled"].map(issueStatus => ({ streamlined, issueStatus }))))("removes failures, stops, waits and stored notices on $issueStatus tasks (streamlined=$streamlined)", ({ streamlined, issueStatus }) => {
+    streamlinedState.enabled = streamlined;
+    setTranscript("failed");
+    const props = {
+      comments: [
+        comment("response", "Saved the useful response.", "failed"),
+        { ...comment("notice", "The previous execution needs to be checked.", "failed"), authorType: "system" as const,
+          presentation: { kind: "system_notice" as const, tone: "warning" as const, title: "Recovery pending", detailsDefaultOpen: true } },
+        { ...comment("human", "Please keep this message."), authorType: "user" as const, authorAgentId: null, authorUserId: "board" },
+        { ...comment("session", "/new"), conversationSessionGeneration: 1 },
+      ],
+      linkedRuns: [run("failed", "failed", 0), run("stopped", "cancelled", 1),
+        { ...run("wait", "cancelled", 2), startedAt: null, errorCode: "execution_reconciliation_required" },
+        run("empty-success", "succeeded", 3)],
+      onAdd: async () => {},
+    };
+    render(<TaskChatThread {...props} issueStatus="blocked" />);
+    render(<TaskChatThread {...props} issueStatus={issueStatus} />);
+    expect(container.textContent).toContain("Saved the useful response.");
+    expect(container.textContent).toContain("Please keep this message.");
+    expect(container.textContent).toContain("New session");
+    for (const status of ["Run failed", "Stopped", "Worked", "Run cancelled", "Waiting to resume", "Recovery pending", "Run completed", "previous execution needs"]) {
+      expect(container.textContent).not.toContain(status);
+    }
+    if (runtimeMode === "legacy") {
+      const activity = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.startsWith("Activity"));
+      expect(activity).toBeDefined();
+      flushSync(() => activity!.click());
+      expect(container.textContent).toContain("Inspected the source.");
+    } else {
+      expect(container.textContent).toContain("Inspected the source.");
+    }
+    expect(props.linkedRuns[0].status).toBe("failed");
+    expect(props.comments).toHaveLength(4);
+  });
+
+  it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
+    setTranscript("old");
+    const notice = { ...comment("notice", "Old recovery details."), authorType: "system" as const,
+      metadata: { version: 1 as const, sourceRunId: "old", sections: [] } };
+    const wait = { ...run("wait", "cancelled", 1), startedAt: null, errorCode: "execution_reconciliation_required" };
+    const props = { comments: [notice, comment("response", "Saved the useful response.", "old")], onAdd: async () => {}, issueStatus: "in_progress" };
+    render(<TaskChatThread {...props} linkedRuns={[run("old", "failed", 0), wait]} />);
+    expect(container.textContent).toContain("Run failed");
+    expect(container.textContent).toContain("Waiting to resume");
+    for (const linkedRuns of [[run("new", "succeeded", 2), wait, run("old", "failed", 0)], [run("old", "failed", 0), wait, run("new", "succeeded", 2)]]) {
+      render(<TaskChatThread {...props} linkedRuns={linkedRuns} />);
+      expect(container.textContent).not.toContain("Run failed");
+      expect(container.textContent).not.toContain("Waiting to resume");
+      expect(container.textContent).not.toContain("Stopped");
+      expect(container.querySelector('[data-testid="task-chat-system-notice"]')).toBeNull();
+      expect(container.textContent).toContain("Saved the useful response.");
+    }
+  });
+
+  it("keeps the latest failure actionable after hiding earlier errors", async () => {
+    const retry = vi.fn();
+    const linkedRuns = [run("new-failure", "failed", 2), run("old-failure", "failed", 0)];
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" linkedRuns={linkedRuns} onRetryFailedRun={retry} />);
+    expect(container.textContent?.match(/Run failed/g)).toHaveLength(1);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(button).not.toBeNull();
+    flushSync(() => button!.click());
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledExactlyOnceWith("new-failure");
+  });
+
+  it.each(["in_progress", "done"])("preserves a child's stop relay after parent work (%s)", (issueStatus) => {
+    const relay = { ...comment("child-relay", "System relay: [Child task](/issues/child) transitioned to `blocked`."),
+      authorType: "system" as const, authorAgentId: null };
+    render(<TaskChatThread comments={[relay]} onAdd={async () => {}} issueStatus={issueStatus}
+      linkedRuns={[run("parent-follow-up", "succeeded", 1)]} />);
+    expect(container.querySelector('[data-thread-anchor="child-relay"]')).not.toBeNull();
+    expect(container.textContent).toContain("Child task");
+  });
+
+  it("clears old notices as soon as a successor is live, before history refreshes", () => {
+    const old = run("old", "failed", 0);
+    const live = { ...run("live", "running", 1), id: "live", finishedAt: null,
+      invocationSource: "on_demand", triggerDetail: null };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress"
+      linkedRuns={[old]} activeRun={live} liveRuns={[live]} />);
+    expect(container.textContent).not.toContain("Run failed");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it("does not carry an old failure into a successful same-agent activity summary", () => {
+    setTranscript("old");
+    setTranscript("new");
+    const response = comment("new-response", "The follow-up succeeded.", "new");
+    response.createdAt = new Date("2025-01-01T10:01:20Z");
+    render(<TaskChatThread comments={[comment("old-response", "Saved the useful response.", "old"), response]}
+      onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[run("old", "failed", 0), run("new", "succeeded", 1)]} />);
+    expect(container.textContent).toContain("The follow-up succeeded.");
+    expect(container.textContent).toContain("Worked");
+    expect(container.textContent).not.toContain("Stopped");
+    expect(container.textContent).not.toContain("Run failed");
+  });
+});
+
+it.each([true, false])("interleaves browser sessions with their requests and preserves position on status updates (streamlined=%s)", (streamlined) => {
+  streamlinedState.enabled = streamlined;
+  const onOpenBrowser = vi.fn();
+  const comments = [0, 2, 4].map((minute) => ({
+    id: `comment-${minute}`, companyId: "company", issueId: "issue",
+    authorType: "user" as const, authorAgentId: null, authorUserId: "board",
+    body: `Request at minute ${minute}`, presentation: null, metadata: null,
+    createdAt: new Date(`2026-09-29T12:0${minute}:00Z`), updatedAt: new Date(`2026-09-29T12:0${minute}:00Z`),
+  }));
+  const browsers: TaskBrowser[] = [1, 3].map((minute) => ({
+    id: `browser-${minute}`, sessionId: `session-${minute}`, issueId: "issue",
+    status: "idle" as const, runStatus: "completed" as const, progress: null,
+    costCents: 0, error: null, idleDeadline: null, expiresAt: null,
+    createdAt: `2026-09-29T12:0${minute}:00Z`,
+  }));
+  const show = (next = browsers) => render(<TaskChatThread comments={comments} browsers={next} onOpenBrowser={onOpenBrowser} threadHeader={<div>Task title</div>} onAdd={async () => {}} />);
+  show();
+  const anchors = () => Array.from(container.querySelectorAll('[data-thread-anchor]')).map(el => el.getAttribute('data-thread-anchor'));
+  const expected = ['comment-0', 'browser:session-1', 'comment-2', 'browser:session-3', 'comment-4'];
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-testid="task-chat-thread-header"]')?.textContent).toBe("Task title");
+  const row = container.querySelector('[data-thread-anchor="browser:session-1"]');
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenCalledWith('browser-1');
+  // Provider IDs can become available after startup; session identity stays put.
+  show([{ ...browsers[0], id: 'provider-browser-1', status: 'closed' }, browsers[1]]);
+  expect(anchors()).toEqual(expected);
+  expect(container.querySelector('[data-thread-anchor="browser:session-1"]')).toBe(row);
+  expect(row?.textContent).toContain("View session");
+  act(() => row?.querySelector<HTMLButtonElement>('button')?.click());
+  expect(onOpenBrowser).toHaveBeenLastCalledWith('provider-browser-1');
+  render(<TaskChatThread comments={comments.slice(1)} browsers={browsers} hasOlderComments onAdd={async () => {}} />);
+  expect(anchors()).toEqual(['comment-2', 'browser:session-3', 'comment-4']);
+  show();
+  expect(anchors()).toEqual(expected);
+});
+
+it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
+  const props = {
+    issueId: "coordinated-issue",
+    comments: [],
+    onAdd: async () => {},
+  };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  const composer = container.querySelector('[data-testid="mock-editor"]');
+  expect(composer).not.toBeNull();
+  expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(
+    container.querySelector('[data-testid="task-chat-history-loading"]'),
+  ).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+});
+
+describe.each(["legacy", "native"] as const)("%s task history readiness", (runtimeMode) => {
+  const retryRun = {
+    runId: "scheduled-run",
+    runtimeMode,
+    status: "scheduled_retry",
+    agentId: "agent-1",
+    adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local",
+    createdAt: "2026-08-25T18:00:00.000Z",
+    startedAt: null,
+  };
+
+  beforeEach(() => {
+    transcriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.hydratedRunIds = new Set();
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+    render(
+      <TaskChatThread
+        issueId="issue-1"
+        comments={createLongThreadComments()}
+        onAdd={async () => {}}
+        linkedRuns={[retryRun]}
+      />,
+    );
+
+    expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-history-loading"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-thread-anchor="comment-1"]')?.closest("[inert]"),
+    ).toBeNull();
+    expect(container.textContent).toContain("Thread message 1");
+  });
+
+  it.each(["running", "succeeded"])(
+    "reveals durable comments before a %s run finishes hydrating",
+    async (status) => {
+      const props = {
+        issueId: "issue-1",
+        comments: createLongThreadComments(),
+        onAdd: async () => {},
+        linkedRuns: [
+          retryRun,
+          {
+            ...retryRun,
+            runId: "started-run",
+            status,
+            startedAt: "2026-08-25T18:00:00.000Z",
+          },
+        ],
+      };
+      render(<TaskChatThread {...props} />);
+      expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).toBeNull();
+      expect(container.textContent).toContain("Thread message 1");
+
+      transcriptState.hydratedRunIds = new Set(["started-run"]);
+      nativeTranscriptState.hydratedRunIds = new Set(["started-run"]);
+      render(<TaskChatThread {...props} />);
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+
+      expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).toBeNull();
+    },
+  );
+});
+
+it("preserves the typed disposition notice through the task-chat adapter", () => {
+  render(<TaskChatThread comments={[{
+    id: "typed-recovery", companyId: "company", issueId: "issue", authorType: "system", authorAgentId: null, authorUserId: null,
+    body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(),
+    presentation: { kind: "system_notice", title: "Different wording", tone: "warning", detailsDefaultOpen: false, density: "compact" },
+    metadata: { version: 1, sections: [], recovery: { kind: "disposition_repair_escalated", actionId: "action", assigneeAgentId: "agent", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted" } },
+  }]} onAdd={async () => {}} issueStatus="blocked" />);
+  expect(container.querySelector('[data-testid="disposition-recovery-notice"]')).not.toBeNull();
+  expect(container.textContent).toContain("Two automatic attempts");
+  expect(container.textContent).not.toContain("Unrelated prose");
+});
+
+it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
+  const comment = {
+    companyId: "company",
+    issueId: "issue",
+    authorAgentId: null,
+    presentation: null,
+    metadata: null,
+    updatedAt: new Date("2026-09-09T12:00:00Z"),
+    id: "optimistic-one",
+    clientId: "optimistic-one",
+    body: "Keep this message in place",
+    authorType: "user" as const,
+    authorUserId: "board",
+    createdAt: new Date("2026-09-09T12:00:00Z"),
+  };
+  render(<TaskChatThread comments={[comment]} onAdd={async () => {}} />);
+  const row = container.querySelector('[data-thread-anchor="optimistic-one"]');
+  expect(row).not.toBeNull();
+  render(
+    <TaskChatThread
+      comments={[{ ...comment, id: "canonical-one" }]}
+      onAdd={async () => {}}
+    />,
+  );
+  expect(container.querySelector('[data-thread-anchor="optimistic-one"]')).toBe(
+    row,
+  );
+  expect(row?.id).toBe("comment-canonical-one");
+  expect(
+    container.textContent?.match(/Keep this message in place/g),
+  ).toHaveLength(1);
+});
 
 function fakeScrollGeometry(
   element: HTMLElement,
@@ -322,7 +650,7 @@ describe("TaskChatThread draft pass-through", () => {
     expect(scroller?.firstElementChild?.classList).toContain("pt-3");
   });
 
-  it("keeps the composer dock aligned with the thread's horizontal padding", () => {
+  it("lets the mobile composer dock use the full thread width", () => {
     render(
       <TaskChatThread
         comments={[
@@ -347,13 +675,12 @@ describe("TaskChatThread draft pass-through", () => {
     const dock = container.querySelector(
       '[data-testid="task-chat-composer-dock"]',
     );
-    const thread = container.querySelector(
-      '[data-testid="task-chat-thread"]',
-    );
+    const thread = container.querySelector('[data-testid="task-chat-thread"]');
     expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
     expect(thread?.classList).toContain("flex-1");
-    expect(dock?.classList).toContain("px-4");
-    expect(dock?.classList).not.toContain("px-1");
+    expect(dock?.classList).toContain("px-1");
+    expect(dock?.classList).toContain("md:px-0");
+    expect(dock?.classList).not.toContain("px-2");
     expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(dock?.classList).not.toContain("pt-1");
     expect(dock?.classList).toContain("md:pb-0");
@@ -401,7 +728,53 @@ describe("TaskChatThread draft pass-through", () => {
 });
 
 describe("TaskChatThread runtime transcript selection", () => {
+  it.each(["queued", "running"])("retains the live log transport for a %s native run with event history", (status) => {
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      { kind: "assistant", text: "Native progress", ts: "2026-08-25T18:00:01.000Z", channel: "progress" },
+    ]);
+    const props = {
+      issueId: "native-live", comments: [], onAdd: async () => {},
+      linkedRuns: [{ runId: "native-run", runtimeMode: "native" as const,
+        status, agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run", status }]);
+
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+  });
+
+  it("does not download fallback logs until native events are empty or fail", () => {
+    const props = {
+      issueId: "native-history", comments: [], onAdd: async () => {},
+      linkedRuns: [{ runId: "native-run", runtimeMode: "native" as const,
+        status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z" }],
+    };
+    nativeTranscriptState.hydratedRunIds = new Set();
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
+    nativeTranscriptState.transcriptByRun.set("native-run", [{ kind: "assistant", text: "Native response", ts: "2026-08-25T18:00:01.000Z", channel: "final" }]);
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+
+    nativeTranscriptState.transcriptByRun.clear();
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run" }]);
+
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.errorsByRun.set("native-run", { message: "Unavailable" });
+    render(<TaskChatThread {...props} />);
+    expect(transcriptHookRuns.legacy.at(-1)).toMatchObject([{ id: "native-run" }]);
+  });
+
   it("selects persisted runtime facts while retaining the log parser as native fallback", () => {
+    nativeTranscriptState.hydratedRunIds = new Set(["native-run"]);
     render(
       <TaskChatThread
         comments={[]}
@@ -514,6 +887,42 @@ describe("TaskChatThread runtime transcript selection", () => {
     ).toBeNull();
   });
 
+
+  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+    if (evidence !== "absent") planState.data = planDocument();
+    render(<TaskChatThread issueId="issue-1" comments={[]} onAdd={async () => {}} issueStatus="blocked"
+      interactions={evidence === "absent" || evidence === "document_only" ? [] : [planReviewInteraction("accepted", evidence === "matching" ? "revision-3" : "revision-2", "restore-run")]}
+      onRetryFailedRun={vi.fn()} linkedRuns={[{
+        runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
+        agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+          ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
+        },
+      }]} />);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Workspace restore failed");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    expect(marker?.textContent).toContain("Workspace files need recovery");
+    expect(marker?.textContent).toContain("No final response was recorded");
+    expect(marker?.textContent).toContain(".claude/skills/paperclip");
+    expect(marker?.querySelector('a[href*="/runs/restore-run"]')).not.toBeNull();
+    expect(marker?.textContent.includes("after the plan was saved")).toBe(evidence === "matching" || evidence === "document_only");
+    expect(Boolean(marker?.querySelector('a[href*="document-plan"]'))).toBe(evidence === "matching" || evidence === "document_only");
+    expect(marker?.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it("uses neutral wording for an unclassified historical legacy failure", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "old-run", runtimeMode: "legacy", status: "failed", errorCode: "adapter_failed",
+      agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
+      createdAt: "2026-08-25T18:00:00.000Z", startedAt: null, finishedAt: "2026-08-25T18:00:02.000Z",
+    }]} />);
+    expect(container.textContent).toContain("The run failed");
+    expect(container.textContent).not.toContain("before returning an answer");
+    expect(container.textContent).not.toContain("Workspace restore failed");
+  });
+
   it("projects the saved Plan inline at its native write_document boundary", () => {
     planState.data = planDocument({
       updatedAt: new Date("2026-08-25T18:00:02.000Z"),
@@ -582,6 +991,75 @@ describe("TaskChatThread runtime transcript selection", () => {
       ),
     ];
     expect(rows.findIndex((row) => row.contains(preview))).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { name: "write_document", anchored: true },
+    { name: "mcp__paperclip__write_document", anchored: false },
+  ])("anchors a settled ACP Plan only at the normalized display name $name", ({ name, anchored }) => {
+    const runId = "acpx-plan";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    const events = ["started", "completed"].map((phase, index) => ({
+      id: index + 1,
+      companyId: "company-1",
+      agentId: "agent-1",
+      stream: "system",
+      level: "info",
+      color: null,
+      message: null,
+      runId,
+      seq: index + 1,
+      eventType: `tool.execution.${phase}`,
+      createdAt: new Date(`2026-08-25T18:00:0${index + 1}.000Z`),
+      payload: {
+        prpEvent: {
+          schema: "paperclip.prp.event.v1",
+          schemaVersion: 1,
+          runId,
+          eventType: `tool.execution.${phase}`,
+          sourceEventId: `acpx-write-${index + 1}`,
+          sourceKind: "runner",
+          sourceInstanceId: "runner-1",
+          sourceSeq: index + 1,
+          normalizedSessionId: "session-1",
+          emittedAt: `2026-08-25T18:00:0${index + 1}.000Z`,
+          payload: {
+            schema: "paperclip.tool.execution.v1",
+            executionId: "write-plan",
+            transport: anchored ? "mcp" : "builtin",
+            namespace: anchored ? "paperclip" : null,
+            name,
+            operation: "execute",
+            readOnly: false,
+            status: phase === "completed" ? "completed" : "running",
+            output: null,
+            outputBytes: 0,
+            outputTruncated: false,
+            outputDigest: null,
+          },
+        },
+      },
+    } satisfies HeartbeatRunEvent));
+    // Exercise persisted ACP display events, without native raw arguments or
+    // a fabricated semantic-tool receipt, through the actual transcript parser.
+    nativeTranscriptState.transcriptByRun.set(runId, nativeRunEventsToTranscript(events));
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" linkedRuns={[{
+      runId,
+      runtimeMode: "native",
+      status: "succeeded",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: "2026-08-25T18:00:00.000Z",
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: "2026-08-25T18:00:03.000Z",
+    }]} />);
+    const preview = container.querySelector('[data-testid="task-chat-plan-preview"]');
+    const fallback = container.querySelector('[data-testid="task-chat-plan-preview-fallback"]');
+    expect(Boolean(preview)).toBe(anchored);
+    expect(Boolean(fallback)).toBe(!anchored);
+    expect((preview ?? fallback)?.textContent).toContain("Preview the Plan");
+    expect((preview ?? fallback)?.closest('[data-testid="task-chat-turn"][data-settled="true"]')).not.toBeNull();
   });
 
   it("retains a native Plan as a visible fallback while its write boundary is unavailable", () => {
@@ -916,7 +1394,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       );
     const revealUsage = () => {
       const summary = container.querySelector<HTMLButtonElement>(
-        '[data-testid="task-chat-phase-summary"]',
+        '[data-testid="task-chat-activity-phase-toggle"]',
       );
       expect(summary).not.toBeNull();
       if (summary?.getAttribute("aria-expanded") !== "true") {
@@ -984,6 +1462,136 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-failed");
   });
 
+  it.each([false, true])("keeps a later bootstrap failure actionable only after the old recovery has a successor: %s", async (continued) => {
+    const onRetryFailedRun = vi.fn();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
+      onRetryFailedRun={onRetryFailedRun} linkedRuns={[
+        {
+          runId: "old-native", runtimeMode: "native", status: "failed", errorCode: "adapter_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+          execution: {
+            phase: continued ? "completed" : "recovery_needed", label: continued ? "Continued in another run" : "Stopped",
+            cause: "native_continuation_requires_reconciliation", lastConfirmedActivityAt: null,
+            retryAt: null, attempt: 1, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+            permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: continued ? "failed-bootstrap" : null,
+          },
+        },
+        {
+          runId: "failed-bootstrap", runtimeMode: "legacy", status: "failed", errorCode: "setup_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+          finishedAt: "2026-08-25T18:01:02.000Z",
+        },
+      ]} />);
+    const retryButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]'));
+    if (!continued) {
+      expect(retryButtons).toHaveLength(0);
+      return;
+    }
+    expect(retryButtons.length).toBeGreaterThan(0);
+    flushSync(() => retryButtons.at(-1)!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("failed-bootstrap");
+  });
+
+  it.each([false, true])("never offers the old quarantined run as Try again after continuation: %s", continued => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress"
+      onRetryFailedRun={vi.fn()} linkedRuns={[{
+        runId: "quarantined", runtimeMode: "native", status: "failed", errorCode: "native_session_cleanup_quarantined",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+        ...(continued ? { execution: { phase: "completed" as const, label: "Continued in another run", cause: "native_session_cleanup_quarantined",
+          lastConfirmedActivityAt: null, retryAt: null, attempt: 2, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+          permittedActions: ["inspect_run" as const], predecessorRunId: null, successorRunId: "fresh-run" } } : {}),
+      }]} />);
+    expect(container.textContent?.includes("Run failed")).toBe(!continued);
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it("explains a native provider usage limit without exposing its error code", async () => {
+    const onRetryFailedRun = vi.fn();
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        onRetryFailedRun={onRetryFailedRun}
+        linkedRuns={[
+          {
+            runId: "native-usage-limit",
+            runtimeMode: "native",
+            status: "failed",
+            errorCode: "native_provider_usage_limit",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00.000Z",
+            startedAt: "2026-08-25T18:00:00.000Z",
+            finishedAt: "2026-08-25T18:00:02.000Z",
+          },
+        ]}
+      />,
+    );
+
+    const marker = container.querySelector(
+      '[data-testid="task-chat-collapsible-marker"]',
+    );
+    expect(marker?.textContent).toContain("Usage limit reached");
+    expect(marker?.textContent).not.toContain("Run failed");
+    const disclosure = marker?.querySelector<HTMLButtonElement>(
+      'button[aria-expanded="false"]',
+    );
+    expect(disclosure).not.toBeNull();
+    flushSync(() => disclosure!.click());
+    const details = container.querySelector(
+      '[data-testid="task-chat-collapsible-marker-details"]',
+    );
+    expect(details?.textContent).toContain(
+      "The model provider has reached its current usage limit. Try again after the limit resets.",
+    );
+    expect(details?.textContent).not.toContain("native_provider_usage_limit");
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-run-failed-try-again"]',
+    );
+    expect(retry).not.toBeNull();
+    flushSync(() => retry!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledWith("native-usage-limit");
+  });
+
+  it("explains a legacy run prevented from starting by a reconciliation hold", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "blocked-legacy", runtimeMode: "legacy", status: "cancelled",
+      errorCode: "execution_reconciliation_required", agentId: "agent-1", agentName: "Runner",
+      adapterType: "claude_local", createdAt: "2026-08-25T18:00:00.000Z",
+      startedAt: null, finishedAt: "2026-08-25T18:00:00.012Z",
+    }]} />);
+    expect(container.textContent).toContain("Waiting to resume");
+    expect(container.textContent).not.toContain("No user-facing response");
+    expect(container.textContent).not.toContain("Run completed");
+    expect(container.querySelector(".text-destructive")).toBeNull();
+  });
+
+  it.each(["legacy", "native"] as const)("groups repeated %s pre-start holds without hiding executed work", (runtimeMode) => {
+    const heldRun = (id: string, recoveryActionId: string, startedAt: string | null = null) => ({
+      runId: id, runtimeMode, status: "cancelled", errorCode: "execution_reconciliation_required",
+      agentId: "agent-1", adapterType: runtimeMode === "native" ? "paperclip_runner" : "claude_local",
+      createdAt: "2026-09-10T18:00:00.000Z", finishedAt: "2026-09-10T18:00:01.000Z", startedAt,
+      resultJson: { executionWait: { recoveryActionId } },
+    });
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[
+      ...Array.from({ length: 100 }, (_, i) => heldRun(`wait-${i}`, "hold-1")),
+      heldRun("ran", "hold-1", "2026-09-10T18:00:00.500Z"),
+      heldRun("new-hold", "hold-2"),
+      heldRun("same-new-hold", "hold-2"),
+    ]} />);
+    expect(container.textContent?.match(/Waiting to resume/g)).toHaveLength(2);
+    expect(container.textContent).not.toContain("Couldn't start");
+    expect(container.textContent).toContain(runtimeMode === "native" ? "Run cancelled" : "Stopped");
+  });
+
   it("shows cancellation after native progress without offering a retry", () => {
     nativeTranscriptState.transcriptByRun.set("native-cancelled", [
       {
@@ -1015,6 +1623,8 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
 
     expect(container.textContent).toContain("Work was in progress.");
+    expect(container.querySelector('[data-testid="task-chat-collapsible-marker"] button')?.classList).toContain("text-muted-foreground");
+    expect(container.querySelector('[data-testid="task-chat-collapsible-marker"] .text-destructive')).toBeNull();
     expect(
       container.querySelector('[data-testid="task-chat-collapsible-marker"]')
         ?.textContent,
@@ -1091,6 +1701,109 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it("shows an actionable approval-required reason for a stopped native run", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "approval-required", runtimeMode: "native", status: "failed",
+      errorCode: "native_provider_approval_required",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+      startedAt: "2026-09-14T15:00:00.000Z", createdAt: "2026-09-14T15:00:00.000Z",
+      finishedAt: "2026-09-14T15:00:02.000Z",
+    }]} />);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Approval required");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    expect(container.textContent).toContain("Review the operation and update the agent's permission setting before retrying");
+    expect(container.textContent).not.toContain("The runner stopped");
+  });
+
+  it("keeps workspace contention out of the conversation's cancellation markers", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "workspace-wait", runtimeMode: "native", status: "cancelled", errorCode: "workspace_busy",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner", startedAt: null,
+      createdAt: "2026-09-12T18:00:00.000Z", finishedAt: "2026-09-12T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("Run cancelled");
+    expect(container.textContent).not.toContain("Run failed");
+    expect(container.textContent).not.toContain("before returning an answer");
+  });
+
+  it("does not render an empty response notice for a conversation reset", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "chat-reset", status: "succeeded", startedAt: null, resultJson: { conversationReset: true },
+      agentId: "agent-1", agentName: "Claude", adapterType: "claude_local",
+      createdAt: "2026-09-11T18:00:00.000Z", finishedAt: "2026-09-11T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+    expect(container.textContent).not.toContain("Run completed");
+  });
+
+  it.each([
+    ["legacy", "issue_not_in_progress"],
+    ["native", "issue_not_in_progress"],
+    ["legacy", "issue_terminal_status"],
+    ["native", "issue_terminal_status"],
+  ] as const)(
+    "hides a redundant cancelled continuation (%s, %s)",
+    (runtimeMode, errorCode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "connection-continuation-skipped",
+              runtimeMode,
+              status: "cancelled",
+              errorCode,
+              startedAt: null,
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).not.toContain(
+        "The runner returned no user-facing response.",
+      );
+      expect(container.textContent).not.toContain("Run completed");
+      expect(container.textContent).not.toContain("Couldn't start");
+      expect(container.textContent).not.toContain("Run cancelled");
+      expect(container.textContent).not.toContain("before returning an answer");
+    },
+  );
+
+  it.each(["legacy", "native"] as const)(
+    "keeps a cancellation visible when the %s run had already started",
+    (runtimeMode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "started-cancellation",
+              runtimeMode,
+              status: "cancelled",
+              errorCode: "issue_terminal_status",
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              startedAt: "2026-09-07T18:00:00.500Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).toContain(
+        runtimeMode === "native" ? "Run cancelled" : "Stopped",
+      );
+    },
+  );
+
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
       {
@@ -1156,7 +1869,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       container.querySelector(
         '[data-testid="task-chat-collapsible-marker-details"]',
       )?.textContent,
-    ).toContain("before returning an answer");
+    ).toContain("The runner stopped (provider_transport_failed).");
     expect(
       container.querySelector('[data-testid="task-chat-final-response"]'),
     ).toBeNull();
@@ -1329,7 +2042,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         ?.textContent,
     ).toContain(repeated);
     expect(container.textContent).toContain(
-      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
     );
     const turnHeaders = Array.from(
       container.querySelectorAll('[data-testid="task-chat-turn-summary"]'),
@@ -1407,7 +2120,239 @@ describe("TaskChatThread runtime transcript selection", () => {
         ?.textContent,
     ).toContain("Continued after steering · Working for");
     expect(container.textContent).toContain(
-      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    );
+  });
+
+  it.each([
+    "missing_result_metadata",
+    "yielded_result_metadata",
+    "steered_missing_result_metadata",
+    "persisted_response_comment",
+    "pending_attention",
+    "live",
+    "failed",
+    "proposed",
+    "question",
+    "approval",
+  ])("renders only an authorized terminal response-wake answer: %s", (mode) => {
+    const runId = "native-checklist-response";
+    const summary =
+      "**Before release**\n- Test and rehearse rollback.\n\n**During release**\n- Deploy incrementally and watch errors.\n\n**After release**\n- Verify workflows and record follow-ups.";
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary,
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      continuation: {
+        kind: "response_wake",
+        idempotencyKey: "next-chat-input",
+      },
+      attentionRequests:
+        mode === "question" || mode === "approval"
+          ? [
+              {
+                kind:
+                  mode === "question"
+                    ? "ask_user_questions"
+                    : "request_confirmation",
+              },
+            ]
+          : [],
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date("2026-08-25T18:00:00Z"),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `checklist-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" ||
+              eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: `2026-08-25T18:00:0${seq}Z`,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([
+        event(1, "item.completed", {
+          kind: "agentMessage",
+          channel: "progress",
+          item: {
+            id: "preamble",
+            type: "agentMessage",
+            channel: "progress",
+            text: "I’m providing the requested checklist and leaving the task open.",
+          },
+        }),
+        event(2, "run.result.proposed", result),
+        ...(mode === "proposed"
+          ? []
+          : [event(3, "run.result.accepted", { result })]),
+        event(4, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: "yielded",
+        }),
+      ]),
+    );
+    render(
+      <TaskChatThread
+        comments={
+          mode === "steered_missing_result_metadata"
+            ? [
+                {
+                  id: "response-wake-steering",
+                  companyId: "company-1",
+                  issueId: "issue-1",
+                  authorType: "user",
+                  authorAgentId: null,
+                  authorUserId: "user-1",
+                  body: "Keep the task open for follow-up.",
+                  presentation: null,
+                  metadata: null,
+                  runId: null,
+                  followUpRequested: true,
+                  consumedByRunId: runId,
+                  steeredIntoRunId: runId,
+                  conversationAnchorAt: new Date("2026-08-25T18:00:03.500Z"),
+                  createdAt: new Date("2026-08-25T18:00:03.000Z"),
+                  updatedAt: new Date("2026-08-25T18:00:03.500Z"),
+                },
+              ]
+            : mode === "persisted_response_comment"
+              ? [
+                  {
+                    id: "private-board-response",
+                    companyId: "company-1",
+                    issueId: "issue-1",
+                    authorType: "agent",
+                    authorAgentId: "agent-1",
+                    authorUserId: null,
+                    body: summary,
+                    presentation: null,
+                    metadata: null,
+                    createdByRunId: runId,
+                    runId,
+                    createdAt: new Date("2026-08-25T18:00:29.000Z"),
+                    updatedAt: new Date("2026-08-25T18:00:29.000Z"),
+                  },
+                ]
+              : []
+        }
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        interactions={
+          mode === "pending_attention"
+            ? [planReviewInteraction("pending", "revision-3", runId)]
+            : []
+        }
+        activeRun={
+          mode === "live"
+            ? {
+                id: runId,
+                runtimeMode: "native",
+                status: "running",
+                invocationSource: "issue",
+                triggerDetail: null,
+                agentId: "agent-1",
+                agentName: "Runner",
+                adapterType: "paperclip_runner",
+                createdAt: "2026-08-25T18:00:00Z",
+                startedAt: "2026-08-25T18:00:00Z",
+                finishedAt: null,
+              }
+            : undefined
+        }
+        linkedRuns={[
+          {
+            runId,
+            runtimeMode: "native",
+            status:
+              mode === "live"
+                ? "running"
+                : mode === "failed"
+                  ? "failed"
+                  : "succeeded",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00Z",
+            startedAt: "2026-08-25T18:00:00Z",
+            finishedAt: mode === "live" ? null : "2026-08-25T18:00:30Z",
+            resultJson: mode.endsWith("missing_result_metadata")
+              ? { recoveredExecutionFailure: { errorCode: "adapter_failed" } }
+              : {
+                  nativeResult: result,
+                  ...(mode === "persisted_response_comment"
+                    ? {
+                        presentationDecision: {
+                          schema: "paperclip.run_presentation_decision.v1",
+                          chosenSource: "existing_issue_comment",
+                          commentId: "private-board-response",
+                        },
+                      }
+                    : {}),
+                },
+          },
+        ]}
+      />,
+    );
+    const responses = container.querySelectorAll(
+      '[data-testid="task-chat-final-response"]',
+    );
+    if (mode === "persisted_response_comment") {
+      expect(responses).toHaveLength(0);
+      expect(container.textContent?.split("Before release")).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-agent-bubble"]')
+          ?.textContent,
+      ).toContain("After release");
+      return;
+    }
+    if (
+      mode !== "missing_result_metadata" &&
+      mode !== "yielded_result_metadata" &&
+      mode !== "steered_missing_result_metadata"
+    ) {
+      expect(responses).toHaveLength(0);
+      return;
+    }
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.textContent).toContain("Before release");
+    expect(responses[0]?.textContent).toContain("After release");
+    expect(responses[0]?.textContent).not.toContain("I’m providing");
+    expect(container.textContent).not.toContain(
+      "The runner returned no user-facing response.",
     );
   });
 
@@ -1521,41 +2466,220 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("transcript withheld");
   });
 
-  it("keeps an empty failed direct run on its legacy failure surface", () => {
+  it.each(["failed", "timed_out", "cancelled"] as const)(
+    "keeps an empty legacy %s actionable without turning Stop into Retry",
+    async (status) => {
+      const onRetryFailedRun = vi.fn();
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="blocked"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[
+            {
+              runId: "legacy-failed",
+              runtimeMode: "legacy",
+              status,
+              errorCode: "legacy_process_exited",
+              agentId: "agent-1",
+              agentName: "Direct Codex",
+              adapterType: "codex_local",
+              createdAt: "2026-08-25T18:00:00.000Z",
+              startedAt: "2026-08-25T18:00:00.000Z",
+              finishedAt: "2026-08-25T18:00:02.000Z",
+            },
+          ]}
+        />,
+      );
+
+      expect(container.textContent).toContain(status === "cancelled" ? "Stopped" : "Run failed");
+      if (status !== "cancelled") {
+        expect(container.textContent).toContain("You can retry this message now.");
+      }
+      expect(
+        container.querySelector('[data-testid="task-chat-collapsible-marker"]'),
+      ).toBeNull();
+      const retry = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      if (status === "cancelled") {
+        expect(retry).toBeNull();
+      } else {
+        expect(retry).not.toBeNull();
+        flushSync(() => retry!.click());
+        await Promise.resolve();
+        expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("legacy-failed");
+      }
+      expect(
+        container.querySelector('[data-testid="task-chat-runner-turn"]'),
+      ).toBeNull();
+    },
+  );
+
+  it.each(["failed", "timed_out"] as const)(
+    "retries the latest legacy %s attempt even when it has a transcript and final comment",
+    async (status) => {
+      const onRetryFailedRun = vi.fn();
+      transcriptState.transcriptByRun.set("latest-attempt", [{
+        kind: "assistant",
+        ts: "2026-08-25T18:01:01.000Z",
+        text: "Starting the requested revision.",
+      }]);
+      const run = {
+        runtimeMode: "legacy" as const,
+        adapterType: "claude_local",
+        agentId: "agent-1",
+        agentName: "Direct agent",
+        startedAt: null,
+      };
+      render(
+        <TaskChatThread
+          comments={[{
+            id: "failure-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            authorType: "agent",
+            presentation: null,
+            metadata: null,
+            body: "The startup handshake timed out.",
+            runId: "latest-attempt",
+            createdAt: new Date("2026-08-25T18:01:02.000Z"),
+            updatedAt: new Date("2026-08-25T18:01:02.000Z"),
+          }]}
+          onAdd={async () => {}}
+          issueStatus="todo"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[
+            { ...run, runId: "original-failure", status: "failed",
+              createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+              finishedAt: "2026-08-25T18:00:02.000Z" },
+            { ...run, runId: "latest-attempt", status, errorCode: "acpx_handshake_timeout",
+              createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+              finishedAt: "2026-08-25T18:01:02.000Z",
+              resultJson: { presentationDecision: { commentId: "failure-comment" } } },
+            { ...run, runId: "cancelled-automatic-retry", status: "cancelled",
+              errorCode: "execution_reconciliation_required",
+              createdAt: "2026-08-25T18:02:00.000Z", finishedAt: "2026-08-25T18:02:02.000Z" },
+          ]}
+        />,
+      );
+
+      expect(container.textContent).toContain("The startup handshake timed out.");
+      const buttons = container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      expect(buttons).toHaveLength(1);
+      flushSync(() => buttons[0]!.click());
+      await Promise.resolve();
+      expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("latest-attempt");
+    },
+  );
+
+  it.each(["active execution", "pending decision", "recovery hold"].flatMap(
+    (gate) => [false, true].map((hasTranscript) => ({ gate, hasTranscript })),
+  ))(
+    "does not promise legacy Retry during $gate (transcript: $hasTranscript) and restores it when the gate clears",
+    ({ gate, hasTranscript }) => {
+      const onRetryFailedRun = vi.fn();
+      if (hasTranscript) transcriptState.transcriptByRun.set("legacy-failed", [{
+        kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Starting the task.",
+      }]);
+      const failedRun = {
+        runId: "legacy-failed",
+        runtimeMode: "legacy" as const,
+        status: "failed",
+        errorCode: "legacy_process_exited",
+        agentId: "agent-1",
+        agentName: "Direct Codex",
+        adapterType: "codex_local",
+        createdAt: "2026-08-25T18:00:00.000Z",
+        startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      };
+      const gateProps: Partial<ComponentProps<typeof TaskChatThread>> =
+        gate === "pending decision"
+          ? { interactions: [planReviewInteraction()] }
+          : {
+              linkedRuns: [{
+                ...failedRun,
+                execution: {
+                  phase: gate === "active execution" ? "working" : "recovery_needed",
+                  label: "Waiting",
+                  cause: null,
+                  lastConfirmedActivityAt: null,
+                  retryAt: null,
+                  attempt: 1,
+                  maxAttempts: 3,
+                  recoveryOwner: null,
+                  nextAction: null,
+                  permittedActions: [],
+                  predecessorRunId: null,
+                  successorRunId: null,
+                },
+              }],
+            };
+      const renderRun = (held: boolean) => render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="blocked"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[failedRun]}
+          {...(held ? gateProps : {})}
+        />,
+      );
+      renderRun(true);
+      expect(container.textContent).toContain("Your message is preserved.");
+      expect(container.textContent).not.toContain("You can retry this message now.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+      renderRun(false);
+      expect(container.textContent).toContain("You can retry this message now.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).not.toBeNull();
+    },
+  );
+
+  it.each([
+    ...["claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+      "pi_local", "grok_local", "kimi_local", "hermes_local"].flatMap((adapterType) =>
+      ["failed", "timed_out"].map((status) => ({ adapterType, status, runtimeMode: "legacy" as const,
+        cause: "legacy_execution_requires_reconciliation", canRetry: true }))),
+    { adapterType: "paperclip_runner", status: "failed", runtimeMode: "native" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+    { adapterType: "process", status: "failed", runtimeMode: "legacy" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+    { adapterType: "claude_local", status: "failed", runtimeMode: "legacy" as const,
+      cause: "uncertain_provider_action", canRetry: false },
+    { adapterType: "claude_local", status: "cancelled", runtimeMode: "legacy" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+  ])("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause", (testCase) => {
     render(
       <TaskChatThread
         comments={[]}
         onAdd={async () => {}}
         issueStatus="blocked"
         onRetryFailedRun={vi.fn()}
-        linkedRuns={[
-          {
-            runId: "legacy-failed",
-            runtimeMode: "legacy",
-            status: "failed",
-            errorCode: "legacy_process_exited",
-            agentId: "agent-1",
-            agentName: "Direct Codex",
-            adapterType: "codex_local",
-            createdAt: "2026-08-25T18:00:00.000Z",
-            startedAt: "2026-08-25T18:00:00.000Z",
-            finishedAt: "2026-08-25T18:00:02.000Z",
+        linkedRuns={[{
+          runId: "stopped-run",
+          runtimeMode: testCase.runtimeMode,
+          adapterType: testCase.adapterType,
+          status: testCase.status,
+          agentId: "agent-1",
+          agentName: "Stopped agent",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+          execution: {
+            phase: "recovery_needed", label: "Stopped", cause: testCase.cause,
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: null, nextAction: null, permittedActions: [],
+            predecessorRunId: null, successorRunId: null,
           },
-        ]}
+        }]}
       />,
     );
-
-    expect(container.textContent).toContain("Run failed");
-    expect(container.textContent).toContain("You can retry this message now.");
-    expect(
-      container.querySelector('[data-testid="task-chat-collapsible-marker"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[data-testid="task-chat-run-failed-try-again"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[data-testid="task-chat-runner-turn"]'),
-    ).toBeNull();
+    expect(Boolean(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')))
+      .toBe(testCase.canRetry);
+    if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
+    else expect(container.textContent).not.toContain("You can retry this message now.");
   });
 
   it.each(DIRECT_ADAPTER_TYPES)(
@@ -1749,6 +2873,131 @@ describe("TaskChatThread runtime transcript selection", () => {
   );
 });
 
+describe("Agent Chat unanswered question history", () => {
+  const old = questionInteraction("old", "Which color?", "2026-08-15T12:00:01Z");
+  const newer = questionInteraction("new", "Which tone?", "2026-08-15T12:05:00Z");
+  const movedOn = createLongThreadComments();
+  const props = { conversationMode: true, issueId: "issue-1", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
+  const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
+  const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  const dismiss = async () => {
+    await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
+  };
+  const click = async (text: string) => {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.trim() === text);
+    expect(button).toBeTruthy();
+    await act(async () => button!.click());
+  };
+
+  it("leaves a compact, reopenable question on reload after moving on", async () => {
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-unanswered-question"]');
+    expect(row?.textContent).toContain("Which color?");
+    await act(async () => row!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    await click("Yes");
+    await click("Submit answers");
+    expect(props.onSubmitInteractionAnswers).toHaveBeenCalledWith(old, [{ questionId: "old-question", optionIds: ["yes"] }]);
+  });
+
+  it("collapses a displayed question when a new user message arrives", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    expect(takeover()).not.toBeNull();
+    await act(async () => render(<TaskChatThread {...props} comments={movedOn} interactions={[old]} />));
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
+  });
+
+  it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    await click("Yes");
+    if (action === "Cancel") await click("Cancel");
+    else await dismiss();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+  });
+
+  it("keeps multiple historical questions out of the composer after reopening and dismissing one", async () => {
+    const anotherOld = questionInteraction("another-old", "Which format?", "2026-08-15T12:00:02Z");
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, anotherOld]} />);
+    expect(container.querySelectorAll('[data-testid="task-chat-unanswered-question"]')).toHaveLength(2);
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    await dismiss();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("counts and cycles approvals without including fresh or historical question cards", async () => {
+    const approval = { ...planReviewInteraction(), id: "approval", title: "Approve the outline?", payload: { version: 1, prompt: "Approve the outline?" } } as IssueThreadInteraction;
+    const nextApproval = { ...approval, id: "next-approval", title: "Approve the note?", createdAt: new Date("2026-08-23T10:02:00Z"), payload: { version: 1, prompt: "Approve the note?" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[old, newer, approval, nextApproval]} />);
+    expect(takeover()?.textContent).toContain("Approve the note?");
+    await click("2 pending");
+    expect(takeover()?.textContent).toContain("Approve the outline?");
+    await click("2 pending");
+    expect(takeover()?.textContent).toContain("Approve the note?");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).toContain("2 pending");
+    expect(takeover()?.textContent).not.toContain("3 pending");
+    await dismiss();
+    expect(pendingIndicator()?.textContent).toContain("2 pending inputs");
+    await act(async () => pendingIndicator()!.click());
+    expect(takeover()?.textContent).toContain("Approve the note?");
+  });
+
+  it("opens the new question but can reopen the exact historical native question", async () => {
+    const nativeOld = { ...old, sourceRunId: "old-run", payload: { ...old.payload, runtimeRequestId: "old-request" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[nativeOld, newer]} />);
+    expect(takeover()?.textContent).toContain("Which tone?");
+    const oldRow = container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]');
+    await act(async () => oldRow!.click());
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    render(<TaskChatThread {...props} comments={[...movedOn]} interactions={[nativeOld, newer]} />);
+    expect(takeover()?.textContent).toContain("Which color?");
+    await dismiss();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which tone?"]')!.click());
+    expect(takeover()?.textContent).toContain("Which tone?");
+  });
+
+  it.each([true, false])("only collapses the question after a successful send (success=%s)", async success => {
+    const onAdd = success ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error("Message not sent"));
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} onAdd={onAdd} />);
+    await click("Yes");
+    await act(async () => editorCallbacks.change("Let's talk about tasks instead."));
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]');
+    expect(send?.disabled).toBe(false);
+    await act(async () => send!.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    if (success) {
+      expect(takeover()).toBeNull();
+      expect(pendingIndicator()).toBeNull();
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-unanswered-question"]')!.click());
+    }
+    expect(takeover()).not.toBeNull();
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
+  });
+
+  it("does not change ordinary task question behavior", async () => {
+    render(<TaskChatThread {...props} conversationMode={false} comments={movedOn} interactions={[old]} />);
+    expect(takeover()?.textContent).toContain("Which color?");
+    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).toBeNull();
+    await dismiss();
+    expect(pendingIndicator()?.textContent).toContain("1 pending input");
+  });
+});
+
 describe("TaskChatThread composer alignment", () => {
   it("matches the thread width at every breakpoint", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
@@ -1781,8 +3030,8 @@ describe("TaskChatThread composer alignment", () => {
     expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(composer?.classList).not.toContain("border");
     expect(composer?.classList).toContain("bg-card");
-    expect(send?.classList).toContain("rounded-md");
-    expect(send?.classList).not.toContain("rounded-full");
+    expect(send?.classList).toContain("rounded-full");
+    expect(send?.classList).not.toContain("rounded-md");
   });
 });
 
@@ -2346,6 +3595,41 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     return container.textContent?.split(text).length! - 1;
   }
 
+  it("hides queued actions while paused and restores the queue after resume", () => {
+    const onSteerQueuedComment = vi.fn(async () => {});
+    const props = {
+      comments: [queuedComment],
+      onAdd: async () => {},
+      queuedCommentQueue: queue,
+      onEditQueuedComment: async () => {},
+      onReorderQueuedComments: async () => {},
+      onSteerQueuedComment,
+      onDiscardQueuedComment: async () => {},
+    };
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+
+    render(<TaskChatThread {...props} composerPause={{ scope: "leaf", onResume: () => {} }} />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    expect(onSteerQueuedComment).not.toHaveBeenCalled();
+
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it("hides legacy transcript interrupt actions while paused", () => {
+    render(<TaskChatThread
+      comments={[{ ...queuedComment, queueState: "queued", queueTargetRunId: "run-1" }]}
+      onAdd={async () => {}}
+      onInterruptQueued={async () => {}}
+      composerPause={{ scope: "leaf", onResume: () => {} }}
+    />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Interrupt")).toBe(false);
+  });
+
   it("suppresses the transcript echo until the queued entry is consumed", async () => {
     const props = {
       comments: [queuedComment],
@@ -2391,7 +3675,29 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it("keeps legacy follow-ups in the composer queue with an interrupt fallback", () => {
+  it.each(["steer", "interrupt"] as const)("preserves inline %s errors after the optimistic last row clears", async action => {
+    let rejectDelivery!: (error: Error) => void;
+    const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
+    const actionQueue = { ...queue, protocol: action === "interrupt" ? "legacy" as const : queue.protocol };
+    const props = { comments: [queuedComment], onAdd: async () => {}, queuedCommentQueue: actionQueue,
+      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery };
+    render(<TaskChatThread {...props} />);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-queued-prp-1"]`)!.click();
+    });
+    render(<TaskChatThread {...props} queuedCommentQueue={null} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => {
+      rejectDelivery(new Error("Connection lost"));
+      await delivery.catch(() => undefined);
+    });
+    await act(async () => { render(<TaskChatThread {...props} />); });
+    expect(container.textContent).toContain(action === "steer"
+      ? "Couldn’t steer. Message is still queued." : "Couldn’t interrupt. Message is still queued.");
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it.each(["run-1", null])("keeps legacy queued delivery available with target %s", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     render(
       <TaskChatThread
@@ -2406,6 +3712,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
         onInterruptQueued={onInterruptQueued}
         queuedCommentQueue={{
           ...queue,
+          targetRunId,
           protocol: "legacy",
           steeringDisposition: "unsupported",
         }}
@@ -2429,7 +3736,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     );
     expect(interrupt).not.toBeNull();
     flushSync(() => interrupt!.click());
-    expect(onInterruptQueued).toHaveBeenCalledWith("run-1");
+    expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {
@@ -2714,6 +4021,18 @@ describe("TaskChatThread live transcript", () => {
     expect(tail2!.textContent).toContain("Waiting for transcript...");
   });
 
+  it("does not send a workspace bootstrap failure to connection settings", () => {
+    const run = { id: "workspace-prep", status: "running" as const, invocationSource: "issue", triggerDetail: null,
+      startedAt: "2026-09-15T10:00:00Z", finishedAt: null, createdAt: "2026-09-15T10:00:00Z",
+      agentId: "agent-1", agentName: "Worker", adapterType: "process" };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[
+      { ...run, runId: run.id, status: "failed", errorCode: "workspace_git_scan_timeout", finishedAt: "2026-09-15T10:00:10Z" },
+    ]} />);
+    expect(container.textContent).toContain("Workspace setup failed before the agent started.");
+    expect(container.textContent).not.toContain("Review the task’s connection");
+  });
+
   it("renders in-flight output through TaskChatLiveTail, dropping the debug plumbing (PAP-463 C1)", () => {
     // Interleave the exact noise the old RunTranscriptView tail surfaced (init
     // row, stdout/stderr/system dumps) with real content. Only the streamed
@@ -2783,9 +4102,9 @@ describe("TaskChatThread live transcript", () => {
       "Streaming through the shared renderer",
     );
     const phaseSummary = tail!.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-phase-summary"]',
+      '[data-testid="task-chat-activity-phase-toggle"]',
     );
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
     expect(tail!.textContent).toContain("src/app.ts");
     // None of the debug plumbing reaches the thread.
     for (const noise of [
@@ -2798,7 +4117,7 @@ describe("TaskChatThread live transcript", () => {
     }
   });
 
-  it("resolves a visible canonical input even while run adapter metadata is stale", async () => {
+  it.each([false, true])("resolves canonical input with stale adapter metadata (saved card: %s)", async (hasSavedCard) => {
     transcriptState.transcriptByRun.set("run-input", [
       {
         kind: "runtime_request",
@@ -2819,7 +4138,7 @@ describe("TaskChatThread live transcript", () => {
               prompt: "What should the server do?",
               required: true,
               answerMode: "single_select",
-              options: [{ id: "api", label: "Starter API" }],
+              options: [{ id: "api", label: "Starter API" }, { id: "worker", label: "Background worker" }],
             },
           ],
         },
@@ -2829,8 +4148,19 @@ describe("TaskChatThread live transcript", () => {
       .spyOn(heartbeatsApi, "resolveRuntimeRequest")
       .mockResolvedValue({} as never);
 
+    const onSubmitInteractionAnswers = vi.fn().mockResolvedValue(undefined);
+    const saved = {
+      ...questionInteraction("saved-question", "What should the server do?", "2026-08-23T20:00:00.000Z"),
+      sourceRunId: "run-input", continuationPolicy: "none",
+      payload: { version: 1, runtimeRequestId: "question-1",
+        questionSet: transcriptState.transcriptByRun.get("run-input")[0].questionSet,
+        questions: [{ id: "goal", prompt: "What should the server do?", required: true, selectionMode: "single",
+          options: [{ id: "api", label: "Starter API" }, { id: "worker", label: "Background worker" }] }] },
+    } as IssueThreadInteraction;
     render(
       <TaskChatThread
+        interactions={hasSavedCard ? [saved] : []}
+        onSubmitInteractionAnswers={onSubmitInteractionAnswers}
         comments={[]}
         onAdd={async () => {}}
         issueStatus="in_progress"
@@ -2861,7 +4191,10 @@ describe("TaskChatThread live transcript", () => {
     );
     await act(async () => submit?.click());
 
-    expect(resolveRuntimeRequest).toHaveBeenCalledWith({
+    if (hasSavedCard) {
+      expect(resolveRuntimeRequest).not.toHaveBeenCalled();
+      expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(saved, [{ questionId: "goal", optionIds: ["api"] }]);
+    } else expect(resolveRuntimeRequest).toHaveBeenCalledWith({
       runId: "run-input",
       requestId: "question-1",
       turnId: "turn-1",
@@ -2876,6 +4209,141 @@ describe("TaskChatThread live transcript", () => {
     });
     expect(container.textContent).not.toContain("no longer attached");
   });
+
+  it.each(["done", "yielded"])(
+    "renders one native turn while its completion comment refresh is delayed: %s",
+    (disposition) => {
+      const runId = "native-delayed-comment";
+      const summary = "DELAYED-CANONICAL-REPLY";
+      nativeTranscriptState.transcriptByRun.set(runId, [
+        {
+          kind: "assistant",
+          ts: "2026-08-07T00:00:01Z",
+          text: "UNIQUE-PROGRESS-LINE",
+          channel: "progress",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-08-07T00:00:02Z",
+          text: summary,
+          channel: "final",
+        },
+        {
+          kind: "run_result",
+          ts: "2026-08-07T00:00:03Z",
+          disposition,
+          summary,
+          objectiveSatisfied: true,
+          verification: [],
+          remainingWork: [],
+          blocker: null,
+          artifacts: [],
+          ...(disposition === "yielded"
+            ? {
+                acceptedResponseWake: {
+                  runId,
+                  sourceEventId: "accepted-result",
+                },
+              }
+            : {}),
+        },
+        {
+          kind: "run_terminal",
+          ts: "2026-08-07T00:00:04Z",
+          turnState: "completed",
+          runState: "succeeded",
+          disposition,
+        },
+      ]);
+      const activeRun = {
+        id: runId,
+        runtimeMode: "native" as const,
+        status: "running",
+        invocationSource: "issue" as const,
+        triggerDetail: null,
+        startedAt: "2026-08-07T00:00:00Z",
+        createdAt: "2026-08-07T00:00:00Z",
+        finishedAt: null,
+        agentId: "agent-1",
+        agentName: "Runner",
+        adapterType: "paperclip_runner",
+      };
+      const linkedRun = {
+        ...activeRun,
+        runId,
+        status: "succeeded",
+        finishedAt: "2026-08-07T00:00:05Z",
+        resultJson: {
+          nativeResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: disposition,
+            summary,
+          },
+          presentationDecision: {
+            schema: "paperclip.run_presentation_decision.v1",
+            chosenSource: "existing_issue_comment",
+            commentId: "delayed-comment",
+          },
+        },
+      };
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          activeRun={activeRun}
+        />,
+      );
+      // The terminal run/event query wins the race, but the canonical comment
+      // request is still pending. The settled answer already owns the turn.
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          linkedRuns={[linkedRun]}
+        />,
+      );
+      expect(container.textContent?.split("UNIQUE-PROGRESS-LINE")).toHaveLength(
+        2,
+      );
+      expect(container.textContent?.split(summary)).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-live-transcript"]'),
+      ).toBeNull();
+      render(
+        <TaskChatThread
+          comments={[
+            {
+              id: "delayed-comment",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorType: "agent",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              createdByRunId: runId,
+              runId,
+              body: summary,
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-08-07T00:00:05Z"),
+              updatedAt: new Date("2026-08-07T00:00:05Z"),
+            },
+          ]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          linkedRuns={[linkedRun]}
+        />,
+      );
+      expect(container.textContent?.split("UNIQUE-PROGRESS-LINE")).toHaveLength(
+        2,
+      );
+      expect(container.textContent?.split(summary)).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-final-response"]'),
+      ).toBeNull();
+    },
+  );
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [
@@ -2932,5 +4400,27 @@ describe("TaskChatThread live transcript", () => {
     // The pill has settled to its "Worked" state rather than flipping back to a
     // spinner while it waits for the reply comment.
     expect(container.textContent).toContain("Worked");
+  });
+});
+
+describe("TaskChatThread composer execution controls", () => {
+  it.each(["process", "paperclip_runner"])("passes the task's stop action through for %s execution", async (adapterType) => {
+    const onStop = vi.fn(async () => {});
+    const run = {
+      id: "task-run", status: "running", runtimeMode: adapterType === "process" ? "legacy" as const : "native" as const,
+      invocationSource: "issue", triggerDetail: null, startedAt: "2026-09-09T12:00:00Z", finishedAt: null,
+      createdAt: "2026-09-09T12:00:00Z", agentId: "agent-1", agentName: "Alex", adapterType,
+    };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopScope="subtree" />);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!;
+    expect(button.title).toBe("Stop response");
+    await act(async () => { button.click(); });
+    expect(onStop).toHaveBeenCalledOnce();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopPending />);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')?.disabled).toBe(true);
+  });
+  it("does not offer Stop for settled work even when a callback is available", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="todo" onCancelRun={vi.fn()} />);
+    expect(container.querySelector('[data-testid="task-chat-composer-stop"]')).toBeNull();
   });
 });

@@ -14,6 +14,9 @@ import {
 } from "acpx/runtime";
 
 import type {
+  AcpxRuntimeGoalCapability,
+  AcpxRuntimeGoalSnapshot,
+  AcpxRuntimeSteeringCapability,
   AcpxRuntimePort,
   AcpxRuntimePortIdentity,
   AcpxRuntimePortOpenOptions,
@@ -25,7 +28,8 @@ import {
   awaitVerifiedAcpxProviderOwnership,
 } from "./installation-integrity.js";
 import type { AcpxModelStatus } from "./model-verification.js";
-import { decideAcpxPermission } from "./permission-policy.js";
+import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
+import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -56,6 +60,43 @@ const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 // minimally provisioned runner. Keep admission finite while allowing the
 // qualified runtime enough time to complete that local handshake.
 const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
+
+interface GoalAwareAcpRuntime extends AcpRuntime {
+  requestExtension?(input: {
+    handle: AcpRuntimeHandle;
+    method: string;
+    params: Record<string, unknown>;
+    sessionMode?: "persistent" | "oneshot";
+  }): Promise<Record<string, unknown>>;
+}
+
+type GoalAwareAcpRuntimeOptions = AcpRuntimeOptions & {
+  onAgentInitialize?: (result: unknown) => void;
+  onSessionNotification?: (notification: unknown) => void;
+};
+
+interface AcpxRuntimeGoalState {
+  capability: AcpxRuntimeGoalCapability | null;
+  snapshot: AcpxRuntimeGoalSnapshot | null;
+  revision: number;
+  observedSnapshot: boolean;
+}
+
+interface AcpxRuntimeExtensionTurn {
+  requestId: string;
+  sessionId: string;
+  controller: AbortController;
+  signal: AbortSignal;
+  promptStarted: Promise<void>;
+  onRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onNotification?: AcpRuntimeOptions["onExtensionNotification"];
+}
+
+interface AcpxRuntimeExtensionBoundary {
+  active: AcpxRuntimeExtensionTurn | null;
+  sessionIds: Set<string>;
+  steering: AcpxRuntimeSteeringCapability | null;
+}
 
 class AcpxRuntimeCloseTimeoutError extends Error {
   constructor() {
@@ -222,14 +263,77 @@ export async function openQualifiedAcpxRuntime(
       .filter((server) => server.runnerOwned)
       .map((server) => server.name),
   );
-  const runtime = createRuntime({
+  const permissionBoundary: {
+    active: AbortController | null;
+    handler?: AcpRuntimeOptions["onPermissionRequest"];
+  } = { active: null };
+  const extensionProfile = ACPX_CAPABILITY_PROFILES[options.profile.agent];
+  const extensionRequests = new Set(extensionProfile.extensionRequests);
+  const extensionNotifications = new Set(extensionProfile.extensionNotifications);
+  const extensionBoundary: AcpxRuntimeExtensionBoundary = {
+    active: null, sessionIds: new Set(), steering: null,
+  };
+  const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
+    extensionBoundary.active === active && !active.signal.aborted
+      && (params.sessionId === undefined || (typeof params.sessionId === "string" && extensionBoundary.sessionIds.has(params.sessionId)));
+  const goalState: AcpxRuntimeGoalState = {
+    capability: null,
+    snapshot: null,
+    revision: 0,
+    observedSnapshot: false,
+  };
+  const acceptGoalNotification = (message: unknown): void => {
+    const update = goalSnapshotFromAcpMessage(message);
+    if (!update.seen) return;
+    const unchanged =
+      goalState.observedSnapshot &&
+      JSON.stringify(goalState.snapshot) === JSON.stringify(update.goal);
+    goalState.observedSnapshot = true;
+    goalState.snapshot = update.goal;
+    if (unchanged) return;
+    goalState.revision += 1;
+    options.onGoalUpdate?.(
+      update.goal === null ? null : structuredClone(update.goal),
+    );
+  };
+  const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
+  const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
     sessionStore,
     agentRegistry: createRegistry({
-      overrides: { [options.profile.agent]: [VERIFIED_COMMAND_SENTINEL] },
+      // Preserve Claude's ACP capability identity. This is metadata only: the
+      // spawn callback below always launches the verified command lease.
+      overrides: { [options.profile.agent]: options.profile.agent === "grok"
+        ? ["/paperclip-verified/grok", "agent", "stdio"]
+        : [options.profile.agent === "claude" ? "/paperclip-verified/claude-agent-acp" : VERIFIED_COMMAND_SENTINEL] },
     }),
-    permissionMode: options.permissionMode,
+    // ACPX does not know the Paperclip-specific mode. Exact SDK rules allow
+    // admitted actions; all remaining requests keep its closed read policy.
+    permissionMode: options.permissionMode === "approve-paperclip"
+      ? "approve-reads"
+      : options.permissionMode,
     elicitationModes: ["form"],
+    ...(options.clientCapabilities === undefined ? {} : { clientCapabilities: structuredClone(options.clientCapabilities) }),
+    extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
+    onExtensionRequest: async (method, params, context) => {
+      const active = extensionBoundary.active;
+      if (!extensionRequests.has(method) || !active?.onRequest || !ownsExtensionTurn(active, params) || context.signal.aborted) {
+        throw new Error("ACPX extension request does not own an admitted active turn");
+      }
+      const signal = AbortSignal.any([active.signal, context.signal]);
+      // Cursor's native extensions omit sessionId. Only after admission may
+      // that omission inherit this exact prompt's ACP wire session identity.
+      const boundParams = params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params;
+      const response = await abortableExtensionResult(active.onRequest(method, boundParams, { requestId: context.requestId, signal, responseDelivery: context.responseDelivery }), signal);
+      signal.throwIfAborted();
+      if (!ownsExtensionTurn(active, params)) throw new Error("ACPX extension request turn expired");
+      return response;
+    },
+    onExtensionNotification: (method, params) => {
+      const active = extensionBoundary.active;
+      if (!extensionNotifications.has(method) || !active?.onNotification || !ownsExtensionTurn(active, params)) return;
+      active.onNotification(method, params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params);
+    },
     nonInteractivePermissions: "fail",
     permissionPolicy: {
       ...options.permissionPolicy,
@@ -248,7 +352,12 @@ export async function openQualifiedAcpxRuntime(
         { name: "Authorization", value: `Bearer ${server.bearerToken}` },
       ],
     })),
-    onPermissionRequest: async (request) => {
+    onPermissionRequest: async (request, context) => {
+      const rawSessionId = objectRecord(request.raw).sessionId;
+      if (!extensionBoundary.sessionIds.has(request.sessionId)
+        || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
+        return { outcome: "reject_once" };
+      }
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -260,12 +369,51 @@ export async function openQualifiedAcpxRuntime(
             options.mcpServers.every((server) => server.runnerOwned),
         },
       );
-      return disposition === "delegate" ? undefined : { outcome: disposition };
+      if (disposition === "delegate") {
+        const active = permissionBoundary.active;
+        const handler = permissionBoundary.handler;
+        if (active && handler && !active.signal.aborted && !context.signal.aborted) {
+          // Capture this turn's callback before awaiting. A session-lifetime
+          // callback must never acquire the next turn's approval authority.
+          const decision = await handler(request, {
+            signal: AbortSignal.any([active.signal, context.signal]),
+            responseDelivery: context.responseDelivery,
+          });
+          if (permissionBoundary.active !== active || active.signal.aborted || context.signal.aborted) {
+            return { outcome: "cancel" };
+          }
+          return decision ?? { outcome: "cancel" };
+        }
+        // This runtime has no interactive approval bridge. Stop the active
+        // turn instead of asking the model to recover from an unexplained
+        // denial or wait for an approval that nobody can answer.
+        permissionBoundary.active?.abort(new AcpxApprovalRequiredError());
+        return { outcome: "reject_once" };
+      }
+      return { outcome: disposition };
     },
+    onAgentInitialize: (result) => {
+      const capability = goalCapabilityFromAcpMessage({ result });
+      if (capability) goalState.capability = capability;
+      // Only the runner-owned Pi wrapper has an admitted steering contract.
+      // Never infer it from generic ACP prompt support or native-only features.
+      const pi = objectRecord(objectRecord(objectRecord(objectRecord(result).agentCapabilities)._meta).paperclipPi);
+      extensionBoundary.steering = options.profile.agent === "pi" && pi.version === 1
+        ? { steering: pi.steering === true, queuedFollowUp: pi.queuedFollowUp === true }
+        : null;
+    },
+    onSessionNotification: acceptGoalNotification,
     spawnEnvironment: () => ({
       ...definedEnvironment(options.launchEnvironment),
       ...(options.profile.agent === "claude"
-        ? { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }
+        ? {
+            PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            // This URL comes from the runner-owned authenticated tool bridge,
+            // never provider-supplied permission-request metadata.
+            PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
+              (server) => server.runnerOwned && server.name === "paperclip",
+            )?.url ?? "",
+          }
         : {}),
     }),
     spawnCwd: options.cwd,
@@ -275,6 +423,7 @@ export async function openQualifiedAcpxRuntime(
       // handshake cannot create a provider process after authority is gone.
       options.signal?.throwIfAborted();
       options.assertWorkspaceHeld?.();
+      commandLaunches.count += 1;
       return children.add(
         options.command.spawn(input.args, input.options, {
           credentialFenceFds,
@@ -282,7 +431,8 @@ export async function openQualifiedAcpxRuntime(
         }) as ChildProcess,
       );
     },
-  });
+  };
+  const runtime = createRuntime(runtimeOptions) as GoalAwareAcpRuntime;
   admissionCleanup = new RuntimeAdmissionCleanup(
     runtime,
     children,
@@ -297,10 +447,8 @@ export async function openQualifiedAcpxRuntime(
         mode: "persistent",
         cwd: options.cwd,
         sessionOptions: {
-          // ACP session construction receives the provider-native selector.
-          // The caller-facing canonical model was already pinned when the
-          // qualified profile was resolved and is restored at the status
-          // boundary after the provider reports this selector.
+          // Forward the requested model unchanged; verify the provider's
+          // reported selection before admitting a billable prompt.
           model: options.profile.reportedModelId,
           ...(options.systemInstructions
             ? { systemPrompt: { append: options.systemInstructions } }
@@ -379,6 +527,10 @@ export async function openQualifiedAcpxRuntime(
       baseStore,
       children,
       runtimeCloseTimeoutMs,
+      goalState,
+      commandLaunches,
+      permissionBoundary,
+      extensionBoundary,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -798,13 +950,45 @@ function lateHandshakeCleanup(
 }
 
 function runtimePort(
-  runtime: AcpRuntime,
+  runtime: GoalAwareAcpRuntime,
   handle: AcpRuntimeHandle,
   identity: AcpxRuntimePortIdentity,
   sessionStore: AcpSessionStore,
   children: SpawnedChildSet,
   runtimeCloseTimeoutMs: number,
+  goalState: AcpxRuntimeGoalState,
+  commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
+  permissionBoundary: { active: AbortController | null; handler?: AcpRuntimeOptions["onPermissionRequest"] },
+  extensionBoundary: AcpxRuntimeExtensionBoundary,
 ): AcpxRuntimePort {
+  extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
+  let extensionControls: Promise<void> = Promise.resolve();
+  const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
+    const active = extensionBoundary.active;
+    const supported = method === "pi/steer"
+      ? extensionBoundary.steering?.steering : extensionBoundary.steering?.queuedFollowUp;
+    if (!supported || !runtime.requestExtension || !active || active.requestId !== requestId || active.signal.aborted) {
+      return Promise.reject(new Error("ACPX extension control does not own a supported active turn"));
+    }
+    if (!text.trim() || Buffer.byteLength(text, "utf8") > 65_536 || text.includes("\0")) {
+      return Promise.reject(new Error("ACPX extension control message is invalid"));
+    }
+    const send = async (): Promise<void> => {
+      await abortableExtensionResult(active.promptStarted, active.signal);
+      active.signal.throwIfAborted();
+      if (extensionBoundary.active !== active) throw new Error("ACPX extension control turn expired");
+      const response = await abortableExtensionResult(runtime.requestExtension!({
+        handle, method, params: { sessionId: identity.backendSessionId, message: text }, sessionMode: "persistent",
+      }), active.signal);
+      active.signal.throwIfAborted();
+      if (extensionBoundary.active !== active) throw new Error("ACPX extension control turn expired");
+      if (response.accepted !== true) throw new Error("ACPX extension control was not acknowledged");
+    };
+    const delivery = extensionControls.then(send);
+    // Preserve caller ordering without letting one rejection deadlock later calls.
+    extensionControls = delivery.catch(() => undefined);
+    return delivery;
+  };
   type RuntimeCloseAttempt = {
     readonly outcome: Promise<unknown | null>;
     readonly reconciliationGeneration: number;
@@ -948,6 +1132,7 @@ function runtimePort(
       attemptNumber: number;
     };
   }): Promise<void> {
+    extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
     if (runtimeClosed) return;
     if (
       runtimeCloseAttempt?.origin.kind === "reconciliation" &&
@@ -1034,18 +1219,120 @@ function runtimePort(
     async getStatus() {
       return await persistedRuntimeStatus(sessionStore, handle, identity);
     },
+    steeringCapability() {
+      return extensionBoundary.steering === null ? null : structuredClone(extensionBoundary.steering);
+    },
+    steerActiveTurn: (text, requestId) => controlActiveTurn("pi/steer", text, requestId),
+    queueFollowUp: (text, requestId) => controlActiveTurn("pi/follow_up", text, requestId),
+    goalCapability() {
+      return goalState.capability === null
+        ? null
+        : structuredClone(goalState.capability);
+    },
+    goalSnapshot() {
+      return goalState.snapshot === null
+        ? null
+        : structuredClone(goalState.snapshot);
+    },
+    async controlGoal(action, objective) {
+      const capability = goalState.capability;
+      if (!capability || !capability.actions.includes(action)) {
+        throw new Error(`ACPX session goal action ${action} is unavailable`);
+      }
+      if (!runtime.requestExtension) {
+        throw new Error("ACPX runtime does not expose extension requests");
+      }
+      const revisionBeforeControl = goalState.revision;
+      await runtime.requestExtension({
+        handle,
+        method: capability.controlMethod,
+        params: {
+          sessionId: identity.agentSessionId,
+          action,
+          ...(action === "set" ? { objective } : {}),
+        },
+        sessionMode: "persistent",
+      });
+      const shouldRepairMissingSetSnapshot =
+        action === "set" &&
+        Boolean(objective?.trim()) &&
+        goalState.snapshot === null;
+      const shouldRepairStaleClearSnapshot =
+        action === "clear" && goalState.snapshot !== null;
+      if (
+        goalState.revision === revisionBeforeControl ||
+        shouldRepairMissingSetSnapshot ||
+        shouldRepairStaleClearSnapshot
+      ) {
+        const now = Date.now();
+        if (action === "set" && objective?.trim()) {
+          goalState.snapshot = {
+            objective: objective.trim(),
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          };
+        } else if (
+          (action === "pause" || action === "resume") &&
+          goalState.snapshot
+        ) {
+          goalState.snapshot = {
+            ...goalState.snapshot,
+            status: action === "pause" ? "paused" : "active",
+            updatedAt: now,
+          };
+        } else if (action === "clear") {
+          goalState.snapshot = null;
+        }
+        goalState.revision += 1;
+      }
+      return goalState.snapshot === null
+        ? null
+        : structuredClone(goalState.snapshot);
+    },
     ...(runtime.setConfigOption
       ? {
           async setModel(model: string) {
-            await runtime.setConfigOption?.({
-              handle,
-              key: "model",
-              value: model,
-            });
+            // A restored handle can be lazy: selecting the pinned model may
+            // launch its first provider before any prompt. Admit that spawn
+            // only for this control call, and verify ownership before return.
+            const finishOwnershipAdmission =
+              children.beginLifetimeOwnershipAdmission();
+            const spawnsBeforeControl = commandLaunches.count;
+            try {
+              await runtime.setConfigOption?.({
+                handle,
+                key: "model",
+                value: model,
+              });
+            } finally {
+              await finishOwnershipAdmission();
+            }
+            // Cold ACP config calls open and close a temporary connection.
+            // A later prompt needs a newly verified single-use launch snapshot.
+            if (commandLaunches.count > spawnsBeforeControl) {
+              await commandLaunches.refreshConsumedCommand?.();
+            }
           },
         }
       : {}),
     startTurn(input) {
+      if (extensionBoundary.active) throw new Error("ACPX runtime already has an active turn");
+      const approval = new AbortController();
+      const controller = new AbortController();
+      const extensionTurn: AcpxRuntimeExtensionTurn = {
+        requestId: input.requestId, sessionId: identity.backendSessionId, controller,
+        signal: input.signal ? AbortSignal.any([controller.signal, input.signal, approval.signal]) : AbortSignal.any([controller.signal, approval.signal]),
+        promptStarted: Promise.resolve(),
+        onRequest: input.onExtensionRequest, onNotification: input.onExtensionNotification,
+      };
+      extensionBoundary.active = extensionTurn;
+      const releaseExtensionTurn = (): void => {
+        controller.abort(new Error("ACPX extension turn expired"));
+        if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
+      };
+      permissionBoundary.active = approval;
+      permissionBoundary.handler = input.onPermissionRequest;
       const finishOwnershipAdmission =
         children.beginLifetimeOwnershipAdmission();
       let turn: AcpxRuntimeTurn;
@@ -1055,16 +1342,61 @@ function runtimePort(
           text: input.text,
           mode: "prompt",
           requestId: input.requestId,
-          ...(input.signal ? { signal: input.signal } : {}),
+          signal: input.signal
+            ? AbortSignal.any([input.signal, approval.signal])
+            : approval.signal,
           ...(input.onElicitation
             ? { onElicitation: input.onElicitation }
             : {}),
         });
       } catch (error) {
+        releaseExtensionTurn();
+        if (permissionBoundary.active === approval) { permissionBoundary.active = null; permissionBoundary.handler = undefined; }
         void finishOwnershipAdmission().catch(() => undefined);
         throw error;
       }
-      return turnWithVerifiedLifetimeOwnership(turn, finishOwnershipAdmission);
+      const guarded = turnWithVerifiedLifetimeOwnership(turn, finishOwnershipAdmission);
+      extensionTurn.promptStarted = guarded.promptStarted;
+      const result = guarded.result.then(
+        (value) => {
+          approval.signal.throwIfAborted();
+          // ACPX may resolve its own permission policy before invoking the
+          // host callback. Keep that typed denial on the same runner outcome.
+          if (value.status === "failed" && value.error?.code === "PERMISSION_PROMPT_UNAVAILABLE") {
+            throw new AcpxApprovalRequiredError();
+          }
+          return value;
+        },
+        (error: unknown) => { approval.signal.throwIfAborted(); throw error; },
+      ).finally(() => {
+        releaseExtensionTurn();
+        if (permissionBoundary.active === approval) { permissionBoundary.active = null; permissionBoundary.handler = undefined; approval.abort(); }
+      });
+      void result.catch(() => undefined);
+      return {
+        ...guarded,
+        result,
+        cancel: (input) => {
+          controller.abort(new Error("ACPX extension turn cancelled"));
+          return guarded.cancel(input);
+        },
+        closeStream: (input) => {
+          controller.abort(new Error("ACPX extension stream closed"));
+          return guarded.closeStream(input);
+        },
+        events: (async function* () {
+          try {
+            for await (const event of guarded.events) {
+              approval.signal.throwIfAborted();
+              yield event;
+            }
+          } catch (error) {
+            approval.signal.throwIfAborted();
+            throw error;
+          }
+          approval.signal.throwIfAborted();
+        })(),
+      };
     },
     close: closeRuntime,
   };
@@ -1093,11 +1425,20 @@ function turnWithVerifiedLifetimeOwnership(
     finishOwnershipAdmission(),
   );
   void ownershipVerified.catch(() => undefined);
+  const promptStarted = ownershipVerified.then(() => turn.promptStarted);
+  const result = ownershipVerified.then(() => turn.result);
+  // Some consumers (including the sidecar) drain events and await the result
+  // without awaiting this optional admission signal. Observe its rejection
+  // immediately so a failed cold start cannot terminate the host process as an
+  // unhandled rejection. Keep the original rejected promise for consumers.
+  void promptStarted.catch(() => undefined);
+  // Event drains can fail before their caller reaches the result promise.
+  void result.catch(() => undefined);
   return {
     requestId: turn.requestId,
-    promptStarted: ownershipVerified.then(() => turn.promptStarted),
+    promptStarted,
     events: eventsAfterLifetimeOwnership(turn.events, ownershipVerified),
-    result: ownershipVerified.then(() => turn.result),
+    result,
     cancel: (input) => turn.cancel(input),
     closeStream: (input) => turn.closeStream(input),
   };
@@ -1148,6 +1489,9 @@ async function persistedRuntimeStatus(
     acpxRecordId: record.acpxRecordId,
     backendSessionId: record.acpSessionId,
     agentSessionId: persistedAgentSessionId,
+    lastRequestId: record.lastRequestId,
+    requestTokenUsage: structuredClone(record.request_token_usage ?? {}),
+    usageCost: structuredClone(record.cumulative_cost),
     ...(currentModelId === undefined && !availableModelIds?.length
       ? {}
       : {
@@ -1587,6 +1931,112 @@ async function signalAndWaitForExit(
 
 function pushUnique(errors: unknown[], error: unknown): void {
   if (!errors.includes(error)) errors.push(error);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+async function abortableExtensionResult<T>(result: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let rejectAbort: (() => void) | undefined;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectAbort = () => reject(signal.reason ?? new Error("ACPX extension turn expired"));
+    signal.addEventListener("abort", rejectAbort, { once: true });
+  });
+  try { return await Promise.race([result, cancellation]); }
+  finally { if (rejectAbort) signal.removeEventListener("abort", rejectAbort); }
+}
+
+function goalCapabilityFromAcpMessage(
+  message: unknown,
+): AcpxRuntimeGoalCapability | null {
+  const result = objectRecord(objectRecord(message).result);
+  const goal = objectRecord(objectRecord(result._meta).goal);
+  const actions = Array.isArray(goal.actions)
+    ? goal.actions.filter(
+        (action): action is "set" | "pause" | "resume" | "clear" =>
+          action === "set" ||
+          action === "pause" ||
+          action === "resume" ||
+          action === "clear",
+      )
+    : [];
+  if (
+    goal.version !== 1 ||
+    goal.controlMethod !== "_session/goal" ||
+    !actions.includes("set") ||
+    !actions.includes("clear")
+  ) {
+    return null;
+  }
+  return { version: 1, controlMethod: goal.controlMethod, actions };
+}
+
+function goalSnapshotFromAcpMessage(message: unknown): {
+  seen: boolean;
+  goal: AcpxRuntimeGoalSnapshot | null;
+} {
+  const envelope = objectRecord(message);
+  const update =
+    envelope.method === "session/update"
+      ? objectRecord(objectRecord(envelope.params).update ?? envelope.params)
+      : Object.prototype.hasOwnProperty.call(envelope, "update")
+        ? objectRecord(envelope.update)
+        : envelope.sessionUpdate === "session_info_update"
+          ? envelope
+          : null;
+  if (update === null) return { seen: false, goal: null };
+  const meta = objectRecord(update._meta);
+  if (!Object.prototype.hasOwnProperty.call(meta, "goal")) {
+    return { seen: false, goal: null };
+  }
+  if (meta.goal === null) return { seen: true, goal: null };
+  const goal = objectRecord(meta.goal);
+  const objective =
+    typeof goal.objective === "string" ? goal.objective.trim() : "";
+  const status = goal.status;
+  if (
+    objective.length === 0 ||
+    objective.length > 4_000 ||
+    (status !== "active" &&
+      status !== "paused" &&
+      status !== "blocked" &&
+      status !== "limited" &&
+      status !== "complete")
+  ) {
+    return { seen: false, goal: null };
+  }
+  const optionalNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  const optionalTimestamp = (
+    value: unknown,
+  ): number | string | null | undefined =>
+    value === null || typeof value === "string" || typeof value === "number"
+      ? value
+      : undefined;
+  return {
+    seen: true,
+    goal: {
+      objective,
+      status,
+      tokenBudget:
+        goal.tokenBudget === null ? null : optionalNumber(goal.tokenBudget),
+      tokensUsed: optionalNumber(goal.tokensUsed),
+      timeUsedSeconds: optionalNumber(goal.timeUsedSeconds),
+      iterations: optionalNumber(goal.iterations),
+      lastReason:
+        goal.lastReason === null || typeof goal.lastReason === "string"
+          ? goal.lastReason
+          : undefined,
+      createdAt: optionalTimestamp(goal.createdAt),
+      updatedAt: optionalTimestamp(goal.updatedAt),
+    },
+  };
 }
 
 function requireIdentity(handle: AcpRuntimeHandle): AcpxRuntimePortIdentity {

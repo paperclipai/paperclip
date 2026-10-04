@@ -6,6 +6,14 @@ import { join } from "node:path";
 import test from "node:test";
 
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+function workflowVerifyBudget() {
+  return {
+    verifyAttempts: Number(releaseWorkflow.match(/^  NPM_PUBLISH_VERIFY_ATTEMPTS: "(\d+)"$/m)?.[1]),
+    verifyDelaySeconds: Number(releaseWorkflow.match(/^  NPM_PUBLISH_VERIFY_DELAY_SECONDS: "(\d+)"$/m)?.[1]),
+  };
+}
 
 function writeExecutable(path, body) {
   writeFileSync(path, body, { mode: 0o755 });
@@ -18,6 +26,10 @@ function runPublishHelper({
   callerPipefail = true,
   publishTool = "pnpm",
   waitForRegistry = false,
+  npmVersionExistsAfterChecks = 0,
+  verifyAttempts = 1,
+  verifyDelaySeconds = 0,
+  visibilityPackages = null,
 }) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-release-lib-"));
   const binDir = join(fixtureDir, "bin");
@@ -74,9 +86,38 @@ exit 1
     `#!/usr/bin/env bash
 set -euo pipefail
 printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
-if [ "$1" = "view" ] && [ "$NPM_VERSION_EXISTS" = "true" ]; then
-  echo "1.2.3"
-  exit 0
+if [ "$1" = "view" ]; then
+  if [ "\${NPM_VIEW_CROSS:-}" = "true" ]; then
+    # Cross-visibility mode: a package resolves only after every OTHER
+    # package has been polled at least once. Mutually dependent visibility
+    # can only converge when the polls run concurrently.
+    spec="$2"
+    name="\${spec%@*}"
+    safe="$(printf '%s' "$name" | tr '/@' '__')"
+    touch "$FAKE_STATE_DIR/seen-$safe"
+    all_seen=true
+    for other in $CROSS_PACKAGES; do
+      osafe="$(printf '%s' "$other" | tr '/@' '__')"
+      [ "$osafe" = "$safe" ] && continue
+      [ -f "$FAKE_STATE_DIR/seen-$osafe" ] || all_seen=false
+    done
+    if [ "$all_seen" = "true" ]; then
+      echo "1.2.3"
+      exit 0
+    fi
+    exit 1
+  fi
+  checks=0
+  if [ -f "$FAKE_STATE_DIR/view-checks" ]; then
+    read -r checks < "$FAKE_STATE_DIR/view-checks"
+  fi
+  checks=$((checks + 1))
+  echo "$checks" > "$FAKE_STATE_DIR/view-checks"
+  if [ "$NPM_VERSION_EXISTS" = "true" ] ||
+    { [ "$NPM_VERSION_EXISTS_AFTER_CHECKS" -gt 0 ] && [ "$checks" -ge "$NPM_VERSION_EXISTS_AFTER_CHECKS" ]; }; then
+    echo "1.2.3"
+    exit 0
+  fi
 fi
 if [ "$1" = "publish" ]; then
   case "$PNPM_MODE" in
@@ -127,13 +168,30 @@ exec npm "$@"
   );
 
   const shellOptions = callerPipefail ? "set -euo pipefail" : "set -eu";
+  // The cross-visibility concurrency test needs real (fractional-second)
+  // sleeps so slower-starting sibling polls get a chance to run; every other
+  // test records virtual waiting so registry-delay tests stay fast/offline.
+  const sleepStub = visibilityPackages
+    ? ""
+    : `sleep() { printf 'sleep %s\\n' "$*" >> "$FAKE_CALL_LOG"; }`;
+  const packageInfo = (
+    visibilityPackages ?? ["@paperclipai/example"]
+  )
+    .map((name) => `packages/example\\t${name}\\t1.2.3`)
+    .join("\\n");
   const script = `
 ${shellOptions}
 source "${repoRoot}/scripts/release-lib.sh"
+${sleepStub}
 ${
-  waitForRegistry
-    ? `publish_package_to_npm_and_wait ${distTag} @paperclipai/example 1.2.3 ${publishTool} 1 0`
-    : `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}`
+  visibilityPackages
+    ? `PACKAGE_INFO="$(printf '${packageInfo}')"
+wait_for_npm_package_versions "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS" "$PACKAGE_INFO"`
+    : waitForRegistry
+      ? `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}
+PACKAGE_INFO="$(printf '${packageInfo}')"
+wait_for_npm_package_versions "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS" "$PACKAGE_INFO"`
+      : `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}`
 }
 `;
 
@@ -149,6 +207,11 @@ ${
         FAKE_CALL_LOG: callLog,
         FAKE_STATE_DIR: stateDir,
         NPM_VERSION_EXISTS: npmVersionExists ? "true" : "false",
+        NPM_VERSION_EXISTS_AFTER_CHECKS: String(npmVersionExistsAfterChecks),
+        VERIFY_ATTEMPTS: String(verifyAttempts),
+        VERIFY_DELAY_SECONDS: String(verifyDelaySeconds),
+        NPM_VIEW_CROSS: visibilityPackages ? "true" : "false",
+        CROSS_PACKAGES: (visibilityPackages ?? []).join(" "),
         PNPM_MODE: pnpmMode,
         REPO_ROOT: fixtureDir,
       },
@@ -245,7 +308,7 @@ test("publish_package_to_npm does not retry stable publishes without provenance"
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm_and_wait confirms registry visibility before returning", () => {
+test("wait_for_npm_package_versions confirms registry visibility after a publish", () => {
   const result = runPublishHelper({
     pnpmMode: "success",
     npmVersionExists: true,
@@ -257,10 +320,89 @@ test("publish_package_to_npm_and_wait confirms registry visibility before return
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
 });
 
-test("publish_package_to_npm_and_wait blocks the release when registry visibility lags", () => {
+test("wait_for_npm_package_versions blocks the release and names the straggler", () => {
   const result = runPublishHelper({ pnpmMode: "success", waitForRegistry: true });
 
   assert.notEqual(result.status, 0);
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
+  assert.match(result.output, /did not become registry-visible: @paperclipai\/example@1\.2\.3/);
+});
+
+test("wait_for_npm_package_versions polls every package concurrently", () => {
+  // In cross-visibility mode each fake package resolves only after the OTHER
+  // package has been polled at least once. Waiting out one package's full
+  // budget before polling the next can never satisfy the first package;
+  // only concurrent polling converges.
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    visibilityPackages: ["@paperclipai/alpha", "@paperclipai/beta"],
+    verifyAttempts: 50,
+    verifyDelaySeconds: 0.2,
+  });
+
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /@paperclipai\/alpha@1\.2\.3 is registry-visible/);
+  assert.match(result.output, /@paperclipai\/beta@1\.2\.3 is registry-visible/);
+});
+
+test("the workflow budget tolerates the observed 15-minute 20-second registry delay", () => {
+  const budget = workflowVerifyBudget();
+  assert.ok(budget.verifyDelaySeconds > 0);
+  const delayedCheck = Math.ceil((15 * 60 + 20) / budget.verifyDelaySeconds) + 1;
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    waitForRegistry: true,
+    npmVersionExistsAfterChecks: delayedCheck,
+    ...budget,
+  });
+
+  assert.equal(result.status, 0, result.output);
+  assert.equal(result.calls.match(/^pnpm publish /gm)?.length, 1);
+  assert.equal(result.calls.match(/^npm view /gm)?.length, delayedCheck);
+  assert.deepEqual(
+    result.calls.split("\n").filter((call) => call.startsWith("sleep ")),
+    Array(delayedCheck - 1).fill(`sleep ${budget.verifyDelaySeconds}`),
+  );
+});
+
+test("the workflow budget does not delay an immediately visible publish", () => {
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    npmVersionExists: true,
+    waitForRegistry: true,
+    ...workflowVerifyBudget(),
+  });
+
+  assert.equal(result.status, 0, result.output);
+  assert.equal(result.calls.match(/^npm view /gm)?.length, 1);
+  assert.doesNotMatch(result.calls, /^sleep /m);
+});
+
+test("the workflow budget fails closed after the last registry check", () => {
+  const budget = workflowVerifyBudget();
+  assert.ok(budget.verifyAttempts > 0);
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    waitForRegistry: true,
+    npmVersionExistsAfterChecks: budget.verifyAttempts + 1,
+    ...budget,
+  });
+
+  assert.notEqual(result.status, 0);
   assert.match(result.output, /did not become registry-visible/);
+  assert.equal(result.calls.match(/^pnpm publish /gm)?.length, 1);
+  assert.equal(result.calls.match(/^npm view /gm)?.length, budget.verifyAttempts);
+  assert.equal(result.calls.match(/^sleep /gm)?.length, budget.verifyAttempts - 1);
+});
+
+test("every publish job budgets for build time and four delayed packages", () => {
+  const { verifyAttempts, verifyDelaySeconds } = workflowVerifyBudget();
+  const pollingSeconds = (verifyAttempts - 1) * verifyDelaySeconds;
+  const requiredSeconds = 30 * 60 + 4 * pollingSeconds;
+
+  for (const job of ["publish_canary", "publish_nightly", "publish_beta", "publish_stable"]) {
+    const body = releaseWorkflow.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z_]+:\n/)[0] ?? "";
+    const timeoutMinutes = Number(body.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
+    assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build and polling`);
+  }
 });

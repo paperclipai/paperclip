@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   ACPX_IDENTITY_RECORD_SCHEMA,
+  acpxRuntimeSessionDirectoryName,
   acpxProviderSessionIdentity,
   createAcpxIdentityRecord,
   createAcpxRecoveryBinding,
@@ -25,6 +26,21 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it("derives one stable, filesystem-safe runtime directory name", () => {
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toMatch(
+      /^session_1-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("...")).toMatch(
+      /^session-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toBe(
+      acpxRuntimeSessionDirectoryName("session/1"),
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).not.toBe(
+      acpxRuntimeSessionDirectoryName("session_1"),
+    );
+  });
+
   it("binds the canonical workspace, profile, model, policy, and session", async () => {
     const fixture = await recoveryFixture();
     expect(fixture.binding.runtimeRoot).toContain("session-1-");
@@ -58,6 +74,21 @@ describe("ACPX recovery identity", () => {
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, record),
     ).not.toThrow();
+  });
+
+  it("rejects restoration across task execution-policy changes", async () => {
+    const fixture = await recoveryFixture();
+    const readonly = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: true } });
+    const writable = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: false } });
+    const record = createAcpxIdentityRecord(fixture.expected, readonly);
+    expect(readonly.profileSessionKey).not.toBe(writable.profileSessionKey);
+    expect(readonly.profileDigest).not.toBe(writable.profileDigest);
+    expect(() => verifyExpectedAcpxIdentity(fixture.expected, writable, record)).toThrow("persisted runtime record");
+    const changedRoots = await createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: true, protectedPaths: ["/another-protected-root"] } });
+    expect(changedRoots.profileSessionKey).not.toBe(readonly.profileSessionKey);
+    await expect(createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: "yes" as never } })).rejects.toThrow("valid task execution policy");
   });
 
   it("uses collision-resistant roots and policy-bound provider keys", async () => {

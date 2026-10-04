@@ -37,8 +37,8 @@ export function formatCents(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
+  return n.toLocaleString("en-US", options);
 }
 
 /**
@@ -58,13 +58,17 @@ export function formatDate(date: Date | string): string {
   });
 }
 
-export function formatDateTime(date: Date | string): string {
+export function formatDateTime(
+  date: Date | string,
+  options: { includeSeconds?: boolean; includeYear?: boolean } = {},
+): string {
   return new Date(date).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
-    year: "numeric",
+    ...(options.includeYear === false ? {} : { year: "numeric" as const }),
     hour: "numeric",
     minute: "2-digit",
+    ...(options.includeSeconds ? { second: "2-digit" as const } : {}),
   });
 }
 

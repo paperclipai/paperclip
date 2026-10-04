@@ -302,6 +302,40 @@ describe("TaskChatInteractionCard", () => {
     );
   });
 
+  it.each([createRequestConfirmation(), pendingRequestCheckboxConfirmationInteraction])(
+    "enables $kind acceptance when preparation clears on the same mounted card",
+    async (fixture) => {
+      const onAcceptInteraction = vi.fn();
+      const onRejectInteraction = vi.fn();
+      const render = (preparing: boolean) => flushSync(() => root.render(
+        <TooltipProvider><ThemeProvider>
+          <TaskChatInteractionCard
+            item={interactionItem({ ...fixture, acceptanceBlocker: preparing ? "workspace_sync_pending" : undefined })}
+            presentation="takeover"
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </ThemeProvider></TooltipProvider>,
+      ));
+      const approve = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.acceptLabel ?? "Approve"),
+      )!;
+      render(true);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+      expect(approve().disabled).toBe(true);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).not.toHaveBeenCalled();
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.rejectLabel ?? "Reject"),
+      )?.disabled).toBe(false);
+      render(false);
+      expect(container.textContent).not.toContain("Preparing approval…");
+      expect(approve().disabled).toBe(false);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("puts the primary CTA at the right edge of the compact action row", () => {
     flushSync(() => {
       root.render(
@@ -437,6 +471,14 @@ describe("TaskChatInteractionCard", () => {
         button.textContent?.includes("Only collapse hidden descendants"),
     );
     await act(async () => firstAnswer?.click());
+    expect(submit).not.toHaveBeenCalled();
+    // Answering stays on the question; Next is what moves on.
+    expect(container.textContent).toContain("1 of 2");
+    await act(async () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === "Next")
+        ?.click(),
+    );
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(
@@ -522,11 +564,22 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Resolved by:");
   });
 
-  it("collapses accepted confirmations and selections to one borderless row", () => {
+  it("collapses resolved confirmations and selections to one borderless row", () => {
     const acceptedConfirmation = createRequestConfirmation({
       status: "accepted",
       resolvedAt: new Date("2026-08-24T13:30:00.000Z"),
       result: { version: 1, outcome: "accepted" },
+    });
+    const continuedConfirmation = createRequestConfirmation({
+      id: "confirmation-continued",
+      status: "rejected",
+      resolvedAt: new Date("2026-08-24T13:30:30.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+      result: { version: 1, outcome: "rejected" },
     });
     const acceptedSelection = structuredClone(
       pendingRequestCheckboxConfirmationInteraction,
@@ -548,6 +601,9 @@ describe("TaskChatInteractionCard", () => {
                 item={interactionItem(acceptedConfirmation)}
               />
               <TaskChatInteractionCard
+                item={interactionItem(continuedConfirmation)}
+              />
+              <TaskChatInteractionCard
                 item={interactionItem(acceptedSelection)}
               />
             </>
@@ -559,11 +615,14 @@ describe("TaskChatInteractionCard", () => {
     const receipts = container.querySelectorAll<HTMLDetailsElement>(
       '[data-testid="task-chat-interaction-receipt"]',
     );
-    expect(receipts).toHaveLength(2);
+    expect(receipts).toHaveLength(3);
     expect(receipts[0]?.querySelector("summary")?.textContent).toBe(
       "Confirmed request",
     );
     expect(receipts[1]?.querySelector("summary")?.textContent).toBe(
+      "Selected “Continue work”",
+    );
+    expect(receipts[2]?.querySelector("summary")?.textContent).toBe(
       "Confirmed with no options selected",
     );
     for (const receipt of receipts) {

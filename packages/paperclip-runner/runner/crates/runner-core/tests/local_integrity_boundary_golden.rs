@@ -189,6 +189,7 @@ fn acpx_projection_matches_shared_plan_question_final_and_terminal_identity() {
         run_id: "run-boundary".to_owned(),
         normalized_session_id: "session-boundary".to_owned(),
         turn_id: fixture["turnId"].as_str().expect("turn id").to_owned(),
+        provider_turn_id: None,
         item_id: "question-boundary-1".to_owned(),
     };
 
@@ -263,7 +264,12 @@ fn acpx_projection_matches_shared_plan_question_final_and_terminal_identity() {
         .expect("project ACPX final"),
         "item.completed",
     );
-    assert_eq!(final_message.payload["itemId"], expected_final["itemId"]);
+    // ACPX provider-state output is identified by its provider turn, rather
+    // than reusing the presentation item ID supplied by the shared fixture.
+    assert_eq!(
+        final_message.payload["itemId"],
+        "acpx-assistant-a7736694c69c42e1b7d7220b4274f274c9dbba97f2e693ddbc584158015f0123"
+    );
     assert_eq!(final_message.payload["channel"], "final");
     assert_eq!(final_message.payload["text"], expected_final["text"]);
 

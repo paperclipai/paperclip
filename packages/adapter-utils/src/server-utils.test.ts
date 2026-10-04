@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
+  readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildPersistentSkillSnapshot,
@@ -14,6 +15,10 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  isPaperclipExternalChatContractTurn,
+  isPaperclipExternalChatQuestionResponseTurn,
+  isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -21,6 +26,8 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
+  hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -82,6 +89,9 @@ describe("runtime connection tool delivery", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       CONNECTION_INTENT_AGENT_GUIDANCE,
     );
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).toContain(CONNECTION_INTENT_AGENT_GUIDANCE);
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("Execution contract:");
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("child issues");
   });
 });
 
@@ -96,31 +106,42 @@ describe("legacy adapter skill selection", () => {
   };
 
   it("keeps the operational skill selected without a stored preference", () => {
-    expect(resolveLegacyPaperclipDesiredSkillNames({}, [operationalEntry, optionalEntry])).toEqual([
-      PAPERCLIP_OPERATIONAL_SKILL_KEY,
-    ]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames({}, [
+        operationalEntry,
+        optionalEntry,
+      ]),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
   });
 
   it("keeps the operational skill selected after an explicit empty replacement", () => {
-    expect(resolveLegacyPaperclipDesiredSkillNames(
-      { paperclipSkillSync: { desiredSkills: [] } },
-      [operationalEntry, optionalEntry],
-    )).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(
+        { paperclipSkillSync: { desiredSkills: [] } },
+        [operationalEntry, optionalEntry],
+      ),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
   });
 
   it("does not force optional skills or synthesize a missing operational entry", () => {
-    const config = { paperclipSkillSync: { desiredSkills: [optionalEntry.key] } };
-    expect(resolveLegacyPaperclipDesiredSkillNames(config, [operationalEntry, optionalEntry])).toEqual([
-      PAPERCLIP_OPERATIONAL_SKILL_KEY,
-      optionalEntry.key,
-    ]);
-    expect(resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry])).toEqual([
-      optionalEntry.key,
-    ]);
+    const config = {
+      paperclipSkillSync: { desiredSkills: [optionalEntry.key] },
+    };
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(config, [
+        operationalEntry,
+        optionalEntry,
+      ]),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY, optionalEntry.key]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry]),
+    ).toEqual([optionalEntry.key]);
   });
 
   it("leaves the configurable resolver available for native runners", () => {
-    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual([]);
+    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual(
+      [],
+    );
   });
 });
 
@@ -893,6 +914,312 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "chat", workMode: "planning", status: "in_progress" },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(ordinary).not.toContain("Execution contract:");
+    expect(ordinary).toContain("Create child issues from the approved plan");
+    for (const resumedSession of [false, true]) {
+      const chat = renderPaperclipWakePrompt(payload, {
+        resumedSession, conversationMode: true, includeExecutionContract: true,
+      });
+      expect(chat).not.toContain("Execution contract:");
+      expect(chat).not.toContain("clear final disposition");
+      expect(chat).not.toContain("Create child issues");
+      expect(chat).not.toContain("you may create child implementation issues");
+    }
+  });
+
+  const ordinaryExternalChatWake = {
+    reason: "External chat message received",
+    externalChatProvider: " GitHub ",
+    checkedOutByHarness: true,
+    issue: {
+      id: "issue-chat-1",
+      identifier: "CHAT-1",
+      title: "External chat conversation",
+      description: "Started from GitHub.",
+      descriptionTruncated: false,
+      status: "in_progress",
+      workMode: "standard",
+    },
+    continuationSummary: {
+      key: "summary",
+      title: "Conversation history",
+      body: "The previous provider turn completed successfully.",
+      updatedAt: "2026-09-07T13:59:39.464Z",
+    },
+    commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+    commentIds: ["comment-chat-1"],
+    latestCommentId: "comment-chat-1",
+    comments: [
+      {
+        id: "comment-chat-1",
+        issueId: "issue-chat-1",
+        body: "Reply with the current release marker.",
+        bodyTruncated: false,
+        authorType: "user",
+      },
+    ],
+    fallbackFetchNeeded: false,
+  };
+
+  it("recognizes only normalized, harness-checked-out ordinary external-chat wakes", () => {
+    expect(isPaperclipExternalChatTurn(ordinaryExternalChatWake)).toBe(true);
+    const normalized = JSON.parse(
+      stringifyPaperclipWakePayload(ordinaryExternalChatWake) ?? "{}",
+    );
+    expect(normalized).toMatchObject({
+      externalChatProvider: "github",
+      checkedOutByHarness: true,
+      skillTest: false,
+    });
+    expect(isPaperclipExternalChatTurn(normalized)).toBe(true);
+
+    const incomplete = JSON.parse(
+      stringifyPaperclipWakePayload({
+        ...ordinaryExternalChatWake,
+        commentWindow: {
+          requestedCount: 2,
+          includedCount: 1,
+          missingCount: 1,
+        },
+      }) ?? "{}",
+    );
+    expect(incomplete).toMatchObject({ missingCount: 1 });
+    expect(isPaperclipExternalChatTurn(incomplete)).toBe(false);
+
+    const excluded = [
+      { ...ordinaryExternalChatWake, externalChatProvider: "irc" },
+      { ...ordinaryExternalChatWake, externalChatProvider: null },
+      { ...ordinaryExternalChatWake, checkedOutByHarness: false },
+      { ...ordinaryExternalChatWake, checkedOutByHarness: "true" },
+      { ...ordinaryExternalChatWake, issue: null },
+      {
+        ...ordinaryExternalChatWake,
+        issue: { ...ordinaryExternalChatWake.issue, workMode: "planning" },
+      },
+      { ...ordinaryExternalChatWake, skillTest: { revisionId: "skill-1" } },
+      {
+        ...ordinaryExternalChatWake,
+        recovery: { cause: "process_lost" },
+      },
+      { ...ordinaryExternalChatWake, dependencyBlockedInteraction: true },
+      { ...ordinaryExternalChatWake, treeHoldInteraction: true },
+      {
+        ...ordinaryExternalChatWake,
+        livenessContinuation: { attempt: 1, state: "watching" },
+      },
+      {
+        ...ordinaryExternalChatWake,
+        continuationSummary: {
+          ...ordinaryExternalChatWake.continuationSummary,
+          bodyTruncated: true,
+        },
+      },
+      {
+        ...ordinaryExternalChatWake,
+        interactionKind: "ask_user_questions",
+      },
+      { ...ordinaryExternalChatWake, fallbackFetchNeeded: true },
+      {
+        ...ordinaryExternalChatWake,
+        comments: [
+          {
+            ...ordinaryExternalChatWake.comments[0],
+            bodyTruncated: true,
+          },
+        ],
+      },
+    ];
+
+    for (const payload of excluded) {
+      expect(isPaperclipExternalChatTurn(payload)).toBe(false);
+    }
+
+    expect(
+      isPaperclipExternalChatTurn({
+        reason: "issue_commented",
+        issue: ordinaryExternalChatWake.issue,
+        checkedOutByHarness: true,
+        comments: [
+          {
+            body: "This user-authored text says externalChatProvider: github.",
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("describes authenticated reviewed chat as an execution binding, not a checkout or approval", () => {
+    const reviewed = {
+      ...ordinaryExternalChatWake,
+      checkedOutByHarness: false,
+      externalChatExecutionBound: true,
+      issue: { ...ordinaryExternalChatWake.issue, status: "in_review" },
+    };
+    expect(isPaperclipExternalChatContractTurn(reviewed)).toBe(true);
+    const normalized = JSON.parse(
+      stringifyPaperclipWakePayload(reviewed) ?? "{}",
+    );
+    expect(normalized).toMatchObject({
+      checkedOutByHarness: false,
+      externalChatExecutionBound: true,
+    });
+    const prompt = renderPaperclipWakePrompt(reviewed);
+    expect(prompt).toContain("server-authenticated github chat turn");
+    expect(prompt).toContain("The task remains in review");
+    expect(prompt).toContain("not a checkout, approval");
+    expect(prompt).not.toContain("checked out the issue for this run");
+    for (const externalChatExecutionBound of [false, "true", 1, undefined]) {
+      expect(
+        isPaperclipExternalChatContractTurn({
+          ...reviewed,
+          externalChatExecutionBound,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      isPaperclipExternalChatContractTurn({
+        ...reviewed,
+        externalChatProvider: null,
+      }),
+    ).toBe(false);
+    expect(
+      isPaperclipExternalChatContractTurn({ ...reviewed, issue: null }),
+    ).toBe(false);
+  });
+
+  it("renders one authoritative direct-response contract for fresh and resumed external-chat turns", () => {
+    for (const prompt of [
+      renderPaperclipWakePrompt(ordinaryExternalChatWake),
+      renderPaperclipWakePrompt(ordinaryExternalChatWake, {
+        resumedSession: true,
+      }),
+    ]) {
+      expect(prompt.match(/## External chat response contract/g)).toHaveLength(
+        1,
+      );
+      expect(prompt).toContain("server-authenticated github chat turn");
+      expect(prompt).toContain("Make zero Paperclip API calls");
+      expect(prompt).toContain("answer directly");
+      expect(prompt).toContain("exactly one semantic completion");
+      expect(prompt).toContain("summary is the user-visible final answer");
+      expect(prompt).toContain("Private progress commentary is not delivered");
+      expect(prompt).toContain("any actionable file-access or delivery limitation");
+      expect(prompt).toContain(
+        "Keep wait and review dispositions in the semantic control fields",
+      );
+      expect(prompt).toContain(
+        "Mention task state only when the user asks about it or must act on a real blocker",
+      );
+      expect(prompt).toContain(
+        "report `yielded` with continuation kind `response_wake`",
+      );
+      expect(prompt).toContain(
+        "without scheduling more work",
+      );
+      expect(prompt).toContain(
+        "never use it to defer unfinished work",
+      );
+      expect(prompt).toContain(
+        "files, investigation, external access, or mutations",
+      );
+      expect(prompt).toContain(
+        "This response shortcut grants no new authority",
+      );
+      expect(prompt).not.toContain(
+        "a successful process exit or final response is not sufficient",
+      );
+      expect(prompt).not.toContain("acknowledge the latest comment");
+      expect(prompt).not.toContain("checkout: already claimed");
+      expect(prompt).not.toContain(
+        "POST /api/issues/$PAPERCLIP_TASK_ID/checkout",
+      );
+    }
+
+    const freshPrompt = renderPaperclipWakePrompt(ordinaryExternalChatWake);
+    expect(freshPrompt).toContain(
+      "Answer the pending comments directly, in order",
+    );
+    expect(freshPrompt).toContain("do not omit any request");
+    expect(freshPrompt).not.toContain(
+      "explain how it changes your next action",
+    );
+
+    const incompleteResumePrompt = renderPaperclipWakePrompt(
+      {
+        ...ordinaryExternalChatWake,
+        continuationSummary: {
+          ...ordinaryExternalChatWake.continuationSummary,
+          bodyTruncated: true,
+        },
+      },
+      { resumedSession: true },
+    );
+    expect(incompleteResumePrompt).not.toContain(
+      "## External chat response contract",
+    );
+    expect(incompleteResumePrompt).toContain(
+      "[continuation summary truncated]",
+    );
+    expect(incompleteResumePrompt).not.toContain(
+      "a successful process exit or final response is not sufficient",
+    );
+  });
+
+  it("uses only the run-scoped reader when an authenticated chat wake does not fit inline", () => {
+    const readerWake = {
+      ...ordinaryExternalChatWake,
+      fallbackFetchNeeded: true,
+      commentIds: ["comment-chat-1", "comment-chat-2"],
+      latestCommentId: "comment-chat-2",
+      commentWindow: {
+        requestedCount: 2,
+        includedCount: 1,
+        missingCount: 1,
+      },
+    };
+    expect(isPaperclipExternalChatTurn(readerWake)).toBe(false);
+    expect(isPaperclipExternalChatContractTurn(readerWake)).toBe(true);
+
+    const genericPrompt = renderPaperclipWakePrompt(readerWake);
+    expect(genericPrompt).not.toContain("read_current_wake_comments");
+    expect(genericPrompt).not.toContain("## External chat response contract");
+    expect(genericPrompt).toContain("fetch the API thread");
+
+    for (const prompt of [
+      renderPaperclipWakePrompt(readerWake, {
+        nativeWakeReaderAvailable: true,
+      }),
+      renderPaperclipWakePrompt(readerWake, {
+        resumedSession: true,
+        nativeWakeReaderAvailable: true,
+      }),
+    ]) {
+      expect(prompt.match(/## External chat response contract/g)).toHaveLength(
+        1,
+      );
+      expect(prompt).toContain(
+        "call `read_current_wake_comments` without a cursor",
+      );
+      expect(prompt).toContain("until `complete` is true");
+      expect(prompt).toContain("exact comments accepted for this run");
+      expect(prompt).toContain("Make zero other Paperclip API calls");
+      expect(prompt).not.toContain("fetch the API thread");
+      expect(prompt).not.toContain("refetching the issue thread");
+      expect(prompt).not.toContain("checkout: already claimed");
+    }
+  });
+
   it("preserves and renders the issue description in structured wake payloads", () => {
     const payload = {
       reason: "issue_assigned",
@@ -1083,76 +1410,18 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("keeps the default local-agent prompt action-oriented", () => {
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Start actionable work in this heartbeat",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "do not stop at a plan",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "clear final disposition",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "evidence, not valid liveness paths by themselves",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "keep `in_progress` only when a live continuation path exists",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Prefer the smallest verification that proves the change",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "After 2 consecutive failures of the same control-plane write",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "adapter/runtime status channel as the sanctioned fallback",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Use child issues",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "instead of polling agents, sessions, or processes",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Create child issues directly when you know what needs to be done",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "POST /api/issues/$PAPERCLIP_TASK_ID/interactions",
-    );
-    // URL paths in prompt text carry real ids or env vars, never brace
-    // placeholders: agents paste these lines verbatim, and a literal {issueId}
-    // reaches the server as /api/issues/%7BissueId%7D and 404s.
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "/api/issues/{issueId}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "/api/issues/{id}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "kind suggest_tasks, ask_user_questions, or request_confirmation",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "for request_confirmation this resumes only after acceptance",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "confirmation:{issueId}:plan:{revisionId}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Wait for acceptance before creating implementation subtasks",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Respect budget, pause/cancel, approval gates, and company boundaries",
-    );
+  it("keeps task and chat defaults to identity and connection guidance", () => {
+    for (const template of [
+      DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+      DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+    ]) {
+      expect(template).toBe(
+        `You are agent {{agent.id}} ({{agent.name}}).\n\n${CONNECTION_INTENT_AGENT_GUIDANCE}`,
+      );
+    }
   });
 
-  it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {
+  it("keeps current task data without generic procedures on fresh scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -1172,12 +1441,12 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).not.toContain("Execution contract:");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
       "Execution contract:",
     );
   });
 
-  it("adds the execution contract to resume delta prompts and opted-in fresh prompts", () => {
+  it("does not restore generic procedures on resume or with the legacy opt-in", () => {
     const payload = {
       reason: "issue_assigned",
       issue: {
@@ -1195,38 +1464,283 @@ describe("renderPaperclipWakePrompt", () => {
       fallbackFetchNeeded: false,
     };
 
-    for (const prompt of [
-      renderPaperclipWakePrompt(payload, { resumedSession: true }),
-      renderPaperclipWakePrompt(payload, { includeExecutionContract: true }),
-    ]) {
-      expect(prompt).toContain(
-        "Execution contract: take concrete action in this heartbeat",
-      );
-      expect(prompt).toContain("clear final disposition");
-      expect(prompt).toContain(
-        "Immediately before returning, verify that Paperclip records one of those dispositions",
-      );
-      expect(prompt).toContain(
-        "a successful process exit or final response is not sufficient",
-      );
-      expect(prompt).toContain(
-        "If no valid disposition is recorded, record it now and do not end the run",
-      );
-      expect(prompt).toContain(
-        "After 2 consecutive failures of the same control-plane write",
-      );
-      expect(prompt).toContain(
-        "adapter/runtime status channel as the sanctioned fallback",
-      );
-      expect(prompt).toContain(
-        "evidence, not valid liveness paths by themselves",
-      );
-      expect(prompt).toContain(
-        "Use child issues for long or parallel delegated work instead of polling",
-      );
-      expect(prompt).toContain("named unblock owner/action");
+    for (const resumedSession of [false, true]) {
+      for (const includeExecutionContract of [undefined, false, true]) {
+        const prompt = renderPaperclipWakePrompt(payload, {
+          resumedSession, includeExecutionContract,
+        });
+        expect(prompt).toContain(resumedSession ? "## Paperclip Resume Delta" : "## Paperclip Wake Payload");
+        expect(prompt).toContain("- reason: issue_assigned");
+        expect(prompt).toContain("- issue: PAP-1580 Update prompts");
+        expect(prompt).toContain("- issue status: in_progress");
+        expect(prompt).not.toContain("Execution contract:");
+        expect(prompt).not.toContain("clear final disposition");
+        expect(prompt).not.toContain("do not end the run");
+      }
     }
   });
+
+  it.each(["answered", "accepted"])(
+    "preserves exact-output constraints for an external %s interaction continuation",
+    (interactionStatus) => {
+      const prompt = renderPaperclipWakePrompt({
+        reason: "issue_commented",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-CHAT",
+          title: "Continue provider request",
+          status: "in_progress",
+        },
+        interactionKind:
+          interactionStatus === "answered"
+            ? "ask_user_questions"
+            : "request_confirmation",
+        interactionStatus,
+        externalInteractionContinuation: true,
+        commentWindow: {
+          requestedCount: 1,
+          includedCount: 1,
+          missingCount: 0,
+        },
+        commentIds: ["comment-1"],
+        latestCommentId: "comment-1",
+        comments: [
+          {
+            id: "comment-1",
+            issueId: "issue-1",
+            body: "Reply with exactly RELEASE-Saffron and nothing else.",
+          },
+        ],
+        fallbackFetchNeeded: false,
+      });
+
+      expect(prompt).toContain("## External interaction continuation");
+      expect(prompt).toContain(
+        "Preserve and obey the original source comment's formatting and exact-output constraints literally.",
+      );
+      expect(prompt).toContain(
+        "the externally visible response must contain exactly that and nothing else",
+      );
+      expect(prompt).toContain(
+        "Use internal Paperclip tools to satisfy the task lifecycle, including marking the task done when its requested work is complete.",
+      );
+      expect(prompt).toContain(
+        "Exact-output constraints apply to provider-visible prose, not necessary internal tool calls",
+      );
+      expect(prompt).toContain(
+        "Do not narrate answer receipt, interaction IDs, Paperclip workflow, delegation, task status, or closure",
+      );
+      expect(prompt).toContain(
+        "Reply with exactly RELEASE-Saffron and nothing else.",
+      );
+    },
+  );
+
+  const externalQuestionMarker = {
+    schema: "paperclip.external_chat_question_response.v1",
+    interactionId: "10000000-0000-4000-8000-000000000001",
+    responseDeliveryId: "20000000-0000-4000-8000-000000000002",
+    sourceRunId: "30000000-0000-4000-8000-000000000003",
+    sourceCommentId: "40000000-0000-4000-8000-000000000004",
+    endpointId: "50000000-0000-4000-8000-000000000005",
+    conversationId: "60000000-0000-4000-8000-000000000006",
+    bindingSha256: "a".repeat(64),
+  };
+  const externalQuestionWake = {
+    ...ordinaryExternalChatWake,
+    reason: "issue_commented",
+    externalChatProvider: "discord",
+    checkedOutByHarness: false,
+    externalChatExecutionBound: true,
+    issue: { ...ordinaryExternalChatWake.issue, status: "in_review" },
+    interactionId: externalQuestionMarker.interactionId,
+    sourceRunId: externalQuestionMarker.sourceRunId,
+    interactionKind: "ask_user_questions",
+    interactionStatus: "answered",
+    externalInteractionContinuation: true,
+    externalChatQuestionResponse: externalQuestionMarker,
+    questionResponse: {
+      interactionId: externalQuestionMarker.interactionId,
+      summaryMarkdown: "Color: Cobalt",
+      truncated: false,
+    },
+    commentIds: [externalQuestionMarker.sourceCommentId],
+    latestCommentId: externalQuestionMarker.sourceCommentId,
+    comments: [
+      {
+        ...ordinaryExternalChatWake.comments[0],
+        id: externalQuestionMarker.sourceCommentId,
+        body: "Ask for a color, then reply with exactly COLOR-<chosen color>.",
+      },
+    ],
+  };
+
+  it.each([false, true])(
+    "uses the actual answer in an attested native chat question continuation (resumed: %s)",
+    (resumedSession) => {
+      for (const checkedOutByHarness of [false, true]) {
+        const wake = JSON.parse(
+          stringifyPaperclipWakePayload({
+            ...externalQuestionWake,
+            checkedOutByHarness,
+            externalChatExecutionBound: !checkedOutByHarness,
+          }) ?? "{}",
+        );
+        const prompt = renderPaperclipWakePrompt(wake, { resumedSession });
+        expect(isPaperclipExternalChatTurn(wake)).toBe(false);
+        expect(isPaperclipExternalChatQuestionResponseTurn(wake)).toBe(true);
+        expect(prompt).toContain("## External chat answered-question contract");
+        expect(prompt).toContain(
+          "The semantic completion summary is the user-visible final answer.",
+        );
+        expect(prompt).toContain(
+          "Use the authoritative answer below to complete the original request; do not repeat or re-ask the resolved question.",
+        );
+        expect(prompt).toContain("Color: Cobalt");
+        expect(prompt).toContain("COLOR-<chosen color>");
+        expect(prompt).toContain(
+          "Original request for context (only the answered questions listed above are resolved):",
+        );
+        expect(prompt.indexOf("Color: Cobalt")).toBeLessThan(
+          prompt.indexOf("Ask for a color"),
+        );
+        expect(prompt).not.toContain("New comments in order:");
+        expect(prompt).toContain(
+          "This answer resolves only the named question, not a separate approval or completion review.",
+        );
+        expect(prompt).toContain(
+          "do not change task status, clear a review, or manufacture a new wait or monitor",
+        );
+        expect(prompt).not.toContain("including marking the task done");
+        expect(prompt).not.toContain("acknowledge the latest comment");
+      }
+    },
+  );
+
+  it("keeps newer comments outside the resolved-question background", () => {
+    const newerComment = {
+      ...ordinaryExternalChatWake.comments[0],
+      id: "comment-2",
+      body: "Also answer this genuinely new follow-up.",
+    };
+    const wake = {
+      ...externalQuestionWake,
+      commentIds: [externalQuestionMarker.sourceCommentId, newerComment.id],
+      latestCommentId: newerComment.id,
+      comments: [...externalQuestionWake.comments, newerComment],
+      commentWindow: {
+        requestedCount: 2,
+        includedCount: 2,
+        missingCount: 0,
+      },
+    };
+
+    const prompt = renderPaperclipWakePrompt(wake);
+    expect(isPaperclipExternalChatQuestionResponseTurn(wake)).toBe(true);
+    expect(prompt).toContain(
+      "Original request for context (only the answered questions listed above are resolved):",
+    );
+    expect(prompt).toContain(
+      "Other new comments in order (not resolved by the answer above):",
+    );
+    expect(prompt.indexOf("Color: Cobalt")).toBeLessThan(
+      prompt.indexOf("Ask for a color"),
+    );
+    expect(prompt.indexOf("Ask for a color")).toBeLessThan(
+      prompt.indexOf("Also answer this genuinely new follow-up."),
+    );
+  });
+
+  it("does not grant the native chat answer prompt to malformed or unbound answer metadata", () => {
+    const invalid = [
+      { externalChatQuestionResponse: null },
+      {
+        externalChatQuestionResponse: {
+          ...externalQuestionMarker,
+          schema: "other",
+        },
+      },
+      {
+        externalChatQuestionResponse: {
+          ...externalQuestionMarker,
+          extra: true,
+        },
+      },
+      {
+        externalChatQuestionResponse: {
+          ...externalQuestionMarker,
+          bindingSha256: "A".repeat(64),
+        },
+      },
+      ...[
+        "interactionId",
+        "responseDeliveryId",
+        "sourceRunId",
+        "sourceCommentId",
+        "endpointId",
+        "conversationId",
+      ].map((key) => ({
+        externalChatQuestionResponse: {
+          ...externalQuestionMarker,
+          [key]: "not-a-uuid",
+        },
+      })),
+      { interactionId: externalQuestionMarker.endpointId },
+      { interactionId: null },
+      { sourceRunId: externalQuestionMarker.endpointId },
+      { sourceRunId: null },
+      {
+        questionResponse: {
+          ...externalQuestionWake.questionResponse,
+          interactionId: externalQuestionMarker.endpointId,
+        },
+      },
+      {
+        questionResponse: {
+          ...externalQuestionWake.questionResponse,
+          truncated: true,
+        },
+      },
+      { questionResponse: null },
+      { externalChatProvider: "irc" },
+      { checkedOutByHarness: false, externalChatExecutionBound: false },
+      { externalInteractionContinuation: false },
+      { interactionStatus: "pending" },
+      { interactionKind: "request_confirmation" },
+      { reason: "issue_recovery_action_restored" },
+      { recovery: { cause: "process_lost" } },
+      { dependencyBlockedInteraction: true },
+      { executionStage: { stageId: "review-1", wakeRole: "reviewer" } },
+      { issue: { ...externalQuestionWake.issue, workMode: "planning" } },
+      { fallbackFetchNeeded: true },
+    ];
+    for (const override of invalid) {
+      const wake = { ...externalQuestionWake, ...override };
+      const prompt = renderPaperclipWakePrompt(wake);
+      expect(isPaperclipExternalChatQuestionResponseTurn(wake)).toBe(false);
+      expect(prompt).not.toContain(
+        "## External chat answered-question contract",
+      );
+    }
+  });
+
+  it.each([false, true])(
+    "keeps routine prepared and waiting status out of native chat summaries (resumed: %s)",
+    (resumedSession) => {
+      for (const wake of [ordinaryExternalChatWake, externalQuestionWake]) {
+        const prompt = renderPaperclipWakePrompt(wake, { resumedSession });
+        expect(prompt).toContain(
+          "omit routine file-preparation, unconfirmed-delivery, and waiting-for-next-message status",
+        );
+        expect(prompt).toContain(
+          "end after the requested content or a neutral file label",
+        );
+        expect(prompt).toContain(
+          "Report a genuine failure or required user action plainly, without claiming a delivery that has not been confirmed.",
+        );
+      }
+    },
+  );
 
   it.each([
     [
@@ -1358,7 +1872,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
+  it("keeps connection guidance without a generic manual in a composed fresh prompt", () => {
     const wakePrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -1378,7 +1892,8 @@ describe("renderPaperclipWakePrompt", () => {
     const composed = [wakePrompt, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE].join(
       "\n\n",
     );
-    expect(composed.match(/Execution contract/g)).toHaveLength(1);
+    expect(composed).toContain(CONNECTION_INTENT_AGENT_GUIDANCE);
+    expect(composed).not.toContain("Execution contract:");
   });
 
   it("trims comment-batch boilerplate on fresh wakes with zero pending comments", () => {
@@ -1446,17 +1961,21 @@ describe("renderPaperclipWakePrompt", () => {
         ].join("\n"),
       },
       commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
-      comments: [{
-        id: "stale-comment",
-        body: "The questions are still pending.",
-        authorType: "user",
-      }],
+      comments: [
+        {
+          id: "stale-comment",
+          body: "The questions are still pending.",
+          authorType: "user",
+        },
+      ],
       fallbackFetchNeeded: false,
     });
 
     expect(prompt).toContain("## Answered questions");
     expect(prompt).toContain("- What should the demo prove?: Minimal JSON API");
-    expect(prompt).toContain("Continue from these answers now; do not wait for another response.");
+    expect(prompt).toContain(
+      "Continue from these answers now; do not wait for another response.",
+    );
     expect(prompt.indexOf("The questions are still pending.")).toBeLessThan(
       prompt.indexOf("## Answered questions"),
     );
@@ -1895,7 +2414,9 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("do not create a child merely because a plan was accepted");
+    expect(prompt).toContain(
+      "do not create a child merely because a plan was accepted",
+    );
     expect(prompt).not.toContain("Update the plan only");
   });
 
@@ -2289,6 +2810,17 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("delivers typed disposition repair instructions without liveness classification", () => {
+    const payload = { reason: "issue_disposition_repair", issue: { id: "issue-1", status: "in_progress" },
+      dispositionRepair: { attempt: 1, maxAttempts: 2, sourceRunId: "source-1", instruction: "Record completion or a durable waiting path through the API." } };
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Task disposition repair:");
+    expect(prompt).toContain("- attempt: 1/2");
+    expect(prompt).toContain(payload.dispositionRepair.instruction);
+    expect(prompt).not.toContain("liveness state:");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
@@ -2447,6 +2979,21 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(fullMarkdown);
   });
 
+  it("prefers assignment-only fields while preserving historical fallback fields", () => {
+    const context = {
+      paperclipTaskMarkdown: `${fullMarkdown}\nHistorical wake comment`,
+      paperclipTaskMarkdownCompact: `${compactMarkdown}\nHistorical compact comment`,
+      paperclipTaskMarkdownAssignment: fullMarkdown,
+      paperclipTaskMarkdownAssignmentCompact: compactMarkdown,
+      paperclipWake: wake("issue_commented"),
+    };
+    expect(selectPaperclipTaskMarkdown(context)).toBe(fullMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
+    expect(
+      selectPaperclipTaskMarkdown({ paperclipTaskMarkdown: "legacy", paperclipWake: wake("issue_commented") }),
+    ).toBe("legacy");
+  });
+
   it("returns the compact markdown for non-assignment resume deltas", () => {
     expect(
       selectPaperclipTaskMarkdown(
@@ -2458,6 +3005,41 @@ describe("selectPaperclipTaskMarkdown", () => {
         { resumedSession: true },
       ),
     ).toBe(compactMarkdown);
+  });
+
+  it("adds saved communication guidance only to a fresh session, including after recovery", () => {
+    const context = {
+      paperclipTaskMarkdown: fullMarkdown,
+      paperclipTaskMarkdownCompact: compactMarkdown,
+      paperclipTaskCommunicationGuidance: "## Communication in Slack\nSaved initial guidance",
+      paperclipWake: wake("issue_commented"),
+    };
+    expect(selectPaperclipTaskMarkdown(context)).toContain("Saved initial guidance");
+    expect(selectInitialCommunicationGuidance({ paperclipTaskCommunicationGuidance: "  Slack preference  " })).toBe("Slack preference");
+    expect(selectInitialCommunicationGuidance(context, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance({})).toBe("");
+    const handoffContext = { ...context, paperclipFreshSessionHandoffMarkdown: "Prior goal and approved decisions" };
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: false })).toContain("Prior goal and approved decisions");
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
+    context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(fullMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: false }).match(/Saved initial guidance/g)).toHaveLength(1);
+  });
+
+  it("reads history only at a fresh provider attempt, including resume fallback", async () => {
+    let reads = 0;
+    const ctx = { context: {} as Record<string, unknown>, getFreshSessionHandoff: async () => {
+      reads += 1;
+      return "Original goal and prior answer";
+    } };
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: true });
+    expect(reads).toBe(0);
+    expect(ctx.context.paperclipFreshSessionHandoffMarkdown).toBeUndefined();
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: false });
+    expect(reads).toBe(1);
+    expect(selectInitialCommunicationGuidance(ctx.context)).toContain("Original goal and prior answer");
   });
 
   it("falls back to the full markdown when no compact variant exists", () => {
@@ -2813,6 +3395,13 @@ describe("applyPaperclipWorkspaceEnv", () => {
 });
 
 describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("maps editable project repositories inside the remote workspace", () => {
+    const result = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/host/task", executionCwd: "/sandbox/task", executionTargetIsRemote: true,
+      workspaceHints: [{ workspaceId: "backend", cwd: "/host/task/.paperclip-repositories/backend" }],
+    });
+    expect(result.workspaceHints).toEqual([{ workspaceId: "backend", cwd: "/sandbox/task/.paperclip-repositories/backend" }]);
+  });
   it("rewrites workspace env paths for remote execution", () => {
     const shaped = shapePaperclipWorkspaceEnvForExecution({
       workspaceCwd: "/tmp/workspace",
@@ -3098,6 +3687,16 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it("does not restore the retired wake JSON variable from config", () => {
+    const env: Record<string, string> = {};
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale wake" },
+      workspaceCwd: null,
+    });
+    expect(env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+  });
+
   it("never accepts PAPERCLIP_API_KEY from config env", () => {
     const env: Record<string, string> = {};
 
@@ -3187,5 +3786,179 @@ describe("buildPaperclipEnv", () => {
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );
+  });
+});
+
+
+describe("runtime skill assignment boundaries", () => {
+  it("preserves an explicitly empty assignment instead of discovering bundled connector skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-empty-"));
+    try {
+      await fs.mkdir(path.join(root, "agentmail"));
+      await fs.writeFile(path.join(root, "agentmail", "SKILL.md"), "---\nname: agentmail\ndescription: Email connector\n---\n");
+      const discovered = await readPaperclipRuntimeSkillEntries({}, root, [root]);
+      expect(discovered.some((entry) => entry.runtimeName === "agentmail")).toBe(true);
+      expect(await readPaperclipRuntimeSkillEntries({ paperclipRuntimeSkills: [] }, root, [root])).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("wake continuation comment ownership", () => {
+  const continuation = (messages: Array<Record<string, unknown>>, resumeDelta?: Array<Record<string, unknown>>) => ({
+    version: 1,
+    companyId: "company-1",
+    issueId: "issue-1",
+    trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+    originCommentIds: [],
+    objective: "Continue the task.",
+    messages,
+    ...(resumeDelta ? { resumeDelta: { baseRunId: "run-old", messages: resumeDelta } } : {}),
+    interactionOutcomes: [],
+    completedWork: null,
+    unresolvedInteractionIds: [],
+    coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+  });
+
+  const message = (id: string, body: string) => ({
+    id,
+    authorType: "user",
+    authorId: "user-1",
+    body,
+    createdAt: "2026-09-21T00:00:00.000Z",
+    updatedAt: "2026-09-21T00:00:00.000Z",
+    deleted: false,
+    sourceTrust: "human",
+  });
+
+  it("suppresses only an exact continuation owner and keeps same-body distinct IDs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [
+        { id: "comment-a", body: "Repeat body" },
+        { id: "comment-b", body: "Repeat body" },
+        { id: "comment-edited", body: "Edited current body" },
+      ],
+      commentWindow: { requestedCount: 3, includedCount: 3, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: continuation([
+        message("comment-a", "Repeat body"),
+        message("comment-edited", "Original body"),
+      ]),
+    });
+    expect(prompt).toContain("comment-b");
+    expect(prompt).toContain("comment-edited");
+    expect(prompt).not.toContain("comment-a at");
+  });
+
+  it("does not suppress a current comment absent from the rendered resume delta", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [{ id: "comment-new", body: "Current delta body" }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: continuation(
+        [message("comment-new", "Current delta body")],
+        [],
+      ),
+    }, { resumedSession: true });
+    expect(prompt).toContain("comment-new");
+    expect(prompt).toContain("Current delta body");
+  });
+
+  it("does not repeat the shared issue brief as continuation objective on a fresh owned wake", () => {
+    const objective = "Assignment brief owned by task markdown.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: objective },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective, objectiveSource: { kind: "description", id: "issue-1", revision: "3afeec397239f147627f99ddaa883639fa50d191fc2bbce0dc7515a0f05deedb" } },
+    }, { suppressIssueDescription: true });
+    expect(prompt).not.toContain(`"objective":"${objective}"`);
+  });
+
+  it("keeps a changed continuation objective on an ordinary compact resume", () => {
+    const objective = "Changed objective must reach the compact resumed turn.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Original brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective, objectiveSource: { kind: "description", id: "issue-1", revision: "3fdd2539337403e2e9551085a24ce3737978e6f0d2fc129d71d6a27c2befb523" } },
+    }, { resumedSession: true, suppressIssueDescription: true });
+    expect(prompt).toContain(`"objective":"${objective}"`);
+  });
+
+  it("keeps continuation objective when its issue identity does not match the assignment", () => {
+    const objective = "Mismatched continuation objective remains visible.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), issueId: "issue-2", objective, objectiveSource: { kind: "description", id: "issue-2", revision: "ba02348ecb9f87dd102e0faf7ae65731c856c8a13ba64874394a873cc529c63f" } },
+    }, { suppressIssueDescription: true });
+    expect(prompt).toContain(`"objective":"${objective}"`);
+  });
+
+  it("suppresses a latest comment objective only when its exact revised message is displayed", () => {
+    const objective = "Latest user direction.";
+    const source = { ...message("comment-latest", objective), updatedAt: "2026-09-21T00:02:00.000Z" };
+    const full = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: source.id, revision: source.updatedAt } },
+    }, { suppressIssueDescription: true });
+    expect(full).not.toContain(`"objective":"${objective}"`);
+
+    const stale = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: source.id, revision: "stale-revision" } },
+    }, { suppressIssueDescription: true });
+    expect(stale).toContain(`"objective":"${objective}"`);
+
+    const wrongSource = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: "comment-other", revision: source.updatedAt } },
+    }, { suppressIssueDescription: true });
+    expect(wrongSource).toContain(`"objective":"${objective}"`);
+
+    const missingDelta = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source], []), objective, objectiveSource: { kind: "comment", id: source.id, revision: source.updatedAt } },
+    }, { resumedSession: true, suppressIssueDescription: true });
+    expect(missingDelta).toContain(`"objective":"${objective}"`);
+
+    const legacy = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective },
+    }, { suppressIssueDescription: true });
+    expect(legacy).toContain(`"objective":"${objective}"`);
   });
 });

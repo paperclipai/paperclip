@@ -56,6 +56,24 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  /** Use the public revision fence when configuring a fixture's instruction entry. */
+  async saveAgentInstructions(agentId: string, content: string): Promise<void> {
+    const path = `/api/agents/${agentId}/instructions-bundle/file`;
+    const current = await this.request.get(`${path}?path=AGENTS.md`);
+    let baseHash: string | null = null;
+    if (current.ok()) {
+      const detail = await current.json();
+      if (typeof detail.contentHash !== "string" || !detail.contentHash) {
+        throw new Error("Existing fixture instructions have no revision hash");
+      }
+      baseHash = detail.contentHash;
+    } else if (current.status() !== 404) {
+      throw new Error(await failureMessage(current, "GET"));
+    }
+    const saved = await this.request.put(path, { data: { path: "AGENTS.md", content, baseHash } });
+    if (!saved.ok()) throw new Error(await failureMessage(saved, "PUT"));
+  }
+
   async delete(
     path: string,
     options?: { allowNotFound?: boolean },
@@ -67,6 +85,13 @@ export class RunnerApi {
   }
 }
 
+export class ObservedStateTimeout extends Error {
+  constructor(label: string, readonly failureClass: "candidate_failure" | "transient_infrastructure", detail?: string) {
+    super(`Timed out waiting for ${label}; ${detail ?? "the observed state did not satisfy the condition"}. See the saved state evidence.`);
+    this.name = "ObservedStateTimeout";
+  }
+}
+
 export async function pollUntil<T>(input: {
   label: string;
   deadlineAt: number;
@@ -74,6 +99,8 @@ export async function pollUntil<T>(input: {
   accept: (value: T) => boolean;
   reject?: (value: T) => string | undefined;
   intervalMs?: number;
+  timeoutFailureClass?: "candidate_failure" | "transient_infrastructure";
+  timeoutDetail?: (value: T | undefined) => string | undefined;
 }): Promise<T> {
   let last: T | undefined;
   let lastError: unknown;
@@ -99,11 +126,12 @@ export async function pollUntil<T>(input: {
       setTimeout(resolve, input.intervalMs ?? 2_000),
     );
   }
-  const detail =
-    lastError instanceof Error
-      ? lastError.message
-      : last === undefined
-        ? "no observation"
-        : JSON.stringify(last);
-  throw new Error(`Timed out waiting for ${input.label}: ${detail}`);
+  if (lastError instanceof Error) {
+    throw new Error(`Timed out waiting for ${input.label}: ${lastError.message}`, { cause: lastError });
+  }
+  throw new ObservedStateTimeout(
+    input.label,
+    input.timeoutFailureClass ?? "candidate_failure",
+    input.timeoutDetail?.(last),
+  );
 }

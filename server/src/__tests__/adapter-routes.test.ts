@@ -357,20 +357,12 @@ describe("adapter routes", () => {
       }),
       expect.objectContaining({
         key: "opencodePermissionMode",
-        default: "ask",
+        default: "allow",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       }),
       expect.objectContaining({
         key: "acpxPermissionMode",
-        default: "approve-reads",
-        meta: { visibleWhen: { key: "provider", value: "acpx" } },
-      }),
-      expect.objectContaining({
-        key: "acpxAgent",
-        options: [
-          expect.objectContaining({ value: "claude" }),
-          expect.objectContaining({ value: "codex" }),
-        ],
+        default: "approve-all",
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       }),
       expect.objectContaining({
@@ -383,7 +375,16 @@ describe("adapter routes", () => {
       }),
     ]));
     const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
-    expect(acpxAgent.options).not.toContainEqual(expect.objectContaining({ value: "pi" }));
+    expect(acpxAgent).toMatchObject({
+      type: "select",
+      default: "claude",
+      meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      options: [
+        { value: "claude", label: "Claude" },
+        { value: "grok", label: "Grok Build" },
+      ],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 
   it("serves the built-in claude_local ACP engine config schema", async () => {

@@ -6,9 +6,11 @@ import { relative, resolve, sep } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 
 export const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
-export const PRP_SCHEMA_ID_PREFIX = "https://paperclip.dev/schemas/prp/v1/";
+export const PRP_SCHEMA_ID_PREFIX = "https://paperclip.dev/schemas/prp/";
+export const PRP_V1_SCHEMA_ID_PREFIX = `${PRP_SCHEMA_ID_PREFIX}v1/`;
 export const SUPPORTED_FIXTURE_VERSION = 1;
-export const SUPPORTED_PROTOCOL_VERSION = 1;
+export const MIN_SUPPORTED_PROTOCOL_VERSION = 1;
+export const SUPPORTED_PROTOCOL_VERSION = 2;
 export const SUPPORTED_EVENT_SCHEMA_VERSION = 1;
 
 function contractError(code, detail) {
@@ -114,7 +116,13 @@ export function compileProtocolValidators(schemaRecords) {
   for (const record of schemaRecords) ajv.addSchema(record.value);
 
   const get = (name) => {
-    const id = `${PRP_SCHEMA_ID_PREFIX}${name}.schema.json`;
+    const id = `${PRP_V1_SCHEMA_ID_PREFIX}${name}.schema.json`;
+    const validator = ajv.getSchema(id);
+    if (validator === undefined) throw contractError("missing_schema_validator", id);
+    return validator;
+  };
+  const getVersioned = (version, name) => {
+    const id = `${PRP_SCHEMA_ID_PREFIX}v${version}/${name}.schema.json`;
     const validator = ajv.getSchema(id);
     if (validator === undefined) throw contractError("missing_schema_validator", id);
     return validator;
@@ -125,6 +133,9 @@ export function compileProtocolValidators(schemaRecords) {
     fixture: get("fixture"),
     providerDescriptor: get("provider-descriptor"),
     questionAdapterFixture: get("question-adapter-fixture"),
+    capabilitiesV2: getVersioned(2, "capabilities"),
+    commandV2: getVersioned(2, "command"),
+    eventV2: getVersioned(2, "event"),
   };
 }
 
@@ -153,16 +164,27 @@ function requireVersion(value, expected, name) {
   }
 }
 
+function requireSupportedProtocolVersion(value) {
+  if (!Number.isInteger(value) || value < MIN_SUPPORTED_PROTOCOL_VERSION || value > SUPPORTED_PROTOCOL_VERSION) {
+    throw contractError(
+      "unsupported_required_version",
+      `protocolVersion=${String(value)}; supported=${MIN_SUPPORTED_PROTOCOL_VERSION}-${SUPPORTED_PROTOCOL_VERSION}`,
+    );
+  }
+}
+
 export function assertReplayFixtureCompatibility(fixture) {
   requireSchema(fixture, "paperclip.prp.fixture.v1", "fixture");
   requireVersion(fixture.fixtureVersion, SUPPORTED_FIXTURE_VERSION, "fixtureVersion");
-  requireVersion(fixture.protocolVersion, SUPPORTED_PROTOCOL_VERSION, "protocolVersion");
+  requireSupportedProtocolVersion(fixture.protocolVersion);
   requireSchema(fixture.identity, "paperclip.prp.identity.v1", "identity");
   requireSchema(fixture.capabilities, "paperclip.prp.capabilities.v1", "capabilities");
 
   if (!Array.isArray(fixture.commands)) throw contractError("invalid_fixture", "commands must be an array");
   for (const [index, command] of fixture.commands.entries()) {
-    requireSchema(command, "paperclip.prp.command.v1", `commands[${index}]`);
+    if (command?.schema !== "paperclip.prp.command.v1" && command?.schema !== "paperclip.prp.command.v2") {
+      throw contractError("unsupported_required_schema", `commands[${index}] requires ${String(command?.schema)}`);
+    }
   }
 
   if (!Array.isArray(fixture.events) || fixture.events.length === 0) {

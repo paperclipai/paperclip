@@ -10,11 +10,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({
   exportFiles: vi.fn(),
+  readCommittedForRuntime: vi.fn(),
   getEffectiveProfilesForAgent: vi.fn(),
+  githubBotConnectionIdsForRun: vi.fn(),
+}));
+
+vi.mock("../chat-github-tools.js", () => ({
+  githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));
 
 vi.mock("../agent-instructions.js", () => ({
   agentInstructionsService: () => ({ exportFiles: serviceMocks.exportFiles }),
+  agentInstructionsBundleMode: (agent: { adapterConfig?: { instructionsBundleMode?: string } }) => agent.adapterConfig?.instructionsBundleMode ?? null,
+}));
+
+vi.mock("../agent-instruction-revisions.js", () => ({
+  agentInstructionRevisionService: () => ({ readCommittedForRuntime: serviceMocks.readCommittedForRuntime }),
 }));
 
 vi.mock("../tool-access.js", () => ({
@@ -23,7 +34,8 @@ vi.mock("../tool-access.js", () => ({
   }),
 }));
 
-import { buildNativeRuntimeContext } from "./runtime-context.js";
+import { createHash } from "node:crypto";
+import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -44,6 +56,8 @@ async function makeTreeWritable(target: string): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
+  serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-native-context-"));
@@ -83,6 +97,60 @@ afterEach(async () => {
 });
 
 describe("buildNativeRuntimeContext", () => {
+  it("uses committed instructions when the disk projection is stale", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "Old disk projection\n", "reference.md": "Sibling reference\n" },
+    });
+    serviceMocks.readCommittedForRuntime.mockResolvedValue({
+      revision: { entryFile: "AGENTS.md" }, content: "Saved canonical instructions\n",
+    });
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: { instructionsBundleMode: "managed" } },
+      runId: "run-1", runtimeConfig: {}, runtimeSkillEntries: [],
+    });
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("Saved canonical instructions\n");
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, "reference.md"), "utf8"))
+      .toBe("Sibling reference\n");
+    expect(serviceMocks.readCommittedForRuntime).toHaveBeenCalledWith({ companyId: "company-1", agentId: "agent-1" });
+  });
+
+  it("does not substitute canonical managed instructions into an external bundle", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "External instructions\n" } });
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterConfig: { instructionsBundleMode: "external" } },
+      runId: "run-1", runtimeConfig: {}, runtimeSkillEntries: [],
+    });
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("External instructions\n");
+    expect(serviceMocks.readCommittedForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pinned prompt immutable while exposing the registered editable instruction copy", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({
+      entryFile: "instructions/CHARter.md",
+      files: { "instructions/CHARter.md": "Original instructions.\n" },
+    });
+    const workingRoot = path.join(temporaryRoots.at(-1)!, "private-run-copy");
+    await mkdir(path.join(workingRoot, "instructions"), { recursive: true });
+    await writeFile(path.join(workingRoot, "instructions/CHARter.md"), "Original instructions.\n");
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-1",
+      runtimeConfig: {},
+      runtimeSkillEntries: [],
+      instructionWorkingCopy: { rootPath: workingRoot, entryPath: "instructions/CHARter.md" },
+    });
+    expect(context.instructions.workingCopy).toEqual({ rootPath: workingRoot, entryPath: "instructions/CHARter.md" });
+    await writeFile(path.join(workingRoot, "instructions/CHARter.md"), "Persist this next time.\n");
+    expect(await readFile(path.join(context.instructions.bundle.rootPath, context.instructions.entryPath), "utf8"))
+      .toBe("Original instructions.\n");
+  });
+
   it.each(["disabled", "degraded"] as const)(
     "omits an unavailable native MCP connection when it is %s without aborting runtime context creation",
     async (unavailableState) => {
@@ -224,6 +292,8 @@ describe("buildNativeRuntimeContext", () => {
       .toBe("Follow the agent instructions.\n");
     expect(await readFile(path.join(context.instructions.bundle.rootPath, "references", "policy.md"), "utf8"))
       .toBe("Company policy sibling.\n");
+    const unselected = await buildNativeRuntimeContext({ ...input, runtimeConfig: {} });
+    expect(unselected.skills).toEqual([]);
     expect(context.skills).toHaveLength(1);
     expect(context.skills[0]).toMatchObject({
       key: "company-1/reviewer",
@@ -296,4 +366,43 @@ describe("buildNativeRuntimeContext", () => {
     });
     expect(context.skills.map((skill) => skill.key)).toEqual(["company-1/supported"]);
   });
+});
+
+
+it("pins both permitted GitHub tool catalogs even when another user’s health probe reports missing credentials", async () => {
+  const connections = ["github-A", "github-B"].map((id) => ({
+    id, status: "active", enabled: true, healthStatus: "missing_secret", transport: "mcp_remote",
+    config: { sourceTemplateKey: "github" }, transportConfig: {},
+  }));
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    entries: connections.map((connection) => ({ effect: "include", connectionId: connection.id })),
+    installedConnections: connections,
+    allowedTools: connections.map((connection) => ({ id: `${connection.id}-get_me`, connectionId: connection.id })),
+  });
+  const limit = vi.fn(async () => [{ responsibleUserId: "A", activeIdentityContextId: "context-A" }]);
+  const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+  const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" });
+  const expected = createHash("sha256").update(JSON.stringify({
+    version: 1, agentId: "agent-1", connections: ["github-A", "github-B"],
+    tools: ["github-A-get_me", "github-B-get_me"],
+  })).digest("hex");
+  expect(snapshot.digest).toBe(expected);
+  expect(snapshot.bindingId).toBe("native-mcp:run-1");
+  expect(limit).toHaveBeenCalledOnce();
+});
+
+it("pins channel tools only when the current task run is bound to that bot", async () => {
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    entries: [{ effect: "include", connectionId: "bot-connection" }],
+    installedConnections: [{
+      id: "bot-connection", status: "active", enabled: true, healthStatus: "healthy",
+      transport: "chat_sdk", config: { sourceTemplateKey: "github-chat" }, transportConfig: {},
+    }],
+    allowedTools: [{ id: "bot-read-pr", connectionId: "bot-connection" }],
+  });
+  const input = { db: {} as Db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();
+  serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set(["bot-connection"]));
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
+  expect(serviceMocks.githubBotConnectionIdsForRun).toHaveBeenLastCalledWith(input.db, "company-1", "agent-1", "run-1");
 });

@@ -1,3 +1,4 @@
+import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -7,7 +8,10 @@ import type {
   CodexRpcServerRequest,
 } from "../drivers/codex/app-server-transport.js";
 import { redactCodexDiagnostic } from "../drivers/codex/app-server-transport.js";
-import { createSkilllessCodexThreadConfig } from "../drivers/codex/codex-app-server-driver.js";
+import { codexSemanticToolSpecs, createSkilllessCodexThreadConfig } from "../drivers/codex/codex-app-server-driver.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
+import { codexToolAcceptsResult, isCodexSemanticTool, isRetainableCodexPayload, rejectedCodexToolCall } from "../drivers/codex/codex-boundaries.js";
+import { validateCodexResultProposal } from "../mock-core/codex-runner.js";
 import {
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
@@ -54,6 +58,15 @@ import {
 } from "./workspace-file-reference.js";
 
 const LIVE_SESSION_SCHEMA = "paperclip.capability.live-session.v1" as const;
+const LIVE_COMPLETION_CONTRACT = Object.freeze({
+  revision: "paperclip-capability-live-v1",
+  criterionIds: ["objective"],
+});
+const LIVE_COMPLETION_ENVELOPE = createCodexTaskEnvelope({
+  objective: "Complete the current requested action without exceeding mock semantic authority.",
+  contractRevision: LIVE_COMPLETION_CONTRACT.revision,
+  criteria: LIVE_COMPLETION_CONTRACT.criterionIds.map((id) => ({ id, requirement: "Complete the current requested action." })),
+});
 const LIVE_BASE_INSTRUCTIONS = [
   "You are operating one mock Paperclip issue through typed semantic tools.",
   "Use only the tools exposed in this thread; never call a Paperclip REST API.",
@@ -195,6 +208,16 @@ export interface CapabilityLiveUsageReceipt {
   observedAt: string;
 }
 
+export interface CapabilityLiveUnavailableUsage {
+  turnId: string;
+  attemptId: string;
+  agent: "pi" | "cursor" | "copilot";
+  reason: "provider_did_not_report_usage";
+  tokenUsage: null;
+  costNanodollars: null;
+  observedAt: string;
+}
+
 export interface CapabilityLiveStateRevision {
   revision: number;
   at: string;
@@ -262,6 +285,8 @@ export interface CapabilityLiveSessionSnapshot {
   terminalTurns?: CapabilityLiveTurnTerminalFact[];
   /** Exact-once provider usage/cost receipts retained across every attempt. */
   usageLedger?: CapabilityLiveUsageReceipt[];
+  /** Candidate turns without a provider receipt; these are never zero-valued receipts. */
+  usageUnavailable?: CapabilityLiveUnavailableUsage[];
   /** Process-level evidence for an interrupted Codex semantic-call resume. */
   nativeResume?: {
     schema: "paperclip.runner.native-resume-proof/v1";
@@ -624,7 +649,7 @@ export function assertCapabilityLiveSessionSnapshot(
   }
   if (provider === "acpx") {
     const agent = config.acpxAgent;
-    if (agent !== "pi" && agent !== "claude" && agent !== "codex") {
+    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot") {
       throw new Error("capability_live_checkpoint_corrupt: invalid config.acpxAgent");
     }
     const expected = resolveQualifiedAcpxProfile(agent, text(config.requestedModel));
@@ -764,6 +789,24 @@ export function assertCapabilityLiveSessionSnapshot(
     }
     usageReceiptIds.add(receiptId);
   }
+  if (snapshot.usageUnavailable !== undefined && !Array.isArray(snapshot.usageUnavailable)) {
+    throw new Error("capability_live_checkpoint_corrupt: invalid unavailable usage");
+  }
+  const unavailableTurnIds = new Set<string>();
+  for (const value of snapshot.usageUnavailable ?? []) {
+    const unavailable = record(value);
+    const turnId = text(unavailable.turnId);
+    if (config.provider !== "acpx" || unavailable.agent !== config.acpxAgent
+      || !["pi", "cursor", "copilot"].includes(text(unavailable.agent))
+      || !turnId || turnId.length > 512 || unavailableTurnIds.has(turnId)
+      || !text(unavailable.attemptId) || text(unavailable.attemptId).length > 512
+      || !text(unavailable.observedAt)
+      || unavailable.reason !== "provider_did_not_report_usage"
+      || unavailable.tokenUsage !== null || unavailable.costNanodollars !== null) {
+      throw new Error("capability_live_checkpoint_corrupt: invalid unavailable usage");
+    }
+    unavailableTurnIds.add(turnId);
+  }
   if (
     snapshot.stateHistory !== undefined &&
     (!Array.isArray(snapshot.stateHistory) || snapshot.stateHistory.length > 256)
@@ -857,8 +900,10 @@ export class CapabilityLiveSessionService {
   }
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
-    if (input.provider === "acpx" && input.acpxAgent === "pi") {
-      throw new Error("The Pi ACPX profile is not available");
+    if (input.provider === "acpx" && input.acpxAgent !== undefined
+      && ["pi", "cursor", "copilot"].includes(input.acpxAgent)
+      && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
+      throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
     if (input.provider === "claude_managed" && !input.managedProfile) {
       throw new Error("Claude Managed live sessions require a qualified managed profile");
@@ -920,9 +965,9 @@ export class CapabilityLiveSessionService {
               ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
-          ? "1.18.17"
+          ? "1.18.32"
           : input.provider === "claude_managed"
-            ? input.managedProfile!.betaVersion
+            ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
               ? input.agentCoreProfile!.qualificationRevision
           : input.provider === "acpx" ? acpxProfile!.acpxVersion : null,
@@ -1141,6 +1186,7 @@ export class CapabilityLiveSession {
   readonly #attempts: CapabilityLiveAttemptSnapshot[];
   readonly #terminalTurns: CapabilityLiveTurnTerminalFact[];
   readonly #usageLedger: CapabilityLiveUsageReceipt[];
+  readonly #usageUnavailable: CapabilityLiveUnavailableUsage[];
   readonly #stateHistory: CapabilityLiveStateRevision[];
   readonly #workspaceDiffs: CapabilityLiveWorkspaceDiffEntry[];
   readonly #workspaceFileReferences: CapabilityLiveWorkspaceFileReferenceEntry[];
@@ -1150,6 +1196,7 @@ export class CapabilityLiveSession {
   #providerThreadId = "";
   #providerSessionId: string | null = null;
   #providerModel: { id: string; provider: string } | undefined;
+  #semanticResult: Record<string, CapabilityJsonValue> | null = null;
   #status: CapabilityLiveSessionStatus = "starting";
   #activeTurnId: string | null = null;
   #providerRunBinding: { runId: string; turnId: string; itemId: string } | null;
@@ -1198,6 +1245,7 @@ export class CapabilityLiveSession {
     this.#currentAttemptId = initialAttemptId;
     this.#terminalTurns = structuredClone(options.snapshot?.terminalTurns ?? []);
     this.#usageLedger = structuredClone(options.snapshot?.usageLedger ?? []);
+    this.#usageUnavailable = structuredClone(options.snapshot?.usageUnavailable ?? []);
     this.#stateHistory = structuredClone(options.snapshot?.stateHistory ?? [{
       revision: this.#port.snapshot().revision,
       at: this.#createdAt,
@@ -1213,6 +1261,11 @@ export class CapabilityLiveSession {
     this.#providerModel = options.snapshot?.providerModel === undefined
       ? undefined
       : structuredClone(options.snapshot.providerModel);
+    if (options.snapshot?.semanticResult) {
+      const validation = validateCodexResultProposal(options.snapshot.semanticResult, LIVE_COMPLETION_ENVELOPE);
+      if (validation.status !== "accepted") throw new Error("capability_live_invalid_semantic_result_checkpoint");
+      this.#semanticResult = jsonValue(validation.result) as Record<string, CapabilityJsonValue>;
+    }
     this.#activeTurnId = options.snapshot?.activeTurnId ?? null;
     this.#providerRunBinding = options.snapshot?.providerRunBinding === undefined
       ? null
@@ -1361,6 +1414,7 @@ export class CapabilityLiveSession {
       ...(this.#providerModel === undefined
         ? {}
         : { providerModel: structuredClone(this.#providerModel) }),
+      semanticResult: structuredClone(this.#semanticResult),
       status: this.#status,
       activeTurnId: this.#activeTurnId,
       ...(this.#providerRunBinding === null
@@ -1383,6 +1437,7 @@ export class CapabilityLiveSession {
       currentAttemptId: this.#currentAttemptId,
       terminalTurns: structuredClone(this.#terminalTurns),
       usageLedger: structuredClone(this.#usageLedger),
+      ...(this.#usageUnavailable.length === 0 ? {} : { usageUnavailable: structuredClone(this.#usageUnavailable) }),
       stateHistory: structuredClone(this.#stateHistory),
       workspaceDiffs: structuredClone(this.#workspaceDiffs),
       workspaceFileReferences: structuredClone(this.#workspaceFileReferences),
@@ -1478,6 +1533,7 @@ export class CapabilityLiveSession {
       settle: () => settleAdmission(),
     };
     this.#pendingTurnAdmission = admission;
+    this.#semanticResult = null;
     this.#status = "running";
     this.#clearIdleTimer();
     this.#turnEventCount = 0;
@@ -1546,7 +1602,6 @@ export class CapabilityLiveSession {
     // Arm the provider timeout only after bounded preflight succeeds. The
     // admission token excludes concurrent sends before this point.
     const terminal = this.#armTurnWaiter();
-    void terminal.catch(() => undefined);
     try {
       response = await admission.transport.request("turn/start", {
         threadId: this.#providerThreadId,
@@ -1656,7 +1711,8 @@ export class CapabilityLiveSession {
     }
     await this.#captureTurnUsage(
       result.turnId,
-      result.status !== "completed" || options.allowMissingUsage === true,
+      result.status !== "completed" || options.allowMissingUsage === true ||
+        (this.#config.provider === "acpx" && this.#config.acpxAgent === "grok"),
     );
     await this.#persist();
     await this.#afterTurnSettled();
@@ -1767,10 +1823,29 @@ export class CapabilityLiveSession {
           ...selected,
           costNanodollars: Math.max(selected.costNanodollars, reported?.costNanodollars ?? 0),
         };
-    if (
-      (selectedWithReportedCost?.inputTokens ?? 0) + (selectedWithReportedCost?.outputTokens ?? 0) === 0
-      && !allowEmpty
-    ) {
+    const missingTokens = (selectedWithReportedCost?.inputTokens ?? 0)
+      + (selectedWithReportedCost?.outputTokens ?? 0) === 0;
+    const candidate = this.#config.acpxAgent;
+    if (missingTokens && this.#config.provider === "acpx"
+      && (candidate === "pi" || candidate === "cursor" || candidate === "copilot")
+      && this.#transportOptions.acpxCandidateProfile === candidate) {
+      // Native candidate wrappers can complete a turn without a usage receipt,
+      // including entitlement-denied turns. Retain the actual result for the
+      // oracle without inventing tokens, charges, or a successful model call.
+      if (!this.#usageUnavailable.some((entry) => entry.turnId === turnId)) {
+        this.#usageUnavailable.push({
+          turnId,
+          attemptId: this.#currentAttemptId,
+          agent: candidate,
+          reason: "provider_did_not_report_usage",
+          tokenUsage: null,
+          costNanodollars: null,
+          observedAt: this.#now().toISOString(),
+        });
+      }
+      return;
+    }
+    if (missingTokens && !allowEmpty) {
       throw new Error(`capability_live_usage_missing:${JSON.stringify({
         captured: captured !== undefined,
         needsRead,
@@ -1780,6 +1855,10 @@ export class CapabilityLiveSession {
         totalKeys: Object.keys(total).sort(),
       })}`);
     }
+    // Grok 1.0.13 does not report verified token/cost measurements. Do not
+    // synthesize a zero receipt from the fallback when nothing was observed.
+    if (this.#config.provider === "acpx" && this.#config.acpxAgent === "grok" &&
+        (captured?.reported ?? captured?.raw ?? captured?.terminal) == null && Object.keys(total).length === 0) return;
     const finalUsage = selectedWithReportedCost ?? cumulativeFallback;
     await this.recordUsage({
       receiptId: `${turnId}:usage`,
@@ -1992,7 +2071,7 @@ export class CapabilityLiveSession {
 
   #armTurnWaiter(): Promise<Omit<CapabilityLiveTurnResult, "snapshot">> {
     if (this.#turnWaiter !== null) throw new Error("Capability live session already has a turn waiter");
-    return new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
+    const terminal = new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
       const timer = setTimeout(() => {
         const waiter = this.#turnWaiter;
         this.#turnWaiter = null;
@@ -2007,6 +2086,13 @@ export class CapabilityLiveSession {
       }, this.#config.turnTimeoutMs);
       this.#turnWaiter = { resolve, reject, timer, assistantText: "", draftId: null };
     });
+    // A caller may await this promise only after another `await` of its own
+    // (see `reconcileActiveTurn`). The timer above can reject before that
+    // point, so attach a no-op handler here, at creation, on every call
+    // site. `.catch()` returns a new promise; the original stays rejected
+    // and a later `await terminal` still observes it.
+    terminal.catch(() => undefined);
+    return terminal;
   }
 
   /** Interrupts and durably reconciles a checkpointed active turn after restart. */
@@ -2266,9 +2352,35 @@ export class CapabilityLiveSession {
       itemId: `item_lab_${identityDigest}`,
     };
     this.#providerRunBinding = providerRunBinding;
+    // PRP run-attach metadata binds server validation, but ACP providers receive
+    // only these system instructions. Make the same immutable contract visible
+    // without expanding the model's separately governed mock task authority.
+    const baseInstructions = [
+      this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+      "",
+      "Native completion report contract: " + JSON.stringify(LIVE_COMPLETION_CONTRACT),
+      "For paperclip_finish or paperclip_block, use that exact contract revision and criterion IDs. These tools report the current provider run result; they do not change mock task state. Mock task mutations still require separately authorized semantic tools and an explicit user request.",
+    ].join("\n");
+    const authorizedTools = this.#dispatcher.listTools(this.#authority.runId);
+    const tools = (this.#config.toolExposure ?? "eager") === "lazy"
+      ? authorizedTools.filter((tool) => tool.annotations.exposure === "always")
+      : authorizedTools;
+    const semanticTools = [
+      ...tools.map(dynamicToolSpec),
+      ...((this.#config.toolExposure ?? "eager") === "lazy" ? discoveryToolSpecs() : []),
+    ];
     const transportBundle = this.#transportFactory({
       ...this.#transportOptions,
       provider,
+      ...(provider === "opencode"
+        ? {
+            // Capability-live sessions expose only governed semantic tools and
+            // use approvalPolicy=never. Keep OpenCode's ambient shell/file
+            // tools fail-closed instead of brokering broader permissions.
+            opencodePermissionMode:
+              this.#transportOptions.opencodePermissionMode ?? "deny",
+          }
+        : {}),
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
       } : {}),
@@ -2292,6 +2404,7 @@ export class CapabilityLiveSession {
         : {}),
       lifecyclePolicy: this.#config.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
       resumeActiveTurnId: resume ? this.#activeTurnId : null,
+      ...(resume ? { resumeDynamicTools: semanticTools } : {}),
       stateDirectory: resolve(this.#config.workingDirectory, ".paperclip-runner-prp", identityDigest),
       prpIdentity: {
         runnerInstanceId: `runner_lab_${identityDigest}`,
@@ -2324,10 +2437,7 @@ export class CapabilityLiveSession {
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     this.#transport.notify("initialized");
-    const authorizedTools = this.#dispatcher.listTools(this.#authority.runId);
-    const tools = (this.#config.toolExposure ?? "eager") === "lazy"
-      ? authorizedTools.filter((tool) => tool.annotations.exposure === "always")
-      : authorizedTools;
+
     this.#appendEvidence("tool_exposure", null, {
       operationIds: tools.map((tool) => tool.name),
       scenarioId: this.#config.scenario.id,
@@ -2369,7 +2479,7 @@ export class CapabilityLiveSession {
         config: createSkilllessCodexThreadConfig(this.#config.workingDirectory),
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2394,11 +2504,9 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
-        dynamicTools: [
-          ...tools.map(dynamicToolSpec),
-          ...((this.#config.toolExposure ?? "eager") === "lazy" ? discoveryToolSpecs() : []),
-        ],
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
+        completionContract: LIVE_COMPLETION_CONTRACT,
+        dynamicTools: [...semanticTools, ...codexSemanticToolSpecs()],
         experimentalRawEvents: true,
         persistExtendedHistory: true,
       });
@@ -2489,6 +2597,31 @@ export class CapabilityLiveSession {
         contentItems: [{ type: "inputText", text: "Tool call was outside the active Capability thread and turn." }],
       };
     }
+    if (isCodexSemanticTool(operationId)) {
+      // Native completion is an advisory run report. It cannot mutate the mock
+      // task, bypass semantic claims, or substitute for provider turn settlement.
+      if (terminalReplay || !isRetainableCodexPayload(request.params.arguments)) {
+        return rejectedCodexToolCall("Native completion requires a bounded active-turn report.");
+      }
+      const validation = validateCodexResultProposal(request.params.arguments, LIVE_COMPLETION_ENVELOPE);
+      if (validation.status !== "accepted" || !codexToolAcceptsResult(operationId, validation.result)) {
+        return rejectedCodexToolCall("Native completion must match the current completion contract and tool disposition.");
+      }
+      const result = jsonValue(validation.result) as Record<string, CapabilityJsonValue>;
+      if (this.#semanticResult !== null && JSON.stringify(this.#semanticResult) !== JSON.stringify(result)) {
+        return rejectedCodexToolCall("A different native completion report was already accepted for this turn.");
+      }
+      const runResult = liveRunResultFeedback(operationId, request.params.arguments, LIVE_COMPLETION_CONTRACT.revision);
+      if (!runResult?.ok) {
+        return rejectedCodexToolCall("Native completion does not satisfy the current run result contract.");
+      }
+      this.#semanticResult = result;
+      const revision = this.#port.snapshot().revision;
+      this.#appendEvidence("tool_call", turnId, { callId, operationId, input: jsonValue(request.params.arguments), beforeRevision: revision });
+      this.#appendEvidence("tool_result", turnId, { callId, operationId, result: jsonValue(runResult), beforeRevision: revision, afterRevision: revision });
+      await this.#persist();
+      return this.#codexToolResponse(runResult);
+    }
     if (operationId === DISCOVER_TOOL) {
       const args = record(request.params.arguments);
       try {
@@ -2554,7 +2687,15 @@ export class CapabilityLiveSession {
       this.#recordTerminalFact(this.#durableReplayTurnId(turnId), "completed");
     }
     await this.#persist();
-    return this.#codexToolResponse(result);
+    // The durable provider bridge correlates the outer semantic result with
+    // the exact dynamic tool Codex called. Keep the dispatched operation in
+    // evidence, but preserve the discovery gateway identity on the response
+    // envelope returned to runnerd.
+    const providerResult =
+      operationId === INVOKE_DISCOVERED_TOOL
+        ? { ...result, operationId, callId }
+        : result;
+    return this.#codexToolResponse(providerResult);
   }
 
   #isDurableTerminalReplay(turnId: string, input: unknown): boolean {
@@ -2579,7 +2720,7 @@ export class CapabilityLiveSession {
     return `${interruptedTurnId}:durable-duplicate-replay`;
   }
 
-  #codexToolResponse(result: CapabilitySemanticToolResult): Record<string, unknown> {
+  #codexToolResponse(result: { readonly ok: boolean }): Record<string, unknown> {
     return {
       success: result.ok,
       contentItems: [{

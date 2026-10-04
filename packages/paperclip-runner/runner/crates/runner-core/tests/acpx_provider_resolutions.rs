@@ -50,7 +50,9 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
         expected_identity: None,
     }
@@ -97,9 +99,9 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
         .unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
     assert!(session.state().pending_question_set("input-1").is_none());
-    assert!(session
+    session
         .deliver_tool_result(&tool_result("issues.read"))
-        .is_err());
+        .expect("an identical result replay must be idempotent");
     session.shutdown("test complete").unwrap();
 }
 
@@ -123,6 +125,7 @@ fn projected_request_id_resolves_the_exact_upstream_sidecar_request() {
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
             item_id: "item-1".to_owned(),
         },
         &input,
@@ -197,7 +200,9 @@ fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
     failed.operation_id = "issues.read".to_owned();
     session.deliver_tool_result(&failed).unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
-    assert!(session.deliver_tool_result(&failed).is_err());
+    session
+        .deliver_tool_result(&failed)
+        .expect("the failure receipt also deduplicates");
     session.shutdown("test complete").unwrap();
 }
 
@@ -257,4 +262,43 @@ fn fails_closed_when_a_resolution_is_not_acknowledged() {
         .to_string();
     assert!(error.contains("did not confirm tool resolution"), "{error}");
     assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
+fn interactive_permission_requires_an_offered_action_and_acknowledgement() {
+    for mode in ["permissions-interactive", "permissions-wrong-ack"] {
+        let mut cfg = config(mode);
+        cfg.agent = "claude".to_owned();
+        cfg.model = "claude-sonnet-5".to_owned();
+        let mut session = AcpxProviderSession::start(&cfg).unwrap();
+        session
+            .start_turn("turn-1", "Run validation", &std::env::temp_dir())
+            .unwrap();
+        session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(session.state().pending_permission("permission-1").is_some());
+        assert!(session
+            .resolve_permission("permission-1", "old-turn", &json!({"action":"accept"}))
+            .is_err());
+        assert!(session
+            .resolve_permission(
+                "permission-1",
+                "turn-1",
+                &json!({"action":"accept_for_session"})
+            )
+            .is_err());
+        assert!(session.state().pending_permission("permission-1").is_some());
+        let result =
+            session.resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}));
+        if mode == "permissions-wrong-ack" {
+            assert!(result.is_err());
+            assert!(session.state().pending_permission("permission-1").is_some());
+        } else {
+            result.unwrap();
+            assert!(session.state().pending_permission("permission-1").is_none());
+            assert!(session
+                .resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}))
+                .is_err());
+        }
+        session.shutdown("verified").unwrap();
+    }
 }

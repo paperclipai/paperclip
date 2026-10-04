@@ -5,6 +5,33 @@ compatibility method. Cloud owns the fixed public OAuth callback and signed
 webhook inbox; provider tokens are sealed to the enrolled instance and stored
 only in its existing encrypted secret system.
 
+## Catalog entries
+
+**GitHub** connects an account for repository tools, Git, and `gh`, and opens
+Access → Connect directly. **GitHub Code Review Bot** connects one agent to a
+GitHub App for pull-request reviews and mentions, and opens Choose agent directly.
+The bot entry follows the Chat Connectors experimental setting.
+
+Both entries reuse the existing GitHub integrations. Bot endpoints retain the
+`github` provider identity and existing setup, reconnect, and management URLs;
+saved bot connections and drafts appear under GitHub Code Review Bot. GitHub
+repository and MCP URLs still resolve to the ordinary GitHub tool connection.
+
+## Self-hosted setup
+
+The setup screen states the default access in one line, with **Change** for
+other choices. **Continue to GitHub** on that screen starts the provider
+handoff.
+
+A self-hosted instance needs one Paperclip Cloud approval before its first
+managed connection. After approval, setup returns to the connect screen and continues to
+GitHub without another instance approval or a service restart.
+
+If an unapproved enrollment link expires, return to setup and select
+**Continue**. Paperclip asks the server for a valid link. The server reuses a
+live pending enrollment or replaces an expired one; this does not revoke or
+repeat an existing instance approval.
+
 ## Identity resolution
 
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,
@@ -54,15 +81,59 @@ installation-health failure, not as token expiry.
 
 ## Repository access
 
-OAuth completion verifies `/user`, `/user/installations`, and each
-installation's accessible repository count. Setup remains incomplete until at
-least one installation and repository are available. Paperclip stores user and
-installation summaries, not a repository-name cache. GitHub stays authoritative:
-removed repository access fails immediately even if a displayed count is stale.
+OAuth completion verifies `/user`, every page of `/user/installations`, and every
+page of each installation's accessible repositories. Setup remains incomplete
+until at least one installation and repository are available. Paperclip stores
+the authenticated username and a grant-scoped display snapshot containing only
+repository IDs, full names, installation IDs, and private-repository flags. GitHub stays authoritative:
+this snapshot never authorizes repository access.
 
-The Apps UI links to GitHub's installation management page and offers
-**Refresh access**. Selected repositories are recommended. Choosing all
-repositories requires an explicit warning in setup.
+The permissions page shows repositories across authorized accounts by default.
+Use the account filter and search to narrow the list. The list scrolls after
+about ten rows and marks known private repositories with a lock. Configure on
+GitHub opens the app account chooser so users can add or update organization
+access. Refresh access after changing the selection. Older snapshots omit the
+private flag until refreshed. If a legacy grant lacks its app chooser URL,
+**Load GitHub configuration** refreshes access and recovers the app slug from
+GitHub installation metadata. The page does not substitute a single-installation
+settings URL for the account chooser.
+
+The permissions page shows the authenticated GitHub account and the complete
+accessible repository list. **Refresh access** reloads it from GitHub. Older
+grants and grants invalidated by newer installation lifecycle events prompt for a
+refresh instead of presenting a stale list. The page links to GitHub's
+installation management page. Selected repositories are recommended; all-
+repository access retains its warning.
+
+Fresh local test-drives use production Paperclip Cloud. Instance enrollment
+and provider enablement are separate: enrollment alone does not enable GitHub
+OAuth. Production must advertise the `github.code` profile (see Cloud's
+`docs/github-connector-deploy-bootstrap.md`). If it is unavailable, setup
+preserves the sign-in intent and offers a retry instead of silently switching
+to a personal access token. A successful retry preserves the chosen audience.
+
+## GitHub Actions tools
+
+Managed and PAT connections request `X-MCP-Toolsets: default,actions` for MCP
+discovery and invocation. GitHub's default catalog excludes Actions; granting
+Actions permissions alone does not expose workflow tools. Existing connections
+can use **Refresh actions** after upgrading to discover the added tools.
+The normal catalog, access, approval, and quarantine rules still apply.
+
+To dispatch an existing workflow, use `actions_run_trigger` with
+`method: "run_workflow"`, the repository owner and name, `workflow_id`, `ref`,
+and any workflow `inputs`. The workflow must declare `workflow_dispatch`.
+The GitHub App installation or fine-grained PAT needs **Actions: Read and
+write** for the repository. App owners set that permission on the GitHub App
+registration; installation owners must approve an increase before it takes
+effect. Paperclip's action controls do not grant GitHub permissions.
+
+The tool also supports rerunning and cancelling runs and deleting run logs.
+It retains GitHub's destructive classification. Read tools include
+`actions_list`, `actions_get`, and `get_job_logs`.
+
+Provider references: [MCP toolset configuration](https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md)
+and [workflow dispatch permissions](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
 
 ## Webhooks
 

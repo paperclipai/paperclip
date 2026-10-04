@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "../agent-appearance.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
 import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
@@ -217,6 +218,7 @@ export interface CompanyPortabilityAgentManifestEntry {
   role: string;
   title: string | null;
   icon: string | null;
+  appearance?: AgentAppearance | null;
   capabilities: string | null;
   reportsToSlug: string | null;
   reportsToExistingAgentId: string | null;

@@ -1,9 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
+import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/sidecar-protocol.js";
+import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
 import {
   awaitSidecarCleanupWithin,
   closeActiveSidecarHostWithin,
@@ -29,6 +34,96 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it.each(["pi", "copilot", "cursor", "codex", "claude"])("offers verified session permission grants only for %s", async agent => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const start = source.indexOf("  const { signal } = context;", source.indexOf("async function waitForPermission"));
+    const end = source.indexOf("\nasync function waitForInput", start);
+    expect(start).toBeGreaterThan(0);
+    const permissions = new Map<string, unknown>();
+    const emitted: Array<{ choices: Array<{ key: string }> }> = [];
+    const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
+      `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
+       const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
+       return async function(activeTurnId, request, context) { ${source.slice(start, end)}`)(
+      permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }> }) => emitted.push(payload),
+    );
+    const abort = new AbortController();
+    const pending = wait("turn-1", { sessionId: "session", inferredKind: "edit", raw: {
+      sessionId: "session", toolCall: { toolCallId: "call", title: "Edit file" },
+      options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ kind, optionId: kind, name: kind })),
+    } }, { signal: abort.signal, responseDelivery: Promise.resolve() });
+    expect(emitted[0]!.choices.some(choice => choice.key === "accept_for_session")).toBe(agent === "pi" || agent === "copilot");
+    abort.abort();
+    await expect(pending).resolves.toEqual({ outcome: "cancel" });
+    expect(permissions.size).toBe(0);
+  });
+  it("preserves ACP input presence through the bounded sidecar handoff", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)),
+      "utf8",
+    );
+    const start = source.indexOf("function boundRuntimeEventForNormalization");
+    const end = source.indexOf("\nfunction sanitizeRuntimeEvent", start);
+    if (start < 0 || end < 0) throw new Error("sidecar normalization source not found");
+    const functionSource = source
+      .slice(start, end)
+      .replace(
+        /function boundRuntimeEventForNormalization\(\n  event: AcpRuntimeEvent,\n\): AcpRuntimeEvent \{/,
+        "function boundRuntimeEventForNormalization(event) {",
+      )
+      .replace("  } as BoundedRuntimeToolEvent;", "  };");
+    const bound = new Function(
+      "boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      `return (${functionSource});`,
+    )(
+      (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
+      (value: string) => value,
+      () => [],
+      null,
+      () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+    ) as (event: Record<string, unknown>) => Record<string, unknown>;
+    const bounded = bound({
+      type: "tool_call", toolCallId: "provider-tool", title: "search", kind: "other",
+      status: "pending", rawInput: { secret: "must not cross" }, rawOutput: null,
+    });
+    expect(bounded.inputUpdated).toBe(true);
+    expect(bounded).not.toHaveProperty("rawInput");
+    const canonical = canonicalProviderEventsFromAcpxRuntimeEvent(bounded as never, "fallback")[0]!;
+    expect(canonical.payload).toMatchObject({ inputUpdated: true });
+    expect(JSON.stringify(canonical.payload)).not.toContain("must not cross");
+    expect(source).toContain("? boundedTool.inputUpdated");
+  });
+
+  it.each(["paperclip_finish", "paperclip_block"])(
+    "bounds pending %s calls before reserved handling and resumes admission",
+    async (operationId) => {
+      const tools = new Map<string, unknown>();
+      for (let index = 0; index < 512; index++) tools.set(`pending-${index}`, {});
+      const emitted: unknown[] = [];
+      const waitForTool = loadWaitForTool({ tools, emitted });
+      const signal = new AbortController();
+      await expect(waitForTool({
+        callId: `${operationId}-at-capacity`, tool: operationId,
+        arguments: operationId === "paperclip_block" ? { reportedWorkDisposition: "blocked" } : { reportedWorkDisposition: "done" },
+        signal: signal.signal,
+      })).rejects.toThrow("ACPX pending tool limit reached");
+      expect(emitted).toEqual([]);
+      expect(tools.size).toBe(512);
+
+      tools.delete("pending-0");
+      const admitted = waitForTool({
+        callId: `${operationId}-after-release`, tool: operationId,
+        arguments: operationId === "paperclip_block" ? { reportedWorkDisposition: "blocked" } : { reportedWorkDisposition: "done" },
+        signal: signal.signal,
+      });
+      await Promise.resolve();
+      expect(tools.has(`${operationId}-after-release`)).toBe(true);
+      signal.abort();
+      await expect(admitted).rejects.toThrow("ACPX tool call was cancelled");
+      expect(tools.size).toBe(511);
+    },
+  );
+
   it("shuts down without using readline after stdin closes", async () => {
     const sidecar = startSidecar();
     sidecar.write(initializeRequest(1, "codex"));
@@ -459,12 +554,27 @@ describe("qualified ACPX runtime sidecar", () => {
     },
   );
 
+  it.each([
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
+    ["cursor", "explicit-cursor-model"],
+    ["copilot", "explicit-copilot-model"],
+  ] as const)("initializes the declared %s candidate without promoting its profile", async (agent, model) => {
+    const sidecar = startSidecar();
+    sidecar.write(initializeRequest(1, agent, model));
+    const frame = await sidecar.next((value) => value.id === 1);
+    expect(frame).toMatchObject({ id: 1, ok: true });
+    const result = frame.result as Record<string, unknown>;
+    expect(result.profile).toEqual(resolveQualifiedAcpxProfile(agent, model));
+    expect(result.profile).toMatchObject({ reportedModelId: model });
+    expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe("pending");
+  });
+
   it("fails closed after an unsupported provider bootstrap", async () => {
     const sidecar = startSidecar();
     sidecar.write(
       initializeRequest(
         1,
-        "pi",
+        "unknown-provider",
         "openrouter/deepseek/deepseek-v4-flash-0731",
       ),
     );
@@ -476,7 +586,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude or codex",
+        message: "ACPX agent must be claude, codex, grok, cursor, copilot, or pi",
         retryable: false,
       },
     });
@@ -601,4 +711,43 @@ class SidecarProcess {
     });
     await Promise.race([exit, timeout]);
   }
+}
+
+function loadWaitForTool(input: {
+  tools: Map<string, unknown>;
+  emitted: unknown[];
+}): (call: { callId: string; tool: string; arguments: Record<string, unknown>; signal: AbortSignal }) => Promise<unknown> {
+  const source = readFileSync(
+    fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)),
+    "utf8",
+  );
+  const start = source.indexOf("async function waitForTool");
+  const end = source.indexOf("\nasync function waitForPermission", start);
+  if (start < 0 || end < 0) throw new Error("waitForTool source not found");
+  const functionSource = source
+    .slice(start, end)
+    .replace(
+      "async function waitForTool(call: RunnerToolCall): Promise<unknown>",
+      "async function waitForTool(call)",
+    );
+  const factory = new Function(
+    "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
+    "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS",
+    `return (${functionSource});`,
+  );
+  return factory(
+    (value: string) => value,
+    input.tools,
+    "test-turn",
+    (_eventType: string, payload: unknown) => input.emitted.push(payload),
+    "paperclip_finish",
+    "paperclip_block",
+    (argumentsValue: unknown) => ({
+      ok: true,
+      result: argumentsValue,
+    }),
+    (value: unknown) => value,
+    (value: unknown) => value,
+    512,
+  );
 }

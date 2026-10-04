@@ -1,3 +1,4 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
 import type {
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
@@ -140,6 +141,7 @@ export function isSupportedCodexNotificationMethod(method: string): boolean {
     method === "model/verification" ||
     method === "model/safetyBuffering/updated" ||
     method.startsWith("item/") ||
+    method === "paperclip/canonicalProviderEvent" ||
     method === "paperclip/workspaceChange/updated" ||
     method === "paperclip/runResult" ||
     method === "turn/diff/updated" ||
@@ -203,10 +205,11 @@ export function safeCodexRequestResponse(
   method: string,
   action: "decline" | "cancel" = "decline",
 ): Record<string, unknown> {
+  if (method === "session/request_permission") return { action: "cancel" };
   if (method === "item/permissions/requestApproval") {
     return { permissions: {}, scope: "turn" };
   }
-  if (method === "mcpServer/elicitation/request") {
+  if (method === "mcpServer/elicitation/request" || isAcpxCanonicalInputMethod(method)) {
     return { action, content: null, _meta: null };
   }
   if (

@@ -43,8 +43,10 @@ export async function createAcpxRecoveryBinding(input: {
   profile: QualifiedAcpxProfile;
   requestedModel: string;
   permissionMode: NativeAcpxPermissionMode;
+  providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
 }): Promise<AcpxRecoveryBinding> {
   validateIdentity(input.normalizedSessionId, "normalized session");
+  if (input.providerPolicy !== undefined && typeof input.providerPolicy.readOnly !== "boolean") throw new Error("ACPX recovery requires a valid task execution policy");
   if (input.requestedModel !== input.profile.qualificationModel) {
     throw new Error("ACPX recovery requested an unqualified model");
   }
@@ -72,6 +74,11 @@ export async function createAcpxRecoveryBinding(input: {
       qualificationModel: input.profile.qualificationModel,
       reportedModelId: input.profile.reportedModelId,
       permissionPolicy: input.profile.permissionPolicy,
+      ...(input.providerPolicy === undefined ? {} : { executionPolicy: {
+        readOnly: input.providerPolicy.readOnly,
+        readRoots: input.providerPolicy.readRoots ?? [],
+        protectedPaths: input.providerPolicy.protectedPaths ?? [],
+      } }),
     }),
   );
   const profileSessionKey = digest(
@@ -307,6 +314,18 @@ export async function resolveAcpxRuntimeRoot(
     throw new Error("ACPX runtime directory must be a directory");
   if (root === dirname(root))
     throw new Error("ACPX runtime directory must not be a filesystem root");
+  return join(
+    resolve(root),
+    "acpx",
+    acpxRuntimeSessionDirectoryName(sessionId),
+  );
+}
+
+/**
+ * Return the stable, filesystem-safe directory name used for one normalized
+ * ACPX session below the runtime's `acpx` namespace.
+ */
+export function acpxRuntimeSessionDirectoryName(sessionId: string): string {
   const readable = sessionId
     .replace(/[^a-zA-Z0-9._-]/g, "_")
     .replace(/^\.+$/, "session")
@@ -315,7 +334,7 @@ export async function resolveAcpxRuntimeRoot(
     .update(sessionId)
     .digest("hex")
     .slice(0, 16);
-  return join(resolve(root), "acpx", `${readable || "session"}-${suffix}`);
+  return `${readable || "session"}-${suffix}`;
 }
 
 function validateIdentity(
@@ -339,7 +358,7 @@ function isDigest(value: unknown): value is string {
 function isPermissionMode(value: unknown): value is NativeAcpxPermissionMode {
   return (
     typeof value === "string" &&
-    ["approve-all", "approve-reads", "deny-all"].includes(value)
+    ["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(value)
   );
 }
 

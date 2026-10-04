@@ -230,21 +230,23 @@ describe("IssueRow", () => {
     act(() => root.unmount());
   });
 
-  it("keeps canonical leading geometry independent of unread state", () => {
+  it("keeps read and unread rows aligned while allowing a smaller plain-row gutter", () => {
     const root = createRoot(container);
     act(() => {
       root.render(
         <>
           <IssueRow issue={createIssue({ id: "read" })} presentation="task" unreadState="hidden" />
           <IssueRow issue={createIssue({ id: "plain" })} presentation="task" />
+          <IssueRow issue={createIssue({ id: "unread" })} presentation="task" unreadState="visible" />
         </>,
       );
     });
 
     const rows = Array.from(container.querySelectorAll('[data-slot="task-row"]'));
     const unreadSlot = rows[0]?.querySelector('[data-testid="issue-row-unread-slot"]');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]?.className).toBe(rows[1]?.className);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.className).toBe(rows[2]?.className);
+    expect(rows[1]?.className).toContain("pl-2 sm:pl-4");
     expect(unreadSlot).not.toBeNull();
     expect(unreadSlot?.className).toContain("absolute");
     expect(unreadSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
@@ -768,6 +770,18 @@ describe("IssueRow", () => {
       });
       return snapshot;
     }
+
+    it("shows native export activity from the action even without a scheduled retry", () => {
+      const issue = recoveryIssue(at(-5 * 60_000));
+      Object.assign(issue.activeRecoveryAction!, {
+        kind: "active_run_watchdog", cause: "native_finalization_invalid",
+        wakePolicy: { kind: "resume_native_run", runId: "native-run", notBefore: at(-5 * 60_000) },
+        nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+      });
+      const chip = renderChip(issue);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).not.toContain("missed");
+    });
 
     it("stays calm while the next attempt is still ahead", () => {
       const chip = renderChip(recoveryIssue(at(3 * 60_000)));

@@ -63,7 +63,8 @@ describe("Codex app-server Codex driver", () => {
     ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
     const iterator = session.events()[Symbol.asyncIterator]();
     const events: PrpEvent[] = [];
-    for (let index = 0; index < 6; index += 1) {
+    // PRP v2 emits capability and goal snapshots before turn events.
+    for (let index = 0; index < 8; index += 1) {
       const next = await iterator.next();
       if (next.value) events.push(next.value);
     }

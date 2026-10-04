@@ -5,7 +5,8 @@ use std::fmt::{self, Display, Formatter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PRP_PROTOCOL_VERSION: u64 = 1;
+pub const PRP_PROTOCOL_MIN_VERSION: u64 = 1;
+pub const PRP_PROTOCOL_VERSION: u64 = 2;
 const PRP_FIXTURE_VERSION: u64 = 1;
 const PRP_FIXTURE_SCHEMA: &str = "paperclip.prp.fixture.v1";
 const PRP_EVENT_SCHEMA: &str = "paperclip.prp.event.v1";
@@ -90,9 +91,9 @@ impl Error for ReplayError {}
 pub fn reduce_replay_fixture(input: &str) -> Result<ReplayParitySummary, ReplayError> {
     let fixture: ReplayFixture = serde_json::from_str(input)
         .map_err(|error| ReplayError::invalid(format!("fixture must be valid JSON: {error}")))?;
-    if fixture.protocol_version != PRP_PROTOCOL_VERSION {
+    if !(PRP_PROTOCOL_MIN_VERSION..=PRP_PROTOCOL_VERSION).contains(&fixture.protocol_version) {
         return Err(ReplayError::invalid(format!(
-            "unsupported required protocolVersion {}; expected {PRP_PROTOCOL_VERSION}",
+            "unsupported required protocolVersion {}; expected {PRP_PROTOCOL_MIN_VERSION}-{PRP_PROTOCOL_VERSION}",
             fixture.protocol_version
         )));
     }
@@ -340,10 +341,10 @@ mod tests {
         let error = reduce_replay_fixture(include_str!(
             "../../../../protocol/fixtures/replay/unsupported-required-version.json"
         ))
-        .expect_err("PRP v2 fixture must fail closed");
+        .expect_err("PRP v3 fixture must fail closed");
         assert!(error
             .to_string()
-            .contains("unsupported required protocolVersion 2"));
+            .contains("unsupported required protocolVersion 3"));
     }
 
     #[test]

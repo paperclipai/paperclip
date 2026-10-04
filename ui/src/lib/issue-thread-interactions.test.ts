@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pendingRequestConfirmationInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
@@ -10,6 +11,7 @@ import {
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
   interactionReplacesComposerSkip,
+  interactionReadinessRefetchInterval,
   isDegenerateAskUserQuestions,
   isSupersededByNewerSiblingInteraction,
   shouldHideInteractionCard,
@@ -311,6 +313,38 @@ describe("issue thread interaction helpers", () => {
       status: "expired",
       result: { version: 1, outcome: "stale_target" },
     })).toBe("Selection expired after target changed");
+  });
+
+  it("uses a confirmation's explicit rejection action in its receipt", () => {
+    const base = {
+      id: "interaction-confirmation",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation" as const,
+      status: "rejected" as const,
+      continuationPolicy: "wake_assignee" as const,
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:01:00.000Z",
+      result: { version: 1 as const, outcome: "rejected" as const },
+    };
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+    })).toBe("Selected “Continue work”");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed?",
+      },
+    })).toBe("Declined request");
   });
 
   it("maps selected checkbox option ids back to labels", () => {
@@ -679,5 +713,16 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     });
     expect(isSupersededByNewerSiblingInteraction(degenerate)).toBe(false);
     expect(shouldHideInteractionCard(degenerate)).toBe(true);
+  });
+});
+
+
+describe("interaction readiness polling", () => {
+  it("uses a fast cadence only for pending preparation and preserves the idle fallback", () => {
+    const preparing = { ...pendingRequestConfirmationInteraction, acceptanceBlocker: "workspace_sync_pending" as const };
+    expect(interactionReadinessRefetchInterval([preparing], 20_000)).toBe(2_000);
+    expect(interactionReadinessRefetchInterval([pendingRequestConfirmationInteraction], 20_000)).toBe(20_000);
+    expect(interactionReadinessRefetchInterval([{ ...preparing, status: "expired" }])).toBe(false);
+    expect(interactionReadinessRefetchInterval(undefined)).toBe(false);
   });
 });

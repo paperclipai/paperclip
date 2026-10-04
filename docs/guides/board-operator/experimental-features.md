@@ -18,6 +18,9 @@ If you need stable behavior for an important workflow, do not rely on an experim
 ## Where you enable them
 
 Board operators enable or disable experiments from **Instance Settings > Experimental** in the app.
+Controls are listed alphabetically within each section. Hosting operators can hide
+controls they manage; empty developer and legacy sections are omitted. Hidden
+controls retain their configured values.
 
 The CLI exposes the same surface:
 
@@ -27,6 +30,21 @@ npx paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 
 Those commands change the same opt-in settings that the UI manages.
+
+## Chat connectors
+
+**Chat connectors** is off by default. Enable it to connect a dedicated
+Slack, GitHub, Microsoft Teams, Telegram, or Discord bot to one Paperclip
+agent. The experiment shows chat setup, connection management, agent channels,
+and external task controls.
+
+When it is off, existing production tool connectors remain available. For
+example, GitHub opens its normal tool connection flow without asking you to
+choose between chat and tools.
+
+This setting controls visibility. Turning it off does not disconnect an
+existing bot or stop its messages. To stop a connection, pause it from its
+chat connection settings before turning off the experiment.
 
 ## When to use them
 

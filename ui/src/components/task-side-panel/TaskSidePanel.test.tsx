@@ -7,6 +7,8 @@ import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
+  taskPanelAgentTasksTab,
+  taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
   writeTaskSidePanelState,
@@ -23,6 +25,9 @@ class ResizeObserverStub {
 
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
+vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
+vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
 const fixture = vi.hoisted(() => ({
   documents: [] as IssueDocument[] | undefined,
   plan: null as IssueDocument | null | undefined,
@@ -69,9 +74,23 @@ vi.mock("@/components/task-detail/TaskDetailRelationsPanel", () => ({
   ),
 }));
 
+const agentChat = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@/hooks/useAgentChatEnabled", () => ({
+  useAgentChatEnabled: () => ({ enabled: agentChat.enabled, loaded: true }),
+}));
+
+vi.mock("@/components/chat/AgentWorkPanels", () => ({
+  AgentTasksPanel: ({ agentId, excludeIssueId }: { agentId: string; excludeIssueId?: string }) => (
+    <div>{`Agent tasks ${agentId} excluding ${excludeIssueId}`}</div>
+  ),
+  AgentArtifactsPanel: ({ agentId }: { agentId: string }) => <div>{`Agent artifacts ${agentId}`}</div>,
+}));
+
 vi.mock("@/components/WorkspaceFileBrowser", () => ({
   WorkspaceFileBrowser: () => <div>Files browser</div>,
 }));
+
+vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
   TaskDocumentPanel: ({ documentKey }: { documentKey: string }) => <div>{`Document ${documentKey}`}</div>,
@@ -111,6 +130,8 @@ describe("TaskSidePanel", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    browserFixture.data = [];
+    browserFixture.control.mockClear();
     fixture.documents = [];
     fixture.plan = null;
     routeFixture.location.search = "";
@@ -158,10 +179,260 @@ describe("TaskSidePanel", () => {
     );
   }
 
+  it("opens, deduplicates, switches and closes text attachment tabs", async () => {
+    const onAttachmentOpened = vi.fn();
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 1 }, onAttachmentOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    expect(container.textContent).toContain("Text file file-1");
+    expect(onAttachmentOpened).toHaveBeenCalledOnce();
+    await render(panel({ openAttachment: { id: "file-2", title: "summary.txt", requestId: 2 } }));
+    await render(panel({ openAttachment: { id: "file-1", title: "AGENTS.md", requestId: 3 } }));
+    expect(container.querySelectorAll('[data-side-panel-tab-target="attachment:file-1"]')).toHaveLength(1);
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close AGENTS.md"]')?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="attachment:file-1"]')).toBeNull();
+  });
+
+  it("lets an attachment request take focus from a workspace-file route", async () => {
+    routeFixture.location.search = "?file=README.md&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
+    expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
+  });
+
+  it("keeps a live browser mounted across tab switches and only hides it on close", async () => {
+    const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    browserFixture.data = [{ id, sessionId: id, issueId: "task-1", status: "running", runStatus: "running", progress: null, error: null, costCents: 0, idleDeadline: null, expiresAt: null, createdAt: new Date().toISOString() }];
+    await render(panel({ openBrowserId: id }));
+    const iframe = container.querySelector("iframe");
+    expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(iframe?.getAttribute("src")).toContain("test-viewer");
+    await render(panel());
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(container.querySelector("iframe")).toBe(iframe);
+    expect(iframe?.closest("[hidden]")).toBeTruthy();
+    expect(localStorage.getItem("paperclip:task-side-panel:v1:user-1:company-1")).not.toContain("test-viewer");
+    await act(async () => container.querySelector<HTMLButtonElement>(`[id="side-panel-tab-browser:${id}"]`)?.click());
+    const close = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.getAttribute("aria-label")?.startsWith("Close Browser"));
+    expect(close).toBeTruthy();
+    await act(async () => close?.click());
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(browserFixture.control).not.toHaveBeenCalled();
+  });
+
+  it("commits a follow-up browser before acknowledging the open request", async () => {
+    const first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const acknowledged = vi.fn(() => {
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe(`side-panel-tab-browser:${next}`);
+      expect(localStorage.getItem("paperclip:task-side-panel:v1:user-1:company-1")).toContain(next);
+    });
+    await render(panel({ openBrowserId: first }));
+    await render(panel({ openBrowserId: next, onBrowserOpened: acknowledged }));
+    expect(acknowledged).toHaveBeenCalledTimes(1);
+    await render(panel());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe(`side-panel-tab-browser:${next}`);
+  });
+
+  it("opens an agent chat on the agent's tasks, not the conversation's artifacts", async () => {
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+    const selected = container.querySelector('[role="tab"][aria-selected="true"]');
+    expect(selected?.getAttribute("data-side-panel-tab-target")).toBe("agent-tasks");
+    expect(selected?.textContent).toContain("Tasks");
+    expect(container.textContent).toContain("Agent tasks agent-1 excluding task-1");
+    expect(container.textContent).not.toContain("Artifacts content");
+  });
+
+  it("keeps an Artifacts-only layout the user chose", async () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelArtifactsTab()], activeTabId: "artifacts" },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: false,
+      updatedAt: 1,
+    });
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+    expect(Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["artifacts"]);
+  });
+
+  it("falls back to Artifacts when Agent Chat is off and only the Tasks tab was saved", async () => {
+    agentChat.enabled = false;
+    try {
+      writeTaskSidePanelState("user-1", "company-1", "task-1", {
+        state: { tabs: [taskPanelAgentTasksTab()], activeTabId: "agent-tasks" },
+        launcherOpen: false,
+        userInteracted: true,
+        autoPlanHandled: false,
+        updatedAt: 1,
+      });
+      await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
+      expect(container.textContent).toContain("Artifacts content");
+    } finally {
+      agentChat.enabled = true;
+    }
+  });
+
+  it("moves a chat's stored Artifacts-only default onto the agent's tasks", async () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelArtifactsTab()], activeTabId: "artifacts" },
+      launcherOpen: false,
+      userInteracted: false,
+      autoPlanHandled: false,
+      updatedAt: 1,
+    });
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+    expect(Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["agent-tasks"]);
+  });
+
+  it("offers the agent's artifacts from the + launcher in an agent chat", async () => {
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }), streamlinedTabs: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const artifactsItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.includes("Artifacts"));
+    await act(async () => artifactsItem?.click());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
+    expect(container.textContent).toContain("Agent artifacts agent-1");
+    expect(container.textContent).not.toContain("Artifacts content");
+  });
+
+  it("keeps a chat on the conversation's own Artifacts while Agent Chat is off", async () => {
+    agentChat.enabled = false;
+    try {
+      await render(panel({ issue: issue({ conversationAgentId: "agent-1" }) }));
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
+      expect(container.textContent).toContain("Artifacts content");
+      expect(container.textContent).not.toContain("Agent tasks");
+    } finally {
+      agentChat.enabled = true;
+    }
+  });
+
   it("opens Properties on first visit", async () => {
     await render(panel());
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it("does not acknowledge a browser selection that could not be persisted", async () => {
+    const acknowledged = vi.fn();
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage")!;
+    const storage = window.localStorage;
+    const write = vi.fn(() => { throw new Error("storage full"); });
+    // jsdom Storage instances ignore an own-method spy. Replace the surface
+    // explicitly so this failure injection also works with native Storage.
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: { getItem: storage.getItem.bind(storage), setItem: write },
+    });
+    try {
+      await render(panel({ openBrowserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", onBrowserOpened: acknowledged }));
+      expect(write).toHaveBeenCalled();
+      expect(acknowledged).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(window, "localStorage", descriptor); }
+  });
+
+  it("offers the existing live browser from a closed tab and distinguishes session tabs", async () => {
+    const first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const shared = { issueId: "task-1", runStatus: "completed" as const, progress: null, error: null, costCents: 0, idleDeadline: null, expiresAt: null, createdAt: new Date().toISOString() };
+    browserFixture.data = [
+      { ...shared, id: first, sessionId: first, status: "closed" },
+      { ...shared, id: next, sessionId: next, status: "idle" },
+    ];
+    await render(panel({ openBrowserId: first }));
+    await render(panel());
+    expect(container.textContent).toContain("Another browser is still open");
+    expect(container.textContent).not.toContain("Send a task message");
+    const recovery = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Open active browser')!;
+    await act(async () => recovery.click());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Browser 2");
+    expect(container.querySelector('[role="tab"][aria-selected="false"]')?.textContent).toBe("Properties");
+    expect(container.querySelector('iframe')).toBeTruthy();
+    expect(browserFixture.control).not.toHaveBeenCalled();
+  });
+
+  it("adds Artifacts on arrival while preserving the selected tab", async () => {
+    await render(panel());
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    fixture.documents = [issueDocument("report", "Updated report")];
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+
+    await render(panel({ artifactsOpenRequestId: 2 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+  });
+
+  it("reopens a dismissed Artifacts tab only for a new arrival", async () => {
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-artifacts")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Artifacts"]')?.click());
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[data-side-panel-tab-target="artifacts"]')).toBeNull();
+    await render(panel({ artifactsOpenRequestId: 2 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+  });
+
+  it("acknowledges an arrival so remounting the panel preserves a later manual selection", async () => {
+    const onArtifactsOpened = vi.fn();
+    await render(panel({ artifactsOpenRequestId: 1, onArtifactsOpened }));
+    expect(onArtifactsOpened).toHaveBeenCalledExactlyOnceWith(1);
+    await render(panel({ onArtifactsOpened }));
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    await render(null);
+    await render(panel({ onArtifactsOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(onArtifactsOpened).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the workspace-file route and selection when an artifact arrives", async () => {
+    routeFixture.location.search = "?file=ui%2Fsrc%2FApp.tsx&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true }));
+    await render(panel({ fileTabsEnabled: true, artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("App.tsx");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+    expect(routeFixture.navigate).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly linked document when artifacts arrive", async () => {
+    fixture.documents = [issueDocument("agents", "AGENTS.md")];
+    const documentDeepLink = { requestId: 1, documentKey: "agents" };
+    await render(panel({ documentDeepLink, artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+  });
+
+  it("handles each document link once without overriding later manual selection", async () => {
+    fixture.documents = [issueDocument("agents", "AGENTS.md")];
+    const documentDeepLink = { requestId: 1, documentKey: "agents" };
+    await render(panel({ documentDeepLink }));
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    fixture.documents = [...fixture.documents, issueDocument("skill", "SKILL.md")];
+    await render(panel({ documentDeepLink: { ...documentDeepLink }, artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+
+    await render(panel({ documentDeepLink: { ...documentDeepLink, requestId: 2 } }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
+  });
+
+  it("keeps a document selected when an artifact arrives", async () => {
+    fixture.documents = [issueDocument("report", "Report")];
+    const documentDeepLink = { documentKey: "report", requestId: 1 };
+    await render(panel({ documentDeepLink }));
+    await render(panel({ documentDeepLink, artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Report");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Document report");
   });
 
   it("uses the approved pre-rebase tab appearance for Streamlined UI", async () => {
@@ -193,6 +464,36 @@ describe("TaskSidePanel", () => {
 
     await act(async () => subtasksTab?.click());
     expect(container.textContent).toContain("Subtasks content: 2");
+  });
+
+  it("adds related tasks without children and preserves the selected plan", async () => {
+    fixture.plan = issueDocument("plan", "Plan");
+    fixture.documents = [fixture.plan];
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 0, content: <div>No tasks yet</div> },
+    }));
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 1, content: <div>Cross-project follow-up</div> },
+    }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.textContent).toContain("Cross-project follow-up");
+    expect(container.textContent).not.toContain("Subtasks content");
+  });
+
+  it("exposes failed task loading even when no task count is available", async () => {
+    await render(panel({ showSubtasksTab: true, tasksTab: { count: 0, hasError: true, content: <div role="alert">Could not load all tasks.</div> } }));
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load all tasks");
   });
 
   it("inserts Subtasks after Properties when child tasks load later", async () => {

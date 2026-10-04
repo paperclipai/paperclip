@@ -28,8 +28,8 @@ describe("ACPX qualified model verification", () => {
     const setModel = vi.fn(async () => undefined);
     const getStatus = vi.fn(async () => ({
       models: {
-        currentModelId: "sonnet",
-        availableModelIds: ["default", "sonnet", "opus"],
+        currentModelId: "claude-sonnet-5",
+        availableModelIds: ["default", "claude-sonnet-5", "opus"],
       },
     }));
 
@@ -51,13 +51,13 @@ describe("ACPX qualified model verification", () => {
   it("selects Claude's profile-pinned ACP selector from a stale default", async () => {
     let selected = false;
     const setModel = vi.fn(async (model: string) => {
-      expect(model).toBe("sonnet");
+      expect(model).toBe("claude-sonnet-5");
       selected = true;
     });
     const getStatus = vi.fn(async () => ({
       models: {
-        currentModelId: selected ? "sonnet" : "default",
-        availableModelIds: ["default", "sonnet", "opus"],
+        currentModelId: selected ? "claude-sonnet-5" : "default",
+        availableModelIds: ["default", "claude-sonnet-5", "opus"],
       },
     }));
 
@@ -73,7 +73,7 @@ describe("ACPX qualified model verification", () => {
       },
     });
     expect(setModel).toHaveBeenCalledTimes(1);
-    expect(setModel).toHaveBeenCalledWith("sonnet");
+    expect(setModel).toHaveBeenCalledWith("claude-sonnet-5");
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 

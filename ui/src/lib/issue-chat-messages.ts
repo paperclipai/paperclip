@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -45,6 +46,7 @@ export interface IssueChatComment extends IssueComment {
 }
 
 export interface IssueChatLinkedRun {
+  execution?: ExecutionProjection | null;
   runId: string;
   runtimeMode?: "legacy" | "native";
   status: string;
@@ -842,6 +844,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+      execution: run.execution,
         runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
@@ -879,6 +882,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      execution: run.execution,
       runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
@@ -1121,6 +1125,7 @@ function createLiveRunMessage(args: {
       runAgentId: run.agentId,
       runAgentName: run.agentName,
       runStatus: run.status,
+      execution: run.execution,
       adapterType: run.adapterType,
       notices,
       waitingText,
@@ -1134,6 +1139,20 @@ function createLiveRunMessage(args: {
     }),
   };
   return message;
+}
+
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
 }
 
 export function buildIssueChatMessages(args: {
@@ -1176,6 +1195,7 @@ export function buildIssueChatMessages(args: {
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,

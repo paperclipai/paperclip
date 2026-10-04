@@ -292,7 +292,7 @@ describe("P6-19 native interaction bridge", () => {
   });
 
   it.each([
-    [governedId, "native_interaction_governed_request_unsupported"],
+    [governedId, "native_interaction_governed_request_unresolved"],
     [selfApprovedId, "native_interaction_self_approval"],
   ])("fails closed for governed or self-approved interaction %s", async (interactionId, code) => {
     const error = await materializeNativeInteractionResponses({

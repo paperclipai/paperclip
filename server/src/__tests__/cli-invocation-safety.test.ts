@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -322,7 +323,9 @@ function findOffenders(relPath: string, text: string): string[] {
 // and internal automation, because a reader does not copy a command from them:
 // `doc/logs` holds past verification logs, `doc/plans` holds dated design
 // plans, and `scripts` holds trusted automation with fixed arguments. It skips
-// test files, because a test names the unsafe form to assert against it.
+// test files, because a test names the unsafe form to assert against it. The
+// root .paperclip-runtime directory contains ignored historical session
+// recordings, not checked-in guidance; never scan those private recordings.
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -335,7 +338,14 @@ const SKIP_DIRS = new Set([
   "tmp",
 ]);
 
-const SKIP_PATH_PREFIXES = ["doc/logs/", "doc/plans/", "scripts/"];
+const SKIP_PATH_PREFIXES = [
+  "doc/logs/",
+  "doc/plans/",
+  "scripts/",
+  // Generated paid-run transcripts contain historical copies of instructions,
+  // including escaped warning examples; they are not authored guidance.
+  "tests/runner-e2e/results/",
+];
 
 const SCAN_EXTENSIONS = new Set([
   ".md",
@@ -355,7 +365,7 @@ function isTestFile(relPath: string): boolean {
   );
 }
 
-function listGuidanceFiles(): string[] {
+function listGuidanceFiles(rootDir = repoRoot): string[] {
   const found: string[] = [];
 
   function walk(absDir: string, relDir: string): void {
@@ -364,6 +374,8 @@ function listGuidanceFiles(): string[] {
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
+        if (SKIP_PATH_PREFIXES.some((prefix) => `${relPath}/`.startsWith(prefix))) continue;
+        if (SKIP_DIRS.has(entry.name) || relPath === ".paperclip-runtime") continue;
         walk(path.join(absDir, entry.name), relPath);
         continue;
       }
@@ -374,7 +386,7 @@ function listGuidanceFiles(): string[] {
     }
   }
 
-  walk(repoRoot, "");
+  walk(rootDir, "");
   return found;
 }
 
@@ -466,6 +478,56 @@ function scanForBrokenExecForm(): string[] {
 }
 
 describe("paperclipai CLI invocation safety", () => {
+  it("excludes generated runner evidence while preserving authored runner guidance", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
+    const sourcePaths = [
+      "doc/CLI.md",
+      "tests/runner-e2e/README.md",
+      "tests/runner-e2e/catalog.ts",
+    ];
+    try {
+      for (const relPath of [
+        ...sourcePaths,
+        "tests/runner-e2e/results/campaign/attempt-1/snapshots/api-state.json",
+      ]) {
+        const absPath = path.join(root, relPath);
+        mkdirSync(path.dirname(absPath), { recursive: true });
+        writeFileSync(absPath, "fixture");
+      }
+      expect(listGuidanceFiles(root).sort()).toEqual(sourcePaths.sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes root runtime recordings but still scans unsafe docs and source guidance", () => {
+    const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
+    try {
+      const fixtures = [
+        "doc/CLI.md",
+        "src/guidance.ts",
+        "src/.paperclip-runtime/guidance.md",
+        ".paperclip-runtime/sessions/recording.json",
+      ];
+      for (const relPath of fixtures) {
+        const file = path.join(fixtureRoot, relPath);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, "pnpm paperclipai issue get issue-1\n");
+      }
+      const files = listGuidanceFiles(fixtureRoot).sort();
+      expect(files).toEqual([
+        "doc/CLI.md",
+        "src/.paperclip-runtime/guidance.md",
+        "src/guidance.ts",
+      ]);
+      for (const relPath of files) {
+        expect(scanText(relPath, readFileSync(path.join(fixtureRoot, relPath), "utf8"))).toHaveLength(1);
+      }
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("allows only exact-allowlist pnpm paperclipai commands on every guidance surface", () => {
     const offenders = scanForOffenders();
     expect(

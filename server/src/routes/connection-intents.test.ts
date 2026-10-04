@@ -20,7 +20,13 @@ describe("runtime connection MCP contract", () => {
         description: CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
         inputSchema: {
           type: "object",
-          properties: { query: { type: "string" } },
+          properties: {
+            query: { type: "string", maxLength: 4000 },
+            retryProviderChoice: {
+              type: "boolean",
+              description: "Only when the user explicitly asks to reconsider a previous provider choice or decline",
+            },
+          },
           additionalProperties: false,
         },
       },
@@ -29,7 +35,14 @@ describe("runtime connection MCP contract", () => {
         description: CONNECTION_REQUEST_TOOL_DESCRIPTION,
         inputSchema: {
           type: "object",
-          properties: { service: { type: "string" } },
+          properties: {
+            service: { type: "string" },
+            targetService: { type: "string", description: "App slug returned by search only when the user explicitly named this external provider" },
+            selectionInteractionId: {
+              type: "string",
+              description: "Saved answered provider-choice interaction ID for aggregator routes",
+            },
+          },
           required: ["service"],
           additionalProperties: false,
         },
@@ -75,21 +88,22 @@ describe("connection intent continuation wake contract", () => {
       expect(wakeup).toHaveBeenCalledWith(
         "agent-123",
         expect.objectContaining({
-          idempotencyKey: `interaction:interaction-123:${status}`,
+          idempotencyKey: `connection-intent:interaction-123:${status}`,
           requestedByActorType: "user",
           requestedByActorId: "user-123",
           contextSnapshot: expect.objectContaining({
             issueId: "issue-123",
             interactionId: "interaction-123",
             interactionStatus: status,
-            forceFreshSession: true,
+            refreshTools: true,
           }),
         }),
       );
+      expect(wakeup.mock.calls[0][1].contextSnapshot.forceFreshSession).toBeUndefined();
     },
   );
 
-  it.each(["backlog", "todo", "in_review", "done", "blocked", "cancelled"])(
+  it.each(["backlog", "todo", "done", "blocked", "cancelled"])(
     "does not wake a parked or closed %s task",
     async (issueStatus) => {
       const wakeup = vi.fn().mockResolvedValue(undefined);

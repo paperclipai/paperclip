@@ -342,7 +342,7 @@ describe("worker configChanged cross-tenant guard", () => {
     });
 
     async function initialize() {
-      await callWorker("initialize", {
+      return await callWorker("initialize", {
         manifest: {
           id: "paperclip.config-guard-test",
           apiVersion: 1,
@@ -368,6 +368,23 @@ describe("worker configChanged cross-tenant guard", () => {
 
     return { callWorker, initialize, stop };
   }
+
+  it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
+    let releases = 0, stops = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { releases++; return { providerLeaseId: "allocation", state: "destroyed" }; },
+      ...(supported ? { async onEnvironmentStopLease() { stops++; return { providerLeaseId: "allocation", state: "stopped" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const stopped = worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(stopped).resolves.toEqual({ providerLeaseId: "allocation", state: "stopped" });
+      else await expect(stopped).rejects.toThrow();
+      expect(stops).toBe(supported ? 1 : 0);
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
 
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];
@@ -778,8 +795,8 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     // worker session id. The test drives them through the captured emitters.
     const controllablePlugin = definePlugin({
       async setup(ctx) {
-        emitOutput = (chunk: string) => ctx.loginPty.output("ws-1", chunk);
-        resolveWait = (value) => ctx.loginPty.exit("ws-1", value.exitCode);
+        emitOutput = (chunk: string) => ctx.loginPty.output("route-1", "ws-1", chunk);
+        resolveWait = (value) => ctx.loginPty.exit("route-1", "ws-1", value.exitCode);
       },
       async onLoginPtyOpen(params) {
         // The open carries the host route id, the closed command key, and the
@@ -896,13 +913,13 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         (note) => note.method === "loginPty.output",
       );
       expect(outputNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", chunk: "prompt output" },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", chunk: "prompt output" },
       ]);
       const exitNotes = notifications.filter(
         (note) => note.method === "loginPty.exit",
       );
       expect(exitNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", exitCode: 0 },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", exitCode: 0 },
       ]);
     } finally {
       worker.stop();

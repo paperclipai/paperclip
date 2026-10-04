@@ -49,6 +49,15 @@ exists, so the settlement always closes it, even on an early failure.
 
 ## The settlement order
 
+The sandbox agent bridge passes small command envelopes through its launch
+environment. When the encoded envelope exceeds 64 KiB, it uploads the envelope
+in bounded chunks to a private session directory instead. This avoids the Linux
+limit on one argument or environment string when retry context grows. The
+wrapper reads and deletes the file before spawning the agent; bridge teardown
+removes it if startup fails. The child's environment values remain unchanged.
+If the launch shell fails before the wrapper emits a protocol event, the run
+log retains the shell's stderr alongside the exit code.
+
 The settlement sequence is the one live cleanup owner for every settled path. It
 claims the ledger once, makes the pure reuse decision, then runs the ordered
 steps:

@@ -20,6 +20,7 @@ import {
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
   nativeRuntimePromptDigest,
+  parseNativeRuntimeContext,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
 import { nativeMcpLaunchBinding } from "./native-mcp.js";
@@ -92,6 +93,17 @@ function context(
 }
 
 describe("runtime context materialization", () => {
+  it("restores the legacy working-copy contract without changing its digest or adding new fields", () => {
+    const old = context("/skills", "/instructions");
+    old.instructions.workingCopy = { rootPath: "/old-run/copy", entryPath: "AGENTS.md" };
+    old.aggregateDigest = canonicalNativeRuntimeContextDigest(old);
+    expect(parseNativeRuntimeContext(JSON.parse(JSON.stringify(old)))).toEqual(old);
+    expect(parseNativeRuntimeContext(old).instructions.workingCopy).not.toHaveProperty("kind");
+    const next = { ...old, instructions: { ...old.instructions, workingCopy: { ...old.instructions.workingCopy, kind: "agent_files" as const } } };
+    next.aggregateDigest = canonicalNativeRuntimeContextDigest(next);
+    expect(parseNativeRuntimeContext(next).instructions.workingCopy?.kind).toBe("agent_files");
+  });
+
   it("validates native MCP launch bindings before they reach Codex", () => {
     expect(nativeMcpLaunchBinding({})).toBeNull();
     expect(() => nativeMcpLaunchBinding({
@@ -149,6 +161,7 @@ describe("runtime context materialization", () => {
     const config = await readFile(join(codexHome, "config.toml"), "utf8");
     expect(config).toContain("shell_snapshot = false");
     expect(config).toContain("paperclip-assigned");
+    expect(config).toContain('default_tools_approval_mode = "approve"');
     expect(config).toContain("Bearer ");
     expect(config).not.toContain("unassigned");
   });

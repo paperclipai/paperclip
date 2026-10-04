@@ -16,11 +16,15 @@
         "run.attach",
         "turn.start",
         "turn.cancel",
+        "turn.steer",
         "permission.resolve",
         "input.resolve",
         "tool.resolve",
         "session.read",
         "session.snapshot",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear",
         "session.suspend",
         "session.close"
       ]
@@ -28,12 +32,14 @@
     "eventType": {
       "enum": [
         "runtime.event",
+        "runtime.rich_event",
         "runtime.permission_requested",
         "runtime.input_requested",
         "runtime.tool_called",
         "runtime.turn_terminal",
         "runtime.process",
-        "runtime.diagnostic"
+        "runtime.diagnostic",
+        "runtime.goal"
       ]
     },
     "request": {
@@ -45,7 +51,11 @@
         "command": { "$ref": "#/$defs/command" },
         "params": { "type": "object" }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [{
+        "if": { "properties": { "command": { "const": "turn.steer" } } },
+        "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
+      }]
     },
     "response": {
       "type": "object",
@@ -103,6 +113,102 @@
         "runId": { "type": ["string", "null"], "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
         "turnId": { "type": ["string", "null"], "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
         "payload": { "type": "object" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.rich_event" } } },
+          "then": {
+            "properties": {
+              "runId": { "type": "string" },
+              "turnId": { "type": "string" },
+              "payload": { "$ref": "#/$defs/richEvent" }
+            }
+          }
+        }
+      ]
+    },
+    "richEvent": {
+      "type": "object",
+      "required": [
+        "eventType",
+        "itemId",
+        "payload"
+      ],
+      "properties": {
+        "eventType": {
+          "enum": [
+            "plan.updated",
+            "tool.execution.started",
+            "tool.execution.progressed",
+            "tool.execution.completed",
+            "research.started",
+            "research.progressed",
+            "research.completed",
+            "delegation.started",
+            "delegation.updated",
+            "delegation.completed",
+            "model.route.changed",
+            "model.verification.updated",
+            "context.compacted",
+            "artifact.viewed",
+            "artifact.generated",
+            "review.mode.changed",
+            "hook.started",
+            "hook.completed",
+            "memory.citation.referenced",
+            "safety.review.started",
+            "safety.review.completed",
+            "terminal.input.sent",
+            "wait.started",
+            "wait.completed",
+            "provider.notice.recorded"
+          ]
+        },
+        "itemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "turnControl": {
+      "type": "object",
+      "required": [
+        "turnId",
+        "controlId",
+        "mode",
+        "message"
+      ],
+      "properties": {
+        "turnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "controlId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "mode": {
+          "enum": [
+            "steer",
+            "follow_up"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
       },
       "additionalProperties": false
     }

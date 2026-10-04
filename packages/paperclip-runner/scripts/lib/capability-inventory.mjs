@@ -96,7 +96,7 @@ function slug(value) {
 
 function classifySkillHeading(heading) {
   const value = heading.toLowerCase();
-  if (/(authentication|identity|scope|checkout|lock|retry|dedupe|budget|wake|inbox|pick work|status quick guide|error handling)/.test(value)) {
+  if (/(authentication|identity|scope|checkout|lock|retry|dedupe|budget|wake|inbox|pick work|status quick guide|error handling|server-verified external chat)/.test(value)) {
     return "control_plane_owned";
   }
   if (/(artifact|work product|comment|document|confirmation|question|approval follow-up|block|review|final disposition|issue lifecycle)/.test(value)) {
@@ -221,16 +221,16 @@ export async function buildInventories({ repoRoot, evalRoot }) {
 }
 
 export async function buildSkillInventory(repoRoot) {
-  const skillRoot = resolve(repoRoot, "skills/paperclip");
-  const skillFiles = ["SKILL.md", "references/artifacts.md", "references/cases.md", "references/company-skills.md", "references/issue-workspaces.md", "references/routines.md", "references/workflows.md", "references/api-reference.md"];
+  const { skillSources: skillFiles } = JSON.parse(await readFile(resolve(repoRoot,
+    "packages/paperclip-runner/spec/capability/source-contract.json"), "utf8"));
   const rows = (await Promise.all(skillFiles.map(async (file) => parseSkillHeadings(
-    await readFile(resolve(skillRoot, file), "utf8"),
-    `skills/paperclip/${file}`,
+    await readFile(resolve(repoRoot, file), "utf8"),
+    file,
   )))).flat();
   return {
     schemaVersion: 2,
     inventoryRole: "normative",
-    generatedFrom: skillFiles.map((file) => `skills/paperclip/${file}`),
+    generatedFrom: skillFiles,
     rows,
   };
 }
@@ -247,7 +247,7 @@ export async function buildMcpInventory(repoRoot) {
 
 export function validateInventories(inventories) {
   const errors = [];
-  const expectedCounts = { capabilities: 152, evaluations: 106, legacyMcpAliases: 42 };
+  const expectedCounts = { capabilities: 160, evaluations: 106, legacyMcpAliases: 42 };
   const normativeNames = ["capabilities", "evaluations"];
   const normativeRows = new Map();
   const globalNormativeIds = new Set();

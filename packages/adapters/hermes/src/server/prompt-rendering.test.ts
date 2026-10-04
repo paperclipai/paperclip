@@ -82,9 +82,41 @@ test("renders standard assignment wake with task authority and no backlog discov
   expect(prompt).toContain("Paperclip task context:");
   expect(prompt).toContain("Add focused unit tests for assignment wake and custom prompt rendering.");
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
-  expect(prompt).toContain("clear final disposition");
+  expect(prompt).not.toContain("clear final disposition");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");
+});
+
+test("keeps current wake comments in the wake owner and preserves assignment markdown inputs", () => {
+  const commentBody = "Please preserve the exact current comment once.";
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11751",
+        title: "Keep the current comment once",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: commentBody }],
+      fallbackFetchNeeded: false,
+    },
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "PAP-11751"',
+    ].join("\n"),
+    paperclipTurnContext: {
+      version: 1,
+      assignment: { owner: "task_markdown" },
+      events: { owner: "wake_prompt", comments: [{ id: "comment-1", revision: "rev-1" }] },
+    },
+  }), {});
+
+  expect(prompt.split(commentBody)).toHaveLength(2);
+  expect(prompt).toContain('Paperclip task context:\n- Issue: "PAP-11751"');
 });
 
 test("renders scoped planning wake authority before the Hermes default workflow", () => {
@@ -98,8 +130,8 @@ test("renders scoped planning wake authority before the Hermes default workflow"
   expect(prompt).toContain("- checkout: already claimed by the harness for this run");
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
-  expect(prompt).toContain("clear final disposition");
-  expect(prompt).toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).not.toContain("clear final disposition");
+  expect(prompt).not.toContain("keep `in_progress` only when a live continuation path exists");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");
 });
@@ -245,4 +277,54 @@ test("preserves custom prompt templates while exposing runtime and wake variable
   expect(prompt).toContain("## Paperclip Wake Payload");
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
   expect(prompt).not.toContain("Paperclip runtime identity:");
+});
+
+test("keeps historical task markdown available to custom templates while automatic context uses assignment markdown", () => {
+  const historical = "Historical task with current comment.";
+  const assignment = "Assignment task without current comment.";
+  const prompt = buildPrompt(baseContext({
+    paperclipTaskMarkdown: historical,
+    paperclipTaskMarkdownAssignment: assignment,
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", status: "in_progress" },
+      comments: [{ id: "comment-1", body: "Current comment." }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    },
+  }), { promptTemplate: "custom={{paperclipTaskMarkdown}}" });
+  expect(prompt).toContain(`custom=${historical}`);
+  expect(prompt).toContain(assignment);
+  expect(prompt).toContain("Current comment.");
+});
+
+test("keeps legacy task markdown when ownership fields are absent", () => {
+  const legacyTask = "Legacy task context from an older Paperclip caller.";
+  const prompt = buildPrompt(baseContext({
+    paperclipTaskMarkdown: legacyTask,
+    paperclipTaskMarkdownAssignment: undefined,
+    paperclipTaskMarkdownCompact: undefined,
+  }), {});
+
+  expect(prompt).toContain(legacyTask);
+});
+
+
+test.each([false, true])("conversation prompts preserve the handoff policy (resumed=%s)", (resumedSession) => {
+  const directive = "Chat directive: clarify goals and hand the plan off to project tasks.";
+  const ctx = baseContext({
+    conversationMode: true,
+    paperclipTaskMarkdown: directive,
+    paperclipTaskMarkdownCompact: directive,
+  });
+  ctx.context.paperclipWake.interactionKind = "request_confirmation";
+  ctx.context.paperclipWake.interactionStatus = "accepted";
+  for (const config of [{}, { promptTemplate: "Custom agent instruction." }]) {
+    const prompt = buildPrompt(ctx, config, { resumedSession });
+    expect(prompt).toContain(directive);
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("clear final disposition");
+    expect(prompt).not.toContain("Create child issues");
+    expect(prompt).not.toContain("--arg status done");
+  }
 });

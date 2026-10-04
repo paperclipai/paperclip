@@ -15,6 +15,8 @@ export const companySkillFileInventoryEntrySchema = z.object({
 
 export const companySkillVersionFileInventoryEntrySchema = companySkillFileInventoryEntrySchema.extend({
   content: z.string(),
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
 });
 
 export const companySkillSchema = z.object({
@@ -360,6 +362,7 @@ export const companySkillProjectScanResultSchema = z.object({
 });
 
 export const companySkillCreateSchema = z.object({
+  idempotencyKey: z.string().min(1).max(240).optional(),
   folderId: z.string().guid().nullable().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).nullable().optional(),
@@ -376,6 +379,8 @@ export const companySkillCreateSchema = z.object({
 });
 
 export const companySkillFileDetailSchema = z.object({
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
   skillId: z.string().guid(),
   path: z.string().min(1),
   kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
@@ -388,6 +393,10 @@ export const companySkillFileDetailSchema = z.object({
 export const companySkillFileUpdateSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
+  encoding: z.enum(["utf8", "base64"]).optional(),
+  executable: z.boolean().optional(),
+  expectedVersionId: z.string().guid().nullable().optional(),
+  idempotencyKey: z.string().min(1).max(240).optional(),
 });
 
 export const companySkillFileDeleteSchema = z.object({

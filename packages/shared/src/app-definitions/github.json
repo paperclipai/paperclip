@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "github",
   "name": "GitHub",
-  "description": "Read code and pull requests, and coordinate repository work.",
+  "description": "Give agents access to GitHub repositories, issues, and pull requests.",
   "categories": [
     "developer"
   ],
@@ -12,20 +12,14 @@
     "darkLogoUrl": "/brands/apps/github-dark.svg"
   },
   "urlPatterns": [
-    "https://api.githubcopilot.com/mcp/*"
+    "https://api.githubcopilot.com/mcp/*",
+    "https://github.com/*"
   ],
   "methods": [
     {
       "key": "managed",
-      "label": "Connect with GitHub",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_cloud_connector",
-      "connectorProfile": "github.code",
-      "grantKinds": [
-        "user",
-        "agent"
-      ],
       "ownershipModes": [
         "platform_shared"
       ],
@@ -34,10 +28,18 @@
         "serverUrl": "https://api.githubcopilot.com/mcp/"
       },
       "guidanceMd": "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
+      "riskTier": "S3",
+      "label": "Connect GitHub",
+      "purpose": "tool",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "github.code",
+      "grantKinds": [
+        "user",
+        "agent"
+      ],
       "warnings": [
         "Shell Git and gh receive this identity for the run and are not constrained by per-tool Ask-first controls."
       ],
-      "riskTier": "S3",
       "requiredResourceFilters": [
         "organization",
         "repository"
@@ -45,7 +47,6 @@
     },
     {
       "key": "mcp-key",
-      "label": "Personal access token (advanced)",
       "transport": "mcp_remote",
       "auth": "api_key",
       "ownershipModes": [
@@ -57,6 +58,8 @@
       },
       "guidanceMd": "Create a fine-grained token limited to the repositories agents should use.",
       "riskTier": "S3",
+      "label": "Personal access token (advanced)",
+      "purpose": "tool",
       "credentialFields": [
         {
           "key": "authorization",
@@ -64,7 +67,8 @@
           "type": "password",
           "required": true,
           "placeholder": "github_pat_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

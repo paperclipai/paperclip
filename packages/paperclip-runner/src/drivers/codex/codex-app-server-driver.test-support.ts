@@ -1,4 +1,7 @@
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll } from "vitest";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -45,7 +48,10 @@ import {
   type CodexTraceInterpretation,
 } from "./app-server-transport.js";
 
-export const WORKSPACE = realpathSync.native(process.cwd());
+// Tests run in managed worktrees beneath sensitive Codex state. Use a real
+// disposable workspace instead of weakening production host-path admission.
+export const WORKSPACE = realpathSync.native(mkdtempSync(join(tmpdir(), "paperclip-codex-test-workspace-")));
+afterAll(() => rmSync(WORKSPACE, { recursive: true, force: true }));
 
 export class TestQueue<T> implements AsyncIterable<T> {
   values: T[] = [];
@@ -156,9 +162,9 @@ export class FakeCodexTransport implements CodexAppServerTransport {
           cwd: WORKSPACE,
           turns: [],
           activePermissionProfile: {
-            id: planMode
+            id: params.permissions ?? (planMode
               ? "paperclip-runner-workspace-read-only"
-              : "paperclip-runner-workspace-only",
+              : "paperclip-runner-workspace-only"),
           },
         },
         model: "gpt-test",
@@ -199,8 +205,18 @@ export class FakeCodexTransport implements CodexAppServerTransport {
       this.goalState = null;
       return {};
     }
+    if (method === "thread/turns/list") {
+      const snapshot = this.readResponse ?? { thread: { turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      const turns = (snapshot.thread as Record<string, unknown>).turns;
+      return { data: Array.isArray(turns) ? turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" })) : turns, nextCursor: null };
+    }
+    if (method === "thread/items/list") {
+      const turns = ((this.readResponse?.thread as Record<string, unknown> | undefined)?.turns ?? []) as Array<Record<string, unknown>>;
+      const turn = turns.find(value => value.id === params.turnId);
+      return { data: ((turn?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+    }
     if (method === "thread/read") {
-      return (
+      return structuredClone(
         this.readResponse ?? {
           thread: {
             id: this.threadId,

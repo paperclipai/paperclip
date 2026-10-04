@@ -17,10 +17,18 @@ export interface CodexAppServerDriverOptions {
   taskEnvelope: CodexTaskEnvelope;
   /** Explicit provider model selected by the persisted native execution. */
   model?: string;
+  /** Per-run reasoning effort sent with each Codex turn, including resumed turns. */
+  reasoningEffort?: string;
   approvalPolicy?: "never" | "on-request" | "untrusted";
+  /** Paperclip runtime instructions. Codex receives these as additive developer
+   * instructions; the historical option name remains compatible with callers. */
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
-  conversationMode?: "task" | "direct";
+  /** Private instruction directory registered by the control plane for this run. */
+  instructionWorkingCopyRoot?: string;
+  /** Explicit selected skills, resolved from this task's assigned runtime assets. */
+  skillInputs?: readonly import("../../contracts/runtime-context.js").NativeSkillInput[];
+  conversationMode?: "task" | "direct" | "prepared";
   requestedCollaborationMode?: "default" | "plan";
   /**
    * Include Codex's built-in collaboration instructions. Defaults to true so
@@ -48,6 +56,8 @@ export interface CodexAppServerDriverOptions {
     turnId: string;
     arguments: unknown;
   }) => Promise<unknown>;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   environment?: NodeJS.ProcessEnv;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
@@ -67,10 +77,20 @@ export interface CodexAppServerDriverOptions {
     usage: boolean;
     reconciliation: boolean;
     dynamicTools: boolean;
+    toolRefreshOnResume: boolean;
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;
   }>;
+  /** Provider-neutral goal metadata for transports exposing a compatible goal lifecycle. */
+  goalCapability?: {
+    actions: readonly ("set" | "pause" | "resume" | "clear")[];
+    autonomousUpdates: boolean;
+    persistentAcrossResume: boolean;
+    maxObjectiveChars: number;
+    tokenBudgetControl: boolean;
+    usageReporting: boolean;
+  };
   /** Provider-specific identity retained when the Codex protocol facade is backed by runnerd. */
   driverIdentity?: {
     kind: string;
@@ -84,6 +104,11 @@ export interface CodexAppServerDriverOptions {
 export type CodexCapabilities = Required<
   NonNullable<CodexAppServerDriverOptions["capabilities"]>
 >;
+
+export type CodexGoalAvailability =
+  | "available"
+  | "unsupported"
+  | "policy_disabled";
 
 export type SemanticResultAdmission = "committed" | "identical" | "conflict";
 

@@ -190,6 +190,31 @@ export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
   return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
 }
 
+/**
+ * Reads the `CLAUDE_CODE_OAUTH_TOKEN` binding from an adapter config, or
+ * `null` when the config carries no such key.
+ */
+export function readClaudeOAuthBinding(config: unknown): unknown {
+  const value = readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY];
+  return value === undefined ? null : value;
+}
+
+/**
+ * Returns true when both bindings are the exact fixed Claude Code OAuth
+ * reference and select the exact same secret version. The hire-inheritance
+ * gate compares the parent's current reference, re-read inside the write
+ * transaction, against the reference already copied onto the child before the
+ * transaction started. A concurrent version change on the parent must fail
+ * this check, so the child never keeps a stale version under a claim the gate
+ * treats as current.
+ */
+export function claudeOAuthBindingsMatchExactly(parentBinding: unknown, childBinding: unknown): boolean {
+  if (!isFixedClaudeOAuthBinding(parentBinding) || !isFixedClaudeOAuthBinding(childBinding)) return false;
+  const parentVersion = (parentBinding as Record<string, unknown>).version;
+  const childVersion = (childBinding as Record<string, unknown>).version;
+  return parentVersion === childVersion;
+}
+
 /** True when the config carries the exact fixed OAuth binding. */
 function hasFixedClaudeOAuthBinding(config: unknown): boolean {
   return isFixedClaudeOAuthBinding(readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY]);
@@ -2497,22 +2522,14 @@ export function secretService(db: Db | DbTransaction) {
     }
 
     try {
+      // Lock and update the parent secret row before touching its version
+      // rows. A credential write-back locks the parent secret row first, then
+      // calls this function. If this transaction updated the version rows
+      // first instead, the two transactions would take their two row locks
+      // in opposite order and could deadlock. Matching the order here removes
+      // that risk: every caller now locks the parent row before the version
+      // rows, so a lock cycle between the two tables cannot form.
       return await db.transaction(async (tx) => {
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "previous" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            ne(companySecretVersions.version, nextVersion),
-          ));
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "current" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, nextVersion),
-          ));
-
         const updated = await tx
           .update(companySecrets)
           .set({
@@ -2536,11 +2553,28 @@ export function secretService(db: Db | DbTransaction) {
         if (!updated) {
           // The predicate matched no row. A supplied expected version means a
           // concurrent rotation won the race; return the stale conflict. An
-          // unguarded rotation means the secret is gone.
+          // unguarded rotation means the secret is gone. Neither version row
+          // has been touched yet, so there is nothing to undo here.
           throw input.expectedLatestVersion === undefined
             ? notFound("Secret not found")
             : conflict(SECRET_VERSION_STALE_CONFLICT);
         }
+
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "previous" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            ne(companySecretVersions.version, nextVersion),
+          ));
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "current" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            eq(companySecretVersions.version, nextVersion),
+          ));
+
         return updated;
       });
     } catch (error) {

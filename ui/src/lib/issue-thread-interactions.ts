@@ -58,6 +58,19 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 
+export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
+  return interaction.status === "pending"
+    && interaction.acceptanceBlocker === "workspace_sync_pending";
+}
+
+/** Poll only while an approval is preparing; retain each surface's idle cadence. */
+export function interactionReadinessRefetchInterval(
+  interactions: IssueThreadInteraction[] | undefined,
+  fallback: number | false = false,
+): number | false {
+  return interactions?.some(isInteractionPreparingApproval) ? 2_000 : fallback;
+}
+
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];
@@ -223,7 +236,10 @@ export function buildIssueThreadInteractionSummary(
 
   if (interaction.kind === "request_confirmation") {
     if (interaction.status === "accepted") return "Confirmed request";
-    if (interaction.status === "rejected") return "Declined request";
+    if (interaction.status === "rejected") {
+      const rejectLabel = interaction.payload.rejectLabel?.trim();
+      return rejectLabel ? `Selected “${rejectLabel}”` : "Declined request";
+    }
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation expired after comment";

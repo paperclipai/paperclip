@@ -118,6 +118,8 @@ async function open(
     runnerInstanceId:
       process.env.PAPERCLIP_RUNNER_INSTANCE_ID ?? "paperclip-runnerd-opencode",
     taskEnvelope: openCodeProxyTaskEnvelope(params),
+    conversationMode:
+      params.conversationMode === "prepared" ? "prepared" : "task",
     systemInstructions: text(
       params.baseInstructions,
       "Complete only the supplied task.",
@@ -331,7 +333,7 @@ async function handle(message: RpcMessage): Promise<void> {
     case "initialize":
       result = {
         user: { sessionId: "opencode" },
-        serverInfo: { name: "opencode", version: "1.18.17" },
+        serverInfo: { name: "opencode", version: "1.18.32" },
       };
       break;
     case "thread/start":

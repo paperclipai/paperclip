@@ -25,7 +25,16 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.airtable.com/mcp"
+        "serverUrl": "https://mcp.airtable.com/mcp",
+        "scopesHint": [
+          "data.records:read",
+          "data.records:write",
+          "schema.bases:read",
+          "schema.bases:write",
+          "data.recordComments:read",
+          "data.recordComments:write",
+          "workspacesAndBases:read"
+        ]
       },
       "guidanceMd": "Connect Airtable in the browser. An Airtable account; enterprise administrators may need to allowlist the client.",
       "riskTier": "S3",

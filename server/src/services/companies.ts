@@ -14,6 +14,7 @@ import {
   projects,
   goals,
   heartbeatRuns,
+  runIdentityContexts,
   heartbeatRunEvents,
   costEvents,
   financeEvents,
@@ -35,6 +36,7 @@ import {
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { notifyCloudOfPrimaryCompanyLifecycleChange } from "./cloud-lifecycle-sync.js";
 import {
   MAX_ISSUE_PREFIX_ATTEMPTS,
   deriveIssuePrefixBase,
@@ -441,10 +443,20 @@ export function companyService(db: Db) {
           company: enrichCompany(hydrated),
           reactivated: shouldLogReactivation ? { agentsRestored } : null,
           archiveCascade,
+          unarchived: willReactivate && existing.status === "archived",
           issuePrefixRederived,
         };
       });
       if (!result) return null;
+      // Post-commit, fire-and-forget, and BEFORE any finalization that
+      // could throw: a Cloud-pinned primary company that crossed the
+      // archived boundary (either direction) rings the harness so the
+      // stack itself can converge. The status transaction has already
+      // committed, so a later cascade or activity-log failure must not
+      // leave Cloud unaware of a company that is in fact archived.
+      if (result.archiveCascade || result.unarchived) {
+        void notifyCloudOfPrimaryCompanyLifecycleChange(id);
+      }
       if (result.issuePrefixRederived) {
         await logActivity(db, {
           companyId: id,
@@ -513,7 +525,10 @@ export function companyService(db: Db) {
       });
       if (!result) return null;
 
+      // Same doorbell rule as update(): the archive is committed, so ring
+      // before finalization, which can throw without undoing it.
       if (result.cascade) {
+        void notifyCloudOfPrimaryCompanyLifecycleChange(id);
         await finalizeArchive(id, actor, result.cascade);
       }
 
@@ -536,6 +551,7 @@ export function companyService(db: Db) {
         }
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));

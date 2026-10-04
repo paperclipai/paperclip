@@ -1,4 +1,5 @@
 import path from "node:path";
+import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -24,7 +25,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -76,8 +77,15 @@ export function resolvePaperclipRunnerBinaryForHarness(
 export function resolvePaperclipRemoteRunnerBinaryForHarness(
   executions: readonly MatrixExecution[],
   runnerBinary: string | undefined,
+  configuredPath = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH,
+  platform: NodeJS.Platform = process.platform,
 ): string | undefined {
+  if (configuredPath?.trim()) return configuredPath;
   if (!runnerBinary) return undefined;
+  // Daytona runs Linux. A default debug binary built by a macOS developer is
+  // Mach-O and cannot be staged into that sandbox. Leave the remote override
+  // unset so the pinned Daytona image's verified runnerd is discovered instead.
+  if (platform !== "linux") return undefined;
   return executions.some(
     (execution) =>
       execution.profile.generation === "native" &&
@@ -97,7 +105,33 @@ export function buildRunnerE2EProcessEnvironment(
   executions: readonly MatrixExecution[],
 ): NodeJS.ProcessEnv {
   const result = { ...source };
+  // Announcements are unrelated to the scenarios and obscure screenshot evidence.
+  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
+  // Discard ambient admission. Only explicit candidate cells authorize the
+  // exact model in their isolated server; credentials still use company secrets.
+  delete result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+  const candidates = new Map<string, string>();
+  for (const execution of executions) {
+    const agent = execution.profile.qualificationCandidate;
+    if (!agent) continue;
+    if (execution.suite.id !== "extended-harnesses" || !execution.suite.manualOnly) {
+      throw new Error("Candidate qualification requires the explicit extended-harnesses suite");
+    }
+    const prior = candidates.get(agent);
+    if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
+    candidates.set(agent, execution.profile.model);
+  }
+  if (candidates.size > 0) {
+    result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify(
+      [...candidates].map(([agent, model]) => ({ agent, model })),
+    );
+  }
+  // These stories explicitly require the native API surface. Other suites
+  // retain the server default or any supplied operator restriction.
+  if (executions.some((e) => isManagedHiringCase(e.suite.id, e.task.id) || chatNeedsApiTools(e.suite.id, e.task.id))) {
+    result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+  }
   if (
     executions.length > 0 &&
     executions.every(
@@ -114,7 +148,8 @@ export function buildRunnerE2EProcessEnvironment(
 /**
  * Build the environment inherited by the Paperclip server. Paid credentials
  * deliberately stay in the launcher/Playwright process and cross the server
- * boundary only once, in the encrypted company-secrets API request.
+ * boundary through encrypted company secrets. Explicit subscription fixtures
+ * stage their login in the disposable company's private credential home.
  */
 export function buildPaperclipServerEnvironment(
   source: NodeJS.ProcessEnv,

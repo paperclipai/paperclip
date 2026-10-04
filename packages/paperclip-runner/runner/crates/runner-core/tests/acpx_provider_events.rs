@@ -202,6 +202,49 @@ fn maps_bounded_plan_and_completion_state() {
 }
 
 #[test]
+fn preserves_usage_counters_across_sidecar_payload_redaction() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    let decoded = decode_acpx_event(
+        &scope,
+        &AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"status", "tag":"usage_update",
+                "breakdown":{
+                    "inputTokens":12, "outputTokens":7, "thoughtTokens":0,
+                    "cachedReadTokens":2, "cachedWriteTokens":0, "totalTokens":21
+                },
+                "accessToken":"provider-secret",
+                "cost":{"amount":0.25,"currency":"USD"}
+            }),
+        },
+    )
+    .unwrap();
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
+        panic!("runtime usage must decode as a runtime payload");
+    };
+    assert_eq!(payload["accessToken"], "[REDACTED]");
+    assert_eq!(payload["breakdown"]["totalTokens"], 21);
+    let events =
+        normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
+    assert_eq!(events[0].payload["runDeltaAvailable"], true);
+    assert_eq!(events[0].payload["runDelta"]["inputTokens"], 12);
+    assert_eq!(events[0].payload["runDelta"]["outputTokens"], 7);
+    assert_eq!(events[0].payload["runDelta"]["cacheReadTokens"], 2);
+    assert_eq!(events[0].payload["runDelta"]["cacheWriteTokens"], 0);
+}
+
+#[test]
 fn maps_usage_and_review_status_but_ignores_inventory_updates() {
     let usage = normalize(
         AcpxRuntimeEventKind::Status,
@@ -291,6 +334,131 @@ fn does_not_label_non_usd_acpx_cost_as_usd() {
 
     assert_eq!(usage[0].payload["runDeltaAvailable"], true);
     assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.0);
+}
+
+#[test]
+fn matches_typescript_mcp_display_identity_across_tool_lifecycle() {
+    for (title, namespace, name) in [
+        (
+            "mcp__paperclip__write_document",
+            "paperclip",
+            "write_document",
+        ),
+        (
+            "mcp.paperclip.write_document",
+            "paperclip",
+            "write_document",
+        ),
+        (
+            "  MCP__Paperclip__write_document  ",
+            "Paperclip",
+            "write_document",
+        ),
+        ("McP.other.read_document", "other", "read_document"),
+        ("mcp__paperclip__nested__tool", "paperclip", "nested__tool"),
+        ("mcp.paperclip.nested.tool", "paperclip", "nested.tool"),
+        ("mcp_____write_document", "_", "write_document"),
+        ("mcp__é__write_document", "é", "write_document"),
+    ] {
+        for (tag, status, event_type) in [
+            ("tool_call", "pending", "tool.execution.started"),
+            (
+                "tool_call_update",
+                "in_progress",
+                "tool.execution.progressed",
+            ),
+            ("tool_call_update", "completed", "tool.execution.completed"),
+        ] {
+            let events = normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ToolCall,
+                &json!({
+                    "type": "tool_call", "tag": tag, "status": status,
+                    "toolCallId": "write-plan", "title": title,
+                    "rawInput": {"private": "not-for-the-log"},
+                    "operationId": "finish_task", "semantic_tool": {"phase": "result"}
+                }),
+                Some("execute"),
+                "event-7",
+                "turn-1",
+                3,
+            );
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_type, event_type);
+            let payload = &events[0].payload;
+            assert_eq!(payload["executionId"], "write-plan");
+            assert_eq!(payload["transport"], "mcp");
+            assert_eq!(payload["namespace"], namespace);
+            assert_eq!(payload["name"], name);
+            // Parsing the display title never changes preclassified operation authority.
+            assert_eq!(payload["operation"], "execute");
+            assert_eq!(payload["readOnly"], false);
+            for dropped in ["rawInput", "operationId", "semantic_tool"] {
+                assert!(payload.get(dropped).is_none());
+            }
+            assert!(!payload.to_string().contains("not-for-the-log"));
+        }
+    }
+}
+
+#[test]
+fn bounds_mcp_namespace_and_name_independently_after_parsing() {
+    let namespace = "é".repeat(300);
+    let events = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({"type": "tool_call", "title": format!("mcp__{namespace}__write_document")}),
+    );
+    assert_eq!(events[0].payload["transport"], "mcp");
+    assert_eq!(events[0].payload["name"], "write_document");
+    assert_eq!(
+        events[0].payload["namespace"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        240
+    );
+    let events = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({"type": "tool_call", "title": format!("mcp.paperclip.{}", "雪".repeat(300))}),
+    );
+    assert_eq!(events[0].payload["namespace"], "paperclip");
+    assert_eq!(
+        events[0].payload["name"].as_str().unwrap().chars().count(),
+        240
+    );
+    for title in [
+        "mcp__Authorization: Bearer namespace-secret__write_document",
+        "mcp.paperclip.Authorization: Bearer tool-secret",
+    ] {
+        let events = normalize(
+            AcpxRuntimeEventKind::ToolCall,
+            json!({"type": "tool_call", "title": title}),
+        );
+        assert!(!events[0].payload.to_string().contains("namespace-secret"));
+        assert!(!events[0].payload.to_string().contains("tool-secret"));
+    }
+}
+
+#[test]
+fn leaves_builtin_and_malformed_mcp_titles_as_display_only_builtin_names() {
+    for title in [
+        "Read file",
+        "write_document",
+        "paperclip__write_document",
+        "mcp____write_document",
+        "mcp__paperclip__",
+        "mcp..write_document",
+        "mcp.paperclip.",
+        "mcp__paperclip__write\ndocument",
+    ] {
+        let events = normalize(
+            AcpxRuntimeEventKind::ToolCall,
+            json!({"type": "tool_call", "title": title}),
+        );
+        assert_eq!(events[0].payload["transport"], "builtin");
+        assert!(events[0].payload["namespace"].is_null());
+        assert_eq!(events[0].payload["name"], title);
+    }
 }
 
 #[test]

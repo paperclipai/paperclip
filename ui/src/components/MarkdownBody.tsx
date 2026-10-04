@@ -1,5 +1,5 @@
 import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +10,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
+import { getCachedIssueDetail } from "../lib/issueDetailCache";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkLinkCaseReferences } from "../lib/case-reference";
@@ -90,6 +91,8 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
+  /** Keep untrusted decision media inert: image references and diagram source only. */
+  mediaMode?: "render" | "reference";
   /**
    * Resolver that decides which inline-code workspace file paths may be linked
    * to the issue file viewer. Omitting it (or returning null) leaves every
@@ -110,8 +113,14 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
+  const queryClient = useQueryClient();
+  const [engaged, setEngaged] = useState(false);
   const { data } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
+    // A transcript can mention dozens of tasks. Their full detail projections
+    // are hover information, not prerequisites for reading this conversation.
+    enabled: engaged,
+    placeholderData: getCachedIssueDetail(queryClient, issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
   });
@@ -125,6 +134,8 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
+      onPointerEnter={() => setEngaged(true)}
+      onFocus={() => setEngaged(true)}
       // Boxless inline mention: the unified status glyph + a regular-weight
       // underlined link, optically centered with the body text.
       className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
@@ -719,6 +730,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   onImageClick,
+  mediaMode = "render",
   resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
@@ -803,7 +815,7 @@ function MarkdownBodyImpl({
     ),
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
-      if (mermaidSource) {
+      if (mermaidSource && mediaMode === "render") {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
       return <CodeBlock preProps={preProps}>{preChildren}</CodeBlock>;
@@ -914,7 +926,13 @@ function MarkdownBodyImpl({
       );
     },
     };
-    if (resolveImageSrc || onImageClick) {
+    if (mediaMode === "reference") {
+      map.img = ({ src, alt, title }) => (
+        <span data-markdown-image-reference title={title}>
+          Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
+        </span>
+      );
+    } else if (resolveImageSrc || onImageClick) {
       map.img = ({ node: _node, src, alt, ...imgProps }) => {
         const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
         const finalSrc = resolved ?? src;
@@ -930,7 +948,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
+  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick, mediaMode]);
 
   return (
     <div

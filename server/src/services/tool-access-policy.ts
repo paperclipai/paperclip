@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -114,10 +114,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function snapshotString(snapshot: Record<string, unknown>, key: string): string | null {
-  const value = snapshot[key];
+function nonBlankString(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+/**
+ * Reads one string field of a run's context snapshot in SQL. The snapshot can
+ * hold hundreds of KB of task text, so a policy check never loads the whole
+ * document. A non-string value reads as null. Runs store the snapshot as a
+ * JSON object, which the run indexes on `context_snapshot ->> 'issueId'` also
+ * expect.
+ */
+export function runContextSnapshotString(key: "issueId" | "projectId" | "routineId" | "wakeCommentId") {
+  const field = sql.raw(`'${key}'`);
+  return sql<string | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot} -> ${field}) = 'string'
+    then ${heartbeatRuns.contextSnapshot} ->> ${field} end`;
+}
+
+/**
+ * Memo for one batch of `decide` calls that share a company, actor and run
+ * context, such as one tools/list response. A listing decides every tool
+ * against the same agent, run, profiles and policies, so the batch reads each
+ * of those rows once instead of once per tool. The cache is a point-in-time
+ * view: create one per batch and drop it with the request. Rate-limit counters
+ * are never cached.
+ */
+export type ToolAccessDecisionCache = Map<string, Promise<unknown>>;
+
+export function createToolAccessDecisionCache(): ToolAccessDecisionCache {
+  return new Map();
+}
+
+function cachedRead<T>(
+  cache: ToolAccessDecisionCache | undefined,
+  key: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  if (!cache) return read();
+  const cached = cache.get(key);
+  if (cached) return cached as Promise<T>;
+  const pending = read();
+  cache.set(key, pending);
+  // Do not keep a failed read, so a later call in the batch tries again.
+  pending.catch(() => {
+    if (cache.get(key) === pending) cache.delete(key);
+  });
+  return pending;
+}
+
+// The database returns ids in this canonical form.
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const catalogEntryContextColumns = {
+  id: toolCatalogEntries.id,
+  companyId: toolCatalogEntries.companyId,
+  connectionId: toolCatalogEntries.connectionId,
+  applicationId: toolCatalogEntries.applicationId,
+  riskLevel: toolCatalogEntries.riskLevel,
+  toolName: toolCatalogEntries.toolName,
+  status: toolCatalogEntries.status,
+  versionHash: toolCatalogEntries.versionHash,
+  schemaHash: toolCatalogEntries.schemaHash,
+};
 
 function stableStringify(value: unknown): string {
   if (!isRecord(value) && !Array.isArray(value)) return JSON.stringify(value);
@@ -671,12 +729,35 @@ function rateBucket(rule: ToolRateLimitRule, ctx: ToolAccessContext): string {
 }
 
 function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessContext) {
-  if (!scope || Object.keys(scope).length === 0) return true;
-  const allowed = listValues(scope.allow);
-  if (allowed.includes(`tool:${ctx.toolName}`)) return true;
-  if (ctx.connectionId && allowed.includes(`connection:${ctx.connectionId}`)) return true;
-  if (ctx.applicationId && allowed.includes(`application:${ctx.applicationId}`)) return true;
-  return selectorMatches(scope, ctx);
+  if (scope === null || scope === undefined) return true;
+  if (!isRecord(scope)) return false;
+  if (Object.keys(scope).length === 0) return true;
+  const { allow, ...selectors } = scope;
+  if (Object.hasOwn(scope, "allow")) {
+    const values = typeof allow === "string" ? [allow] : allow;
+    if (!Array.isArray(values) || values.length === 0 ||
+        !values.every((value) => typeof value === "string" && value.trim().length > 0)) return false;
+    if (!values.includes(`tool:${ctx.toolName}`) &&
+        !(ctx.upstreamToolName && values.includes(`tool:${ctx.upstreamToolName}`)) &&
+        !(ctx.connectionId && values.includes(`connection:${ctx.connectionId}`)) &&
+        !(ctx.applicationId && values.includes(`application:${ctx.applicationId}`))) return false;
+  }
+  // Grant restrictions must all be understood and match. The permissive policy
+  // selector matcher cannot validate untrusted or historical grant JSON itself.
+  const keys = new Set([
+    "actorType", "agentId", "projectId", "routineId", "issueId", "gatewayId",
+    "applicationId", "connectionId", "catalogEntryId", "applicationKey",
+    "providerType", "toolName", "riskLevel",
+  ]);
+  for (const [key, value] of Object.entries(selectors)) {
+    if (keys.has(key)) {
+      if (typeof value !== "string" || value.trim().length === 0) return false;
+    } else if (key.endsWith("s") && keys.has(key.slice(0, -1))) {
+      if (!Array.isArray(value) || value.length === 0 ||
+          !value.every((entry) => typeof entry === "string" && entry.trim().length > 0)) return false;
+    } else return false;
+  }
+  return selectorMatches(selectors, ctx);
 }
 
 export function toolAccessPolicyService(db: Db) {
@@ -838,7 +919,35 @@ export function toolAccessPolicyService(db: Db) {
     return deleted;
   }
 
-  async function loadContext(input: ToolAccessDecisionInput): Promise<
+  async function loadCatalogEntry(companyId: string, catalogEntryId: string, cache?: ToolAccessDecisionCache) {
+    const readEntry = async () => {
+      const [entry] = await db.select(catalogEntryContextColumns).from(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalogEntryId));
+      return entry && entry.companyId === companyId ? entry : null;
+    };
+    // Only a canonical id can use the in-memory lookup. Any other spelling
+    // takes the direct query, so a cached and an uncached decision agree.
+    if (!cache || !CANONICAL_UUID_RE.test(catalogEntryId)) return readEntry();
+    // A listing decides the active catalog tools of the company, so a batch
+    // reads those entries once and looks each one up in memory. Any other
+    // entry takes the direct query.
+    const entriesById = await cachedRead(cache, `active-catalog-tools:${companyId}`, async () => {
+      const entries = await db
+        .select(catalogEntryContextColumns)
+        .from(toolCatalogEntries)
+        .where(and(
+          eq(toolCatalogEntries.companyId, companyId),
+          eq(toolCatalogEntries.entryKind, "tool"),
+          eq(toolCatalogEntries.status, "active"),
+          isNull(toolCatalogEntries.quarantinedAt),
+        ));
+      return new Map(entries.map((entry) => [entry.id, entry]));
+    });
+    const entry = entriesById.get(catalogEntryId);
+    if (!entry) return readEntry();
+    return entry.companyId === companyId ? entry : null;
+  }
+
+  async function loadContext(input: ToolAccessDecisionInput, cache?: ToolAccessDecisionCache): Promise<
     | { ok: true; ctx: ToolAccessContext; redaction: RedactionResult }
     | { ok: false; decision: ToolAccessDecision; redaction: RedactionResult }
   > {
@@ -851,7 +960,9 @@ export function toolAccessPolicyService(db: Db) {
     const gatewayId = input.runContext?.gatewayId ?? null;
 
     if (input.actor.actorType === "agent") {
-      const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId ?? ""), eq(agents.companyId, input.companyId)));
+      const lookupAgentId = agentId ?? "";
+      const [agent] = await cachedRead(cache, `agent:${input.companyId}:${lookupAgentId}`, async () =>
+        db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, lookupAgentId), eq(agents.companyId, input.companyId))));
       if (!agent) {
         return { ok: false, redaction, decision: decision("deny", "deny_missing_agent", "Authenticated agent was not found in the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -859,15 +970,25 @@ export function toolAccessPolicyService(db: Db) {
     }
 
     if (heartbeatRunId) {
-      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, heartbeatRunId));
+      const runId = heartbeatRunId;
+      const [run] = await cachedRead(cache, `run:${runId}`, async () =>
+        db
+          .select({
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            issueId: runContextSnapshotString("issueId"),
+            projectId: runContextSnapshotString("projectId"),
+            routineId: runContextSnapshotString("routineId"),
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId)));
       if (!run || run.companyId !== input.companyId || (input.actor.actorType === "agent" && run.agentId !== agentId)) {
         return { ok: false, redaction, decision: decision("deny", "deny_run_context_mismatch", "Supplied run context does not match the authenticated actor.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
       agentId = run.agentId;
-      const snapshot = isRecord(run.contextSnapshot) ? run.contextSnapshot : {};
-      const runIssueId = snapshotString(snapshot, "issueId");
-      const runProjectId = snapshotString(snapshot, "projectId");
-      const runRoutineId = snapshotString(snapshot, "routineId");
+      const runIssueId = nonBlankString(run.issueId);
+      const runProjectId = nonBlankString(run.projectId);
+      const runRoutineId = nonBlankString(run.routineId);
       if ((issueId && runIssueId && issueId !== runIssueId)
         || (projectId && runProjectId && projectId !== runProjectId)
         || (routineId && runRoutineId && routineId !== runRoutineId)) {
@@ -879,7 +1000,9 @@ export function toolAccessPolicyService(db: Db) {
     }
 
     if (issueId) {
-      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const contextIssueId = issueId;
+      const [issue] = await cachedRead(cache, `issue:${contextIssueId}`, async () =>
+        db.select({ companyId: issues.companyId, projectId: issues.projectId }).from(issues).where(eq(issues.id, contextIssueId)));
       if (!issue || issue.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Issue context is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -889,13 +1012,17 @@ export function toolAccessPolicyService(db: Db) {
       projectId = projectId ?? issue.projectId;
     }
     if (projectId) {
-      const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
+      const contextProjectId = projectId;
+      const [project] = await cachedRead(cache, `project:${contextProjectId}`, async () =>
+        db.select({ companyId: projects.companyId }).from(projects).where(eq(projects.id, contextProjectId)));
       if (!project || project.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Project context is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
     }
     if (routineId) {
-      const [routine] = await db.select().from(routines).where(eq(routines.id, routineId));
+      const contextRoutineId = routineId;
+      const [routine] = await cachedRead(cache, `routine:${contextRoutineId}`, async () =>
+        db.select({ companyId: routines.companyId }).from(routines).where(eq(routines.id, contextRoutineId)));
       if (!routine || routine.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Routine context is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -915,8 +1042,8 @@ export function toolAccessPolicyService(db: Db) {
     let applicationType: string | null = null;
 
     if (catalogEntryId) {
-      const [entry] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalogEntryId));
-      if (!entry || entry.companyId !== input.companyId) {
+      const entry = await loadCatalogEntry(input.companyId, catalogEntryId, cache);
+      if (!entry) {
         return { ok: false, redaction, decision: decision("deny", "deny_missing_tool", "Requested tool is not in the company catalog.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
       connectionId = entry.connectionId;
@@ -927,10 +1054,12 @@ export function toolAccessPolicyService(db: Db) {
       catalogVersionHash = entry.versionHash;
       catalogSchemaHash = entry.schemaHash;
     } else if (connectionId) {
-      const [entry] = await db
-        .select()
-        .from(toolCatalogEntries)
-        .where(and(eq(toolCatalogEntries.companyId, input.companyId), eq(toolCatalogEntries.connectionId, connectionId), eq(toolCatalogEntries.name, input.request.toolName)));
+      const entryConnectionId = connectionId;
+      const [entry] = await cachedRead(cache, `catalog-entry-name:${input.companyId}:${entryConnectionId}:${input.request.toolName}`, async () =>
+        db
+          .select(catalogEntryContextColumns)
+          .from(toolCatalogEntries)
+          .where(and(eq(toolCatalogEntries.companyId, input.companyId), eq(toolCatalogEntries.connectionId, entryConnectionId), eq(toolCatalogEntries.name, input.request.toolName))));
       if (entry) {
         catalogEntryId = entry.id;
         applicationId = entry.applicationId ?? applicationId;
@@ -943,7 +1072,18 @@ export function toolAccessPolicyService(db: Db) {
     }
 
     if (connectionId) {
-      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+      const contextConnectionId = connectionId;
+      const [connection] = await cachedRead(cache, `connection:${contextConnectionId}`, async () =>
+        db
+          .select({
+            companyId: toolConnections.companyId,
+            applicationId: toolConnections.applicationId,
+            enabled: toolConnections.enabled,
+            status: toolConnections.status,
+            transport: toolConnections.transport,
+          })
+          .from(toolConnections)
+          .where(eq(toolConnections.id, contextConnectionId)));
       if (!connection || connection.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Connection is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -954,7 +1094,17 @@ export function toolAccessPolicyService(db: Db) {
       connectionTransport = connection.transport;
     }
     if (applicationId) {
-      const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationId));
+      const contextApplicationId = applicationId;
+      const [application] = await cachedRead(cache, `application:${contextApplicationId}`, async () =>
+        db
+          .select({
+            companyId: toolApplications.companyId,
+            applicationKey: toolApplications.applicationKey,
+            status: toolApplications.status,
+            type: toolApplications.type,
+          })
+          .from(toolApplications)
+          .where(eq(toolApplications.id, contextApplicationId)));
       if (!application || application.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Application is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -1004,24 +1154,28 @@ export function toolAccessPolicyService(db: Db) {
     };
   }
 
-  async function effectiveProfiles(ctx: ToolAccessContext) {
-    const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
+  async function effectiveProfiles(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache) {
+    const bindings = await cachedRead(cache, `profile-bindings:${ctx.companyId}`, async () =>
+      db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId)));
     const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
     if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
     const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
-    const candidateProfiles = await db.select().from(toolProfiles).where(and(
-      eq(toolProfiles.companyId, ctx.companyId),
-      inArray(toolProfiles.id, candidateProfileIds),
-    ));
-    const [gateway] = ctx.gatewayId
-      ? await db
-          .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
-          .from(toolMcpGateways)
-          .where(and(
-            eq(toolMcpGateways.companyId, ctx.companyId),
-            eq(toolMcpGateways.id, ctx.gatewayId),
-          ))
-          .limit(1)
+    const candidateProfiles = await cachedRead(cache, `profiles:${ctx.companyId}:${[...candidateProfileIds].sort().join(",")}`, async () =>
+      db.select().from(toolProfiles).where(and(
+        eq(toolProfiles.companyId, ctx.companyId),
+        inArray(toolProfiles.id, candidateProfileIds),
+      )));
+    const gatewayId = ctx.gatewayId;
+    const [gateway] = gatewayId
+      ? await cachedRead(cache, `gateway-profile-mode:${ctx.companyId}:${gatewayId}`, async () =>
+          db
+            .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+            .from(toolMcpGateways)
+            .where(and(
+              eq(toolMcpGateways.companyId, ctx.companyId),
+              eq(toolMcpGateways.id, gatewayId),
+            ))
+            .limit(1))
       : [];
     const activeBindings = effectiveToolProfileBindings(
       matchingBindings,
@@ -1035,25 +1189,29 @@ export function toolAccessPolicyService(db: Db) {
       .map((profileId) => profilesById.get(profileId) ?? null)
       .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
+    // The active profile set depends on the connection (additive app profiles),
+    // so a batch reads the entries once per distinct set.
     const entries = activeProfileIds.length > 0
-      ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
+      ? await cachedRead(cache, `profile-entries:${ctx.companyId}:${[...activeProfileIds].sort().join(",")}`, async () =>
+          db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds))))
       : [];
     return { profiles: activeProfiles, entries };
   }
 
-  async function explicitGrant(ctx: ToolAccessContext): Promise<boolean> {
+  async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache): Promise<boolean> {
     const principalType = ctx.actorType === "agent" ? "agent" : ctx.actorType === "user" ? "user" : null;
     const principalId = ctx.actorType === "agent" ? ctx.agentId : ctx.actorId;
     if (!principalType || !principalId) return false;
-    const grants = await db
-      .select()
-      .from(principalPermissionGrants)
-      .where(and(
-        eq(principalPermissionGrants.companyId, ctx.companyId),
-        eq(principalPermissionGrants.principalType, principalType),
-        eq(principalPermissionGrants.principalId, principalId),
-        eq(principalPermissionGrants.permissionKey, "tools:use"),
-      ));
+    const grants = await cachedRead(cache, `tool-grants:${ctx.companyId}:${principalType}:${principalId}`, async () =>
+      db
+        .select()
+        .from(principalPermissionGrants)
+        .where(and(
+          eq(principalPermissionGrants.companyId, ctx.companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+          eq(principalPermissionGrants.permissionKey, "tools:use"),
+        )));
     return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
   }
 
@@ -1177,13 +1335,30 @@ export function toolAccessPolicyService(db: Db) {
     });
   }
 
-  async function decide(input: ToolAccessDecisionInput): Promise<ToolAccessDecision> {
-    const loaded = await loadContext(input);
+  /**
+   * Decides one tool access request. Pass the same `cache` to every call of a
+   * batch that shares one actor and run context (for example, one tools/list
+   * response) so the batch reads the shared policy inputs once.
+   */
+  async function decide(
+    input: ToolAccessDecisionInput,
+    options: { cache?: ToolAccessDecisionCache } = {},
+  ): Promise<ToolAccessDecision> {
+    // A decision that consumes a rate limit can also record a trust-rule hit
+    // from the policy row, so it always reads fresh rows.
+    const cache = input.consumeRateLimit === true ? undefined : options.cache;
+    const loaded = await loadContext(input, cache);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
-    const profileState = await effectiveProfiles(ctx);
+    const profileState = await effectiveProfiles(ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
-    const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
+    const permittedByProfile = profileState.profiles.some((profile) => {
+      const matchingEntries = profileState.entries.filter((entry) => entry.profileId === profile.id && profileEntryMatches(entry, ctx));
+      return !matchingEntries.some((entry) => entry.effect === "exclude")
+        && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
+    });
+    const policies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () =>
+      db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
     for (const policy of policies) {
       const conditions = policyConditions(policy);
       if (conditions && selectorMatches(policy.selectors, ctx)) {
@@ -1214,6 +1389,7 @@ export function toolAccessPolicyService(db: Db) {
     const matchingPolicies = policies
       .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
       .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {
         policyId: policy.id,
@@ -1255,6 +1431,10 @@ export function toolAccessPolicyService(db: Db) {
         const rule = trustRuleConfig(policy);
         if (!rule || !trustRuleIsActive(policy)) continue;
         if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        // Remembered permissions cannot override an explicit block. Preserve
+        // priority semantics for ordinary allow/require-approval policies.
+        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+
         if (trustRuleNeedsReview(policy, ctx)) {
           return decision(
             "require_approval",
@@ -1271,13 +1451,16 @@ export function toolAccessPolicyService(db: Db) {
         return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "require_approval") {
+        // The connection's Ask first control restricts an existing action grant;
+        // it must never grant access to agents outside that connection's profile.
+        if (policy.config?.source === "app_gallery_finish" && !permittedByProfile) continue;
         return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "allow") {
         return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
     }
-    if (await explicitGrant(ctx)) {
+    if (await explicitGrant(ctx, cache)) {
       return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
     }
 
@@ -1678,7 +1861,12 @@ export function toolAccessPolicyService(db: Db) {
       scope: input.body.scope,
     });
     assertReviewedTrustRuleSelectors(selectors, reviewedSelectors);
-    const filters = assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
+    if (input.body.argumentMode === "action" && (input.actor?.agentId || !invocation.agentId || !invocation.connectionId || actionRequest.approvalId)) {
+      throw unprocessable("Action-wide permission requires a human-approved agent connection action without a formal approval gate");
+    }
+    const filters = input.body.argumentMode === "action"
+      ? { allowAny: true }
+      : assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
     const approvalThreshold = input.body.approvalThreshold ?? 2;
     const approvedCount = await matchingApprovedActionRequestCount({
       companyId: input.companyId,

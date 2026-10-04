@@ -1,6 +1,6 @@
 # Runner E2E security for a public repository
 
-This suite can spend provider money, expose four API credentials to isolated
+This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
 prompts, evidence packager, and publisher as security-sensitive production
@@ -63,9 +63,20 @@ rejects mutable tag or branch references.
 
 ## Secrets and protected environments
 
+Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
+protected paid environment. Deliver it only to that subscription profile's paid
+test step. Prefer a dedicated test-account login and refresh it before a campaign.
+The fixture stores only the selected login in its disposable company home, rejects
+ambient/redirected homes, and removes the login during teardown. Token fragments
+and account identifiers inside its JSON join the evidence redaction set. The
+subscription suite remains manual-only and never falls back to `XAI_API_KEY`.
+
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
-only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
-`DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or
+only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, and
+`DAYTONA_API_KEY` in it. `KIMI_MODEL_API_KEY` remains a local-only catalog name
+for pending explicit profiles and is intentionally absent from the workflow
+environment. Product E2E pending-profile admission remains gated separately.
+Do not duplicate these credentials as repository- or
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
 from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
@@ -74,9 +85,29 @@ report, history, and Pages jobs receive none of these secrets.
 Each full-stack matrix cell receives only its selected profile credential, plus
 Daytona only for Daytona cells. Secret-bearing and OIDC jobs use frozen installs
 without a shared dependency cache.
+On disposable GitHub Linux runners with Ubuntu's unprivileged-user-namespace
+restriction, the authorized default-branch workflow provisions an AppArmor profile before provider credentials are exposed. The profile is attached to the exact
+lockfile-pinned Codex executable. It grants `userns` so Codex can construct its
+filesystem sandbox; it does not disable the kernel restriction or Codex's
+workspace policy. Setup fails before invoking a model if the noninteractive
+profile load fails. Target-controlled tests only probe the existing sandbox and never invoke sudo or load host policy. This host-only profile disappears with the ephemeral runner.
+See [Ubuntu's namespace restriction documentation](https://documentation.ubuntu.com/security/security-features/privilege-restriction/apparmor/).
+Local developer machines are never modified by this setup. Legacy Codex fixtures
+disable optional shell-environment snapshots to avoid persisting credentials;
+other suites retain the persisted-state scanner. The `first-task` suite omits
+private home/workspace credential-persistence scanning so its evaluation focuses
+on onboarding behavior. Artifact redaction and publication scanning remain in
+force for every suite.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.
+
+The context-integrity catalog lists six pending Kimi/Grok cells for discovery:
+two cases each across `legacy-kimi-cli`, `legacy-kimi-acp`, and `legacy-grok`.
+The launcher and direct Playwright runner reject these profiles before loading
+credentials. Pi has no qualified model source and is not cataloged. Admission
+remains blocked until identity, authentication, skills, session, and billing
+evidence is qualified together.
 
 Create `runner-e2e-history`, also default-branch-only, for the OIDC publishing
 job. It contains no long-lived AWS key. Required reviewers may be added when a
@@ -85,13 +116,18 @@ the actor gate, environment branch restriction, and protected default branch.
 
 ## Runner fleet isolation
 
-When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
+When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells, reusable runner builds,
+and Daytona image builds use the exact RunsOn fleet
 selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
 fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
 Any other or missing toggle value falls back to the GitHub-hosted
 `ubuntu-latest` runner and its lower concurrency ceiling. The workflow chooses
 between those two reviewed literal labels; it never evaluates a configured
 runner label.
+
+Daytona image builds depend on successful campaign authorization and keep the
+existing GHCR publication and signing permissions. They receive no provider
+credentials and do not enter the `runner-e2e-paid` environment.
 
 Keep both runner targets restricted to `paperclipai/paperclip` and workflows
 that independently authorize trusted source revisions. Never let a fork or
@@ -179,32 +215,80 @@ latest pointers are mutable, and S3 versioning makes those updates recoverable.
 ## Public evidence boundary
 
 CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
-usage, costs, normalized results, and allowlisted inert structured per-attempt
-evidence are expected public data. Screenshots, video, archives, generated
-Playwright/blob/HTML report trees, credentials, Paperclip homes, databases,
-workspaces, master keys, raw/unredacted logs, and unallowlisted files are not.
-Only allowlisted `.log` copies that passed exact-value/key-shape scanning and
-redaction may cross the public boundary.
+usage, costs, normalized results, and trusted runner PNG screenshots are
+expected public data. Each
+public screenshot must carry the explicit `public-runner-fixture` marker in
+the normalized result. This includes a `failure.png` capture. Screenshot paths
+must be safe PNG basenames and must be tied to the exact normalized execution
+ID and attempt. The runner capture helper accepts only the exact issue route
+for the live fixture that the harness created. Other issue routes, credential
+pages, setup pages, and administration pages fail closed. The
+CloudFront-backed S3 history also publishes one
+synthetic campaign-summary PNG generated by trusted publisher code solely from
+fixed catalog labels and sanitized numeric/status fields. Video, archives,
+generated Playwright/blob/HTML report trees, SVG or other active content,
+credentials, Paperclip homes, databases, workspaces, master keys,
+raw/unredacted logs, unmarked images, and unallowlisted files are not public.
+Per-attempt JSON snapshots, result copies, logs, Markdown, and text files stay
+in the retained Actions artifact. Credential redaction does not remove hidden
+reasoning or provider session identities, so a text extension never admits a
+file to the public bundle. Graded results remain in `normalized-results.json`.
 
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
-different, access-controlled boundary. Text is exact-value and key-shape
-scanned and redacted. PNG and WebM are raw-byte scanned but cannot be inspected
-for credentials rendered as pixels, so they remain only in local evidence and
-the access-controlled artifact. SVG is rejected during packaging because it is
-active content.
+different, broader boundary. Text is exact-value and key-shape scanned and
+redacted. PNG and WebM are raw-byte scanned; SVG is rejected during packaging
+because it is active content. Raster pixels cannot be exhaustively
+secret-scanned by bytes, so fixture authors must treat every marked capture as
+public and must never extend the allowed task route to credentials, secrets,
+private user data, or other non-public content. Adding or changing a marked
+capture requires review of the visible page state. Videos remain
+access-controlled.
 
-Before permanent publication, the campaign publisher prunes raster/video
-files, archives, and generated report trees. It then regenerates the dashboard
-from the remaining allowlisted `.json`, `.log`, `.md`, and `.txt` evidence and
-accepts only that dashboard, normalized JSON/JUnit/summary, fixed
-branding assets, and the inert structured evidence paths. Per-attempt XML is
-excluded because browsers can process XML/XSLT; the only public XML is the
-root `junit.xml`, which the report aggregator constructs from fixed markup and
-XML-escaped fields. The same pruned tree feeds both S3/CloudFront history and
-the optional GitHub Pages artifact. A leak fails the cell and withholds the
-unsafe file.
+Before permanent publication, the campaign publisher creates a separate S3
+stage and retains only result PNGs with the explicit `public-runner-fixture`
+marker under `evidence/`. This applies even to malformed JSON and renamed
+process logs. Original packaged evidence and grades remain unchanged.
+It then launches publisher-only Chromium with networking blocked to render one
+`public-images/campaign-summary.png`. That fixed-path PNG is capped at 12 MiB
+and its signature is validated. Per-attempt XML is excluded because browsers
+can process XML/XSLT;
+the only public XML is the root `junit.xml`, which the report aggregator
+constructs from fixed markup and XML-escaped fields. Videos, archives,
+raw/unallowlisted logs, SVG, undeclared images, generated reports, and symlinks
+fail closed or are removed before the immutable manifest is calculated.
+
+GitHub Pages is built from a second stage without the synthetic summary PNG but
+with the same trusted-fixture screenshot allowlist. A leak detected by the
+existing packager scan fails the cell and withholds the unsafe file.
 
 Rotate the affected credential immediately if a secret-scanning failure or
 unexpected public object is observed. Preserve the access-controlled Actions
 artifact and S3 object versions for incident analysis; do not weaken scanning
 to make a campaign publish.
+
+`agent-chat-qualification.worker-crash-retry` is local-only and explicit-only.
+Linux with Python pidfd support is required; unsupported hosts fail before signalling.
+The fault target comes from the public run detail, must be native and running,
+and must have an exact `--run-id` command argument. PID 1, the harness PID,
+noninteger PIDs, remote profiles, and mismatched identities are refused. The
+fixture workspace must be within the disposable instance root. The helper pins an owned pidfd, verifies the exact run argument and recorded
+process start ticks again after evidence capture, and signals through that handle.
+PID reuse cannot redirect the signal. This is one
+specific process signal, never a name-based or machine-wide process kill.
+The bounded fixture command is released even on failure; normal instance cleanup
+still owns all disposable processes and files. No credentials enter the prompt,
+fault metadata, or structured grading fixtures.
+
+### Candidate ACP qualification
+
+The explicit-only `extended-harnesses` launcher removes ambient candidate
+admission, then authorizes only selected candidate/model pairs in its isolated
+server process. The server never reads admission from agent configuration,
+resolved credential bindings, or provider environment. Invalid, duplicate and
+mismatched authorization fails closed. Verified packaging and normal company
+and tool governance still apply. `CURSOR_AUTH_TOKEN` and
+`COPILOT_GITHUB_TOKEN` enter via encrypted company secret references, and all
+Cursor, Copilot, GitHub and GH environment variables are stripped from the
+server environment. GitHub PAT shapes are included in retained-evidence scans.
+Candidates have no automatic infrastructure retries; spending must be reconciled
+before a deliberate repeat.

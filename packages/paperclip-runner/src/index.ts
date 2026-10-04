@@ -11,6 +11,7 @@ export * from "./contracts/question-set.js";
 export * from "./contracts/runtime-context.js";
 export * from "./contracts/types.js";
 export * from "./backends/harness-driver-backend.js";
+export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";
 export { createOpenCodeNativeSessionBackend } from "./backends/opencode-native-backend.js";
 export {
   createNativeSessionBackend,
@@ -20,10 +21,14 @@ export {
   OpenCodeServerDriver,
   type OpenCodeServerDriverOptions,
 } from "./drivers/opencode/opencode-server-driver.js";
-export { parseCodexTurnDiff, summarizeCodexTurnDiff } from "./drivers/codex/codex-turn-diff.js";
+export {
+  parseCodexTurnDiff,
+  summarizeCodexTurnDiff,
+} from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,
+  inspectWarmRunTransition,
   type DurablePrpControlPlaneOptions,
   type PrpWireConnection,
   type PrpWireAttachment,
@@ -38,6 +43,7 @@ export * from "./drivers/codex/codex-app-server-driver.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
+export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,
   type ProbeQualifiedAcpxEnvironmentOptions,
@@ -47,8 +53,16 @@ export * from "./drivers/acpx/sidecar-protocol.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
+  readRunnerdArtifactBinding,
+  drainRetainedRunnerdMaintenanceOperations,
   resolveSourceCodexHome,
+  settleRetainedRunnerdSession,
+  retainedRunnerdCleanupProofIsCurrent,
+  retainedRunnerdMaintenanceIsIdle,
+  type RetainedRunnerdCleanupProof,
+  type RetainedRunnerdMaintenanceEpochReceipt,
   type RunnerdCodexTransport,
   type RunnerdCodexTransportOptions,
 } from "./live/runnerd-codex-transport.js";

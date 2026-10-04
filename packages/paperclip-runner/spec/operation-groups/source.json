@@ -48,12 +48,17 @@
     {
       "id": "discovery",
       "description": "Company-visible task, agent, project, and goal discovery.",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "set_task_title"]
+    },
+    {
+      "id": "projects",
+      "description": "Project creation and authorized repository discovery through the live company/run authority.",
+      "operationIds": ["create_project", "list_project_repositories"]
     },
     {
       "id": "delegation_dependencies",
-      "description": "Create delegated work and maintain dependency edges.",
-      "operationIds": ["create_task", "set_dependencies"]
+      "description": "Create or reassign delegated work and maintain dependency edges.",
+      "operationIds": ["create_task", "reassign_task", "set_dependencies", "hire_agent"]
     },
     {
       "id": "governance",
@@ -82,8 +87,8 @@
     },
     {
       "id": "company_skills",
-      "description": "Inspect company skills and synchronize the current agent's skills.",
-      "operationIds": ["list_company_skills", "sync_company_skills"]
+      "description": "Create, update, or inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["create_skill", "update_skill", "list_company_skills", "sync_company_skills"]
     },
     {
       "id": "secrets",
@@ -99,6 +104,14 @@
       "id": "test_escape_hatch",
       "description": "Controlled skill-test transport only; never product coverage.",
       "operationIds": ["generic_api_request"]
+    },
+    {
+      "id": "api_fallback",
+      "description": "Discover and invoke HTTP API operations unsupported by available dedicated tools. Production authority and route authorization remain required.",
+      "operationIds": [
+        "search_api",
+        "call_api"
+      ]
     }
   ],
   "behaviorGroups": [
@@ -107,7 +120,7 @@
       "legacyGroup": 1,
       "name": "Heartbeat",
       "owner": "control plane + always tools",
-      "operationIds": ["get_task_context"],
+      "operationIds": ["get_task_context", "set_task_title"],
       "controlPlaneOperationIds": ["select_work", "enforce_budget"],
       "realSurface": "agent identity, inbox-lite, heartbeat context, budget and active-issue services",
       "mockStateDomains": ["company", "actor", "wake", "task", "budget", "run"],
@@ -155,21 +168,21 @@
       "legacyGroup": 5,
       "name": "Search",
       "owner": "optional discovery tools",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"],
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "list_project_repositories"],
       "controlPlaneOperationIds": [],
       "realSurface": "company issue search and agent/project/goal list/get routes",
       "mockStateDomains": ["company", "task", "actor", "project", "goal"],
       "prpEvidence": "bounded redacted read projections through tool-result item events",
-      "gap": "Project and goal operations are scenario-only; every real service binding is unbound."
+      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher."
     },
     {
       "id": "su",
       "legacyGroup": 6,
       "name": "Subtasks",
       "owner": "optional delegation tools",
-      "operationIds": ["create_task"],
+      "operationIds": ["create_task", "reassign_task", "hire_agent"],
       "controlPlaneOperationIds": ["route_wake"],
-      "realSurface": "company issue create, child issue, assignment, and wake services",
+      "realSurface": "company issue create, child issue, guarded reassignment, and wake services",
       "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
       "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
       "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."
@@ -250,13 +263,13 @@
       "id": "rf",
       "legacyGroup": 13,
       "name": "Reference files",
-      "owner": "optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request"],
+      "owner": "always instruction tools + optional domain tools + test-only escape hatch",
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions"],
       "controlPlaneOperationIds": ["append_audit_record"],
-      "realSurface": "case, routine, company-skill, secret, portability, and administration services",
+      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage."
+      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
     },
     {
       "id": "mh",

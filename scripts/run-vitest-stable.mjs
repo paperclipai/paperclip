@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
+
+import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -66,11 +68,41 @@ const serializedModeName = "serialized";
 const generalModeName = "general";
 const allModeName = "all";
 const generalServerGroupName = "general-server";
+const generalServerWithoutChatGroupName = "general-server-without-chat";
+const generalChatGroupName = "general-chat";
+const generalServerNativeRunnerGroupName = "general-server-native-runner";
+const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
+// This suite rebuilds the Runner release binaries with cargo in beforeAll.
+// Inside the PR workflow's plain server shards, which carry no Rust cache,
+// that build was a ~4m30s cold compile of every third-party crate on each run
+// (277s of a 291s shard vitest step, actions run 35246999382, 2026-09-17).
+const nativeRunnerSuite =
+  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+// In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
+// workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
+// Runner vitest shard runs the native-runner group instead, because those
+// lanes restore the shared release-runner-v1 Rust cache (see
+// packages/paperclip-runner/scripts/run-pr-vitest-lane.mjs). Every other
+// caller — local runs, release-verify.yml under the Release and Cloud
+// readiness workflows — keeps the suite in the server shards, so a renamed or
+// unknown workflow degrades to today's slower-but-covered behavior rather
+// than dropping the suite.
+const prWorkflowName = "PR";
+const nativeRunnerSuiteRunsInRustCachedLane = process.env.GITHUB_WORKFLOW === prWorkflowName;
+const withoutChatExcludedSuites = nativeRunnerSuiteRunsInRustCachedLane
+  ? [chatSuite, nativeRunnerSuite]
+  : [chatSuite];
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
 const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
+const allowedGeneralGroupNames = [
+  ...generalGroupNames,
+  generalServerWithoutChatGroupName,
+  generalChatGroupName,
+  generalServerNativeRunnerGroupName,
+];
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
@@ -216,10 +248,10 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      (group === generalServerGroupName || group === generalWorkspacesAGroupName));
+      ([generalServerGroupName, generalServerWithoutChatGroupName, generalChatGroupName, generalWorkspacesAGroupName].includes(group)));
   if (!shardAllowed && shardIndex !== null) {
     fail(
-      "--shard-index/--shard-count are only valid with --mode serialized, --mode general --group general-server, or --mode general --group general-workspaces-a.",
+      "--shard-index/--shard-count are only valid with serialized mode or a shardable general server/chat/workspaces-a group.",
     );
   }
 
@@ -227,8 +259,8 @@ function parseCliOptions(argv) {
     fail("--group is only valid with --mode general.");
   }
 
-  if (group !== null && !generalGroupNames.includes(group)) {
-    fail(`Unknown group "${group}". Expected one of: ${generalGroupNames.join(", ")}.`);
+  if (group !== null && !allowedGeneralGroupNames.includes(group)) {
+    fail(`Unknown group "${group}". Expected one of: ${allowedGeneralGroupNames.join(", ")}.`);
   }
 
   if (shardIndex !== null) {
@@ -271,21 +303,45 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-function runVitest(args, label) {
+function runVitest(args, label, testShard = null) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
+  // Production workspace/security checks reject symlink aliases. In particular
+  // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
+  const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {
     ...process.env,
     NODE_ENV: "test",
     PAPERCLIP_HOME: path.join(testRoot, "h"),
+    // Config discovery otherwise prefers the checkout's .paperclip/config.json
+    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
+    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
+  if (testShard) {
+    const collect = (filters, name) => {
+      const output = path.join(testRoot, `${name}.json`);
+      const result = spawnSync("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
+        ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
+        cwd: repoRoot, env, stdio: "inherit",
+      });
+      if (result.error || result.status !== 0) fail(`Vitest collection failed: ${result.error?.message ?? result.status}`);
+      return JSON.parse(readFileSync(output, "utf8"));
+    };
+    const collected = collect(args, "all");
+    const file = path.resolve(repoRoot, chatSuite);
+    const selected = partitionTestLines(collected, testShard.count, file)[testShard.index];
+    const filters = selected.lines.map((line) => `${chatSuite}:${line}`);
+    args = [...args.filter((arg) => arg !== chatSuite), ...filters];
+    assertSelectedTests(selected.tests, collect(args, "selected"), file);
+    console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
+    args.push("--allowOnly=false");
+  }
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
@@ -320,16 +376,35 @@ function runProjectGroup(projects, groupName, shardIndex = null, shardCount = nu
 }
 
 function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
-  if (groupName === generalServerGroupName) {
+  if (groupName === generalChatGroupName) {
+    runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
+      "chat integration test shard", { index: shardIndex ?? 0, count: shardCount ?? 1 });
+    return;
+  }
+  if (groupName === generalServerNativeRunnerGroupName) {
+    runVitest(
+      ["--project", "@paperclipai/server", ...serializedServerVitestArgs, nativeRunnerSuite],
+      "native runner vertical-slice suite",
+    );
+    return;
+  }
+  if (groupName === generalServerGroupName || groupName === generalServerWithoutChatGroupName) {
+    // In the PR workflow the without-chat group also leaves the native-runner
+    // suite to the Rust-cached vitest lane; the full general-server group
+    // (local runs) keeps both.
+    const withoutChat = groupName === generalServerWithoutChatGroupName;
+    const files = withoutChat
+      ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
+      : generalServerTestFiles;
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
-        generalServerTestFiles,
+        files,
         shardIndex,
         shardCount,
         generalServerShardDurations,
       );
       console.log(
-        `\n[test:run] general-server shard ${shardIndex + 1}/${shardCount} running ${shardFiles.length} of ${generalServerTestFiles.length} suites`,
+        `\n[test:run] general-server shard ${shardIndex + 1}/${shardCount} running ${shardFiles.length} of ${files.length} suites`,
       );
       if (shardFiles.length === 0) {
         return;
@@ -348,6 +423,11 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     }
 
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
+    if (withoutChat) {
+      for (const suite of withoutChatExcludedSuites) {
+        excludeRouteArgs.push("--exclude", suite.replace(/^server\//, ""));
+      }
+    }
     runVitest(
       [
         "--project",
@@ -431,21 +511,25 @@ if (options.dryRun) {
         shardIndex: options.shardIndex,
         shardCount: options.shardCount,
         group: options.group,
-        availableGeneralGroups: generalGroupNames,
+        availableGeneralGroups: allowedGeneralGroupNames,
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
-          options.mode === generalModeName &&
-          options.group === generalServerGroupName &&
-          options.shardCount !== null
-            ? selectGeneralServerShard(
-                generalServerTestFiles,
-                options.shardIndex,
-                options.shardCount,
-                generalServerShardDurations,
-              )
-            : null,
+          options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
+            ? [nativeRunnerSuite]
+            : options.mode === generalModeName &&
+                [generalServerGroupName, generalServerWithoutChatGroupName].includes(options.group) &&
+                options.shardCount !== null
+              ? selectGeneralServerShard(
+                  options.group === generalServerWithoutChatGroupName
+                    ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
+                    : generalServerTestFiles,
+                  options.shardIndex,
+                  options.shardCount,
+                  generalServerShardDurations,
+                )
+              : null,
         workspaceProjects:
           options.group === generalWorkspacesAGroupName
             ? generalWorkspacesAProjects

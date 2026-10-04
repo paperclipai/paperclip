@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useNavigate, useParams } from "@/lib/router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, History, Pencil, Repeat, Sparkles, X } from "lucide-react";
 import { ApiError } from "../api/client";
@@ -86,7 +86,7 @@ export function buildRoutineProjectOptions(
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
-  triggers: "Schedule",
+  triggers: "Triggers",
   variables: "Variables",
   secrets: "Secrets",
   delivery: "Delivery",
@@ -121,6 +121,8 @@ function buildRoutineMutationPayload(input: RoutineEditDraft) {
 
 export function RoutineDetail() {
   const { routineId, section: sectionParam } = useParams<{ routineId: string; section?: string }>();
+  const [searchParams] = useSearchParams();
+  const triggerSetup = sectionParam === "triggers" && searchParams.has("triggerSetup");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -198,7 +200,7 @@ export function RoutineDetail() {
     }),
     [routine?.triggers, routineRuns],
   );
-  const { data: activity } = useQuery({
+  const { data: activity, isLoading: activityLoading, error: activityError } = useQuery({
     queryKey: [
       ...queryKeys.routines.activity(selectedCompanyId!, routineId!),
       relatedActivityIds.triggerIds.join(","),
@@ -325,14 +327,14 @@ export function RoutineDetail() {
 
   useEffect(() => {
     if (!routine) return;
-    setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
+    if (!triggerSetup) setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
     if (!routineDefaults) return;
     const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
+  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, triggerSetup]);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -413,6 +415,7 @@ export function RoutineDetail() {
       setRunVariablesOpen(false);
       navigateToSection("runs");
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine", routineId!] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -602,6 +605,7 @@ export function RoutineDetail() {
 
   const onHistoryRestoreSecretMaterials = useCallback((response: RestoreRoutineRevisionResponse) => {
     if (response.secretMaterials.length > 0) {
+      navigateToSection("triggers");
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
@@ -613,7 +617,7 @@ export function RoutineDetail() {
         })),
       });
     }
-  }, []);
+  }, [navigateToSection]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -760,6 +764,8 @@ export function RoutineDetail() {
     navigateToSection,
   };
 
+  if (triggerSetup) return <RoutineDetailContext.Provider value={contextValue}><TriggersSection /></RoutineDetailContext.Provider>;
+
   const isEditableSection = EDITABLE_SECTIONS.includes(section);
 
   return (
@@ -903,7 +909,7 @@ export function RoutineDetail() {
             {section === "secrets" && <SecretsSection />}
             {section === "delivery" && <DeliverySection />}
             {section === "runs" && <RunsSection />}
-            {section === "activity" && <ActivitySection />}
+            {section === "activity" && <ActivitySection isLoading={activityLoading} error={activityError} />}
             {section === "history" && <HistorySection />}
 
             {isEditableSection && (section !== "overview" || overviewEditing) ? (

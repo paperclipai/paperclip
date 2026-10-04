@@ -1,3 +1,4 @@
+import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
   createHash,
@@ -10,6 +11,8 @@ import {
   type KeyObject,
 } from "node:crypto";
 import {
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  type AppDefinition,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
@@ -31,8 +34,8 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
-export type PaperclipCloudConnectorProvider = "google" | "github";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -93,6 +96,7 @@ type SealedEnvelope = {
 
 type ConnectorResponse = {
   confirmationUrl?: unknown;
+  authorizationUrl?: unknown;
   handoff?: unknown;
   expiresAt?: unknown;
   scopes?: unknown;
@@ -126,7 +130,55 @@ const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "he
 const X25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex");
 const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
 
-/** A stable, intentionally detail-free error for all remote broker failures. */
+// Only fixed protocol codes may enter errors/logs. Never retain the broker's
+// message, request data, return URI, or an arbitrary error/code string.
+const BROKER_REJECTION_REASONS = new Set([
+  "RETURN_ORIGIN_NOT_ENROLLED", "INVALID_RETURN_URI", "INVALID_REQUEST",
+  "UNKNOWN_INSTANCE", "INSTANCE_APPROVAL_REQUIRED", "INSTANCE_SUSPENDED",
+  "ENVIRONMENT_MISMATCH", "PROFILE_NOT_AVAILABLE", "PROFILE_NOT_ELIGIBLE",
+  "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
+  "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
+  "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
+  "PROVIDER_OPERATION_FAILED",
+]);
+const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
+
+async function readBrokerRejectionReason(response: Response): Promise<string> {
+  if (response.bodyUsed || response.body?.locked) return UNKNOWN_BROKER_REASON;
+  const reader = response.body?.getReader();
+  if (!reader) return UNKNOWN_BROKER_REASON;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async () => {
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 4_096) return UNKNOWN_BROKER_REASON;
+          chunks.push(value);
+        }
+        const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const reason = body && typeof body === "object" && "error" in body ? body.error : null;
+        return typeof reason === "string" && BROKER_REJECTION_REASONS.has(reason)
+          ? reason : UNKNOWN_BROKER_REASON;
+      })(),
+      new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve(UNKNOWN_BROKER_REASON), 500);
+      }),
+    ]);
+  } catch {
+    return UNKNOWN_BROKER_REASON;
+  } finally {
+    clearTimeout(timer);
+    // Diagnostic reads and cancellation must never delay the original failure.
+    void reader.cancel().catch(() => {});
+  }
+}
+
+/** Stable public code/status with only allowlisted broker diagnostics. */
 export class PaperclipCloudConnectorError extends Error {
   constructor(
     message: string,
@@ -261,8 +313,9 @@ export function createPaperclipCloudConnector(input: {
     }
     if (operation === "revoke" && response.status === 204) return {};
     if (!response.ok) {
+      const reason = await readBrokerRejectionReason(response);
       throw new PaperclipCloudConnectorError(
-        "Paperclip Cloud connector rejected the request",
+        `Paperclip Cloud connector rejected the request (operation=${operation}, status=${response.status}, reason=${reason})`,
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
       );
@@ -348,14 +401,45 @@ export function createPaperclipCloudConnector(input: {
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
       }
-      const confirmationUrl = new URL(response.confirmationUrl);
-      const expectedBroker = new URL(config.baseUrl);
-      if (confirmationUrl.origin !== expectedBroker.origin || confirmationUrl.pathname !== "/connections/confirm") {
+      let confirmationUrl: URL;
+      try {
+        confirmationUrl = new URL(response.confirmationUrl);
+      } catch {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
+      }
+      const expectedBroker = new URL(config.baseUrl);
+      if (
+        confirmationUrl.origin !== expectedBroker.origin
+        || confirmationUrl.pathname !== "/connections/confirm"
+        || confirmationUrl.username
+        || confirmationUrl.password
+        || confirmationUrl.hash
+      ) {
+        throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
+      }
+      let authorizationUrl: URL | undefined;
+      if (response.authorizationUrl !== undefined) {
+        if (typeof response.authorizationUrl !== "string") {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        try {
+          authorizationUrl = new URL(response.authorizationUrl);
+        } catch {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        if (
+          authorizationUrl.protocol !== "https:"
+          || authorizationUrl.username
+          || authorizationUrl.password
+          || authorizationUrl.hash
+          || !isExpectedProviderAuthorizationUrl(profile, authorizationUrl)
+        ) {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
       }
       const handoff = parseCloudHandoff(response.handoff);
       return {
-        authorizationUrl: confirmationUrl.toString(),
+        authorizationUrl: authorizationUrl?.toString() ?? confirmationUrl.toString(),
         expiresAt: response.expiresAt,
         ...(handoff ? { handoff } : {}),
       };
@@ -455,7 +539,34 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
   return value === "paperclip_cloud_connector" || value === "paperclip_id_connector";
 }
 
+/** Use the same signed instance profiles for catalog display and setup validation. */
+export function appWithPaperclipCloudConnectorAvailability(
+  app: AppDefinition,
+  profiles: readonly string[],
+): AppDefinition {
+  const enabledProfiles = new Set(profiles);
+  const methods = app.methods.filter((method) =>
+    !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+  );
+  return {
+    ...app,
+    methods,
+    ownershipAvailability: {
+      ...DEFAULT_OWNERSHIP_AVAILABILITY,
+      ...app.ownershipAvailability,
+      platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
+    },
+  };
+}
+
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
+let capabilityCacheGeneration = 0;
+
+export function invalidatePaperclipCloudConnectorCapabilities(): void {
+  capabilityCacheGeneration += 1;
+  capabilityCache = null;
+}
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -474,9 +585,12 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   if (!config) return [];
   const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
+  const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
   const profiles = await connector.getCapabilities();
-  capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  if (generation === capabilityCacheGeneration) {
+    capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  }
   return profiles;
 }
 
@@ -641,14 +755,30 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (isAsanaConnectorProfileId(profile)) {
+    return { provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
+  }
   if (isGitHubConnectorProfileId(profile)) {
     return { provider: "github", scopes: GITHUB_CONNECTOR_PROFILES[profile].scopes };
   }
   return { provider: "google", scopes: GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes };
 }
 
+function isExpectedProviderAuthorizationUrl(
+  profile: PaperclipCloudConnectorProfileId,
+  url: URL,
+): boolean {
+  if (isAsanaConnectorProfileId(profile)) {
+    return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
+  }
+  if (isGitHubConnectorProfileId(profile)) {
+    return url.origin === "https://github.com" && url.pathname === "/login/oauth/authorize";
+  }
+  return url.origin === "https://accounts.google.com" && url.pathname === "/o/oauth2/v2/auth";
+}
+
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value);
+  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

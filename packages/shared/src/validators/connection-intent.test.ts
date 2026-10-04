@@ -63,4 +63,9 @@ describe("connection intent contracts", () => {
     expect(connectionsSearchInputSchema.parse({ query: "  notion  " })).toEqual({ query: "notion" });
     expect(connectionRequestInputSchema.parse({ service: " notion " })).toEqual({ service: "notion" });
   });
+  it("accepts long natural-language searches while bounding input size", () => {
+    const query = "Please help me find a connection. ".repeat(30) + "AgentMail inbox";
+    expect(connectionsSearchInputSchema.parse({ query }).query).toBe(query);
+    expect(connectionsSearchInputSchema.safeParse({ query: "x".repeat(4001) }).success).toBe(false);
+  });
 });

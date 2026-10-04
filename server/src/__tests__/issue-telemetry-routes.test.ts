@@ -43,6 +43,10 @@ const mockDb = vi.hoisted(() => ({
   transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
     callback({ select: mockDbSelect })),
 }));
+const mockRunnerGoalService = vi.hoisted(() => ({
+  projection: vi.fn(async () => null),
+  act: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -52,6 +56,12 @@ function registerModuleMocks() {
 
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/runner-goals.js", () => ({
+    runnerGoalService: () => mockRunnerGoalService,
+    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -129,11 +139,15 @@ function makeIssue(status: "todo" | "done") {
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -146,7 +160,7 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("issue telemetry routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -187,7 +201,9 @@ describe("issue telemetry routes", () => {
           permissions: null,
         }]).then(onFulfilled, onRejected),
     }));
-  });
+    // Keep cold route imports in setup rather than the HTTP assertion timeout.
+    await loadAppModules();
+  }, 60_000);
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
     mockAgentService.getById.mockResolvedValue({

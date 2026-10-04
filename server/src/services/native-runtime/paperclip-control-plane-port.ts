@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -23,6 +24,7 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
 
 export interface PaperclipControlPlaneBinding {
@@ -38,7 +40,10 @@ export interface PaperclipControlPlaneBinding {
 }
 
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
-  return "schema" in value && value.schema === "paperclip.prp.event.v1";
+  return "schema" in value && [
+    "paperclip.prp.event.v1",
+    "paperclip.prp.event.v2",
+  ].includes(value.schema);
 }
 
 function isCompleteInput(value: NativeRunResult | CompleteControlPlaneRunInput): value is CompleteControlPlaneRunInput {
@@ -205,6 +210,14 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       },
     });
     if (persisted.disposition === "committed") {
+      publishChatPublicationCommitSignal({
+        companyId: this.#binding.companyId,
+        issueId: this.#binding.issueId,
+        runId: this.#binding.runId,
+        agentId: this.#binding.agentId,
+        seq: persisted.row.seq,
+        eventType: event.eventType,
+      });
       await this.#onCommittedEvent?.(event);
     } else {
       // A recovered runner may replay the event whose durable side effects
@@ -276,6 +289,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
 
     await this.#db.transaction(async (tx) => {
+      // Result insertion checks the task foreign key. Acquire that parent lock
+      // before the run, matching task mutations that subsequently update a run.
+      // Otherwise concurrent chat/status writes can deadlock after generation.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);

@@ -16,17 +16,45 @@
   ],
   "methods": [
     {
-      "key": "api-key",
-      "transport": "rest_api",
-      "auth": "api_key",
+      "key": "ai-subscription",
+      "label": "Claude subscription",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "oauth",
+      "ai": {
+        "provider": "anthropic",
+        "method": "subscription"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use credentials from your provider account.",
-      "defaults": {
-        "serviceHost": "api.anthropic.com"
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3"
+    },
+    {
+      "key": "ai-api_key",
+      "label": "Claude API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "anthropic",
+        "method": "api_key"
       },
-      "guidanceMd": "Create a key in the Anthropic Console and rotate it if it has been exposed.",
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
       "riskTier": "S3",
       "credentialFields": [
         {
@@ -34,13 +62,13 @@
           "label": "API key",
           "type": "password",
           "required": true,
-          "placeholder": "sk-ant-api03-...",
+          "placeholder": "Enter API key",
           "secret": true
         }
       ],
       "keyPlacement": {
-        "location": "header",
-        "name": "x-api-key"
+        "location": "env",
+        "name": "ANTHROPIC_API_KEY"
       }
     }
   ]

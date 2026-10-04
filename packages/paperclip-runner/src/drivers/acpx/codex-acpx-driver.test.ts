@@ -14,6 +14,7 @@ import {
   type CodexAcpxDriverOptions,
 } from "./codex-acpx-driver.js";
 import type {
+  AcpxRuntimeSteeringCapability,
   AcpxRuntimeTurnInput,
   AcpxRuntimeTurn,
   OpenAcpxRuntimeHostOptions,
@@ -21,6 +22,58 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it("delivers negotiated steering and follow-up distinctly, once, for the active turn", async () => {
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: true });
+    const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    expect(fixture.hostOptions?.providerPolicy).toEqual({ readOnly: true });
+    expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: true });
+    const { turnId } = await session.startTurn({ message: { text: "Work" } });
+    const turnInput = fixture.host.startTurn.mock.calls[0]![0];
+    const context = { requestId: 0, signal: new AbortController().signal };
+    await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "agent-1" }, context)).rejects.toThrow(/session mismatch/);
+    await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "backend-1" }, context)).rejects.toThrow(/adapter is unavailable/);
+    await session.steer!({ turnId, correlationId: "control-1", message: { text: "Change focus" } });
+    await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { text: "Then validate" } });
+    expect(fixture.host.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Change focus", `run-controls:${turnId}`);
+    expect(fixture.host.queueFollowUp).toHaveBeenCalledExactlyOnceWith("Then validate", `run-controls:${turnId}`);
+    expect(fixture.host.interruptActiveTurn).not.toHaveBeenCalled();
+    await expect(session.steer!({ turnId, correlationId: "control-2", message: { text: "Duplicate" } })).rejects.toThrow(/already attempted/);
+    await expect(session.steer!({ turnId: "wrong-turn", message: { text: "Stale" } })).rejects.toThrow();
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.filter(event => event.payload.kind === "steering_acknowledgement").map(event => event.payload.mode)).toEqual(["steer", "follow_up"]);
+    for (const event of events) expect(validatePrpEvent(event).ok).toBe(true);
+    await expect(session.steer!({ turnId, message: { text: "Already settled" } })).rejects.toThrow();
+    await session.close({ reason: "controls verified" });
+  });
+
+  it("rejects unnegotiated controls and retains ambiguous delivery attempts", async () => {
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const { turnId } = await session.startTurn({ message: { text: "Work" } });
+    await expect(session.steer!({ turnId, message: { text: "No handshake" } })).rejects.toThrow(/did not negotiate/);
+    expect(fixture.host.steerActiveTurn).not.toHaveBeenCalled();
+    fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: false });
+    fixture.host.steerActiveTurn.mockRejectedValueOnce(new Error("delivery acknowledgement lost"));
+    const input = { turnId, correlationId: "ambiguous", message: { text: "Maybe delivered" } };
+    await expect(session.steer!(input)).rejects.toThrow(/acknowledgement lost/);
+    await expect(session.steer!(input)).rejects.toThrow(/already attempted/);
+    expect(fixture.host.steerActiveTurn).toHaveBeenCalledOnce();
+    await session.close({ reason: "ambiguous control verified" });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"], ["codex", "gpt-5.6-sol"],
+  ] as const)("launches %s in full auto when no mode is supplied", async (agent, model) => {
+    const fixture = driverFixture({ agent, model, permissionMode: undefined });
+    const session = await fixture.driver.openSession({
+      runId: "run-default-permissions", normalizedSessionId: "session-1", workingDirectory: "/workspace",
+    });
+    expect(fixture.hostOptions?.permissionMode).toBe("approve-all");
+    await session.close({ reason: "default permission verified" });
+  });
+
   it("rejects a pre-aborted open before starting host admission", async () => {
     const fixture = driverFixture();
     const controller = new AbortController();
@@ -232,7 +285,10 @@ describe("Codex ACPX harness driver", () => {
         arguments: completedResult(),
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ accepted: true });
+    ).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted. Task status is committed after this turn and workspace finalization finish.",
+    });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
 
     const events = await terminalEvents;
@@ -285,6 +341,40 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "complete" });
     await session.close({ reason: "idempotent close" });
     expect(fixture.host.close).toHaveBeenCalledOnce();
+  });
+
+  it("checks server completion feedback before ACPX semantic admission", async () => {
+    const completionFeedback = vi.fn()
+      .mockRejectedValueOnce(new Error("Name the reviewer and decision."))
+      .mockResolvedValue("Completion report accepted.");
+    const fixture = driverFixture({ completionFeedback });
+    const session = await fixture.driver.openSession({
+      runId: "run-feedback",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+    const call = (callId: string) => bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId,
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    await expect(call("rejected")).resolves.toMatchObject({ accepted: false });
+    expect((await session.snapshot()).semanticResult).toBeNull();
+    await expect(call("corrected")).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted.",
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await terminalEvents;
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.find((event) => event.eventType === "run.result.rejected")?.payload).toMatchObject({
+      recovery: { required: true, recoverable: true },
+    });
+    await session.close({ reason: "completion feedback verified" });
   });
 
   it("keeps ACPX reasoning and assistant identities stable through settlement", async () => {
@@ -1181,7 +1271,10 @@ describe("Codex ACPX harness driver", () => {
         arguments: completedResult(),
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ accepted: true });
+    ).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted. Task status is committed after this turn and workspace finalization finish.",
+    });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
 
     await vi.waitFor(async () => {
@@ -1408,6 +1501,73 @@ describe("Codex ACPX harness driver", () => {
     });
   });
 
+  it("delivers only offered permission choices and rejects stale or duplicate answers", async () => {
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" });
+    const session = await fixture.driver.openSession({
+      runId: "run-permission", normalizedSessionId: "session-1", workingDirectory: "/workspace",
+    });
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Run validation." } });
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const response = callback({
+      inferredKind: "execute", raw: {
+        sessionId: "agent-session-1", toolCall: { toolCallId: "tool-permission", title: "Run validation" },
+        options: [{ optionId: "once", kind: "allow_once", name: "Allow once" }],
+      },
+    } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    const events = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    expect(events.at(-1)?.payload).toMatchObject({ request: {
+      type: "permission", choices: [{ key: "accept" }, { key: "cancel" }],
+      origin: { method: "session/request_permission" },
+    } });
+    await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId: "old-turn",
+      resolution: { action: "accept" } })).rejects.toThrow();
+    await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId,
+      resolution: { action: "accept_for_session" } })).rejects.toThrow("offered choice");
+    expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    await session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "accept" } });
+    await expect(response).resolves.toEqual({ outcome: "allow_once" });
+    await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId,
+      resolution: { action: "accept" } })).rejects.toThrow("no longer pending");
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "permission verified" });
+  });
+
+  it.each(["written", "failed"] as const)("waits for the exact provider permission reply receipt: %s", async outcome => {
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: false } });
+    const session = await fixture.driver.openSession({ runId: "run-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Approve with receipt." } });
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const receipt = deferred<void>();
+    const providerResponse = callback({ inferredKind: "execute", raw: {
+      sessionId: "agent-session-1", toolCall: { toolCallId: "receipt-tool", title: "Run validation" },
+      options: [{ optionId: "session", kind: "allow_always", name: "Allow for session" }],
+    } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
+    await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    expect(request.details).toMatchObject({ choices: [{ key: "accept_for_session" }, { key: "cancel" }] });
+    let acknowledged = false;
+    const emitted = collectUntil(session.events(), outcome === "written" ? "runtime_request.resolved" : "runtime_request.expired");
+    const resolution = session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "accept_for_session" } })
+      .then(() => { acknowledged = true; });
+    await expect(providerResponse).resolves.toEqual({ outcome: "allow_always" });
+    expect(acknowledged).toBe(false);
+    if (outcome === "written") { receipt.resolve(); await resolution; }
+    else {
+      const rejected = expect(resolution).rejects.toThrow("pipe failed");
+      receipt.reject(new Error("pipe failed")); await rejected;
+    }
+    const events = await emitted;
+    expect(events.filter(event => event.eventType === "runtime_request.resolved")).toHaveLength(outcome === "written" ? 1 : 0);
+    if (outcome === "failed") expect(events.at(-1)?.payload).toMatchObject({ replayAllowed: false, reason: "response_delivery_failed" });
+    expect(session.pendingRuntimeRequests!()).toHaveLength(0);
+    if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await session.close({ reason: "receipt checked" });
+  });
+
   it("round-trips a provider-neutral ACP form through the runtime request boundary", async () => {
     const fixture = driverFixture();
     const session = await fixture.driver.openSession({
@@ -1442,7 +1602,7 @@ describe("Codex ACPX harness driver", () => {
           },
         },
       },
-      { requestId: "rpc-question-1", signal: controller.signal },
+      { requestId: "rpc-question-1", signal: controller.signal, responseDelivery: Promise.resolve() },
     );
     const events = await createdEvent;
     const request = session.pendingRuntimeRequests!()[0]!;
@@ -1524,7 +1684,7 @@ describe("Codex ACPX harness driver", () => {
         },
         {
           requestId: "rpc-question-created-pressure",
-          signal: new AbortController().signal,
+          signal: new AbortController().signal, responseDelivery: Promise.resolve(),
         },
       ),
     ).resolves.toEqual({ action: "cancel" });
@@ -1558,7 +1718,7 @@ describe("Codex ACPX harness driver", () => {
           properties: { value: { type: "string" } },
         },
       },
-      { requestId: "rpc-question-abort", signal: controller.signal },
+      { requestId: "rpc-question-abort", signal: controller.signal, responseDelivery: Promise.resolve() },
     );
     await createdEvent;
     const cancelledEvent = collectUntil(
@@ -1607,7 +1767,7 @@ describe("Codex ACPX harness driver", () => {
       },
       {
         requestId: "rpc-question-stream-failure",
-        signal: new AbortController().signal,
+        signal: new AbortController().signal, responseDelivery: Promise.resolve(),
       },
     );
     await vi.waitFor(() => {
@@ -1653,7 +1813,7 @@ describe("Codex ACPX harness driver", () => {
       },
       {
         requestId: "rpc-question-handoff",
-        signal: new AbortController().signal,
+        signal: new AbortController().signal, responseDelivery: Promise.resolve(),
       },
     );
     await createdEvent;
@@ -1721,7 +1881,7 @@ describe("Codex ACPX harness driver", () => {
       },
       {
         requestId: "rpc-question-handoff-pressure",
-        signal: new AbortController().signal,
+        signal: new AbortController().signal, responseDelivery: Promise.resolve(),
       },
     );
     await vi.waitFor(() => {
@@ -2673,6 +2833,9 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
       },
     })),
     startTurn: vi.fn((_input: AcpxRuntimeTurnInput) => createTurn()),
+    steeringCapability: vi.fn<() => AcpxRuntimeSteeringCapability | null>(() => null),
+    steerActiveTurn: vi.fn(async (_text: string, _requestId?: string) => undefined),
+    queueFollowUp: vi.fn(async (_text: string, _requestId?: string) => undefined),
     interruptActiveTurn: vi.fn(async () => undefined),
     close: vi.fn(async () => {
       onClose();

@@ -247,6 +247,65 @@ export interface RunnerLiveEvalSchedule {
   expectedExecutions: number;
 }
 
+export interface RunnerLiveEvalSelection {
+  candidateIds?: readonly string[];
+  caseIds?: readonly string[];
+  limit?: number;
+}
+
+/** Selects a stable paid subset without weakening validation of the full schedule. */
+export function selectRunnerLiveEvalSchedule(
+  schedule: RunnerLiveEvalSchedule,
+  selection: RunnerLiveEvalSelection,
+): RunnerLiveEvalSchedule {
+  const candidateIds = new Set(selection.candidateIds ?? []);
+  const caseIds = new Set(selection.caseIds ?? []);
+  for (const id of candidateIds) {
+    if (!schedule.candidates.some((candidate) => candidate.id === id)) {
+      throw new Error(`unknown Runner live eval candidate: ${id}`);
+    }
+  }
+  const scheduledCaseIds = new Set(
+    schedule.entries.map((entry) => entry.caseId),
+  );
+  for (const id of caseIds) {
+    if (!scheduledCaseIds.has(id as RunnerWorkflowEvalCase["id"])) {
+      throw new Error(`unknown Runner live eval case: ${id}`);
+    }
+  }
+  if (
+    selection.limit !== undefined &&
+    (!Number.isSafeInteger(selection.limit) || selection.limit <= 0)
+  ) {
+    throw new Error(
+      "Runner live eval selection limit must be a positive integer",
+    );
+  }
+  let entries = schedule.entries.filter(
+    (entry) =>
+      (candidateIds.size === 0 || candidateIds.has(entry.candidateId)) &&
+      (caseIds.size === 0 || caseIds.has(entry.caseId)),
+  );
+  if (selection.limit !== undefined)
+    entries = entries.slice(0, selection.limit);
+  if (entries.length === 0) {
+    throw new Error(
+      "Runner live eval selection matched no scheduled executions",
+    );
+  }
+  const selectedCandidateIds = new Set(
+    entries.map((entry) => entry.candidateId),
+  );
+  return {
+    ...schedule,
+    candidates: schedule.candidates.filter((candidate) =>
+      selectedCandidateIds.has(candidate.id),
+    ),
+    entries,
+    expectedExecutions: entries.length,
+  };
+}
+
 export function assertRunnerLiveCandidateManifest(): void {
   const slots = RUNNER_LIVE_CANDIDATE_SLOTS.map((slot) => slot.id);
   const candidates = RUNNER_LIVE_CANDIDATE_SLOTS.flatMap(

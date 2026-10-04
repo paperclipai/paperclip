@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 21);
+  assert.equal(schemas.length, 25);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -59,15 +59,15 @@ test("unknown required versions and schemas fail closed", async () => {
   const unsupported = await fixture("replay/unsupported-required-version.json");
   assert.throws(
     () => assertReplayFixtureCompatibility(unsupported),
-    /unsupported_required_version: protocolVersion=2; supported=1/,
+    /unsupported_required_version: protocolVersion=3; supported=1-2/,
   );
 
   const eventVersion = structuredClone(await fixture("replay/happy-path.json"));
-  eventVersion.events[0].schemaVersion = 2;
+  eventVersion.events[0].schemaVersion = 3;
   assert.throws(() => assertReplayFixtureCompatibility(eventVersion), /unsupported_required_version/);
 
   const commandSchema = structuredClone(await fixture("replay/happy-path.json"));
-  commandSchema.commands[0].schema = "paperclip.prp.command.v2";
+  commandSchema.commands[0].schema = "paperclip.prp.command.v3";
   assert.throws(() => assertReplayFixtureCompatibility(commandSchema), /unsupported_required_schema/);
 });
 

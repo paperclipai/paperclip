@@ -1,3 +1,4 @@
+import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "@/components/DispositionRecoveryNotice";
 import { useId, useState } from "react";
 import {
   ChevronDown,
@@ -41,8 +42,9 @@ const TONE_ICON_CLASS: Record<SystemNoticeTone, string> = {
  * it reads as a quiet left-aligned one-liner in TaskChatMarker's register — tone
  * icon + humanized plain-English title + relative time + chevron — instead of
  * a large gray paragraph of raw text. Expanding reveals the full
- * markdown-rendered body plus any structured metadata sections; nothing is
- * suppressed, only folded.
+ * markdown-rendered body plus any structured metadata sections. Workspace-ready
+ * notices omit their Markdown fallback when the equivalent structured workspace
+ * metadata is present, so each value appears once in the expanded panel.
  */
 export function TaskChatSystemNotice({
   item,
@@ -53,6 +55,7 @@ export function TaskChatSystemNotice({
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
+  const recoverySnapshot = useDispositionRecoverySnapshot(item.metadata);
   const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
@@ -63,6 +66,11 @@ export function TaskChatSystemNotice({
   const sections = mapCommentMetadataToSystemNoticeSections(item.metadata, {
     runAgentId: item.runAgentId,
   });
+  const isStructuredWorkspaceReadyNotice =
+    item.presentation?.kind === "system_notice" &&
+    item.presentation.title?.trim().toLowerCase().startsWith("workspace ready") === true &&
+    sections.some((section) => section.title?.trim().toLowerCase() === "workspace");
+  const showBody = !isStructuredWorkspaceReadyNotice;
   const ToneIcon = TONE_ICON[tone];
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
   const showTryAgain =
@@ -76,9 +84,13 @@ export function TaskChatSystemNotice({
       .catch(() => undefined);
   };
 
+  if (item.author === "system" && recoverySnapshot) {
+    return <DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={item.createdAtIso} defaultExpanded={item.presentation?.detailsDefaultOpen} />;
+  }
+
   return (
     <div
-      className={cn("tc-enter-bubble flex flex-col items-center", streamlined ? "py-0.5" : "py-1")}
+      className={cn("tc-enter-bubble flex flex-col items-start", streamlined ? "py-0.5" : "py-1")}
       data-testid="task-chat-system-notice"
       data-tone={streamlined ? tone : undefined}
       role={streamlined ? "group" : undefined}
@@ -124,13 +136,20 @@ export function TaskChatSystemNotice({
           data-testid="task-chat-system-notice-details"
           className="mt-1 w-full max-w-(--pct-85) overflow-hidden rounded-lg border border-border bg-muted/25 text-left text-sm dark:bg-muted/15"
         >
-          <div className="px-3 py-2.5 text-foreground/90">
-            <MarkdownBody softBreaks linkIssueReferences>
-              {item.text}
-            </MarkdownBody>
-          </div>
+          {showBody ? (
+            <div className="px-3 py-2.5 text-foreground/90">
+              <MarkdownBody softBreaks linkIssueReferences>
+                {item.text}
+              </MarkdownBody>
+            </div>
+          ) : null}
           {sections.length > 0 ? (
-            <div className="border-t border-border/70 bg-background/50 dark:bg-background/30">
+            <div
+              className={cn(
+                "bg-background/50 dark:bg-background/30",
+                showBody && "border-t border-border/70",
+              )}
+            >
               <SystemNoticeMetadataSections sections={sections} tone={tone} />
             </div>
           ) : null}

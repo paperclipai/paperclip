@@ -2,6 +2,245 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "markdown": {
+          "description": "Complete SKILL.md including name and description frontmatter and substantive instructions.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase skill name, matching SKILL.md frontmatter.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Optional; must equal name.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "name",
+        "description",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_skill",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create skill",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them. For a persistent hire, first list_agents to reuse a suitable teammate. Search agent-hires for the hiring schema and agent-configurations for compatible adapter/runtime settings, then use call_api with the returned operationId. Supply role-specific instructionsBundle.files as a filename-to-content record. Use the returned agent.id for delegation and obey any pending approval. Provider helper threads are temporary workers, not Paperclip hires. If a hire response is uncertain, reconcile with list_agents before retrying.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 200,
+          "type": "string"
+        },
+        "limit": {
+          "default": 5,
+          "maximum": 10,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "operationId": "search_api",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "api:discover"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Search the Paperclip API",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
+        },
+        "contentType": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "properties": {
+                  "artifactId": {}
+                },
+                "required": [
+                  "artifactId"
+                ]
+              },
+              {
+                "properties": {
+                  "path": {}
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            ],
+            "properties": {
+              "artifactId": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string"
+              },
+              "path": {
+                "description": "File relative to the active issue workspace. Remote files must first be uploaded as an artifact.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
+        "operationId": {
+          "description": "Exact operationId returned by search_api, for example GET /api/projects/{id}. Do not guess identifiers.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pathParams": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "query": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "responseText": {
+          "additionalProperties": false,
+          "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. New live responses have a 1 GiB capture limit and a 4 GiB per-run capture budget. Existing larger assets remain readable in bounded pages. If a live response returns an artifact, continue on its content operation for a stable snapshot.",
+          "properties": {
+            "limitBytes": {
+              "default": 24576,
+              "maximum": 24576,
+              "minimum": 4,
+              "type": "integer"
+            },
+            "offsetBytes": {
+              "default": 0,
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "type": "object"
+    },
+    "operationId": "call_api",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "api:call"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Call the Paperclip API",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"
@@ -158,6 +397,53 @@
     "requiredClaims": [],
     "schema": "paperclip.semantic-action.v1",
     "title": "List document revisions",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Set a concise, descriptive title for the active task. When its titleNeedsGeneration is true, call this early with onlyIfProvisional: true to replace the initial prompt slice without overwriting a user's title. Use false only for an intentional rename. This changes no task status, ownership, or description.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "description": "Reuse this key on retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "onlyIfProvisional": {
+          "description": "True for automatic initial naming; preserves any title already chosen by a user or agent.",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Short title describing the requested outcome.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "title",
+        "onlyIfProvisional"
+      ],
+      "type": "object"
+    },
+    "operationId": "set_task_title",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Set task title",
     "version": 1
   },
   {
@@ -989,6 +1275,82 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "description": "Optional concise capability summary.",
+          "maxLength": 2000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions": {
+          "description": "Optional persona or task instructions.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name for the new teammate.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "default": "general",
+          "enum": [
+            "ceo",
+            "cto",
+            "cmo",
+            "cfo",
+            "security",
+            "engineer",
+            "designer",
+            "pm",
+            "qa",
+            "devops",
+            "researcher",
+            "general"
+          ]
+        },
+        "title": {
+          "description": "Optional teammate title.",
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "operationId": "hire_agent",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:agents:create"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Hire a native agent",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"
@@ -1304,6 +1666,118 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Reassign an existing task to another company agent. Read search_tasks first and supply its current assignee and statusVersion to prevent overwriting a concurrent change. Preserve the task, documents, dependencies, and blocked/backlog status. Active work is stopped before handoff. Use a stable idempotency key for retries. Cannot reassign this run’s own task, conversations, completed tasks, or pending reviews; use create_task for delegation from the current task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeActorId": {
+          "description": "New company agent ID from list_agents.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedAssigneeActorId": {
+          "description": "Current assigneeAgentId from search_tasks; null means unassigned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedStatusVersion": {
+          "description": "Current statusVersion from search_tasks.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the task should move and context for the new owner.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Existing task ID from search_tasks.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "taskId",
+        "assigneeActorId",
+        "expectedAssigneeActorId",
+        "expectedStatusVersion",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "operationId": "reassign_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:tasks:assign"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Reassign task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "skill_test"
     ],
@@ -1396,9 +1870,252 @@
   {
     "allowedModes": [
       "standard",
+      "ask",
+      "planning",
       "skill_test"
     ],
-    "description": "Create one child task under the active task.",
+    "description": "Inspect available company projects before selecting a project for new work.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_projects",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "discovery:projects:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List projects",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List authorized repositories with stable IDs and names. Consider appropriate repositories before creating a project; never invent IDs.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_project_repositories",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List available repositories",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "archivedAt": {
+          "description": "Archive timestamp.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "description": "Project color.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Project outcome and context.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "executionWorkspacePolicy": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "goalId": {
+          "description": "Goal ID.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goalIds": {
+          "description": "Goal IDs.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "icon": {
+          "description": "Project icon.",
+          "enum": [
+            "folder",
+            "rocket",
+            "code",
+            "terminal",
+            "database",
+            "globe",
+            "package",
+            "boxes",
+            "box",
+            "layers",
+            "briefcase",
+            "compass",
+            "target",
+            "flame",
+            "zap",
+            "star",
+            "bug",
+            "wrench",
+            "hammer",
+            "lightbulb",
+            "sparkles",
+            "shield",
+            "lock",
+            "search",
+            "cog",
+            "brain",
+            "cpu",
+            "git-branch",
+            "file-code",
+            "puzzle",
+            "gem",
+            "atom",
+            "heart",
+            "mail",
+            "message-square",
+            "crown",
+            "radar",
+            "telescope",
+            "hexagon",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "leadAgentId": {
+          "description": "Lead agent ID.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Project name.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repositoryIds": {
+          "description": "Authorized repository IDs from list_project_repositories; may contain multiple repositories.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "repositoryUrls": {
+          "description": "Existing HTTPS GitHub repository URLs, including repos absent from the catalog.",
+          "items": {
+            "maxLength": 2000,
+            "pattern": "^https://github\\.com/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/(?!\\.{1,2}/?$)[A-Za-z0-9_.-]+/?$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "backlog",
+            "planned",
+            "in_progress",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "targetDate": {
+          "description": "Target date.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "name"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_project",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create project",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -1435,6 +2152,14 @@
           "minLength": 1,
           "type": "string"
         },
+        "initialPlan": {
+          "description": "Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "priority": {
           "enum": [
             "critical",
@@ -1443,8 +2168,23 @@
             "low"
           ]
         },
+        "projectId": {
+          "description": "Project identifier for the new task.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",
+          "enum": [
+            "backlog",
+            "todo"
+          ]
+        },
         "title": {
-          "description": "Child task title.",
+          "description": "Task title.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -1511,7 +2251,7 @@
       "delegation:tasks:create"
     ],
     "schema": "paperclip.semantic-action.v1",
-    "title": "Create child task",
+    "title": "Create task",
     "version": 1
   },
   {

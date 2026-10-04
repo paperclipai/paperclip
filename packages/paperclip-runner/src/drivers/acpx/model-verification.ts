@@ -37,10 +37,7 @@ export async function requireVerifiedAcpxModel(
         "ACPX agent cannot verify its qualified model through ACP config options",
       );
     }
-    // The caller-facing model is already pinned by resolveQualifiedAcpxProfile.
-    // Select the immutable ACP-facing identifier from that same profile: some
-    // providers expose a stable selector (for example Claude's `sonnet`) while
-    // Paperclip publishes the canonical model name after verification.
+    // Claude uses the exact requested ID, including custom IDs.
     await control.setModel(providerModel);
     status = await control.getStatus();
   }

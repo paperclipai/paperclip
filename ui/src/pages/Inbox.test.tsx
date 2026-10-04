@@ -108,17 +108,16 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
+}));
+
 vi.mock("../context/DialogContext", () => ({
   useDialogActions: () => ({ openNewIssue: vi.fn() }),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
-}));
-
-const generalSettingsMock = { keyboardShortcutsEnabled: false };
-vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => generalSettingsMock,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -384,6 +383,44 @@ describe("Inbox toolbar", () => {
     }
     container.remove();
   });
+
+  it.each([
+    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
+    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
+    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
+    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },
+  ].flatMap((scenario) => [true, false].map((streamlined) => ({ ...scenario, streamlined }))))(
+    "scopes failed runs on $tab for $userId (streamlined=$streamlined)",
+    async ({ tab, userId, visible, hidden, streamlined }) => {
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+      routerMock.location.pathname = `/inbox/${tab}`;
+      apiMocks.authSession.mockResolvedValue(userId ? { user: { id: userId }, session: { userId } } : null);
+      apiMocks.heartbeatRunsList.mockResolvedValue([
+        createFailedRun({ id: "own-failure", agentId: "agent-1", responsibleUserId: "user-1" }),
+        createFailedRun({ id: "other-failure", agentId: "agent-2", responsibleUserId: "user-2", status: "timed_out" }),
+        createFailedRun({ id: "unowned-failure", agentId: "agent-3" }),
+      ]);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      try {
+        await act(async () => {
+          root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+        });
+        await vi.waitFor(() => {
+          expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
+          expect(queryClient.isFetching()).toBe(0);
+          for (const id of visible) expect(container.querySelector(`a[to$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[to$="/runs/${id}"]`)).toBeNull();
+        });
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
 
   it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
     routerMock.location.pathname = "/inbox/mine";
@@ -809,7 +846,10 @@ describe("Inbox toolbar", () => {
         </QueryClientProvider>,
       );
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Workspace-aware task"));
+    // Workspace metadata resolves independently of the task list.
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+    });
 
     const taskRow = container.querySelector('[data-slot="task-row"]');
     const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
@@ -928,8 +968,7 @@ describe("Inbox toolbar", () => {
     // state-selected band (which would swap to hover:bg-transparent). Coupling
     // hover to React state was the per-hover re-render storm behind the lag;
     // scrubbing the list must not touch selection state. (Keyboard nav that
-    // continues from the hovered row is exercised in live/e2e verification —
-    // this unit mocks keyboardShortcutsEnabled off.)
+    // continues from the hovered row is exercised in live/e2e verification.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
@@ -1015,7 +1054,6 @@ describe("Inbox toolbar", () => {
 
   it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-2001", title: "Sync row A" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-2002", title: "Sync row B" });
     const issueC = createIssue({ id: "issue-c", identifier: "PAP-2003", title: "Sync row C" });
@@ -1073,7 +1111,6 @@ describe("Inbox toolbar", () => {
       });
       expect(selectedRowIndex()).toBe(2);
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => {
         root.unmount();
       });
@@ -1297,7 +1334,6 @@ describe("Inbox toolbar", () => {
   });
 
   it("restores a locally hidden archive when undo is pressed", async () => {
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     routerMock.location.pathname = "/inbox/mine";
     const archivedIssue = createIssue({
       id: "issue-a",
@@ -1341,7 +1377,6 @@ describe("Inbox toolbar", () => {
         expect(container.textContent).toContain("Undoable inbox row");
       });
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => root.unmount());
     }
   });

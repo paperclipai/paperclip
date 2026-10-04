@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,13 +18,15 @@ import {
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
-import { evaluateMatchers } from "./matchers.js";
+import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
   assertSecretFree,
   findSecretLeak,
   findSecretLeakInJsonValues,
   findSecretLeakInDirectory,
   isEphemeralCodexRuntimeAuthFile,
+  isEphemeralPostgresPidFile,
+  isEphemeralPostgresScanFile,
   redactText,
   sanitizeJson,
 } from "./redaction.js";
@@ -35,15 +38,78 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  collectRunEvents,
+  hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
   providerSessionContinuityFailures,
+  reasoningProjectionFailures,
 } from "./run-observations.js";
 import { runnerE2EWebServerCommand } from "./web-server-command.js";
 
 const cleanupDirectories: string[] = [];
+
+it("rejects reasoning mislabeled as assistant text without echoing private content", () => {
+  const reasoning = {
+    eventType: "item.delta",
+    payload: { prpEvent: {
+      eventType: "item.delta",
+      payload: { kind: "agentMessage", text: "PRIVATE_THOUGHT", update: { kind: "reasoning" } },
+    } },
+  };
+  expect(reasoningProjectionFailures([reasoning])).toEqual([
+    "provider reasoning was projected as assistant text in 1 durable events",
+  ]);
+  const correctlyTyped = structuredClone(reasoning);
+  correctlyTyped.payload.prpEvent.payload.kind = "reasoning";
+  expect(reasoningProjectionFailures([correctlyTyped])).toEqual([]);
+  const assistant = structuredClone(reasoning);
+  assistant.payload.prpEvent.payload.update.kind = "agentMessage";
+  expect(reasoningProjectionFailures([assistant])).toEqual([]);
+});
+
+describe("complete run event evidence", () => {
+  const page = Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "item.delta" }));
+  it("reads completion events beyond the first 1000 rows", async () => {
+    const terminal = ["run.result.proposed", "run.result.accepted", "run.terminal"]
+      .map((eventType, i) => ({ seq: 1001 + i, eventType }));
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce(terminal);
+    const events = await collectRunEvents(load);
+    expect(events).toEqual([...page, ...terminal]);
+    expect(load.mock.calls).toEqual([[0, 1000], [1000, 1000]]);
+  });
+  it("checks for another page even at an exact page boundary", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce([]);
+    expect(await collectRunEvents(load)).toEqual(page);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    null, {}, [{ eventType: "run.terminal" }], [{ seq: 0 }], [{ seq: -1 }],
+    [{ seq: 1.5 }], [{ seq: "1" }], [{ seq: NaN }], [{ seq: Infinity }],
+    [{ seq: 2 }, { seq: 1 }], [{ seq: 1 }, { seq: 1 }], [...page, { seq: 1001 }],
+  ])("rejects malformed evidence page %#", async (malformed) => {
+    await expect(collectRunEvents(async () => malformed)).rejects.toThrow("Run event evidence");
+  });
+  it("rejects a repeated cursor instead of accepting duplicate events", async () => {
+    const load = vi.fn().mockResolvedValue(page);
+    await expect(collectRunEvents(load)).rejects.toThrow("non-increasing sequence");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("propagates a missing later page without returning partial evidence", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockRejectedValueOnce(new Error("Unavailable"));
+    await expect(collectRunEvents(load)).rejects.toThrow("Unavailable");
+  });
+  it("fails closed when a stream never ends within the bounded capture", async () => {
+    const load = vi.fn(async (afterSeq: number) => page.map((event) => ({ ...event, seq: event.seq + afterSeq })));
+    await expect(collectRunEvents(load)).rejects.toThrow("refusing incomplete evidence");
+    expect(load).toHaveBeenCalledTimes(100);
+  });
+});
+
+
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -106,14 +172,34 @@ describe("runner E2E local binary resolution", () => {
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [remoteNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBe(runnerBinary);
     expect(
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [localNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        undefined,
+        "darwin",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        "/cross-compiled/paperclip-runnerd",
+        "darwin",
+      ),
+    ).toBe("/cross-compiled/paperclip-runnerd");
   });
 });
 
@@ -138,7 +224,7 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true" });
+      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
     }
 
     for (const execution of [nativeOpenCode, breadthOpenCode]) {
@@ -147,8 +233,27 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes" });
+      ).toEqual({ KEEP_ME: "yes", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
     }
+  });
+
+  it("disables announcements through the server boundary for every runner cell", () => {
+    for (const execution of runnerMatrix) {
+      const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
+      const env = buildRunnerE2EProcessEnvironment(source, [execution]);
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
+    }
+  });
+});
+
+describe("hiring capability opt-in", () => {
+  it("enables API tools only when the manual hiring story is selected", () => {
+    const hire = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")!;
+    const delegate = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "delegate-feedback")!;
+    expect(buildRunnerE2EProcessEnvironment({}, [hire]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBe("true");
+    expect(buildRunnerE2EProcessEnvironment({}, [delegate]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
+    expect(buildRunnerE2EProcessEnvironment({}, []).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
   });
 });
 
@@ -229,6 +334,22 @@ describe("runner E2E structured evidence scanning", () => {
     expect(
       findSecretLeakInJsonValues({ nested: "sk-proj-abcdefghijklmnop" }, []),
     ).toBe("secret-shaped value");
+  });
+
+  it("keeps fake Kimi and Grok credentials out of persisted payloads while retaining references", () => {
+    const fakeCredentials = ["kimi-fixture-secret", "xai-fixture-secret"];
+    const payload = {
+      env: {
+        KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "kimi-ref", version: "latest" },
+        XAI_API_KEY: { type: "secret_ref", secretId: "xai-ref", version: "latest" },
+      },
+      log: "provider response redacted",
+    };
+    expect(findSecretLeakInJsonValues(payload, fakeCredentials)).toBeNull();
+    expect(findSecretLeak(JSON.stringify(payload), fakeCredentials)).toBeNull();
+    expect(() => assertSecretFree(JSON.stringify(payload), fakeCredentials, "pending-profile.json")).not.toThrow();
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[0]!);
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[1]!);
   });
 });
 
@@ -340,6 +461,23 @@ describe("runner E2E matchers", () => {
     expect(result?.detail).toContain("observed 2");
   });
 
+  it("matches finalized workspace files byte-for-byte", async () => {
+    const [matched, extraLine] = await evaluateMatchers(
+      [
+        { kind: "file_exact", path: "continuity.txt", expected: "T1\nT2\n" },
+        { kind: "file_exact", path: "duplicate.txt", expected: "T1\nT2\n" },
+      ],
+      {
+        files: {
+          "continuity.txt": "T1\nT2\n",
+          "duplicate.txt": "T1\nT2\nT2\n",
+        },
+      },
+    );
+    expect(matched?.passed).toBe(true);
+    expect(extraLine?.passed).toBe(false);
+  });
+
   it("normalizes ordered fragments and evaluates nested JSON Schema", async () => {
     const results = await evaluateMatchers(
       [
@@ -373,6 +511,45 @@ describe("runner E2E matchers", () => {
 });
 
 describe("runner E2E run observations", () => {
+  it("retries only terminal Plan confirmations missing a revision-bound target", () => {
+    const observation = {
+      runs: [{ status: "succeeded" }],
+      interactions: [
+        {
+          kind: "request_confirmation",
+          status: "pending",
+          payload: { version: 1, prompt: "Approve the Plan?" },
+        },
+      ],
+      minimumRunCount: 1,
+    };
+
+    expect(hasTerminalMalformedPlanConfirmation(observation)).toBe(true);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        runs: [{ status: "running" }],
+      }),
+    ).toBe(false);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        interactions: [
+          {
+            ...observation.interactions[0],
+            payload: {
+              target: {
+                type: "issue_document",
+                key: "plan",
+                revisionId: "revision-1",
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("retries only the zero-marker DeepSeek hello terminal emission variance", () => {
     const expectedMarker = "PC_H_nonce-1";
     const observation = {
@@ -606,6 +783,52 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
+    for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
+      expect(classifyFailure(new Error(
+        `Stopped waiting for everyday recover-controller settled: native execution failed native_session_interrupted: RPC call "${method}" timed out after 330000ms`,
+      ))).toBe("transient_infrastructure");
+    }
+    expect(classifyFailure(new Error('RPC call "run.attach" timed out after 330000ms')))
+      .toBe("candidate_failure");
+  });
+
+  it.each([
+    "native_session_close_unrecoverable: provider transport failed",
+    "Provider connection closed: runner did not durably suspend before checkpoint",
+    "native_session_close_unrecoverable: provider transport timed out; runner did not durably suspend before checkpoint",
+  ])("does not retry controller session-close defects: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it.each([
+    'native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=unclassified)"},"status":"failed"}',
+    "native_session_recovery_failed: provider transport failed\nACPX sidecar command session.open was rejected (retryable = false, classification=session_not_found)",
+  ])("does not retry explicit non-retryable ACPX recovery rejection: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it.each([
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=true, classification=network)","status":"failed"}',
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected","status":"failed"}',
+    "native_session_recovery_failed: failed to start ACPX provider: ECONNRESET",
+  ])("retains transient ACPX recovery retries: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("transient_infrastructure");
+    expect(shouldRetryFailure(failureClass)).toBe(true);
+  });
+
+  it("disables both automatic retry classes when the policy is zero", () => {
+    expect(shouldRetryFailure("transient_infrastructure", 0)).toBe(false);
+    expect(shouldRetryFailure("provider_variance", 0)).toBe(false);
+    expect(shouldRetryFailure("transient_infrastructure", 1)).toBe(true);
+    expect(shouldRetryFailure("provider_variance", 1)).toBe(true);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),
@@ -685,7 +908,12 @@ describe("runner E2E server isolation", () => {
         OPENAI_API_KEY: "openai",
         ANTHROPIC_API_KEY: "anthropic",
         OPENROUTER_API_KEY: "openrouter",
+        KIMI_MODEL_API_KEY: "kimi",
+        XAI_API_KEY: "xai",
+        GROK_AUTH_JSON: "grok-auth-json",
         DAYTONA_API_KEY: "daytona",
+        XAI_ORG_ID: "xai-sensitive",
+        GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
         PAPERCLIP_API_KEY: "ambient-board-key",
         PAPERCLIP_AGENT_API_KEY: "ambient-agent-key",
@@ -708,7 +936,12 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
+    expect(env.GROK_AUTH_JSON).toBeUndefined();
     expect(env.OPENAI_ORG_ID).toBeUndefined();
+    expect(env.XAI_ORG_ID).toBeUndefined();
+    expect(env.GROK_HOME).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
     expect(env.PAPERCLIP_AGENT_API_KEY).toBeUndefined();
     expect(env.XDG_CACHE_HOME).toBe("/tmp/cell/xdg-cache");
@@ -799,6 +1032,24 @@ describe("runner E2E evidence redaction", () => {
     expect(sanitizeJson({ nested: [secret] }, [secret])).toEqual({
       nested: ["[REDACTED]"],
     });
+    expect(
+      sanitizeJson(
+        {
+          metadata: {
+            apiKey: "opaque-provider-issued-value",
+            access_token: "opaque-access-token",
+            apiKeyRef: "DAYTONA_API_KEY",
+          },
+        },
+        [],
+      ),
+    ).toEqual({
+      metadata: {
+        apiKey: "[REDACTED]",
+        access_token: "[REDACTED]",
+        apiKeyRef: "DAYTONA_API_KEY",
+      },
+    });
     expect(sanitizeJson("paperclip.runner-e2e.evidence/v1", [secret])).toBe(
       "paperclip.runner-e2e.evidence/v1",
     );
@@ -833,6 +1084,89 @@ describe("runner E2E evidence redaction", () => {
     await expect(
       findSecretLeakInDirectory(root, [secret]),
     ).resolves.toMatchObject({ reason: "exact secret value" });
+  });
+
+  it("tolerates only the embedded PostgreSQL PID disappearing during shutdown and keeps scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-race-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    const persistedFile = path.join(path.dirname(pidFile), "z-persisted.bin");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await writeFile(persistedFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => {
+        if (file === pidFile) unlinkSync(file); // Removed after directory enumeration.
+        return false;
+      },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: persistedFile, reason: "exact secret value" });
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "workspace", "postmaster.pid"))).toBe(false);
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "instances", "test", "db", "records.bin"))).toBe(false);
+  });
+
+  it("handles a removed PostgreSQL relation but scans existing relation bytes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-relation-race-"));
+    cleanupDirectories.push(root);
+    const relation = path.join(root, "instances", "test", "db", "base", "16384", "16824");
+    const persisted = path.join(path.dirname(relation), "16825");
+    await mkdir(path.dirname(relation), { recursive: true });
+    await writeFile(relation, "old relation"); await writeFile(persisted, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: file => { if(file === relation)unlinkSync(file); return false; },
+      allowDisappearedFile: file => isEphemeralPostgresScanFile(root, file),
+    })).resolves.toEqual({file:persisted,reason:"exact secret value"});
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"workspace","base","16384","16824"))).toBe(false);
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"instances","test","db","base","records.json"))).toBe(false);
+  });
+
+  it("still detects secrets in an existing PostgreSQL PID file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-secret-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: pidFile, reason: "exact secret value" });
+  });
+
+  it("fails when required persisted state disappears during scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-file-race-"));
+    cleanupDirectories.push(root);
+    const requiredFile = path.join(root, "records.json");
+    await writeFile(requiredFile, "{}");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not suppress other I/O failures for the ephemeral PID path", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-io-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); mkdirSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
+  it("still reports missing mandatory pass evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-evidence-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    await mkdir(privateDir);
+    const packaged = await packageEvidence({
+      privateDir,
+      uploadDir: path.join(root, "upload"),
+      secrets: [secret],
+      expectPassScreenshot: true,
+    });
+    expect(packaged.missing).toContain("result.json");
+    expect(packaged.missing).toContain("final-state.png");
   });
 
   it("can ignore fake key shapes while scanning persisted package state", async () => {
@@ -941,6 +1275,23 @@ describe("runner E2E evidence redaction", () => {
     await expect(
       readFile(path.join(uploadDir, "database.sqlite")),
     ).rejects.toThrow();
+  });
+
+  it("retains the two reviewed chat plan captures without admitting arbitrary chat PNGs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-chat-captures-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    const uploadDir = path.join(root, "upload");
+    await mkdir(privateDir, { recursive: true });
+    for (const file of ["chat-plan-draft.png", "chat-plan-revised.png", "chat-secret.png", "chat-plan-extra.png"]) {
+      await writeFile(path.join(privateDir, file), "fixture raster");
+    }
+    const packaged = await packageEvidence({ privateDir, uploadDir, secrets: [secret], expectPassScreenshot: false });
+    expect(packaged.files.sort()).toEqual(["chat-plan-draft.png", "chat-plan-revised.png", "evidence-manifest.json"]);
+    expect(packaged.leaks).toEqual([]);
+    for (const file of packaged.files.filter((file) => file.endsWith(".png"))) {
+      expect(await readFile(path.join(uploadDir, file), "utf8")).toBe("fixture raster");
+    }
   });
 
   it("keeps raster evidence private to CI and rejects active SVG content", async () => {
@@ -1062,5 +1413,81 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+
+describe("persisted final response selection", () => {
+  const comments = [
+    { id: "attachment-comment", body: "Prepared file for this response.", createdByRunId: "run-1" },
+    { id: "reply", body: "FINAL", createdByRunId: "run-1" },
+    { id: "other-run", body: "unrelated", createdByRunId: "run-2" },
+  ];
+  const run = { id: "run-1", resultJson: { presentationDecision: { commentId: "reply" } } };
+  it("grades the real final comment independently from an attachment's preparation comment", () => {
+    expect(persistedFinalRunMessage(comments, run)).toBe("FINAL");
+  });
+  it("fails closed when the selected final comment is missing or belongs to another run", () => {
+    expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
+    expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
+    expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");
+    expect(persistedFinalRunMessage([], { id: "run-1", resultJson: { summary: "FINAL" } })).toBe("");
+  });
+});
+
+describe("warm continuity grading scope", () => {
+  it("checks workspace bytes, lifecycle, and ordered turn markers without exact response formatting", () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution);
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T1_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T2_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T3_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_ordered",
+      expected: [
+        "PAPERCLIP_E2E_WARM_T1_test-nonce",
+        "PAPERCLIP_E2E_WARM_T2_test-nonce",
+        "PAPERCLIP_E2E_WARM_T3_test-nonce",
+      ],
+    });
+    expect(matchers).toContainEqual({
+      kind: "file_exact", path: "daytona-warm-test-nonce.txt",
+      expected: "T1-test-nonce\nT2-test-nonce\nT3-test-nonce\n",
+    });
+    expect(matchers).toContainEqual({ kind: "issue_status", expected: "done" });
+    const hello = runnerMatrix.find((cell) => cell.task.id === "hello-complete")!;
+    expect(hello.task.buildMatchers("test-nonce", hello).some((matcher) => matcher.kind === "message_exact")).toBe(true);
+  });
+
+  it("accepts warm-turn prose while rejecting missing, duplicate, or out-of-order markers", async () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution)
+      .filter((matcher) => matcher.kind.startsWith("message_"));
+    const passing = await evaluateMatchers(matchers, {
+      message: [
+        "Turn one is complete: PAPERCLIP_E2E_WARM_T1_test-nonce.",
+        "Turn two is complete: PAPERCLIP_E2E_WARM_T2_test-nonce.",
+        "Turn three is complete: PAPERCLIP_E2E_WARM_T3_test-nonce.",
+      ].join("\n"),
+    });
+    expect(passing.every((result) => result.passed)).toBe(true);
+
+    const invalidMessages = [
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T3_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce",
+    ];
+    for (const message of invalidMessages) {
+      const results = await evaluateMatchers(matchers, { message });
+      expect(results.some((result) => !result.passed)).toBe(true);
+    }
   });
 });

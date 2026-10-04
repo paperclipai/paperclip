@@ -19,6 +19,7 @@ import {
   issueComments,
   issueDocuments,
   issueRelations,
+  issueRecoveryActions,
   issueTreeHolds,
   issues,
   workspaceOperations,
@@ -244,7 +245,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     );
     expect(dispatchedRequests).toHaveLength(1);
     const dispatchedRun = runs.find((run) => run.id === dispatchedRequests[0]!.runId);
-    expect(dispatchedRun).toMatchObject({ status: "succeeded", agentId });
+    expect(dispatchedRun).toMatchObject({
+      status: "succeeded",
+      agentId,
+      contextSnapshot: {
+        source: "native_status_decision",
+        statusDecisionSource: "native_status_decision",
+      },
+    });
 
     const persistedIntents = await db.select({
       id: agentWakeupRequests.id,
@@ -257,6 +265,127 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       expect.objectContaining({ status: "coalesced", runId: dispatchedRun!.id }),
     ]));
     expect(dispatchedRequests[0]).toMatchObject({ runId: dispatchedRun!.id });
+  });
+
+  it.each(["onboarding", "ordinary", "cancelled"])("dispatches only a verified completed onboarding report: %s", async kind => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), childId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Completion", issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Lead", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Parent", status: kind === "cancelled" ? "cancelled" : "done",
+      originKind: kind === "ordinary" ? "manual" : "onboarding_first_task", assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
+    await db.insert(issues).values({ id: childId, companyId, title: "Saved result", parentId: issueId, status: "done", assigneeAgentId: agentId });
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_children_completed",
+      requestedByActorType: "system", requestedByActorId: "native-status-committer", idempotencyKey: `onboarding-completed:${issueId}`,
+      payload: { issueId, _paperclipWakeContext: { issueId, completedChildIssueId: childId, onboardingCompletion: true } } });
+    const result = await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    expect(result.dispatched).toBe(kind === "onboarding" ? 1 : 0);
+    await heartbeat.drainActiveRunExecutions();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(kind === "onboarding" ? 1 : 0);
+    if (kind === "onboarding") {
+      expect({ status: runs[0].status, errorCode: runs[0].errorCode, error: runs[0].error })
+        .toEqual({ status: "succeeded", errorCode: null, error: null });
+      expect(runs[0].contextSnapshot).toMatchObject({
+        onboardingCompletion: true, chatCompletionUpdates: [expect.objectContaining({ id: childId, status: "done" })],
+      });
+      expect(mockAdapterExecute).toHaveBeenCalledOnce();
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(kind === "cancelled" ? "cancelled" : "done");
+  });
+
+  it("coalesces the native intent when dispatch admission defers behind an active issue run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const activeRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "NativeWakeRunner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native wake behind active run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      executionRunId: activeRunId,
+      executionLockedAt: new Date(),
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "active_run_watchdog",
+      status: "active",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: activeRunId,
+      evidence: { runId: activeRunId },
+      nextAction: "Wait for the active execution to stop.",
+    });
+    const [intent] = await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      payload: { issueId, taskId: issueId, _paperclipWakeContext: { issueId, taskId: issueId } },
+      requestedByActorType: "system",
+      requestedByActorId: "native-status-committer",
+      idempotencyKey: `native-race:${issueId}`,
+    }).returning();
+
+    const result = await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    expect(result).toMatchObject({ scanned: 1, dispatched: 0, deferred: 1 });
+
+    const rows = await db.select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+      runId: agentWakeupRequests.runId,
+      requestedByActorId: agentWakeupRequests.requestedByActorId,
+    }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(rows.find((row) => row.id === intent!.id)).toMatchObject({
+      status: "coalesced",
+      runId: null,
+    });
+    expect(rows.filter((row) => row.status === "deferred_issue_execution")).toHaveLength(1);
+    expect(rows.filter((row) => row.requestedByActorId?.startsWith("native-status-wake-dispatch:"))).toHaveLength(1);
+
+    // Simulate the process crash window after the dispatch receipt was written
+    // but before the committer intent was reconciled.
+    await db.update(agentWakeupRequests).set({ status: "queued", updatedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, intent!.id));
+    const recovered = await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    expect(recovered).toMatchObject({ scanned: 1, recovered: 1 });
+    const recoveredIntent = await db.select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent!.id))
+      .then((result) => result[0]);
+    expect(recoveredIntent).toMatchObject({ status: "coalesced" });
   });
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {
@@ -363,11 +492,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
     expect(blockedRunsBeforeResolution).toBe(0);
 
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId: blockedIssueId,
+      authorType: "user", authorUserId: "responsible-user",
+      body: "Explain the current dependency without starting blocked work.",
+    });
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId: blockedIssueId, commentId: randomUUID() },
+      payload: { issueId: blockedIssueId, commentId },
       contextSnapshot: {
         issueId: blockedIssueId,
         wakeReason: "issue_commented",

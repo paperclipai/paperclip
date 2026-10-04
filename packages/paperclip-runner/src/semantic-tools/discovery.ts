@@ -17,14 +17,24 @@ export interface CapabilityDiscoveryResult {
   readonly truncated: boolean;
 }
 
+const MAX_DISCOVERY_RESULTS = 10;
+
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
+  set_task_title: "active_task",
+  search_api: "api_fallback",
+  call_api: "api_fallback",
   get_task_context: "active_task", get_task_history: "active_task",
   list_documents: "documents", read_document: "documents", list_document_revisions: "documents",
   report_progress: "active_task", answer_status_question: "active_task", write_document: "documents",
   request_human_input: "documents", register_deliverable: "documents", finish_task: "active_task",
   block_task: "active_task", request_review: "active_task", search_tasks: "discovery",
-  list_agents: "discovery", get_agent: "discovery", create_task: "delegation",
-  set_dependencies: "delegation", list_approvals: "governance", get_approval: "governance",
+  list_agents: "discovery", get_agent: "discovery",
+  read_agent_instructions: "agent_instructions",
+  update_agent_instructions: "agent_instructions",
+  get_agent_instruction_history: "agent_instructions",
+  restore_agent_instructions: "agent_instructions",
+ create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+  set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
   get_workspace_runtime: "workspace", control_workspace_service: "workspace",
@@ -32,6 +42,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
+  { name: "api_fallback", description: "API escape hatch for work unsupported by available dedicated tools." },
   { name: "discovery", description: "Find company tasks and agents." },
   { name: "delegation", description: "Create bounded child work and task dependencies." },
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
@@ -47,7 +58,7 @@ export const CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS = Object.freeze([{
     type: "object", properties: {
       query: { type: "string", minLength: 1, maxLength: 500 },
       namespace: { type: "string" },
-      limit: { type: "integer", minimum: 1, maximum: 8 },
+      limit: { type: "integer", minimum: 1, maximum: MAX_DISCOVERY_RESULTS },
     }, required: ["query"], additionalProperties: false,
   },
   outputSchema: {
@@ -90,10 +101,16 @@ export function discoverCapabilityDefinitions(
 ): CapabilityDiscoveryResult {
   const normalized = query.trim().toLowerCase();
   if (normalized.length === 0) throw new Error("discovery_query_empty");
-  const limit = Math.max(1, Math.min(options.limit ?? 5, 8));
+  const limit = Math.max(
+    1,
+    Math.min(options.limit ?? 5, MAX_DISCOVERY_RESULTS),
+  );
   const tokens = normalized.split(/[^a-z0-9]+/).filter((token) => token.length > 1);
   const permitted = CAPABILITY_SEMANTIC_TOOL_CATALOG
     .filter((descriptor) => descriptor.exposure === "optional")
+    // Retain dispatch support for pre-upgrade sessions, but do not advertise
+    // revision history/restore as a capability of current agent directories.
+    .filter((descriptor) => descriptor.operationId !== "get_agent_instruction_history" && descriptor.operationId !== "restore_agent_instructions")
     .filter((descriptor) => options.namespace === undefined || capabilityToolNamespace(descriptor.operationId) === options.namespace)
     .filter((descriptor) => decideCapabilitySemanticAuthorization(descriptor, context, "exposure").allowed)
     .map((descriptor) => ({ descriptor, score: score(descriptor, tokens, normalized) }))

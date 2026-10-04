@@ -137,13 +137,22 @@ export function resolveRouteOnboardingOptions(params: {
  * agents as `Agent[] | undefined` while the query is in flight, and an absent
  * list reads exactly like an empty one — redirecting on that would bounce
  * every user through onboarding on each cold load.
+ *
+ * `agentsRefreshing` covers the other way a count of zero lies: a cached list
+ * that is being refetched. The wizard hires the first agent and then lands on
+ * the first task; a dashboard reached from there can hold the empty list it
+ * cached before the hire, with the refetch still in flight. Offering on that
+ * list reopens "Create your first agent" for a company that just got one,
+ * and the customer walks the agent and model steps a second time.
  */
 export function shouldRouteAgentlessCompanyToOnboarding(params: {
   pathname: string;
   agentsLoaded: boolean;
+  agentsRefreshing?: boolean;
   agentCount: number;
 }): boolean {
   if (!params.agentsLoaded) return false;
+  if (params.agentsRefreshing) return false;
   if (params.agentCount > 0) return false;
   // Already there. Redirecting onto the path we are on is the loop that
   // "finished the wizard but created no agent" would otherwise spin in.

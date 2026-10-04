@@ -37,3 +37,6 @@ updates:
       day: monday
       time: "06:00"
     open-pull-requests-limit: 5
+    ignore:
+      # This first-party workflow follows CODEOWNERS-protected master.
+      - dependency-name: "paperclipai/paperclip/.github/workflows/pr-trusted.yml"

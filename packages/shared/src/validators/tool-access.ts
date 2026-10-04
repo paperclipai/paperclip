@@ -1,3 +1,4 @@
+import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
 import { z } from "zod";
 import {
   CONNECTION_TOKEN_ISSUANCE_PATHS,
@@ -41,7 +42,8 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk"]);
+export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
 export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
@@ -179,6 +181,7 @@ export const createToolConnectionSchema = z.object({
   applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
+  connectionPurpose: toolConnectionPurposeSchema.default("tool"),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
   credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
@@ -415,6 +418,9 @@ export const connectToolAppSchema = z.object({
   interactionId: z.string().uuid().optional(),
   /** Exact draft to continue after an interrupted setup. */
   resumeConnectionId: z.string().guid().optional(),
+  /** Exact configured connection to reauthorize without replacing its identity. */
+  reconnectConnectionId: z.string().guid().optional(),
+  saveDraft: z.boolean().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
   credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
@@ -434,12 +440,18 @@ export const connectToolAppSchema = z.object({
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
   }
-  if (value.authMode && value.galleryKey) {
+  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector" });
+  }
+  if (value.authMode && value.galleryKey && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["authMode"],
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
     });
+  }
+  if (value.resumeConnectionId && value.reconnectConnectionId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reconnectConnectionId"], message: "Choose resume or reconnect, not both" });
   }
   if (value.resumeConnectionId && !value.galleryKey) {
     ctx.addIssue({
@@ -476,12 +488,15 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
+  /** Task setup adds access while preserving existing assignments and action policies. */
+  preserveExistingAccess: z.boolean().optional(),
   enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   askFirstCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   reviewedCatalogEntryIds: z.array(z.string().guid()).max(500).optional(),
   access: z.union([
     z.literal("all_agents"),
-    z.object({ agentIds: z.array(z.string().guid()).min(1).max(250) }),
+    // Choosing specific agents may intentionally leave the connection unassigned.
+    z.object({ agentIds: z.array(z.string().guid()).max(250) }),
   ]),
 });
 
@@ -980,6 +995,7 @@ export const toolTrustRuleBatchApprovalSchema = z.object({
 });
 
 export const createToolTrustRuleFromActionRequestSchema = z.object({
+  argumentMode: z.enum(["exact", "action"]).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().max(4000).optional().nullable(),
   priority: z.number().int().min(0).max(10000).default(40),

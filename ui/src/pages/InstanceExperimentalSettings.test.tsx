@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { INSTANCE_FEATURE_KEYS } from "@paperclipai/shared";
 import type {
   InstanceExperimentalSettings as InstanceExperimentalSettingsPayload,
   InstanceExperimentalSettingsWithManaged,
@@ -73,11 +74,17 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableNativeRunner: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableMcpAggregators: true,
+    enableChatConnectors: false,
+    enableMemoryConnectors: false,
     enablePipelines: false,
     enableCases: false,
+    enableAgentChat: false,
+    enableCombinedInboxTasks: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
@@ -92,6 +99,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
+    enableFirstTaskPlanProposal: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
     enableWorkspaceBranchReconcileForward: true,
@@ -107,6 +115,12 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
 
 const WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR =
   'button[aria-label="Toggle worktree run execution setting"]';
+
+const ISOLATED_WORKSPACES_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle isolated workspaces experimental setting"]';
+
+const ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle isolated workspaces by default experimental setting"]';
 
 function setWorktreeRuntimeMeta(enabled: boolean) {
   const name = "paperclip-worktree-enabled";
@@ -197,6 +211,53 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(container.querySelector('button[aria-label="Toggle apps experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("defaults memory connectors off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle memory connectors experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Existing connections keep running.");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMemoryConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
+  it("defaults Combined Inbox + Task List off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle combined inbox and task list experimental setting"]';
+    expect(container.textContent).toContain("Combined Inbox + Task List");
+    expect(container.textContent).not.toContain("Agent Chat v2");
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableCombinedInboxTasks: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
+  it("does not offer a retired MCP aggregators toggle", async () => {
+    await renderPage();
+    expect(container.querySelector('button[aria-label="Toggle MCP aggregators experimental setting"]')).toBeNull();
+    expect(container.textContent).not.toContain("MCP aggregators");
+  });
+
+  it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle chat connectors experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Existing chat connections keep running");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
@@ -380,6 +441,82 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableGoalsSidebarLink: true,
     });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("hides the isolated-workspaces-by-default toggle while isolated workspaces are off", async () => {
+    await renderPage();
+
+    expect(container.querySelector(ISOLATED_WORKSPACES_TOGGLE_SELECTOR)).not.toBeNull();
+    expect(
+      container.querySelector(ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("Use Isolated Workspaces By Default");
+  });
+
+  it("keeps the dependent toggle hidden even when its stored flag is already on", async () => {
+    // The operator default is inert without isolated workspaces, so the server
+    // ignores a stored `true`. The control must not imply otherwise.
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: false,
+      enableIsolatedWorkspacesByDefault: true,
+    };
+    await renderPage();
+
+    expect(
+      container.querySelector(ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR),
+    ).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("renders and patches the isolated-workspaces-by-default toggle on and off", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: true,
+    };
+    await renderPage();
+
+    expect(container.textContent).toContain("Use Isolated Workspaces By Default");
+    expect(container.textContent).toContain("per-task worktree");
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableIsolatedWorkspacesByDefault: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableIsolatedWorkspacesByDefault: false,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reflects a stored isolated-workspaces-by-default value as checked", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    };
+    await renderPage();
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
@@ -703,6 +840,43 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     });
   });
 
+  it("keeps a managed isolated-workspaces-by-default setting locked", async () => {
+    // The cloud overlay owns this key, so the tenant sees its value but cannot
+    // write it back and have the overlay immediately override the write.
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+      managedKeys: {
+        enableIsolatedWorkspacesByDefault: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle?.disabled).toBe(true);
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("keeps a managed chat connectors setting locked", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: { enableChatConnectors: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle chat connectors experimental setting"]');
+    expect(toggle?.disabled).toBe(true);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+    await act(() => toggle?.click());
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
   it("locks Status Cards when managed Summaries is disabled", async () => {
     await renderPage({
       ...defaultExperimentalSettings(),
@@ -817,6 +991,17 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     expect(sections.at(-1)?.textContent).toContain("Goals Sidebar Link");
   });
 
+  it("alphabetizes cards by their displayed title within each section", async () => {
+    setWorktreeRuntimeMeta(true);
+    await renderPage({ ...defaultExperimentalSettings(), enableIsolatedWorkspaces: true });
+
+    for (const section of container.querySelectorAll("section")) {
+      const titles = [...section.querySelectorAll("h3")].map((heading) => heading.textContent ?? "");
+      expect(titles.length).toBeGreaterThan(1);
+      expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })));
+    }
+  });
+
   it("renders setting cards without a background color", async () => {
     await renderPage(defaultExperimentalSettings());
 
@@ -850,11 +1035,15 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     root = null;
     queryClient?.clear();
     container.remove();
+    setWorktreeRuntimeMeta(false);
     vi.clearAllMocks();
   });
 
-  async function renderPage(hiddenSettings?: string[]) {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+  async function renderPage(
+    hiddenSettings?: string[],
+    settings: InstanceExperimentalSettingsWithManaged = defaultExperimentalSettings(),
+  ) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(settings);
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
@@ -877,6 +1066,41 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {
+    setWorktreeRuntimeMeta(true);
+    const visible = new Set(["enableExternalObjects", "enableMemoryConnectors", "enableSimplifiedEnglishInteractions"]);
+    await renderPage(
+      INSTANCE_FEATURE_KEYS.filter((key) => !visible.has(key)).map((key) => `instance.experimental.${key}`),
+      {
+        ...defaultExperimentalSettings(),
+        enableIsolatedWorkspaces: true,
+        enableIsolatedWorkspacesByDefault: true,
+        enablePaperclipDeveloperMode: true,
+        managedKeys: {
+          enableIsolatedWorkspacesByDefault: { managed: true, managedBy: "paperclip-cloud" },
+        },
+      },
+    );
+
+    expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "Enable External Objects",
+      "Memory connectors",
+      "Simplified English Interactions",
+    ]);
+    expect([...container.querySelectorAll("section h2")].map((heading) => heading.textContent)).toEqual([
+      "Experimental features",
+    ]);
+    expect(container.querySelectorAll('button[role="switch"]')).toHaveLength(3);
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("retains a section when one of its controls is visible", async () => {
+    const visible = new Set(["enablePaperclipDeveloperMode", "enableGoalsSidebarLink"]);
+    await renderPage(INSTANCE_FEATURE_KEYS.filter((key) => !visible.has(key)).map((key) => `instance.experimental.${key}`));
+    expect(container.querySelector('[aria-labelledby="developer-mode-heading"] h3')?.textContent).toBe("Paperclip Developer Mode");
+    expect(container.querySelector('[aria-labelledby="legacy-heading"] h3')?.textContent).toBe("Goals Sidebar Link");
   });
 
   it("shows every toggle when nothing is hidden", async () => {

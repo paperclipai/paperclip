@@ -42,7 +42,8 @@ describe("TaskChatMarker", () => {
               kind: "marker",
               variant: "interrupted",
               label: "Run failed",
-              detail: "The runner stopped before returning an answer (runner_exited).",
+              detail:
+                "The runner stopped before returning an answer (runner_exited).",
               collapsible: true,
               createdAtIso: "2026-09-01T12:00:00.000Z",
               runHref: "/agents/codex/runs/run-1",
@@ -70,8 +71,37 @@ describe("TaskChatMarker", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(container.textContent).toContain("runner_exited");
     expect(
-      container.querySelector('a[href="/agents/codex/runs/run-1"]')?.textContent,
+      container.querySelector('a[href="/agents/codex/runs/run-1"]')
+        ?.textContent,
     ).toBe("View run");
+  });
+
+  it("keeps expected cancellation neutral when collapsed and expanded", () => {
+    flushSync(() =>
+      root!.render(
+        <ThemeProvider>
+          <TaskChatMarker
+            item={{
+              id: "cancelled",
+              kind: "marker",
+              variant: "interrupted",
+              tone: "neutral",
+              label: "Run cancelled",
+              detail: "Cancelled by you.",
+              collapsible: true,
+            }}
+          />
+        </ThemeProvider>,
+      ),
+    );
+    const toggle = container.querySelector<HTMLButtonElement>(
+      "button[aria-expanded]",
+    )!;
+    expect(toggle.classList).toContain("text-muted-foreground");
+    expect(container.querySelector(".text-destructive")).toBeNull();
+    flushSync(() => toggle.click());
+    expect(container.textContent).toContain("Cancelled by you.");
+    expect(container.querySelector(".text-destructive")).toBeNull();
   });
 
   it("keeps Try again available without retry instructions in the detail", async () => {
@@ -97,7 +127,9 @@ describe("TaskChatMarker", () => {
     const retry = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-run-failed-try-again"]',
     )!;
-    expect(container.textContent).not.toContain("You can retry this message now");
+    expect(container.textContent).not.toContain(
+      "You can retry this message now",
+    );
     flushSync(() => retry.click());
     await Promise.resolve();
     expect(onTryAgain).toHaveBeenCalledTimes(1);

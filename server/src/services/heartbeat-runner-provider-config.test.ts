@@ -3,10 +3,26 @@ import { describe, expect, it } from "vitest";
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 
 describe("Paperclip Runner native provider configuration", () => {
+  it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
+    "passes Grok's full-auto default or explicit %s policy to the native runner",
+    (acpxPermissionMode) => {
+      expect(resolvePaperclipRunnerNativeProviderInput({
+        backend: "acpx_runtime",
+        adapterConfig: { provider: "acpx", acpxAgent: "grok", acpxPermissionMode },
+      })).toEqual({
+        provider: "acpx",
+        acpxAgent: "grok",
+        model: "grok-4.7",
+        acpxPermissionMode: acpxPermissionMode ?? "approve-all",
+      });
+    },
+  );
+
   it("qualifies native Codex only in never-ask mode", () => {
     expect(
       resolvePaperclipRunnerNativeProviderInput({
@@ -27,6 +43,45 @@ describe("Paperclip Runner native provider configuration", () => {
         },
       }),
     ).toThrow("codexPermissionMode set to never");
+  });
+
+  it("projects Codex effort only when the selected model supports it", () => {
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra" },
+    })).toMatchObject({ provider: "codex", model: "gpt-6-astra", codexReasoningEffort: "ultra" });
+    expect(() => resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-luna", modelReasoningEffort: "ultra" },
+    })).toThrow("reasoning effort is not supported");
+  });
+
+  it("uses only task model and effort overrides without changing the Runner provider", () => {
+    const base = { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra", codexPermissionMode: "never" };
+    const projected = projectPaperclipRunnerTaskConfig("codex_app_server", base, {
+      provider: "opencode", model: "gpt-6-luna", managedProfileId: "other-profile",
+    });
+    expect(projected).toEqual({ provider: "codex", model: "gpt-6-luna", codexPermissionMode: "never" });
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server", adapterConfig: projected,
+    })).toEqual({ provider: "codex", model: "gpt-6-luna", codexApprovalPolicy: "never" });
+    expect(projectPaperclipRunnerTaskConfig("codex_app_server", base, { modelReasoningEffort: "high" }))
+      .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
+  });
+
+  it("uses an OpenCode task model without changing the Runner provider", () => {
+    const projected = projectPaperclipRunnerTaskConfig(
+      "opencode_server",
+      { provider: "opencode", model: "openrouter/qwen/qwen3-coder-next", opencodePermissionMode: "deny" },
+      { provider: "codex", model: "openrouter/deepseek/deepseek-v4-flash-0731", modelReasoningEffort: "ultra" },
+    );
+    expect(projected).toEqual({
+      provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+    });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toEqual({
+        provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+      });
   });
 
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
@@ -87,7 +142,7 @@ describe("Paperclip Runner native provider configuration", () => {
       contextBucket: "paperclip-context",
       contextPrefix: "runner/",
       contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-      qualificationRevision: "aws-agentcore-harness-v1",
+      qualificationRevision: "aws-agentcore-harness-context-v2",
       eventExpiryDays: 90,
     };
     const stored = {
@@ -147,7 +202,7 @@ describe("Paperclip Runner native provider configuration", () => {
     },
   );
 
-  it("applies the safe provider permission default from adapter config", () => {
+  it("applies the full-auto provider permission default from adapter config", () => {
     expect(
       resolvePaperclipRunnerNativeProviderInput({
         backend: "opencode_server",
@@ -159,7 +214,7 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toEqual({
       provider: "opencode",
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      opencodePermissionMode: "ask",
+      opencodePermissionMode: "allow",
     });
   });
 
@@ -224,7 +279,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,
@@ -278,7 +333,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,
@@ -352,7 +407,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,
@@ -376,6 +431,6 @@ describe("Paperclip Runner native provider configuration", () => {
         backend: "acpx_runtime",
         adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "pi-model" },
       }),
-    ).toThrow("Pi is not available");
+    ).toThrow("Pi is awaiting local and Daytona qualification");
   });
 });

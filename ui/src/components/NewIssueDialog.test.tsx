@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { NewIssueDialog } from "./NewIssueDialog";
 
 const dialogState = vi.hoisted(() => ({
@@ -186,11 +187,13 @@ vi.mock("./InlineEntitySelector", async () => {
       {
         value: string;
         placeholder?: string;
+        className?: string;
+        triggerDataSlot?: string;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
+        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot}>
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -295,13 +298,14 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
-function renderDialog(container: HTMLDivElement) {
+function renderDialog(container: HTMLDivElement, hiddenSettings: string[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
     },
   });
+  queryClient.setQueryData(queryKeys.health, { hiddenSettings });
   const root = createRoot(container);
   act(() => {
     root.render(
@@ -410,6 +414,31 @@ describe("NewIssueDialog", () => {
     expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
+  });
+
+  it("uses the compact composer control proportions for mobile task fields", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const compactControls = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="new-issue-compact-control"]'),
+    );
+    const prefix = compactControls.find((control) => control.textContent === "PAP");
+    const assignee = compactControls.find((control) => control.textContent === "Assignee");
+    const project = compactControls.find((control) => control.textContent === "Project");
+    const status = compactControls.find((control) => control.textContent?.trim() === "Todo");
+    const upload = compactControls.find((control) => control.textContent?.trim() === "Upload");
+    const mode = compactControls.find((control) => control.hasAttribute("data-issue-work-mode-chip"));
+    const more = container.querySelector<HTMLElement>('[data-testid="new-issue-more-menu-trigger"]');
+
+    expect(prefix?.className).toContain("p-1.5");
+    for (const control of [assignee, project, status, upload, mode]) {
+      expect(control?.className).toContain("h-8");
+      expect(control?.className).toContain("px-2.5");
+    }
+    expect(more?.className).toContain("size-8");
+
+    act(() => root.unmount());
   });
 
   it("submits parent and goal context for sub-issues", async () => {
@@ -686,6 +715,52 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("hides isolation choices and omits stale workspace draft overrides", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([{
+      id: "project-1", name: "Alpha", workspaces: [],
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
+    }]);
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+      title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "",
+      reviewerValue: "", approverValue: "", projectId: "project-1",
+      selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false, workMode: "standard",
+    }));
+    const { root } = renderDialog(container, ["workspaces.isolation"]);
+    await flush();
+    expect(container.textContent).not.toContain("Execution workspace");
+    expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
+    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title (optional)"]')!, "Managed task");
+    const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
+    act(() => create!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    const payload = mockIssuesApi.create.mock.calls[0][1];
+    expect(payload).not.toHaveProperty("executionWorkspacePreference");
+    expect(payload).not.toHaveProperty("executionWorkspaceSettings");
+    expect(payload).not.toHaveProperty("executionWorkspaceId");
+    act(() => root.unmount());
+  });
+
+  it.each([false, true])("keeps explicit workspace launch context when isolation controls are hidden (subtask: %s)", async (subtask) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      projectId: "project-1", executionWorkspaceId: "workspace-context",
+      ...(subtask ? { parentId: "parent-task", parentIdentifier: "TEST-1" } : {}),
+    };
+    const { root } = renderDialog(container, ["workspaces.isolation"]);
+    await flush();
+    expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
+    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title (optional)"]')!, "Context task");
+    const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes(subtask ? "Create Sub-Task" : "Create Task"));
+    act(() => create!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    expect(mockIssuesApi.create.mock.calls[0][1]).toMatchObject({
+      executionWorkspaceId: "workspace-context", executionWorkspacePreference: "reuse_existing",
+    });
+    act(() => root.unmount());
+  });
+
   it("applies project and execution workspace defaults for normal new issues", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -818,6 +893,36 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("restores a description-only draft", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+      title: "", description: "Keep the request without a title", status: "todo", priority: "medium",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => {
+      expect((container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement).value).toBe("Keep the request without a title");
+    });
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"))!;
+    expect(submit.hasAttribute("disabled")).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("creates a task from its description without requiring a title", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"))!;
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Add description..."]')!, "Investigate the sign-in redirect and fix it");
+    await vi.waitFor(() => expect(submit.hasAttribute("disabled")).toBe(false));
+    await act(async () => { submit.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ description: "Investigate the sign-in redirect and fix it" }));
+    expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
   it("submits the latest locally typed title and description", async () => {
     let resolveProjects: (projects: Array<{
       id: string;
@@ -833,7 +938,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
@@ -913,7 +1018,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
@@ -949,7 +1054,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Plan this first");
 
@@ -987,7 +1092,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Answer this first");
 
@@ -1181,7 +1286,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Task title (optional)"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
@@ -1238,9 +1343,8 @@ describe("NewIssueDialog", () => {
     });
 
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
-    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
     expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-top")).toBe(
-      "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      "var(--new-issue-dialog-top-gap)",
     );
     expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-height")).toBe(
       "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
@@ -1249,6 +1353,56 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
     expect(dialogContent?.style.translate).toBe("var(--pct-neg-50)");
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+
+    act(() => root.unmount());
+  });
+
+  it("ignores transient invalid visual viewport measurements and keeps the last valid layout", async () => {
+    const visualViewport = new EventTarget() as EventTarget & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 0;
+    visualViewport.offsetTop = 0;
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: visualViewport,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 844,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll<HTMLDivElement>("div")).find((element) =>
+      element.className.includes("max-h-(--new-issue-dialog-height)"),
+    );
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("");
+    expect(dialogContent?.style.top).toBe("");
+    expect(dialogContent?.style.height).toBe("");
+    expect(dialogContent?.style.translate).toBe("");
+
+    visualViewport.height = 420;
+    visualViewport.offsetTop = 24;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+
+    visualViewport.height = 0;
+    visualViewport.offsetTop = Number.NaN;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
 
     act(() => root.unmount());
   });

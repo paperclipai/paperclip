@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -37,7 +38,6 @@ import {
   validateCodexResultProposal,
 } from "../../mock-core/codex-runner.js";
 import {
-  CODEX_INVALID_REQUEST,
   CODEX_METHOD_NOT_FOUND,
   CodexRpcError,
   type CodexAppServerTransport,
@@ -156,9 +156,9 @@ class FakeCodexTransport implements CodexAppServerTransport {
           cwd: TEST_WORKING_DIRECTORY,
           turns: [],
           activePermissionProfile: {
-            id: planMode
+            id: params.permissions ?? (planMode
               ? "paperclip-runner-workspace-read-only"
-              : "paperclip-runner-workspace-only",
+              : "paperclip-runner-workspace-only"),
           },
         },
         model: "gpt-test",
@@ -199,8 +199,18 @@ class FakeCodexTransport implements CodexAppServerTransport {
       this.goalState = null;
       return {};
     }
+    if (method === "thread/turns/list") {
+      const snapshot = this.readResponse ?? { thread: { turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      const turns = (snapshot.thread as Record<string, unknown>).turns;
+      return { data: Array.isArray(turns) ? turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" })) : turns, nextCursor: null };
+    }
+    if (method === "thread/items/list") {
+      const turns = ((this.readResponse?.thread as Record<string, unknown> | undefined)?.turns ?? []) as Array<Record<string, unknown>>;
+      const turn = turns.find(value => value.id === params.turnId);
+      return { data: ((turn?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+    }
     if (method === "thread/read") {
-      return (
+      return structuredClone(
         this.readResponse ?? {
           thread: {
             id: this.threadId,
@@ -316,6 +326,31 @@ function makeDriver(
     ...options,
   });
 }
+
+it("refreshes authorized tools on resume without replacing the provider thread", async () => {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const original = await makeDriver([first], { conversationMode: "prepared", dynamicTools: [] }).openSession({
+    runId: "run-connect", normalizedSessionId: "normalized-connect", workingDirectory: TEST_WORKING_DIRECTORY,
+  });
+  const snapshot = await original.snapshot();
+  await original.close({ reason: "waiting for connection" });
+  const githubTool = { name: "github_search", description: "Search authorized repositories", inputSchema: { type: "object" } };
+  const handler = vi.fn(async () => ({ repositories: ["paperclip"] }));
+  const resumedDriver = makeDriver([second], { conversationMode: "prepared", dynamicTools: [githubTool], dynamicToolHandler: handler });
+  expect((await resumedDriver.descriptor()).capabilities.toolRefreshOnResume).toBe(true);
+  const recovery = await resumedDriver.recoverSession(snapshot);
+  expect(recovery.recovered).toBe(true);
+  await recovery.session!.startTurn({ message: { role: "user", text: "Continue with GitHub connected" } });
+  expect(second.calls.some(call => call.method === "thread/start")).toBe(false);
+  expect(second.calls.find(call => call.method === "thread/resume")?.params).toMatchObject({ threadId: "thread-1", dynamicTools: expect.arrayContaining([githubTool]) });
+  const result = await second.invoke({ id: "rpc-github", method: "item/tool/call", params: {
+    threadId: "thread-1", turnId: "turn-1", callId: "github-call", tool: "github_search", arguments: { query: "paperclip" },
+  } });
+  expect(result).toMatchObject({ success: true });
+  expect(handler).toHaveBeenCalledWith(expect.objectContaining({ tool: "github_search", threadId: "thread-1" }));
+  await recovery.session?.close({ reason: "test done" });
+});
 
 async function collectUntilTerminal(
   events: AsyncIterable<PrpEvent>,
@@ -562,7 +597,7 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it("places Paperclip runtime instructions in Codex's system channel and enables only selected skill instructions", async () => {
+  it("adds Paperclip developer instructions without replacing the Codex base and enables selected skills", async () => {
     const transport = new FakeCodexTransport();
     const baseInstructions = [
       "You are running as a Paperclip agent.",
@@ -582,12 +617,13 @@ describe("Codex app-server Codex driver", () => {
 
     const threadStart = transport.calls.find((call) => call.method === "thread/start");
     expect(threadStart?.params).toMatchObject({
-      baseInstructions,
+      developerInstructions: baseInstructions,
       config: {
         "skills.include_instructions": true,
         include_apps_instructions: false,
       },
     });
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
     expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(baseInstructions);
   });
 
@@ -1242,7 +1278,7 @@ describe("Codex app-server Codex driver", () => {
       model: "gpt-test",
       modelProvider: "openai",
       workingDirectory: TEST_WORKING_DIRECTORY,
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       instructionSources: [],
       instructionPolicy: {
         skillInstructions: false,
@@ -1258,7 +1294,7 @@ describe("Codex app-server Codex driver", () => {
     expect(
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       config: {
         "skills.include_instructions": false,
         include_apps_instructions: false,
@@ -1344,6 +1380,25 @@ describe("Codex app-server Codex driver", () => {
     },
   );
 
+  it.each([false, true])("requires trusted continuation metadata before omitting task context (%s)", async (continuation) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], {
+      skillInputs: [{ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" }],
+    }).openSession({ runId: "run-delta", normalizedSessionId: "session-delta", workingDirectory: TEST_WORKING_DIRECTORY });
+    const text = JSON.stringify({ schema: "paperclip.native-continuation.v1", events: '{"messages":[{"body":"Go ahead"}]}', completion: { revision: "2", criterionIds: ["comment"] } });
+    await session.startTurn({ message: { role: "user", text }, ...(continuation ? { continuation: true as const } : {}) });
+    const params = transport.calls.find((call) => call.method === "turn/start")!.params;
+    if (continuation) {
+      expect(params.input).toEqual([{ type: "text", text, text_elements: [] }]);
+      expect(JSON.stringify(params.input)).not.toContain("constraints");
+      expect(JSON.stringify(params.input)).not.toContain("first-task");
+    } else {
+      expect(JSON.stringify(params.input)).toContain("constraints");
+      expect(params.input).toContainEqual({ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" });
+    }
+    await session.close({ reason: "test complete" });
+  });
+
   it("allows eval fixtures to opt out of Codex collaboration instructions", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport], {
@@ -1408,6 +1463,18 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("sends the selected reasoning effort with the Codex turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({
+      runId: "run-effort",
+      normalizedSessionId: "session-effort",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue" } });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ effort: "ultra" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("fails closed when the installed app-server does not confirm plan mode", async () => {
     const transport = new FakeCodexTransport();
     transport.confirmCollaborationMode = false;
@@ -1456,6 +1523,38 @@ describe("Codex app-server Codex driver", () => {
         workingDirectory: "/",
       }),
     ).rejects.toThrow("cannot be a filesystem root");
+  });
+
+  it("uses negotiated ACP controls through the Codex transport facade", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ ...controls }) });
+    const session = await makeDriver([transport], {
+      driverIdentity: { kind: "acpx_runtime", displayName: "Pi ACP", version: "test" },
+      capabilities: { steering: false },
+    }).openSession({ runId: "run-pi", normalizedSessionId: "session-pi", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, message: { role: "user", text: "Change" } })).rejects.toThrow("not negotiated");
+      controls = { steering: true, queuedFollowUp: true };
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const input = { turnId, correlationId: "queued-1", mode: "follow_up" as const, message: { role: "user" as const, text: "Then validate" } };
+      await session.steer?.(input);
+      expect(transport.calls.find(call => call.method === "turn/steer")?.params).toMatchObject({ expectedTurnId: turnId, mode: "follow_up", correlationId: "queued-1" });
+      await expect(session.steer?.(input)).rejects.toThrow("already acknowledged");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(1);
+    } finally { await session.close({ reason: "verified" }); }
+  });
+
+  it("keeps native follow-up disabled for the Codex app-server driver", async () => {
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ steering: true, queuedFollowUp: true }) });
+    const session = await makeDriver([transport]).openSession({ runId: "run-codex", normalizedSessionId: "session-codex", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: false });
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, mode: "follow_up", message: { role: "user", text: "Queue" } })).rejects.toThrow("not negotiated");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(0);
+    } finally { await session.close({ reason: "verified" }); }
   });
 
   it("steers and interrupts an active turn without replacing the session", async () => {
@@ -1658,7 +1757,9 @@ describe("Codex app-server Codex driver", () => {
     ).rejects.toBeInstanceOf(HarnessStaleTurnError);
     const events = session.events()[Symbol.asyncIterator]();
     const observed: PrpEvent[] = [];
-    for (let index = 0; index < 9; index += 1) {
+    // PRP v2 adds a capability and authoritative goal snapshot immediately
+    // after session start, so include those two events in this bounded read.
+    for (let index = 0; index < 11; index += 1) {
       const next = await events.next();
       if (next.done) break;
       observed.push(next.value);
@@ -1760,15 +1861,21 @@ describe("Codex app-server Codex driver", () => {
 
     // Both denials a real app-server sends: the method is absent, and the
     // build has the feature switched off.
-    for (const denial of [
-      new CodexRpcError(
-        '{"code":-32601,"message":"method not found"}',
-        CODEX_METHOD_NOT_FOUND,
-      ),
-      new CodexRpcError(
-        '{"code":-32600,"message":"goals feature is disabled"}',
-        CODEX_INVALID_REQUEST,
-      ),
+    for (const { denial, availability } of [
+      {
+        denial: new CodexRpcError(
+          '{"code":-32601,"message":"method not found"}',
+          CODEX_METHOD_NOT_FOUND,
+        ),
+        availability: "unsupported",
+      },
+      {
+        denial: new CodexRpcError(
+          '{"code":-32004,"message":"goals feature is disabled by policy"}',
+          -32_004,
+        ),
+        availability: "policy_disabled",
+      },
     ]) {
       const unsupportedTransport = new FakeCodexTransport();
       unsupportedTransport.rejectMethods.set("thread/goal/get", denial);
@@ -1781,6 +1888,14 @@ describe("Codex app-server Codex driver", () => {
       expect((await unsupportedDriver.descriptor()).capabilities).toMatchObject(
         { goals: false },
       );
+      const unsupportedEvents = unsupported.events()[Symbol.asyncIterator]();
+      await unsupportedEvents.next();
+      await expect(unsupportedEvents.next()).resolves.toMatchObject({
+        value: {
+          eventType: "session.capabilities.updated",
+          payload: { sessionGoals: { availability } },
+        },
+      });
       await expect(
         unsupported.goal?.({ action: "get" }),
       ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
@@ -1817,6 +1932,128 @@ describe("Codex app-server Codex driver", () => {
       ).toHaveLength(2);
       await session.close({ reason: "fixture complete" });
     }
+  });
+
+  it("preserves an inactive goal status while editing its objective", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goal-inactive-edit",
+      normalizedSessionId: "normalized-goal-inactive-edit",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+
+    await session.goal?.({
+      action: "set",
+      objective: "Updated while paused",
+      status: "paused",
+    });
+
+    expect(
+      transport.calls.filter(({ method }) => method === "thread/goal/set"),
+    ).toContainEqual({
+      method: "thread/goal/set",
+      params: {
+        threadId: "thread-1",
+        objective: "Updated while paused",
+        status: "paused",
+      },
+    });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("rolls back only a definitely rejected idle goal autostart", async () => {
+    const definiteTransport = new FakeCodexTransport();
+    const definiteSession = await makeDriver([definiteTransport]).openSession({
+      runId: "run-goal-autostart-definite-rejection",
+      normalizedSessionId: "normalized-goal-autostart-definite-rejection",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    definiteTransport.rejectMethods.set(
+      "thread/goal/set",
+      new CodexRpcError('{"code":-32603,"message":"internal error"}', -32_603),
+    );
+    await expect(
+      definiteSession.goal?.({
+        action: "set",
+        objective: "Rejected before a turn starts",
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    definiteTransport.rejectMethods.delete("thread/goal/set");
+    await expect(
+      definiteSession.startTurn({
+        message: { role: "user", text: "A normal turn may still start." },
+      }),
+    ).resolves.toMatchObject({ turnId: "turn-1" });
+    await definiteSession.close({ reason: "fixture complete" });
+
+    const ambiguousTransport = new FakeCodexTransport();
+    const ambiguousSession = await makeDriver([ambiguousTransport]).openSession({
+      runId: "run-goal-autostart-ambiguous",
+      normalizedSessionId: "normalized-goal-autostart-ambiguous",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    ambiguousTransport.rejectMethods.set(
+      "thread/goal/set",
+      new Error("codex app-server transport closed"),
+    );
+    await expect(
+      ambiguousSession.goal?.({
+        action: "set",
+        objective: "The provider may have started this goal",
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    ambiguousTransport.rejectMethods.delete("thread/goal/set");
+    await expect(
+      ambiguousSession.startTurn({
+        message: { role: "user", text: "Do not create competing work." },
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    await ambiguousSession.close({ reason: "fixture complete" });
+  });
+
+  it("preserves a provider-neutral goal action subset through the Codex transport facade", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], {
+      goalCapability: {
+        actions: ["set", "clear"],
+        autonomousUpdates: true,
+        persistentAcrossResume: true,
+        maxObjectiveChars: 4_000,
+        tokenBudgetControl: false,
+        usageReporting: true,
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-goals-action-subset",
+      normalizedSessionId: "normalized-goals-action-subset",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    const events = session.events()[Symbol.asyncIterator]();
+    await events.next();
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        eventType: "session.capabilities.updated",
+        payload: {
+          sessionGoals: {
+            availability: "available",
+            actions: ["set", "clear"],
+            tokenBudgetControl: false,
+          },
+        },
+      },
+    });
+
+    await expect(
+      session.goal?.({ action: "pause" }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    expect(
+      transport.calls.filter(({ method }) => method === "thread/goal/set"),
+    ).toHaveLength(0);
+    await expect(
+      session.goal?.({ action: "set", objective: "Finish the task" }),
+    ).resolves.toMatchObject({ objective: "Finish the task" });
+    await expect(session.goal?.({ action: "clear" })).resolves.toBeNull();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("validates runtime request resolutions against the kind of request they answer", async () => {
@@ -2311,6 +2548,138 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "test complete" });
   });
 
+  it("exposes and dispatches only explicit chat tools across fresh and resumed direct chat", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const registerDeliverable = {
+      name: "register_deliverable",
+      description: "Prepare one requested file.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readCurrentWakeComments = {
+      name: "read_current_wake_comments",
+      description: "Read only comments bound into the current wake.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const requestHumanInput = {
+      name: "request_human_input",
+      description: "Ask one structured question through Paperclip.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const listChatAttachments = {
+      name: "list_chat_attachments",
+      description: "List same-conversation attachment metadata.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const reuseChatAttachment = {
+      name: "reuse_chat_attachment",
+      description: "Prepare one same-conversation attachment again.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readChatAttachment = {
+      name: "read_chat_attachment",
+      description: "Read one same-conversation file without resending it.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const handler = vi.fn(async (call) => ({
+      interaction: { id: "interaction-direct-question", status: "pending" },
+      callId: call.callId,
+    }));
+    const driver = makeDriver([first, second], {
+      conversationMode: "direct",
+      dynamicTools: [
+        registerDeliverable,
+        readCurrentWakeComments,
+        requestHumanInput,
+        listChatAttachments,
+        reuseChatAttachment,
+        readChatAttachment,
+        {
+          name: "report_progress",
+          description: "Must remain unavailable in direct chat.",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      dynamicToolHandler: handler,
+    });
+    const original = await driver.openSession({
+      runId: "run-direct-file",
+      normalizedSessionId: "normalized-direct-file",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Please return one file." },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    expect(
+      first.calls.find((call) => call.method === "thread/start")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+
+    const freshQuestion = await first.invoke({
+      id: "rpc-direct-question-fresh",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-fresh",
+        tool: "request_human_input",
+        arguments: { interactionKind: "questions" },
+      },
+    });
+    expect(freshQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-fresh",
+        arguments: { interactionKind: "questions" },
+      }),
+    );
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    expect(
+      second.calls.find((call) => call.method === "thread/resume")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+    const resumedQuestion = await second.invoke({
+      id: "rpc-direct-question-resumed",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-resumed",
+        tool: "request_human_input",
+        arguments: { interactionKind: "confirmation" },
+      },
+    });
+    expect(resumedQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-resumed",
+        arguments: { interactionKind: "confirmation" },
+      }),
+    );
+    await recovery?.session?.close({ reason: "test complete" });
+  });
+
   it("lets an answer claimed before expiry win the terminal-event race", async () => {
     const transport = new FakeCodexTransport();
     let releaseResolution!: () => void;
@@ -2614,6 +2983,29 @@ describe("Codex app-server Codex driver", () => {
         arguments: {},
       }),
     );
+  });
+
+  it.each(["unknown", "validation"])("preserves the dynamic tool outcome boundary (%s)", async (outcome) => {
+    const transport = new FakeCodexTransport();
+    const error = outcome === "unknown"
+      ? new SemanticToolOutcomeUnknownError("write may have committed")
+      : new Error("invalid instruction input");
+    const handler = vi.fn(async () => { throw error; });
+    const session = await makeDriver([transport], {
+      dynamicTools: [{ name: "update_agent_instructions", description: "Write instructions.", inputSchema: { type: "object" } }],
+      dynamicToolHandler: handler,
+    }).openSession({ runId: "run-uncertain-write", normalizedSessionId: "session-uncertain-write", workingDirectory: TEST_WORKING_DIRECTORY });
+    await session.startTurn({ message: { role: "user", text: "Update instructions." } });
+    const response = transport.invoke({ id: "rpc-write", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "uncertain-write", tool: "update_agent_instructions", arguments: {},
+    } });
+    if (outcome === "unknown") await expect(response).rejects.toBe(error);
+    else await expect(response).resolves.toMatchObject({ success: false });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const completions = events.filter((event) => event.eventType === "item.completed" && event.itemId === "uncertain-write");
+    expect(completions).toHaveLength(outcome === "unknown" ? 0 : 1);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when an agent message changes a tool-committed result", async () => {
@@ -3101,9 +3493,13 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
+      "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
@@ -3392,15 +3788,11 @@ describe("Codex app-server Codex driver", () => {
       const snapshot = await original.snapshot();
       await original.close({ reason: "transport lost" });
       const recovery = await driver.recoverSession?.(snapshot);
-      expect(recovery?.session).toBeDefined();
-      await expect(
-        recovery!.session!.reconcile!(),
-      ).rejects.toMatchObject<HarnessReconciliationError>({
-        name: "HarnessReconciliationError",
-        recoverable: true,
-        message: expect.stringContaining(testCase.message),
+      expect(recovery).toMatchObject({
+        recovered: false,
+        reason: expect.stringContaining(testCase.message),
       });
-      await recovery!.session!.close({ reason: "test complete" });
+      expect(recovery?.session).toBeUndefined();
     }
   });
 
@@ -3501,7 +3893,8 @@ describe("Codex app-server Codex driver", () => {
     ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
     const iterator = session.events()[Symbol.asyncIterator]();
     const events: PrpEvent[] = [];
-    for (let index = 0; index < 6; index += 1) {
+    // PRP v2 emits capability and goal snapshots before turn events.
+    for (let index = 0; index < 8; index += 1) {
       const next = await iterator.next();
       if (next.value) events.push(next.value);
     }

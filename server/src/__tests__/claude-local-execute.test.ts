@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { buildPaperclipTaskMarkdown } from "../services/heartbeat.js";
 import {
   claudeCommandSupportsEffortFlag,
   claudeSessionCwdMatchesExecutionTarget,
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
+  sessionCodec,
 } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
@@ -350,6 +352,91 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it("passes real assignment markdown and ordered current events once through the CLI", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-context-owner-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+      includeWakeComments: false,
+    });
+    const historicalMarkdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+    });
+    try {
+      await execute({
+        runId: "run-context-owner",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli", command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Custom template keeps {{paperclipTaskMarkdown}} and {{paperclipWakePrompt}}.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: historicalMarkdown,
+          paperclipTaskMarkdownAssignment: markdown,
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase", status: "in_progress" },
+            comments: [
+              { id: "comment-a", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:00:00.000Z" },
+              { id: "comment-b", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:01:00.000Z" },
+            ],
+            commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+          paperclipTurnContext: { version: 1, assignment: { owner: "task_markdown" }, events: { owner: "wake_prompt", comments: [{ id: "comment-a", revision: "a" }, { id: "comment-b", revision: "b" }] } },
+        },
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Custom template keeps");
+      expect(capture.prompt.indexOf("comment-a")).toBeLessThan(capture.prompt.indexOf("comment-b"));
+      expect(capture.prompt.split("Same event body.")).toHaveLength(3);
+      expect(capture.prompt.split("Repeat phrase Repeat phrase")).toHaveLength(4);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [undefined, "claude-opus-5"],
+    ["", "claude-opus-5"],
+    ["  ", "claude-opus-5"],
+    ["claude-sonnet-4-5", "claude-sonnet-4-5"],
+  ])("passes the resolved model to the CLI for %j", async (model, expected) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-default-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const result = await execute({
+        runId: "run-default",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli", model, command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+        },
+        context: {}, onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const { argv } = JSON.parse(await fs.readFile(capturePath, "utf8"));
+      expect(argv[argv.indexOf("--model") + 1]).toBe(expected);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a strict per-agent MCP config only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
@@ -552,9 +639,12 @@ describe("claude execute", () => {
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     const metaEvents: Array<{ commandArgs: string[]; commandNotes: string[] }> = [];
+    const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF: original goal and prior decisions");
+    const prompts: string[] = [];
     try {
       const result = await execute({
         runId: "run-resume-fallback",
+        getFreshSessionHandoff,
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
@@ -572,6 +662,7 @@ describe("claude execute", () => {
         authToken: "tok",
         onLog: async () => {},
         onMeta: async (meta) => {
+          prompts.push(String(meta.prompt ?? ""));
           metaEvents.push({
             commandArgs: ((meta.commandArgs as string[]) ?? []).slice(),
             commandNotes: ((meta.commandNotes as string[]) ?? []).slice(),
@@ -584,6 +675,9 @@ describe("claude execute", () => {
         appendedSystemPromptFileContents: string | null;
       }>;
       expect(captured).toHaveLength(2);
+      expect(getFreshSessionHandoff).toHaveBeenCalledOnce();
+      expect(prompts[0]).not.toContain("FRESH_HANDOFF");
+      expect(prompts[1]).toContain("FRESH_HANDOFF: original goal and prior decisions");
       expect(captured[0]?.argv).toContain("--resume");
       expect(captured[0]?.argv).not.toContain("--append-system-prompt-file");
       expect(captured[1]?.argv).not.toContain("--resume");
@@ -872,11 +966,8 @@ describe("claude execute", () => {
         },
       });
       const capture = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
-      expect(capture.argv).toContain("--allowedTools");
-      expect(capture.argv).toContain(
-        "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
-      );
-      expect(capture.argv).not.toContain("--dangerously-skip-permissions");
+      expect(capture.argv).toContain("--dangerously-skip-permissions");
+      expect(capture.argv).not.toContain("--allowedTools");
       expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));
       expect(capture.claudeConfigEntries).toContain("settings.json");
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -1079,7 +1170,7 @@ describe("claude execute", () => {
     })).toBe(false);
   });
 
-  it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
+  it.each(["unchanged", "added", "removed"])("resumes a stable Claude prompt bundle with %s MCP tools", async (change) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -1128,6 +1219,14 @@ describe("claude execute", () => {
           },
         },
         context: {},
+        runtimeMcp: {
+          getServers: () => [{
+            name: "Paperclip projects",
+            url: "http://localhost:3100/api/mcp/project-tools",
+            connectionId: "paperclip-project-tools",
+            token: "run-jwt-token",
+          }],
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
@@ -1140,7 +1239,9 @@ describe("claude execute", () => {
       });
       expect(typeof first.sessionParams?.promptBundleKey).toBe("string");
 
+      const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF_ONLY");
       const second = await execute({
+        getFreshSessionHandoff,
         runId: "run-2",
         agent: {
           id: "agent-1",
@@ -1151,7 +1252,7 @@ describe("claude execute", () => {
         },
         runtime: {
           sessionId: null,
-          sessionParams: first.sessionParams ?? null,
+          sessionParams: sessionCodec.deserialize(sessionCodec.serialize(first.sessionParams ?? null)),
           sessionDisplayId: null,
           taskKey: null,
         },
@@ -1173,6 +1274,7 @@ describe("claude execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
+          refreshTools: change !== "unchanged",
           paperclipWake: {
             reason: "issue_commented",
             issue: {
@@ -1203,6 +1305,14 @@ describe("claude execute", () => {
             fallbackFetchNeeded: false,
           },
         },
+        runtimeMcp: {
+          getServers: () => change === "removed" ? [] : [{
+            name: "Paperclip projects",
+            url: "http://localhost:3100/api/mcp/project-tools",
+            connectionId: "paperclip-project-tools",
+            token: "next-run-jwt-token",
+          }, ...(change === "added" ? [{ name: "GitHub", url: "https://example.test/github/mcp", connectionId: "github", token: "fresh-github-token" }] : [])],
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
@@ -1231,7 +1341,14 @@ describe("claude execute", () => {
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
       expect(capture1.skillEntries).toContain("paperclip");
       expect(capture2.argv).toContain("--resume");
+      expect(getFreshSessionHandoff).not.toHaveBeenCalled();
       expect(capture2.argv).toContain("11111111-1111-4111-8111-111111111111");
+      if (change === "removed") expect(capture2.mcpConfigContents).toBeNull();
+      else {
+        expect(capture2.mcpConfigContents).toContain("next-run-jwt-token");
+        expect(capture2.mcpConfigContents).not.toContain('"run-jwt-token"');
+        if (change === "added") expect(capture2.mcpConfigContents).toContain("fresh-github-token");
+      }
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {

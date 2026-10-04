@@ -1,4 +1,7 @@
+import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
+import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -69,6 +72,13 @@ export class CodexHarnessSession
     }
   }
 
+  turnControlCapabilities() {
+    if (this.driverKind === "acpx_runtime") {
+      return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
+    }
+    return { steering: this.capabilities.steering, queuedFollowUp: false };
+  }
+
   ids(): ReturnType<HarnessSession["ids"]> {
     return {
       driverSessionId: this.opened.threadId,
@@ -78,10 +88,12 @@ export class CodexHarnessSession
   }
 
   async attachRun(input: { runId: string }): Promise<void> {
+    this.assertProtocolIntegrity();
+    const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.activeTurnId !== null ||
       this.turnStartPending ||
-      this.pendingRuntimeRequestMap.size > 0
+      (!transportOwnsQuiescence &&
+        (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
@@ -91,6 +103,21 @@ export class CodexHarnessSession
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
     });
+    this.assertProtocolIntegrity();
+    if (transportOwnsQuiescence) {
+      // Runnerd's attachment contract performs two durable readiness probes,
+      // drains the settled provider tail, and rotates authority atomically.
+      // Its proof supersedes host reducer state that can remain stale when a
+      // semantic-result consumer stops before the interrupt terminal arrives.
+      // Drop only the prior run's already-proven-settled buffered suffix.
+      this.activeTurnId = null;
+      this.pendingRuntimeRequestMap.clear();
+      this.eventQueue.clear();
+    }
+    if (this.codexUsageBaseline && input.runId !== this.runId) {
+      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+    }
     this.runId = input.runId;
     this.result = null;
     this.resultFingerprint = null;
@@ -117,11 +144,17 @@ export class CodexHarnessSession
 
   async startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
+    this.assertProtocolIntegrity();
+    if (this.protocolFailed && this.protocolFailureCode) {
+      throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
+    }
     if (
       this.terminal ||
       this.protocolFailed ||
@@ -136,10 +169,15 @@ export class CodexHarnessSession
       );
     }
     const dispositionOnlyRecovery = this.dispositionOnlyRecoveryAvailable;
+    // A native continuation already carries just new events and the current
+    // completion IDs. Do not wrap it in the prior task objective/constraints
+    // or re-invoke a skill whose instructions are already in this session.
+    const continuationTurn = input.continuation === true;
+    const turnSkills = continuationTurn ? [] : this.skillInputs;
     const taskText =
-      this.conversationMode === "direct"
+      this.conversationMode === "direct" || this.conversationMode === "prepared"
         ? input.message.text
-        : dispositionOnlyRecovery
+        : dispositionOnlyRecovery || continuationTurn
           ? input.message.text
           : JSON.stringify({
               task: this.taskEnvelope,
@@ -168,6 +206,7 @@ export class CodexHarnessSession
     this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
+      ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
       requestedCollaborationMode:
         input.requestedCollaborationMode ?? effectiveCollaborationMode,
       effectiveCollaborationMode,
@@ -182,16 +221,25 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
-          requestedMode === "plan"
+          text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
             ? PLANNING_PERMISSION_PROFILE
-            : SKILLLESS_PERMISSION_PROFILE,
+            : SKILLLESS_PERMISSION_PROFILE),
         runtimeWorkspaceRoots: [this.opened.context.workingDirectory],
         ...(this.opened.collaborationMode === null
           ? {}
           : { collaborationMode: this.opened.collaborationMode }),
-        input: [userInput({ role: "user", text: taskText })],
+        input: [
+          userInput({
+            role: "user",
+            text: turnSkills.length
+              ? `${turnSkills.map((skill) => `$${skill.name}`).join(" ")}\n\n${taskText}`
+              : taskText,
+          }),
+          ...turnSkills,
+        ],
         ...(this.conversationMode === "direct"
           ? {}
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
@@ -226,10 +274,17 @@ export class CodexHarnessSession
       // never observes the terminal turn ahead of turn.accepted.
       releaseTurnStartSettled();
     }
+    this.assertProtocolIntegrity();
     const turn = record(response.turn);
     const turnId = text(turn.id);
-    if (turnId.length === 0)
+    if (turnId.length === 0) {
+      // A start notification is only optimistic until the response validates.
+      // Clear it before released semantic/terminal waiters can observe an
+      // active turn for a request that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       throw new Error("Codex turn response omitted turn.id");
+    }
     if (this.activeTurnId !== null && this.activeTurnId !== turnId) {
       this.failProtocol(
         "turn_start_mismatch",
@@ -253,17 +308,23 @@ export class CodexHarnessSession
   }
 
   async steer(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void> {
-    this.requireCapability("steering");
+    this.assertProtocolIntegrity();
+    const controls = this.turnControlCapabilities();
+    if (!(input.mode === "follow_up" ? controls.queuedFollowUp : controls.steering)) {
+      throw this.unsupported("steering", "requested turn control was not negotiated");
+    }
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
       const acknowledgedTurnId = this.acknowledgedSteeringCorrelations.get(
         input.correlationId,
       );
       if (acknowledgedTurnId) {
+        if (this.driverKind === "acpx_runtime") throw new Error("ACP turn control correlation was already acknowledged");
         if (acknowledgedTurnId !== input.turnId)
           throw new HarnessOperationAlreadyTerminalError("steering");
         return;
@@ -275,6 +336,7 @@ export class CodexHarnessSession
         input: [userInput(input.message)],
         expectedTurnId: input.turnId,
         correlationId: input.correlationId,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
       });
       if (this.activeTurnId !== input.turnId) {
         throw new HarnessOperationAlreadyTerminalError("steering");
@@ -289,7 +351,8 @@ export class CodexHarnessSession
         "item.completed",
         {
           kind: "steering_acknowledgement",
-          text: "Steering acknowledged for the active turn.",
+          text: input.mode === "follow_up" ? "Follow-up queued by the active provider." : "Steering acknowledged for the active turn.",
+          ...(this.driverKind === "acpx_runtime" ? { mode: input.mode ?? "steer" } : {}),
           status: "acknowledged",
         },
         {
@@ -301,6 +364,7 @@ export class CodexHarnessSession
       );
     } catch (error) {
       if (error instanceof HarnessOperationAlreadyTerminalError) throw error;
+      this.rethrowProtocolIntegrity(error);
       const detail = redactCodexDiagnostic(String(error));
       if (/unsupported|unavailable|capability|method not found/i.test(detail)) {
         throw this.unsupported("steering", detail);
@@ -340,6 +404,7 @@ export class CodexHarnessSession
       await this.transport.request("turn/interrupt", {
         threadId: this.opened.threadId,
         turnId,
+        ...(reason ? { reason: boundedText(reason) } : {}),
       });
       if (this.activeTurnId !== turnId) {
         throw new HarnessOperationAlreadyTerminalError("interruption");
@@ -374,6 +439,7 @@ export class CodexHarnessSession
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void> {
+    this.assertProtocolIntegrity();
     this.requireCapability("runtimeRequestResolution");
     const pending = this.pendingRuntimeRequestMap.get(input.requestId);
     if (pending === undefined) {
@@ -437,6 +503,7 @@ export class CodexHarnessSession
     reason: "durable_handoff";
     signal: AbortSignal;
   }): HarnessRuntimeRequestHandoff {
+    this.assertProtocolIntegrity();
     if (input.signal.aborted) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
@@ -478,7 +545,29 @@ export class CodexHarnessSession
   }
 
   async goal(input: HarnessGoalOperation): Promise<HarnessThreadGoal | null> {
+    this.assertProtocolIntegrity();
     this.requireCapability("goals");
+    if (
+      input.action !== "get"
+      && !this.goalCapability.actions.includes(input.action)
+    ) {
+      throw this.unsupported(
+        `goal ${input.action}`,
+        "capability action not advertised",
+      );
+    }
+    const expectsIdleAutostart =
+      this.activeTurnId === null
+      && !this.turnStartPending
+      && (input.action === "resume"
+        || (input.action === "set" && (input.status ?? "active") === "active"));
+    if (expectsIdleAutostart) {
+      // Codex activates an idle goal by starting a provider turn without a
+      // turn/start response. Keep the expectation armed until turn/started
+      // supplies the authoritative turn id; the notification may arrive
+      // after thread/goal/set has already returned.
+      this.turnStartPending = true;
+    }
     let method: string;
     let params: Record<string, unknown> = { threadId: this.opened.threadId };
     if (input.action === "get") {
@@ -491,7 +580,7 @@ export class CodexHarnessSession
         params = {
           ...params,
           objective: input.objective,
-          status: "active",
+          status: input.status ?? "active",
           ...(input.tokenBudget !== undefined
             ? { tokenBudget: input.tokenBudget }
             : {}),
@@ -505,6 +594,7 @@ export class CodexHarnessSession
     }
     try {
       const response = await this.transport.request(method, params);
+      this.assertProtocolIntegrity();
       const goal =
         input.action === "clear" ? null : parseThreadGoal(response.goal);
       if (!["get", "clear"].includes(input.action) && goal === null) {
@@ -527,31 +617,53 @@ export class CodexHarnessSession
         },
         { itemId: `${this.opened.threadId}:goal:${this.sourceSequence + 1}` },
       );
+      this.emitGoalEvent(
+        input.action === "clear"
+          ? "session.goal.cleared"
+          : input.action === "get"
+            ? "session.goal.snapshot"
+            : "session.goal.updated",
+        goal,
+        {
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          workingNow: this.activeTurnId !== null,
+        },
+      );
       return goal === null ? null : structuredClone(goal);
     } catch (error) {
+      this.rethrowProtocolIntegrity(error);
+      if (expectsIdleAutostart && error instanceof CodexRpcError) {
+        // A JSON-RPC error is a definite provider rejection. Transport and
+        // protocol failures are ambiguous and deliberately retain the pending
+        // start so another command cannot create competing provider work.
+        this.turnStartPending = false;
+      }
       throw this.unsupported(`goal ${input.action}`, error);
     }
   }
 
   lineage(): HarnessThreadLineageEntry[] {
+    this.assertProtocolIntegrity();
     return [...this.lineageByThread.values()].map((entry) =>
       structuredClone(entry),
     );
   }
 
   async read(): Promise<Record<string, unknown>> {
+    this.assertProtocolIntegrity();
     this.requireCapability("read");
     try {
-      return await this.transport.request("thread/read", {
-        threadId: this.opened.threadId,
-        includeTurns: true,
-      });
+      const snapshot = await readCodexThreadState(this.transport, this.opened.threadId);
+      this.assertProtocolIntegrity();
+      return snapshot;
     } catch (error) {
+      this.rethrowProtocolIntegrity(error);
       throw this.unsupported("read", error);
     }
   }
 
   async reconcile(): Promise<Record<string, unknown>> {
+    this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
     const thread = record(snapshot.thread);
@@ -569,12 +681,33 @@ export class CodexHarnessSession
         "thread/read returned a different provider session",
       );
     }
-    const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
+    const turns = await readCodexTurnMetadata(this.transport, this.opened.threadId);
+    thread.turns = turns;
+    for (const turn of turns) {
+      if ((text(turn.id) === this.activeTurnId || this.terminalTurns.has(text(turn.id)))
+        && text(turn.status) !== "inProgress") {
+        turn.items = await readCodexTurnItems(this.transport, this.opened.threadId, text(turn.id));
+        turn.itemsView = "full";
+      }
+    }
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
-    if (Object.keys(reconciledUsage).length > 0)
-      this.usageSnapshot = reconciledUsage;
+    if (Object.keys(reconciledUsage).length > 0) {
+      if (this.driverKind === "codex_app_server" && this.codexUsageBaseline) {
+        this.codexUsageBaseline = observeCodexUsage(
+          this.codexUsageBaseline,
+          reconciledUsage.total,
+          false,
+        );
+        this.usageSnapshot = {
+          ...reconciledUsage,
+          ...codexRunUsage(this.codexUsageBaseline),
+        };
+      } else {
+        this.usageSnapshot = reconciledUsage;
+      }
+    }
     const activeTurns = turns.filter(
       (turn) => text(turn.status) === "inProgress",
     );
@@ -642,6 +775,7 @@ export class CodexHarnessSession
   }
 
   async usage(): Promise<Record<string, unknown> | null> {
+    this.assertProtocolIntegrity();
     this.requireCapability("usage");
     return this.usageSnapshot === null
       ? null
@@ -649,8 +783,10 @@ export class CodexHarnessSession
   }
 
   async snapshot(): Promise<PersistedHarnessSession> {
+    this.assertProtocolIntegrity();
     return {
       driverKind: this.driverKind,
+      workingDirectory: this.opened.context.workingDirectory,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
       ...(this.opened.providerIdentity === undefined
@@ -670,6 +806,7 @@ export class CodexHarnessSession
               callId: this.resultCallId,
               turnId: this.resultTurnId,
             },
+      ...(this.codexUsageBaseline ? { codexUsageBaseline: structuredClone(this.codexUsageBaseline) } : {}),
       terminalTurns: [...this.terminalTurns].map(([turnId, fingerprint]) => ({
         turnId,
         fingerprint,
@@ -684,10 +821,10 @@ export class CodexHarnessSession
     };
   }
 
-  async close(): Promise<void> {
+  async close(input?: { reason: string }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
-    await this.transport.close();
+    await this.transport.close(input?.reason);
   }
 
   async detachControllerForRestart(): Promise<void> {

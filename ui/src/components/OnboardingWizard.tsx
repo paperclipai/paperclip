@@ -1,7 +1,17 @@
+import { healthApi } from "@/api/health";
+import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
+import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
+import { aiConnectionsApi } from "@/api/ai-connections";
+import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
+import type { AiConnectionBinding } from "@paperclipai/shared";
+import { storeProviderApiKey } from "../lib/provider-credential";
+import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
+import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
+import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
@@ -86,9 +96,7 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { restoreOnboardingState } from "../lib/onboarding-state";
-import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -107,14 +115,7 @@ import {
   companyPrefixFromOnboardingPath,
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
-import { useCompanyMission } from "../hooks/useCompanyMission";
 import { useCloudInstance } from "../hooks/useCloudInstance";
-import {
-  isExistingCompanyMissionUnresolved,
-  planMissionPersistence,
-} from "../lib/onboarding-mission";
-import { AsciiArtAnimation } from "./AsciiArtAnimation";
-import { FrontDoor } from "./FrontDoor";
 import { PillGuy } from "./onboarding/PillGuy";
 import { SleepingZs } from "./onboarding/SleepingZs";
 import {
@@ -131,15 +132,11 @@ import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
-import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
+import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
-  Building2,
-  Bot,
-  ListTodo,
   ArrowLeft,
   ArrowRight,
-  Sparkles,
   Check,
   Loader2,
   ChevronDown,
@@ -149,12 +146,6 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // Plugin/external adapters use arbitrary type ids, so this mirrors the master
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
-
-const MISSION_PROMPT_CHIPS = [
-  "Build a SaaS product",
-  "Scale a content business",
-  "Launch a marketplace"
-];
 
 // First-run onboarding stays on the proven direct adapters even when an
 // instance administrator has opted into Paperclip Runner elsewhere. The
@@ -169,15 +160,6 @@ function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
   return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
     ? savedAdapterType
     : "claude_local";
-}
-
-function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
-  const parts: string[] = [];
-  if (q1.trim()) parts.push(q1.trim());
-  if (q2.trim()) parts.push(`We serve ${q2.trim().toLowerCase()}.`);
-  if (q3.trim()) parts.push(`Our biggest challenge is ${q3.trim().toLowerCase()}.`);
-  if (q4.trim()) parts.push(`Success looks like ${q4.trim().toLowerCase()}.`);
-  return parts.join(" ");
 }
 
 /**
@@ -293,33 +275,6 @@ function ModelSourceMark({
 // duplicating the literal and silently drifting from it if it's ever renamed.
 export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
 const DEFAULT_TASK_TITLE = "Paperclip onboarding";
-const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
-understand what the user wants and turn it into a concrete plan — not to
-start building yet.
-
-A greeting has already been posted to the user on your behalf, so don't
-re-introduce yourself — go straight to the questions.
-
-This is a user-facing chat. Everything you post here is read by the user, so
-keep your messages terse and written for them. Only surface things meant for
-the user: the questions, the plan, the team, next-step options, and short
-status ("Got your answers — here's the plan."). Never narrate how you work.
-Don't post your internal steps or thinking into the chat — no "let me probe
-the schema", "schema learned", "building the questions payload", "orienting
-myself with the API", or similar play-by-play of your API/tool calls. Do that
-work silently and post only the result.
-
-Work in this order:
-
-1. Ask a few focused, clarifying questions. Use an ask_user_questions interaction to settle on one concrete goal to tackle first— scope, priorities, constraints, and what "done" looks like. Don't guess; ask.
-
-2. Propose one plan. Once you understand the goal, write a short approach plan to the \`plan\` document. At the bottom, list the agents you'd hire (with their roles) and any follow-up tasks you'd create. Then present the whole thing as a SINGLE request_checkbox_confirmation that targets the \`plan\` document, with each proposed hire and follow-up task as its own checkable option, checked by default. Give each option a stable id you can act on later. Do NOT use suggest_tasks or a separate request_confirmation — one checkbox card is the plan and its approval. In the card's message keep the summary to a line or two and point the user to the full write-up in the plan on the right sidebar (it opens to the Plan there automatically) — don't paste the whole plan into the card, and never say the write-up is "above" or "in the plan doc above"; it lives in the right sidebar.
-
-3. Wait for approval. Don't hire anyone or create work until the user approves the plan. They can uncheck anything they don't want before approving, and unchecking simply drops it. If they ask for changes, revise the plan document and re-confirm.
-
-4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
-
-Propose, don't decide. Keep it conversational.`;
 /**
  * The onboarding draft in `localStorage`, via a browser that is allowed to say
  * no.
@@ -577,7 +532,10 @@ function OnboardingWizardInner({
   const disabledTypes = useDisabledAdaptersSync({ enabled: effectiveOnboardingOpen });
   const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: effectiveOnboardingOpen });
 
-  const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
+  // A fresh run opens on step 1 — "Name your organization". The Build / Grow
+  // front door and its own step 0 are gone: there is one path now, so the
+  // wizard drops the customer straight onto the first real question.
+  const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
@@ -587,12 +545,26 @@ function OnboardingWizardInner({
   // customer mid-flow — and here that would quietly re-open the "create a
   // company" step to a run that already holds one.
   const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
-  const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
-
-  // "Grow existing" questionnaire fields
-  const [growWorkflows, setGrowWorkflows] = useState((saved?.growWorkflows as string) ?? "");
-  const [growPainPoints, setGrowPainPoints] = useState((saved?.growPainPoints as string) ?? "");
-  const [growAutomate, setGrowAutomate] = useState((saved?.growAutomate as string) ?? "");
+  /**
+   * A page that opens straight onto the agent step — a cloud-managed
+   * workspace arriving from Cloud's naming screen, or a reload — plays the
+   * hand-off's second half on its first frames rather than mounting cold: the
+   * first paint holds the naming step's layout (hero room and content closed),
+   * the next frame opens them. `arrival` is fixed for the mount; `arrived`
+   * flips once. See heroRoomArrival.
+   */
+  const arrival = entryStep === 3 && beatDelay(1) > 0;
+  const [arrived, setArrived] = useState(!arrival);
+  useEffect(() => {
+    if (arrived) return;
+    const frame = requestAnimationFrame(() => setArrived(true));
+    return () => cancelAnimationFrame(frame);
+  }, [arrived]);
+  // The step before this render's, for choosing an entrance that matches
+  // where the capsule came from; updated after paint, so during the render
+  // in which the step just changed it still names the departed step.
+  const lastStep = useRef(step);
+  useEffect(() => { lastStep.current = step; }, [step]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
@@ -600,20 +572,13 @@ function OnboardingWizardInner({
 
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
-  const [companyGoal, setCompanyGoal] = useState((saved?.companyGoal as string) ?? "");
-  const [missionPath, setMissionPath] = useState<"direct" | "questionnaire" | null>((saved?.missionPath as "direct" | "questionnaire" | null) ?? null);
-  const [missionConfirmed, setMissionConfirmed] = useState((saved?.missionConfirmed as boolean) ?? false);
-  // Questionnaire answers
-  const [q1, setQ1] = useState((saved?.q1 as string) ?? ""); // What do you do?
-  const [q2, setQ2] = useState((saved?.q2 as string) ?? ""); // Who do you serve?
-  const [q3, setQ3] = useState((saved?.q3 as string) ?? ""); // Biggest bottleneck?
-  const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
   // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
   // on the customer's behalf that they then have to notice and undo. It is the
   // step's only question, and its CTA gates on it.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
+  const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(saved?.agentAppearance).data ?? randomAgentAppearance());
   // Defaults to `general` rather than empty. The arc stopped asking for a role
   // — a customer naming their first agent is describing what it does, not
   // filing it — but the hire still needs one, and the guard below returns
@@ -686,8 +651,10 @@ function OnboardingWizardInner({
    * picked keys, left, and came back should not be handed a sign-in panel they
    * already said no to.
    */
-  const [credentialMode, setCredentialMode] = useState<CredentialMode>(
-    (saved?.credentialMode as CredentialMode) ?? "subscription",
+  const [credentialModeChoice, setCredentialMode] = useState<CredentialMode | null>(
+    (saved?.credentialModeChoice !== undefined
+      ? saved.credentialModeChoice as CredentialMode | null
+      : saved?.credentialMode as CredentialMode | undefined) ?? null,
   );
   /**
    * Where the connect step's sign-in sequence is.
@@ -727,6 +694,24 @@ function OnboardingWizardInner({
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
     existingCompanyId ?? (saved?.createdCompanyId as string) ?? null
   );
+  const savedKeys = useSavedProviderKeys(
+    createdCompanyId,
+    apiKeyEnvKeyFor(adapterType),
+    effectiveOnboardingOpen && step === 4,
+  );
+  // The chooser is absent in onboarding. Prefer the user's explicit default;
+  // otherwise only reuse an unambiguous account, regardless of list ordering.
+  const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
+    ?? (savedKeys.subscriptions.length === 1 ? savedKeys.subscriptions[0] : undefined);
+  const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
+  const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
+    ? selectedSavedKey.id
+    : savedKeys.options[0]?.id;
+  const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+  const credentialMode = credentialModeChoice ?? (
+    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
+      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+  );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -759,7 +744,9 @@ function OnboardingWizardInner({
   // Connect handler re-runs a cached failed probe — and two overlapping
   // submissions could then both pass the fresh probe and both hire. `loading`
   // cannot stop the second caller for the same reason as above.
-  const hiringAgentRef = useRef(false);
+  const hiringAgentRef = useRef<number | null>(null);
+  const connectAttemptRef = useRef(0);
+  const autoConnectStartedRef = useRef(false);
   // True when the last `adapterEnvResult` came from a config that carried
   // the fixed Claude login binding (see `hireAdapterConfig` in
   // `handleGiveHeartbeat`). A cached result from a config that did not carry
@@ -772,60 +759,20 @@ function OnboardingWizardInner({
    * customer on the step to try again — and without this each press would store
    * another copy of the same credential.
    */
-  const apiKeySecretRef = useRef<{ key: string } | null>(null);
+  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
+  const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
+  const managedProvider = aiProviderForAdapter(adapterType);
+  function managedBindingForStep(): AiConnectionBinding | undefined {
+    if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
+      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
+        ? apiKeySecretRef.current.aiConnection : undefined);
+    return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
+  }
   createdCompanyIdRef.current = createdCompanyId;
 
-  // The mission of the company actually in hand, which is not always the one
-  // the route named - the dashboard opens the wizard with a company too. Same
-  // query key as the route lookup above, so when they agree this is one cache
-  // entry and no second request.
-  const {
-    mission: existingCompanyMission,
-    settled: existingMissionSettled,
-    fetching: existingMissionFetching,
-  } = useCompanyMission(createdCompanyId);
-
-  // Seed the mission field from the company's own goal.
-  //
-  // A company that already has its mission opens on the agent step, so steps 1
-  // and 2 never run and `companyGoal` stays empty. It is not only a display
-  // field: the Review checklist reads it, and `composeCeoInstructions` seeds
-  // the lead agent's instructions from it. Left empty, the agent is hired
-  // knowing nothing of the mission the customer gave at signup - which is the
-  // answer this whole flow exists to carry forward.
-  //
-  // Only when the field is empty, so a customer editing their mission is never
-  // overwritten by the stored copy.
-  const hydratedMissionForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!effectiveOnboardingOpen || !createdCompanyId) return;
-    if (hydratedMissionForRef.current === createdCompanyId) return;
-    if (!existingMissionSettled || existingMissionFetching) return;
-    hydratedMissionForRef.current = createdCompanyId;
-    if (!existingCompanyMission.goalInput) return;
-    setCompanyGoal((current) => (current.trim() ? current : existingCompanyMission.goalInput));
-    setCreatedCompanyGoalId((current) => current ?? existingCompanyMission.goalId);
-  }, [
-    effectiveOnboardingOpen,
-    createdCompanyId,
-    existingMissionSettled,
-    existingMissionFetching,
-    existingCompanyMission.goalInput,
-    existingCompanyMission.goalId,
-  ]);
-
-  // Hiring seeds the agent's instructions from `companyGoal`, so it must not
-  // run while that field is still waiting to be hydrated - the agent would be
-  // created with an empty or foreign mission and nothing would report it.
-  const missionUnresolvedForHire = isExistingCompanyMissionUnresolved({
-    existingCompanyId: createdCompanyId,
-    goalsLoaded: existingMissionSettled,
-    goalsFetching: existingMissionFetching,
-  });
   // The step the request wants, mirrored for the same reason. `initialStep` is
-  // *derived* - from the company list, and now from the goal list behind
-  // `useCompanyMission` - so its value changes whenever one of those queries
-  // does: a retry, a background refetch, a cache invalidation. An effect that
+  // *derived* - from the company list - so its value changes whenever that
+  // query does: a retry, a background refetch, a cache invalidation. An effect that
   // depended on it would re-run on every such change and call setStep, moving
   // a customer who is already mid-flow. Reading it through a ref breaks that
   // dependency, so the effect runs when the wizard *opens* or when the company
@@ -852,17 +799,9 @@ function OnboardingWizardInner({
    * hand rather than the one before it.
    */
   function clearCompanyScopedState() {
+    setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
     setCompanyName("");
-    setCompanyGoal("");
-    // The marker travels with the field it describes. It means "companyGoal
-    // holds this company's hydrated mission", so it is cleared wherever that
-    // field is - here and in `reset()`. Left behind, the next run believes a
-    // mission it no longer holds was already fetched, and hires the lead agent
-    // without one.
-    hydratedMissionForRef.current = null;
-    setMissionPath(null);
-    setMissionConfirmed(false);
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
@@ -963,22 +902,20 @@ function OnboardingWizardInner({
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     const state = {
-      step, companyName, companyGoal, missionPath, missionConfirmed,
-      q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
+      step, companyName,
+      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
-      credentialMode,
+      credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
-      onboardingPath, growWorkflows, growPainPoints, growAutomate,
     };
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
-    effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
-    q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
-    credentialMode,
+    effectiveOnboardingOpen, step, companyName,
+    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+    credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
-    onboardingPath, growWorkflows, growPainPoints, growAutomate,
   ]);
 
   const {
@@ -1076,6 +1013,28 @@ function OnboardingWizardInner({
   // full adapter test result. The cheap auth signal below stands in for that
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
+  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const localLogin = useLocalAiLogin(createdCompanyId, {
+    provider: managedProvider ?? "anthropic", method: "subscription",
+    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
+  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
+  // A result from a previous selection must not hire or advance this wizard.
+  // Environment query updates are not user navigation: the test resolves its
+  // own environment, and those updates must not interrupt the pending attempt.
+  useEffect(() => {
+    autoConnectStartedRef.current = false;
+    hiringAgentRef.current = null;
+    if (step === 4) {
+      setLoading(false);
+      setAdapterEnvLoading(false);
+    }
+    return () => { connectAttemptRef.current++; };
+  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
+
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&
@@ -1106,6 +1065,46 @@ function OnboardingWizardInner({
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+  /**
+   * Restores the connect sequence after a reload.
+   *
+   * The panel resumes an active session on its own mount, but this step only
+   * mounts the panel once the sequence has moved off `idle` — and a reload
+   * starts the sequence at `idle` again, deliberately: `connectPhase` is not
+   * in the draft. Without this read, a reload during a login would leave the
+   * panel unmounted and the resumed session unreachable from this step. A 404
+   * means no active session for the caller.
+   */
+  const activeLoginSessionQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.activeLoginSession(createdCompanyId, adapterType)
+      : ["agents", "none", "active-login-session", adapterType],
+    queryFn: async () => {
+      try {
+        return adapterCaps.login?.panelMode === "submitted_browser_code"
+          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!)
+          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  useEffect(() => {
+    if (!activeLoginSessionQuery.data || credentialMode === "api" || savedSubscription || savedKeys.storedLogin.data) return;
+    // Re-derive the row's answer along with the sequence: a resumed session
+    // implies a source was already picked, and the row stays a question
+    // otherwise (see `sourcePicked` above).
+    setSourcePicked(true);
+    // Skip straight past the collapsing beat — that animation is for a press
+    // landing on a step already on screen, not for a reload that should show
+    // the running login at once. The panel's own mount reports the resumed
+    // prompt through `onPromptReady`, below, which is what moves this beat
+    // from `loading` to `ready`, exactly as a fresh press would.
+    setConnectPhase((phase) => (phase === "idle" ? "loading" : phase));
+  }, [activeLoginSessionQuery.data, credentialMode, savedSubscription, savedKeys.storedLogin.data]);
   /**
    * The signal is being fetched and has not answered yet.
    *
@@ -1174,8 +1173,7 @@ function OnboardingWizardInner({
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
    */
-  const connectStepReady =
-    sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
+  const connectStepReady = sourceSelected && !adapterEnvLoading && !savedKeys.loading;
 
   /**
    * Whether this step has a sign-in to do before it can hire.
@@ -1183,12 +1181,19 @@ function OnboardingWizardInner({
    * The same four conditions the card itself renders on, named once so the
    * footer button and the card cannot disagree about whether a login is
    * happening. When it is false — an API key, a source already signed in on the
-   * sandbox, no sandbox to sign in against — Connect goes straight to the hire,
-   * exactly as it did before.
+   * sandbox, or a local CLI account — Connect verifies credentials before the hire.
    */
   const connectStepNeedsLogin = Boolean(
     credentialMode !== "api" &&
-      showAdapterLoginPanel &&
+      // Connection-list invalidation can arrive before the login's completion
+      // poll. Keep its controller mounted until it reports success; otherwise
+      // the saved account replaces the panel and "Connecting" never finishes.
+      (connectAuthUrl || (
+        showAdapterLoginPanel &&
+        !savedSubscription &&
+        !(adapterType === "claude_local" && savedKeys.storedLogin.data)
+      )) &&
+      !savedKeys.loading &&
       createdCompanyId &&
       resolvedLoginEnvironmentId,
   );
@@ -1206,17 +1211,7 @@ function OnboardingWizardInner({
   const loginSubmitsBrowserCode =
     adapterCaps.login?.panelMode === "submitted_browser_code";
 
-  /**
-   * The one thing that can be wrong here before anything is pressed: there is
-   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
-   * on arrival rather than after a press that goes nowhere.
-   *
-   * Its two neighbours in the old canvas are not worth the same. "Checking this
-   * source's credentials…" narrated a request nothing was waiting on, and "this
-   * source is already signed in" answered a question the customer had not asked
-   * yet — both were written for a canvas that opened on selection, and the
-   * press is what opens it now.
-   */
+  /** Without browser login, show instructions for the selected execution environment. */
   const connectStepHasNoSandbox =
     credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
 
@@ -1228,7 +1223,10 @@ function OnboardingWizardInner({
   */
   const connectCollapsed =
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
-  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox;
+  const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
+  const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
+    (credentialMode !== "api" && managedBindingForStep()));
+  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
     connectHasCard &&
     (connectPhase === "loading" ||
@@ -1257,9 +1255,39 @@ function OnboardingWizardInner({
     connectPhase === "unwindRow";
   const connectLinkVisible = connectPhase === "idle" || connectPhase === "unwindRow";
 
+  /**
+   * When "Connecting" started, and whether the login behind it has finished.
+   *
+   * Two facts because they now arrive at different times. The button says
+   * "Connecting" the moment a code is pasted, but the credential only exists
+   * once the server confirms it, a poll and a completion read later. The hire
+   * waits for both: the stored login, and two seconds of "Connecting" counted
+   * from the paste — so a fast server still shows the state, and a slow one
+   * does not have the hold added on top of its own wait.
+   */
+  const connectingSinceRef = useRef<number | null>(null);
+  const [connectCredentialStored, setConnectCredentialStored] = useState(false);
+  /** What the button was offering before a paste, for when the paste is refused. */
+  const phaseBeforeSubmitRef = useRef<ConnectPhase>("waiting");
+
   /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
     connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
+
+  // Detecting a credential is enough to start verification once the user has
+  // chosen Claude or Codex. A saved-list refresh during that work is not a new
+  // attempt, and a failed attempt waits for an explicit Connect retry.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || step !== 4 || connectPhase !== "ready" ||
+        !connectStepReady || connectStepNeedsLogin || connectCredentialStored ||
+        credentialMode !== "subscription" ||
+        (adapterType !== "claude_local" && adapterType !== "codex_local") ||
+        (!hasSavedSubscription && localLogin.status !== "ready") ||
+        loading || autoConnectStartedRef.current) return;
+    autoConnectStartedRef.current = true;
+    void handleGiveHeartbeat();
+  }, [effectiveOnboardingOpen, step, connectPhase, connectStepReady, connectStepNeedsLogin,
+    connectCredentialStored, credentialMode, adapterType, hasSavedSubscription, localLogin.status, loading]);
 
   /**
    * The beats, each waiting for the animation before it.
@@ -1285,17 +1313,27 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     if (connectPhase === "connecting") {
+      // Not before the login is stored. "Connecting" starts at the paste now,
+      // ahead of the server confirming anything, so a hire from here would go
+      // out against a source with no credential to run on.
+      if (!connectCredentialStored) return;
       // No success state: the step advances. The hold is so "Connecting" is
       // legible as a state rather than a flicker on the way out — a step that
       // left the instant a paste landed would read as the paste having gone
-      // wrong.
+      // wrong. Counted from when "Connecting" appeared, so the time the server
+      // spent confirming counts toward it instead of being added to it.
       //
       // A beat rather than a bare timer because Back stays live through it. A
       // dropped handle hired two seconds after the customer had backed out,
       // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
       // has no notion of the phase and could not refuse it. Leaving the phase —
       // Back, the step changing, unmount — now cancels the hire with it.
-      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      const shownFor =
+        connectingSinceRef.current === null ? 0 : Date.now() - connectingSinceRef.current;
+      const t = setTimeout(
+        () => void handleGiveHeartbeat(),
+        Math.max(0, CONNECTED_HOLD_MS - shownFor),
+      );
       return () => clearTimeout(t);
     }
     if (connectPhase === "unwindCard") {
@@ -1317,7 +1355,7 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     return;
-  }, [step, connectPhase, credentialMode, connectStepNeedsLogin]);
+  }, [step, connectPhase, credentialMode, connectStepNeedsLogin, connectCredentialStored]);
 
   /**
    * The button's four faces, and which of them can be pressed.
@@ -1329,7 +1367,9 @@ function OnboardingWizardInner({
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    connectPhase === "waiting"
+    connectProgress
+      ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      : connectPhase === "waiting"
       ? { label: "Waiting for code", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: "Connecting", icon: "spinner", disabled: true }
@@ -1344,7 +1384,7 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim()),
+                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1353,20 +1393,28 @@ function OnboardingWizardInner({
   /**
    * Back, on the connect step, unwinds the sign-in before it leaves the step.
    *
-   * With no Cancel on the card this is the only way out, and what it undoes
-   * depends on how far in you are. Unmounting the panel is what releases the
-   * server session — see the release-on-unmount effect in `AdapterLoginPanel`
-   * — so the card leaving is the cancel, not a separate call.
+   * This hides the card; it does not cancel the login. Unmounting the panel
+   * does not release the server session — the session stays reachable for a
+   * later resume, the same read that restores it after a reload — so backing
+   * out and returning shows the sign-in still running, not a fresh one.
+   *
+   * Nothing releases it explicitly any more. The card carried a Cancel that
+   * did, sitting beside an instruction and directly above this step's own
+   * Back, and two ways out of one screen is one too many — the button went and
+   * the release went with it. What is left is the server deadline, which is
+   * the same thing that collects a session abandoned by closing the tab.
    */
   function unwindConnectStep() {
+    connectAttemptRef.current++;
+    hiringAgentRef.current = null;
+    setLoading(false);
+    setAdapterEnvLoading(false);
     setConnectAuthUrl(null);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
-    // during the collapse has no card to close and no room to give back, and
-    // entering `unwindCard` regardless mounted the panel — which starts a
-    // server login on mount — purely so the unmount could cancel it. Should
-    // that cancel fail, the reservation is held to the server deadline and an
-    // immediate retry cannot start. With no card open, the row is the whole of
-    // the unwind.
+    // during the collapse has no card to close and no room to give back.
+    // With no card open, the row is the whole of the unwind.
     setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
   }
 
@@ -1386,6 +1434,10 @@ function OnboardingWizardInner({
       setConnectPhase("waiting");
       return;
     }
+    // The hold owns the hire once "Connecting" is showing. That now starts at
+    // the paste, before the credential exists, so Cmd+Enter here would hire
+    // against a source with nothing to run on.
+    if (connectPhase === "connecting") return;
     if (connectStepLoggingIn) return;
     void handleGiveHeartbeat();
   }
@@ -1488,7 +1540,7 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
+  }, [step, adapterType, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id]);
 
   /**
    * Leaving the step puts the row back to a question.
@@ -1502,13 +1554,17 @@ function OnboardingWizardInner({
    * Nothing else needs to reset it. A source can only change by being picked,
    * and picking sets the phase itself; the credential mode can only change
    * before the sequence starts, because its control is inert once the row has
-   * collapsed.
+   * collapsed. Switching either no longer needs its own reset: the panel keeps
+   * its server session reachable for a later resume instead of releasing it on
+   * the remount, so there is nothing left here for that change to undo.
    */
   useEffect(() => {
     if (step === 4) return;
     setConnectPhase("idle");
     setConnectAuthUrl(null);
     setSourcePicked(false);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
   }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
@@ -1559,26 +1615,16 @@ function OnboardingWizardInner({
 
   function reset() {
     onboardingDraftStorage.clear();
-    // Cleared with `companyGoal` below - see `clearCompanyScopedState`.
-    hydratedMissionForRef.current = null;
-    setStep(0);
-    setOnboardingPath(null);
-    setGrowWorkflows("");
-    setGrowPainPoints("");
-    setGrowAutomate("");
+    // Back to the first step — "Name your organization". There is no front
+    // door before it anymore, so a fresh run opens here.
+    setStep(1);
     setLoading(false);
     setError(null);
     setCompanyName("");
-    setCompanyGoal("");
-    setMissionPath(null);
-    setMissionConfirmed(false);
-    setQ1("");
-    setQ2("");
-    setQ3("");
-    setQ4("");
     // Back to the mount defaults: an empty name (the step's only question, and
     // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
+    setAgentAppearance(randomAgentAppearance());
     setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
@@ -1687,7 +1733,6 @@ function OnboardingWizardInner({
           createdCompanyId,
           buildOnboardingIssuePayload({
             title: DEFAULT_TASK_TITLE,
-            description: DEFAULT_TASK_DESCRIPTION,
             assigneeAgentId: createdAgentId,
             projectId,
             goalId
@@ -1740,7 +1785,7 @@ function OnboardingWizardInner({
    *
    * A user secret needs a definition to hang off. The Claude token's is fixed
    * and server-owned; there is no such definition for API keys, so onboarding
-   * creates one on first use. That needs company owner or admin rights, which
+   * creates a distinct definition for each new key, preserving existing keys. That needs company owner or admin rights, which
    * whoever just created this company in onboarding has.
    *
    * Returns false on failure, having set the error. Callers must treat false as
@@ -1750,31 +1795,15 @@ function OnboardingWizardInner({
   async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
     const key = apiKey.trim();
     const envKey = apiKeyEnvKeyFor(adapterType);
-    if (apiKeySecretRef.current?.key === key) return true;
+    if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
-      const entries = await secretsApi.listMyUserSecrets(companyId);
-      const existing = entries.find((entry) => entry.definition.key === envKey);
-      const definitionId =
-        existing?.definition.id ??
-        (
-          await secretsApi.createUserSecretDefinition(companyId, {
-            key: envKey,
-            name: `${envKey} for onboarding`,
-            description: "Created while connecting a model during onboarding.",
-          })
-        ).id;
-      // Rotate rather than create when a value is already stored, because
-      // creating a second value for one definition is what the server refuses.
-      if (existing?.secret) {
-        await secretsApi.rotateMyUserSecret(companyId, existing.secret.id, { value: key });
-      } else {
-        await secretsApi.createMyUserSecret(companyId, {
-          definitionId,
-          definitionKey: envKey,
-          value: key,
-        });
+      if (managedProvider) {
+        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
+        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
+        return true;
       }
-      apiKeySecretRef.current = { key };
+      const stored = await storeProviderApiKey(companyId, envKey, key);
+      apiKeySecretRef.current = { key, companyId, envKey, binding: stored.binding };
       return true;
     } catch (err) {
       setError(
@@ -1838,24 +1867,24 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
-    if (credentialMode === "api" && bindApiKey) {
+    if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
           ? { ...(config.env as Record<string, unknown>) }
           : {};
-      env[apiKeyEnvKeyFor(adapterType)] = {
-        type: "user_secret_ref",
-        key: apiKeyEnvKeyFor(adapterType),
-        version: "latest",
-      };
+      env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
+    }
+    if (credentialMode === "subscription" && savedSubscription?.binding) {
+      config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
     }
     return config;
   }
 
   async function runAdapterEnvironmentTest(
     adapterConfigOverride?: Record<string, unknown>,
-    appliedStoredClaudeLoginBinding = false
+    appliedStoredClaudeLoginBinding = false,
+    isCurrent = () => true,
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
@@ -1893,6 +1922,7 @@ function OnboardingWizardInner({
         settings = generalSettings;
         managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
       } catch {
+        if (!isCurrent()) return null;
         setAdapterEnvError(
           "Could not load environment settings to determine which environment to test in. Retry the test.",
         );
@@ -1915,155 +1945,37 @@ function OnboardingWizardInner({
         // default to the managed sandbox instead of sending the hidden local id.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
+      if (!isCurrent()) return null;
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
         adapterType,
         {
           adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
           environmentId,
         }
       );
+      if (!isCurrent()) return null;
       setAdapterEnvResult(result);
       adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
+      if (!isCurrent()) return null;
       setAdapterEnvError(
         err instanceof Error ? err.message : "Adapter environment test failed"
       );
       return null;
     } finally {
-      setAdapterEnvLoading(false);
+      if (isCurrent()) setAdapterEnvLoading(false);
     }
   }
 
-  // Step 2 → 3 ("Confirm mission"): create the company + its company-level
-  // goal, then advance to naming the team lead. Guarded so revisiting the
-  // mission step (e.g. via Back) doesn't create a duplicate company.
-  async function handleConfirmMission() {
-    if (createdCompanyId) {
-      // An existing company needs its mission written, not just skipped past.
-      // This branch used to advance without saving anything, which was
-      // harmless while nothing sent an existing company to the mission step -
-      // a company reached step 2 only by creating itself on step 1, one line
-      // below. The dashboard now opens an agentless company here, so the
-      // customer types a mission and presses "Confirm mission". Advancing
-      // without writing it would leave the company with no mission at all,
-      // which is the state this whole change exists to remove.
-      //
-      // A goal already in hand means update it, not skip the write. It used
-      // to mean skip, which was safe only while the field could not hold an
-      // unsaved change: the id was set by *writing* the mission, so arriving
-      // here with one meant nothing had been typed since. Hydration breaks
-      // that - the id now also arrives from the company's existing goal, with
-      // the customer's edits sitting in the field beside it - and skipping
-      // would discard exactly the answer this step asked for.
-      setLoading(true);
-      setError(null);
-      try {
-        // The company may already have a mission this step could not see.
-        // `useCompanyMission` fails open, so a goal lookup that exhausted its
-        // retries sends a company that has one here anyway. Adding a second
-        // company-level goal would leave two, and the earlier one would keep
-        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
-        //
-        // So read once more before writing, and update rather than add. The
-        // customer just answered the question on a step that asked it, so
-        // their answer is the mission. A read that fails still writes: an
-        // unwritten mission is the failure this whole change exists to remove.
-        let existingGoalId: string | null = createdCompanyGoalId;
-        try {
-          const goals = await queryClient.fetchQuery({
-            queryKey: queryKeys.goals.list(createdCompanyId),
-            queryFn: () => goalsApi.list(createdCompanyId)
-          });
-          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
-        } catch {
-          // Still cannot tell. Fall through and write.
-        }
-
-        const plan = planMissionPersistence({
-          goalInput: companyGoal,
-          existingGoalId,
-        });
-        if (plan.kind === "skip") {
-          setStep(3);
-          return;
-        }
-        const goal =
-          plan.kind === "update"
-            ? await goalsApi.update(plan.goalId, plan.payload)
-            : await goalsApi.create(createdCompanyId, plan.payload);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(createdCompanyId)
-        });
-        if (!stillTheSameCompany(createdCompanyId)) return;
-        setCreatedCompanyGoalId(goal.id);
-        setStep(3);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to save the mission");
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const companyIdAtStart = createdCompanyIdRef.current;
-    try {
-      const company = await companiesApi.create({ name: companyName.trim() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      // Same guard as the others, from the other end: nothing was in hand when
-      // this started, so "unchanged" means still nothing. A route that supplied
-      // a company while the request was open has taken over the wizard, and
-      // adopting the company just created would fight it — and would leave the
-      // customer on a company they never navigated to.
-      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
-      setCreatedCompanyId(company.id);
-      // Keep the mirror current here rather than waiting for the next render.
-      // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
-      // that still held the pre-create value would answer "no" to the handler
-      // that just did the creating - so the goal would never be attributed and
-      // the wizard would sit on the mission step it had just completed.
-      createdCompanyIdRef.current = company.id;
-      setCreatedCompanyPrefix(company.issuePrefix);
-      setSelectedCompanyId(company.id);
-
-      const parsedGoal = parseOnboardingGoalInput(companyGoal);
-      const goal = await goalsApi.create(company.id, {
-        title: parsedGoal.title,
-        ...(parsedGoal.description
-          ? { description: parsedGoal.description }
-          : {}),
-        level: "company",
-        status: "active"
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.goals.list(company.id)
-      });
-      if (!stillTheSameCompany(company.id)) return;
-      setCreatedCompanyGoalId(goal.id);
-
-      setStep(3); // → Create your team lead
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create organization");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Step 1 → 3 ("Name your company"): create the company, then go straight to
-  // the first agent.
+  // Step 1 → 3 ("Name your organization"): create the organization, then go
+  // straight to the first agent. There is no mission step between them anymore.
   //
-  // This work used to live at the end of `handleConfirmMission`, because step 1
-  // led to the mission step and the company was created when that step was
-  // confirmed. Onboarding no longer asks for the mission, so step 1 has to do
-  // its own creating — routing 1 → 3 without this left the wizard on the agent
-  // step with no company to hire into, and nothing said so.
-  //
-  // No goal is written here. That is the difference from the path this was
-  // taken from, and it is deliberate: the mission is collected later, in the
-  // tenant app, so writing an empty one now would only give the company a goal
-  // it did not choose.
+  // No goal is written here: the mission is collected later, in the chat with
+  // the first agent, so writing an empty one now would only give the
+  // organization a goal it did not choose.
   async function handleCreateCompany() {
     if (createdCompanyId) {
       setStep(3);
@@ -2084,9 +1996,9 @@ function OnboardingWizardInner({
       // navigated to.
       if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
-      // Keep the mirror current rather than waiting for the next render, for
-      // the same reason the mission path does: anything downstream that asks
-      // `stillTheSameCompany` in this tick would otherwise be told no.
+      // Keep the mirror current rather than waiting for the next render:
+      // anything downstream that asks `stillTheSameCompany` in this tick would
+      // otherwise be told no.
       createdCompanyIdRef.current = company.id;
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -2114,17 +2026,15 @@ function OnboardingWizardInner({
       setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
       return;
     }
-    // Guarded at the button and the Enter path too; repeated here because this
-    // seeds the agent's instructions from `companyGoal`, and hiring with an
-    // unhydrated mission fails silently - the agent exists, and simply never
-    // learns what the company is for.
-    if (missionUnresolvedForHire) return;
     if (createdAgentId) {
       setStep(5);
       return;
     }
-    if (hiringAgentRef.current) return;
-    hiringAgentRef.current = true;
+    if (hiringAgentRef.current !== null) return;
+    const attempt = ++connectAttemptRef.current;
+    const isCurrent = () => connectAttemptRef.current === attempt && stillTheSameCompany(createdCompanyId);
+    hiringAgentRef.current = attempt;
+    autoConnectStartedRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -2179,14 +2089,20 @@ function OnboardingWizardInner({
       // hire describe it the same way — as a reference. A failure here stops the
       // hire rather than falling through to a configuration with no credential.
       let apiKeyStored = false;
-      if (credentialMode === "api" && apiKey.trim()) {
+      if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
-        if (!apiKeyStored) return;
+        if (!apiKeyStored || !isCurrent()) return;
       }
+      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
+        await localLogin.connect();
+        if (!isCurrent()) return;
+        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+      }
+      const managedBinding = managedBindingForStep();
       const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
-        adapterType === "claude_local" &&
+        !managedBinding && adapterType === "claude_local" &&
         !adapterConfigHasAnthropicApiKey(baseAdapterConfig)
       ) {
         try {
@@ -2197,7 +2113,8 @@ function OnboardingWizardInner({
           if (!(err instanceof ApiError) || err.status !== 404) throw err;
           storedClaudeLogin = null;
         }
-        if (stillTheSameCompany(createdCompanyId)) setClaudeOAuthStatus(storedClaudeLogin);
+        if (!isCurrent()) return;
+        setClaudeOAuthStatus(storedClaudeLogin);
       }
       const shouldApplyStoredClaudeLogin = storedClaudeLogin !== null;
       const hireAdapterConfig = shouldApplyStoredClaudeLogin
@@ -2226,8 +2143,8 @@ function OnboardingWizardInner({
             : null;
         const result =
           cachedUsable ??
-          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin));
-        if (!result) return;
+          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin, isCurrent));
+        if (!result || !isCurrent()) return;
         // Block the hire on a failed environment test. Also block it on a
         // pass or a warn result that reports missing authentication — the
         // agent cannot run without one of those.
@@ -2244,18 +2161,54 @@ function OnboardingWizardInner({
       // `agentRole` always holds a value now (see its default), so this is a
       // type narrowing rather than a gate — but it stays, because a future
       // path that clears the role must not reach a hire that silently no-ops.
-      if (!agentRole) return;
+      if (!agentRole || !isCurrent()) return;
 
+      const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
+
+      // The company may already hold this agent. A wizard that reopens on the
+      // agent step after the hire — the dashboard's agentless offer on a stale
+      // list, a restored run — has no `createdAgentId` to stop it, and the
+      // server accepts a repeat name by numbering it, so the customer who
+      // walks the step twice ends up with "Ada" and "Ada 2". An agent with the
+      // same name on the same source is that agent: adopt it and move on to
+      // Review, the way a run that remembers its hire does.
+      const existingAgents = await agentsApi.list(createdCompanyId).catch(() => null);
+      if (!isCurrent()) return;
+      const existing = existingAgents?.find(
+        (agent) =>
+          agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
+          agent.adapterType === adapterType,
+      );
+      if (existing) {
+        if (!isCurrent()) return;
+        setCreatedAgentId(existing.id);
+        setAgentAppearance(resolveAgentAppearance(existing.appearance, existing.id));
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(5);
+        return;
+      }
+
+      // Invalidation prevents sending a hire for an abandoned verification.
+      // Once submitted, this existing API has no rollback contract; navigation
+      // can only suppress its completion, just as it does for a manual hire.
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
-        name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
+        name: hireName,
+        appearance: agentAppearance,
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,
         ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        // The server owns what the first agent is told now: this marker seeds
+        // the chief-of-staff persona over the agent's entry instruction file.
+        // The wizard no longer composes or overwrites it.
+        onboardingFirstAgent: true,
+        runtimeConfig: { ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
       });
+      if (!isCurrent()) return;
       if (hire.approval) {
         await approvalsApi.approve(
           hire.approval.id,
@@ -2269,46 +2222,28 @@ function OnboardingWizardInner({
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      // Seed the CEO's agent instructions file so the agent always has
-      // company context + a hiring-plan output format rule. Non-fatal on
-      // failure — the agent can still function with adapter defaults.
-      //
-      // Before the ownership check below on purpose. This agent exists now,
-      // and it needs its instructions whatever this wizard goes on to show.
-      // Guarding server work rather than attribution would leave a hired agent
-      // with adapter defaults because the customer changed pages.
-      try {
-        const bundle = await agentsApi.instructionsBundle(agent.id, createdCompanyId);
-        await agentsApi.saveInstructionsFile(
-          agent.id,
-          {
-            path: bundle.entryFile,
-            content: composeCeoInstructions({
-              companyName,
-              companyGoal,
-              growPath: onboardingPath === "grow",
-              growWorkflows,
-              growPainPoints,
-              growAutomate,
-              q1, q2, q3, q4,
-            }),
-          },
-          createdCompanyId,
-        );
-      } catch (err) {
-        console.warn("Failed to seed CEO instructions:", err);
-      }
+      // The agent's instruction file is seeded server-side from the
+      // `onboardingFirstAgent` marker above (the chief-of-staff persona). The
+      // wizard no longer composes or overwrites it.
 
-      if (!stillTheSameCompany(createdCompanyId)) return;
+      if (!isCurrent()) return;
       setCreatedAgentId(agent.id);
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
     } catch (err) {
+      if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
-      hiringAgentRef.current = false;
-      setLoading(false);
+      if (hiringAgentRef.current === attempt) hiringAgentRef.current = null;
+      if (isCurrent()) setLoading(false);
+      // Authentication is already saved. A failed probe or hire must offer a
+      // retry with that account, rather than keep the completed login busy.
+      if (connectCredentialStored && isCurrent()) {
+        connectingSinceRef.current = null;
+        setConnectAuthUrl(null);
+        setConnectPhase((phase) => phase === "connecting" ? "ready" : phase);
+      }
     }
   }
 
@@ -2375,14 +2310,9 @@ function OnboardingWizardInner({
       // Every button below is disabled while a request is in flight. The
       // keyboard has to honour the same rule, or a second Enter re-enters a
       // handler whose guard is a piece of state the first one has not set
-      // yet — two goals for one mission, two agents for one hire.
+      // yet — two organizations for one name, two agents for one hire.
       if (loading) return;
-      if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) {
-        if (skipsMissionStep) void handleCreateCompany();
-        else setStep(2);
-      }
-      else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
+      if (step === 1 && companyName.trim()) void handleCreateCompany();
       else if (step === 3 && agentName.trim()) setStep(4);
       // `connectStepReady`, the same predicate the step's button uses. Spelling
       // the condition out here again is what let this path hire against a
@@ -2405,23 +2335,15 @@ function OnboardingWizardInner({
   if (!effectiveOnboardingOpen) return null;
 
   // The arc strip stands in for the full-length bar only when the run began on
-  // the arc — the Cloud-first path, where the company already exists and steps
-  // 1-2 never happen. A run that started at step 1 keeps one continuous count.
-  // Step 2 is two different screens wearing one number: the grow path's "tell us
-  // about your team" questionnaire, and the create path's mission step.
-  // Onboarding stopped asking for the mission, but the questionnaire is still
-  // how a grow run describes the team it is levelling up — its answers seed the
-  // lead agent — so only the create path skips ahead.
-  const skipsMissionStep = onboardingPath !== "grow";
+  // the arc — the Cloud-first path, where the company already exists and step 1
+  // never happens. A run that started at step 1 keeps one continuous count.
 
   // Back lands on whatever came before this step *for this run*, which is not
-  // always `step - 1`. A create run went 1 → 3, so stepping blindly would walk
-  // it into the mission screen it never saw. Two runs still belong on step 2
-  // going back: a grow run, whose step 2 is the questionnaire rather than the
-  // mission, and a run that *entered* on the mission step because something
-  // opened it there — it has seen that screen, so Back owes it the way back.
+  // always `step - 1`. The run goes 1 → 3 (there is no mission step 2 between
+  // naming the organization and naming the agent), so the agent step walks
+  // back to step 1 rather than to a screen the customer never saw.
   function backStepFrom(current: Step): Step {
-    if (current === 3 && skipsMissionStep && entryStep !== 2) return 1;
+    if (current === 3) return 1;
     return (current - 1) as Step;
   }
 
@@ -2443,6 +2365,15 @@ function OnboardingWizardInner({
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
+  /**
+   * Whether the step hand-off plays out. Under reduced motion — and where the
+   * platform cannot be asked, which `beatDelay` reads the same way — the next
+   * step's content simply takes the departing one's place: a sequence that
+   * holds the screen for a departure nobody sees is just a slower screen.
+   */
+  const stepHandoff = beatDelay(1) > 0;
+  const heroRoomTarget = step === 1 || !arrived ? heroRoomMotion.closed : arrival && lastStep.current === entryStep ? heroRoomArrival : heroRoomMotion.open;
+  const capsuleTarget = step === 1 || !arrived ? capsuleRoomExit : step === 3 && stepHandoff && lastStep.current === 1 ? capsuleRoomEnter : capsuleHeroMotion.animate;
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
@@ -2472,24 +2403,10 @@ function OnboardingWizardInner({
           className="fixed inset-0 z-50 flex"
           onKeyDown={handleKeyDown}
         >
-          {/* Step 0: Front Door — full-screen choice */}
-          {step === 0 && (
-            <div className="w-full flex flex-col overflow-y-auto">
-              <FrontDoor onChoose={(path) => {
-                setOnboardingPath(path);
-                setStep(1);
-              }} />
-            </div>
-          )}
-
-          {/* Left half — form (steps 1+) */}
-          {step !== 0 && (
-          <div
-            className={cn(
-              "w-full flex flex-col overflow-y-auto transition-(--tp-width) duration-500 ease-in-out",
-              step === 2 ? "md:w-1/2" : "md:w-full"
-            )}
-          >
+          {/* Form column — the wizard opens directly on step 1, so there is no
+              front-door choice ahead of it, and it fills the width on every
+              step (the mission step's half-width split is gone). */}
+          <div className="w-full flex flex-col overflow-y-auto">
             <div
               className={cn(
                 // my-auto, not items-center on the column: they look identical
@@ -2508,17 +2425,23 @@ function OnboardingWizardInner({
                 // narrower than the next screen's makes the whole frame jump on
                 // Continue — which is the thing that read as "off" to begin
                 // with, and is more obvious once the buttons match.
-                // 68px sides, so the column inside the 560px frame is 424px —
-                // the measure the design draws every arc step to. It was 40px
-                // (a 480px column), which is wide enough that the two model
-                // tiles stretch and the name field sits under a question far
-                // narrower than itself.
+                // 40px sides, so the column inside the 560px frame is 480px:
+                // the measure the connect sequence is drawn to. The arc shares
+                // one shell, so the other steps take that measure rather than
+                // sitting narrower than the step between them.
+                //
+                // It has been both ways, and the objection that moved it last
+                // time has not been retested since it moved back. A 64px inset
+                // (a 432px column) was chosen because at the wider measure the
+                // two model tiles stretch and the name field sits under a
+                // question far narrower than itself. The connect step is now
+                // drawn to 480px, so the shell followed it. If step 1 or step 3
+                // reads loose, that is the reason and this is the line — but
+                // narrowing the shell again would put the connect step back out
+                // of step with its own design, so the fix would belong in those
+                // steps' own content rather than here.
                 isAgentArcStep || step === 1
-                  ? // 40px inset, not 64: the connect sequence is drawn against
-                    // a 480px column and the arc's other steps share the shell,
-                    // so they widen with it rather than sitting narrower than
-                    // the step between them.
-                    "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -2567,11 +2490,11 @@ function OnboardingWizardInner({
                 />
               )}
 
-              {/* The hero, above the heading: one PillGuy held in the same tree
+              {/* The hero, above the heading: one character held in the same tree
                   slot across steps 3–5, so React reuses the DOM node and moving
                   between steps never replays the entrance. It is dormant while
                   the agent is being specified and wakes on Review. */}
-              {step >= 3 && step <= 5 && (
+              {(step === 1 || (step >= 3 && step <= 5)) && (
                 // reducedMotion="user" defers to the OS setting, so the hero
                 // arrives in place for anyone who asked for less movement. The
                 // token layer zeroes the CSS durations; this covers the JS half.
@@ -2586,383 +2509,116 @@ function OnboardingWizardInner({
                       the character and the title and belonged to neither. 24px
                       against the 36px used elsewhere, a little over a third
                       less. `mb-9` still holds the block off the step content. */}
-                  <div className="mb-9 space-y-6">
+                  <div className="mb-9">
+                    {/* The hero's room. Closed on the naming step — there is
+                        no agent yet — and opened by the hand-off into the
+                        agent step, the capsule springing up inside it as it
+                        grows. The 24px under the name lives inside the room so
+                        a closed room takes no space. A reload straight onto
+                        the arc mounts it open, as before. */}
+                    <motion.div
+                      className="overflow-hidden"
+                      initial={false}
+                      animate={heroRoomTarget}
+                      aria-hidden={step === 1 || undefined}
+                    >
                     <motion.div
                       initial={capsuleHeroMotion.initial}
-                      animate={capsuleHeroMotion.animate}
+                      animate={capsuleTarget}
                       transition={capsuleHeroMotion.transition}
-                      className="flex flex-col items-center gap-2"
+                      className="flex flex-col items-center gap-2 pb-6"
                     >
-                      {/* Dormant until the agent is actually hired. Review is
-                          the first step where one exists, so that is where it
-                          wakes — the arc's payoff, not a flourish along it. */}
-                      {/* `relative` is load-bearing: the sleep marks anchor
-                          to this box and travel out past its top-right
-                          corner. */}
-                      <div className="relative size-(--sz-72px)">
-                        <PillGuy
-                          state={step === 5 ? "alive" : "dormant"}
-                          className="size-full"
-                        />
-                        {/* Only while it is actually asleep. A still grey
-                            silhouette reads as a placeholder that failed to
-                            load rather than as something waiting its turn. */}
-                        {step < 5 && <SleepingZs />}
+                      {/* Dozing and gray until the agent is actually hired.
+                          Review is the first step where one exists, so that is
+                          where it wakes and takes its colour — the arc's
+                          payoff, not a flourish along it. The sequence itself
+                          is the studio's export; see OnboardingCharacter. */}
+                      <div className="relative size-(--sz-160px)">
+                        <OnboardingCharacter appearance={agentAppearance} awake={step === 5} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
+                    </motion.div>
                     </motion.div>
 
                     <OnboardingHeading
                       center
+                      // Keyed by step so the new words fade in where the old
+                      // ones stood. Entrance only: the h1 keeps its line the
+                      // whole time, so nothing below it moves for the swap.
                       title={
-                        step === 3
-                          ? "Create your first agent"
-                          : step === 4
-                            ? "Connect a model"
-                            : "Let's get started..."
-                      }
-                      // The agent step carries no lede, as the prototype has it:
-                      // the capsule and the heading say what this is, and a
-                      // sentence restating it only pushes the fields down.
-                      lede={
-                        step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your subscription or API keys.</>
-                        ) : (
-                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
-                        )
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 1
+                            ? "What is the name of your organization?"
+                            : step === 3
+                              ? "Create your first agent"
+                              : step === 4
+                                ? "Connect a model"
+                                : "Let's get started..."}
+                        </motion.span>
                       }
                     />
+                    {/* The lede lives outside the heading primitive so its
+                        room can open and close. The agent step carries none,
+                        as the prototype has it: the capsule and the heading
+                        say what this is, and a sentence restating it only
+                        pushes the fields down. The 8px gap sits inside the
+                        clipped box so a closed lede takes no space at all.
+                        The naming step carries none either: the question is
+                        the whole screen, and Cloud's naming step (which most
+                        walkers see instead) is drawn the same way. */}
+                    <motion.div
+                      className="overflow-hidden text-center"
+                      initial={false}
+                      animate={step === 1 || step === 3 ? ledeMotion.closed : ledeMotion.open}
+                      aria-hidden={step === 1 || step === 3 || undefined}
+                    >
+                      <p className="pt-2 text-base leading-relaxed text-muted-foreground">
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 4
+                            ? "Paperclip works with your subscription or API keys."
+                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                        </motion.span>
+                      </p>
+                    </motion.div>
                   </div>
                 </MotionConfig>
               )}
 
               {/* Step content */}
-              {step === 2 && onboardingPath === "grow" && (
-                <div className="space-y-8">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Sparkles className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Tell us about your team</h3>
-                      <p className="text-xs text-muted-foreground">
-                        We'll use this to set up your lead agent and plan which agents to add.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What does your team work on?</label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. We create educational YouTube content about AI"
-                      value={q1}
-                      onChange={(e) => setQ1(e.target.value)}
-                    />
-                  </div>
-                  <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What are your current workflows?</label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
-                      placeholder="e.g. Manual content creation, spreadsheet tracking, email outreach"
-                      value={growWorkflows}
-                      onChange={(e) => setGrowWorkflows(e.target.value)}
-                    />
-                  </div>
-                  <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What pain points would you solve with AI?</label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
-                      placeholder="e.g. Can't produce content fast enough, no time for social media"
-                      value={growPainPoints}
-                      onChange={(e) => setGrowPainPoints(e.target.value)}
-                    />
-                  </div>
-                  <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What would you automate first?</label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Social media scheduling and content repurposing"
-                      value={growAutomate}
-                      onChange={(e) => setGrowAutomate(e.target.value)}
-                    />
-                  </div>
-                  {companyName.trim() && q1.trim() && (
-                    <>
-                      {!companyGoal.trim() && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const parts = [q1.trim()];
-                            if (growPainPoints.trim()) parts.push(`Key challenge: ${growPainPoints.trim()}`);
-                            if (growAutomate.trim()) parts.push(`First priority: automate ${growAutomate.trim().toLowerCase()}`);
-                            setCompanyGoal(parts.join(". "));
-                          }}
-                        >
-                          Generate mission from answers
-                        </Button>
-                      )}
-                      {companyGoal.trim() && (
-                        <div className="group">
-                          <label className="text-xs text-foreground mb-1 block">Generated mission — edit however you like:</label>
-                          <textarea
-                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
-                            value={companyGoal}
-                            onChange={(e) => setCompanyGoal(e.target.value)}
-                          />
-                        </div>
-                      )}
-                    </>
-                  )}
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => { setOnboardingPath(null); setStep(0); }}
-                  >
-                    ← Back to start
-                  </button>
-                </div>
-              )}
-
-              {/* Step 1: name the organization (both paths).
-                  Dressed as the arc steps that follow it — centred heading, no
-                  lede, and the same footer pair — because a customer walks
-                  straight from here into them, and one screen reading as a
-                  different product is more jarring than this one no longer
-                  matching the funnel's naming screen exactly. The question
-                  itself is still the funnel's, so the ask has not changed.
-
-                  The lede went because it said what the field already says: a
-                  labelled "Name" under "What is the name of your organization?"
-                  does not need a sentence explaining that it names the
-                  organization. */}
+              {/* Steps 1, 3 and 4 hand their content over inside one presence:
+                  the departing step fades and gives its room back before the
+                  next opens its own, so the footer slides rather than jumps.
+                  See stepContentMotion. */}
+              {/* `initial` only for an arrival: the step's content opens its
+                  room with the hero's instead of being there already. */}
+              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={arrival}>
+              {/* Step 1: name the organization — the wizard's first screen now
+                  that the Build / Grow front door is gone. Its heading and
+                  welcome sit in the shared block above, so the walk into the
+                  agent step swaps words rather than screens. The field is the
+                  agent step's field: same label, same filled surface, same
+                  measure — the two questions the wizard asks present the same
+                  target. */}
               {step === 1 && (
-                <div className="mx-auto w-full space-y-9">
-                  <OnboardingHeading
-                    center
-                    title="What is the name of your organization?"
-                  />
-                  {/* The field takes the agent step's measure rather than the
-                      column's, so the two questions the wizard asks — name the
-                      organization, name the agent — present the same target.
-                      The heading stays full width above it, as it does there. */}
-                  <div className="group mx-auto w-full max-w-(--sz-320px)">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                <motion.div key="step-1" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-company-name">Name</Label>
+                    <Input
+                      id="onboarding-company-name"
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && companyName.trim()) {
                           e.preventDefault();
-                          if (skipsMissionStep) void handleCreateCompany();
-                          else setStep(2);
+                          void handleCreateCompany();
                         }
                       }}
                       autoFocus
                     />
                   </div>
-                </div>
-              )}
-
-              {/* Step 2: Define your mission */}
-              {step === 2 && onboardingPath !== "grow" && (
-                <div className="space-y-8">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Building2 className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Define your mission</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Your mission guides everything — your lead agent, who you bring on, and the work <strong>{companyName}</strong> takes on.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Mission path selector */}
-                  <div className="space-y-3 pt-3">
-                    <label className="text-xs text-foreground block">
-                      How would you like to define your mission?
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        className={cn(
-                          "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
-                          missionPath === "direct"
-                            ? "border-foreground bg-accent/50"
-                            : "border-border hover:bg-accent/50"
-                        )}
-                        onClick={() => setMissionPath("direct")}
-                      >
-                        <Sparkles className="h-4 w-4" />
-                        <span className="font-medium">I know my mission</span>
-                        <span className="text-muted-foreground text-(length:--text-nano)">
-                          Type it directly
-                        </span>
-                      </button>
-                      <button
-                        className={cn(
-                          "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
-                          missionPath === "questionnaire"
-                            ? "border-foreground bg-accent/50"
-                            : "border-border hover:bg-accent/50"
-                        )}
-                        onClick={() => setMissionPath("questionnaire")}
-                      >
-                        <ListTodo className="h-4 w-4" />
-                        <span className="font-medium">Help me figure it out</span>
-                        <span className="text-muted-foreground text-(length:--text-nano)">
-                          Answer a few questions
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Direct mission input */}
-                  {missionPath === "direct" && (
-                    <div className="space-y-3 animate-in fade-in duration-200">
-                      <div className="group">
-                        <label
-                          className={cn(
-                            "text-xs mb-1 block transition-colors",
-                            companyGoal.trim()
-                              ? "text-foreground"
-                              : "text-muted-foreground group-focus-within:text-foreground"
-                          )}
-                        >
-                          Mission
-                        </label>
-                        <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
-                          placeholder="What is your team trying to achieve?"
-                          value={companyGoal}
-                          onChange={(e) => setCompanyGoal(e.target.value)}
-                          autoFocus
-                        />
-                      </div>
-                      {/* Prompt chips for inspiration */}
-                      <div className="flex flex-wrap gap-1.5">
-                        {MISSION_PROMPT_CHIPS.map((chip) => (
-                          <button
-                            key={chip}
-                            className={cn(
-                              "rounded-full border px-2.5 py-1 text-(length:--text-micro) transition-colors",
-                              companyGoal === chip
-                                ? "border-foreground bg-accent text-foreground"
-                                : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/50"
-                            )}
-                            onClick={() => setCompanyGoal(chip)}
-                          >
-                            {chip}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Questionnaire path */}
-                  {missionPath === "questionnaire" && !missionConfirmed && (
-                    <div className="space-y-3 animate-in fade-in duration-200">
-                      <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          What does your team work on?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. We create educational YouTube content about AI"
-                          value={q1}
-                          onChange={(e) => setQ1(e.target.value)}
-                          autoFocus
-                        />
-                      </div>
-                      <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Who do you serve?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. Non-technical professionals curious about AI tools"
-                          value={q2}
-                          onChange={(e) => setQ2(e.target.value)}
-                        />
-                      </div>
-                      <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          What's your biggest bottleneck right now?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. Can't produce content fast enough across multiple channels"
-                          value={q3}
-                          onChange={(e) => setQ3(e.target.value)}
-                        />
-                      </div>
-                      <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          What would success look like in 6 months?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. Publishing daily content across 4 platforms with a team of AI agents"
-                          value={q4}
-                          onChange={(e) => setQ4(e.target.value)}
-                        />
-                      </div>
-                      {q1.trim() && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setCompanyGoal(buildMissionFromQuestionnaire(q1, q2, q3, q4));
-                            setMissionConfirmed(true);
-                          }}
-                        >
-                          Generate my mission
-                        </Button>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Questionnaire result — editable mission */}
-                  {missionPath === "questionnaire" && missionConfirmed && (
-                    <div className="space-y-3 animate-in fade-in duration-200">
-                      <div className="group">
-                        <label className="text-xs text-foreground mb-1 block">
-                          Here's your draft mission — edit it however you like:
-                        </label>
-                        <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-80px)"
-                          value={companyGoal}
-                          onChange={(e) => setCompanyGoal(e.target.value)}
-                          autoFocus
-                        />
-                      </div>
-                      <button
-                        className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                        onClick={() => { setMissionConfirmed(false); setCompanyGoal(""); }}
-                      >
-                        ← Back to questions
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Confirm mission note */}
-                  {companyGoal.trim() && (
-                    <p className="text-(length:--text-micro) text-muted-foreground italic">
-                      You can always change your mission later in settings.
-                    </p>
-                  )}
-                </div>
+                </motion.div>
               )}
 
               {/* Step 3: the name, and only the name. The role picker went with
@@ -2972,7 +2628,7 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full flex-col gap-9">
+                <motion.div key="step-3" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Agent name</Label>
                     {/*
@@ -2990,15 +2646,21 @@ function OnboardingWizardInner({
                       placeholder="e.g. Chief of staff"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing && agentName.trim()) {
+                          e.preventDefault();
+                          setStep(4);
+                        }
+                      }}
                       autoFocus
                     />
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-8">
+                <motion.div key="step-4" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="space-y-8">
                   <div>
                     {/* Sources come from `recommendedAdapters`, not a list
                         written here — that filter is `recommended` in the
@@ -3026,6 +2688,7 @@ function OnboardingWizardInner({
                       settling={connectPhase === "unwindRow"}
                       onSelect={(id) => {
                         if (connectPhase !== "idle") return;
+                        autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
@@ -3058,6 +2721,8 @@ function OnboardingWizardInner({
                     >
                       <div className="-ml-3 mt-1">
                         <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
                     </motion.div>
                   </div>
@@ -3098,13 +2763,22 @@ function OnboardingWizardInner({
                       not, and they outlive the space by a beat. See
                       `connectCardMounted`.
                     */}
-                    {!connectCardMounted ? null : credentialMode === "api" ? (
+                    {!connectCardMounted ? null : connectProgress ? (
+                      <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        {connectProgress}
+                      </p>
+                    ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={`Provide your ${
+                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        <OnboardingCardField
+                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                          setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
+                          setApiKey("");
+                        }} />
+                        {!selectedApiKey && <OnboardingCardField
                           label="API key"
                           placeholder="Enter API key here"
                           masked
@@ -3113,9 +2787,12 @@ function OnboardingWizardInner({
                           // over from the key field this card replaced.
                           autoFocus
                           value={apiKey}
-                          onChange={setApiKey}
+                          onChange={(value) => {
+                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
+                            setApiKey(value);
+                          }}
                           onSubmit={() => handleConnectStepPrimary()}
-                        />
+                        />}
                       </OnboardingLoginCard>
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&
@@ -3125,9 +2802,10 @@ function OnboardingWizardInner({
                          in the connect step's chrome. It owns the session; the
                          step owns the sequence around it.
 
-                         Unmounting it is the cancel: the panel releases its
-                         server session on unmount, so Back closing the card is
-                         what frees the owner's reservation.
+                         Unmounting it is not the cancel: the session stays
+                         reachable for a later resume, so Back and a source
+                         switch only hide the card, and nothing here releases
+                         the session early — see `unwindConnectStep`.
 
                          No "Use saved login" control: the hire step already
                          applies a stored login on its own. */
@@ -3137,16 +2815,67 @@ function OnboardingWizardInner({
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
+                        aiConnection={managedProvider ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
                         autoStart
                         onPromptReady={(url) => {
                           setConnectAuthUrl(url);
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onCodeSubmitted={() => {
+                          // The button reacts to the paste, not to the server.
+                          // Waiting for the login to be stored left about a
+                          // second of a button still reading "Waiting for code"
+                          // after the code had already gone in.
+                          phaseBeforeSubmitRef.current = connectPhase;
+                          connectingSinceRef.current = Date.now();
+                          setConnectCredentialStored(false);
+                          setConnectPhase("connecting");
+                        }}
+                        onSubmitFailed={() => {
+                          // Only while the button still says "Connecting". The
+                          // panel stays mounted through Back's exit, so a failure
+                          // that landed after Back restored the button and
+                          // reopened the card the customer was leaving — without
+                          // the address Back had cleared, so its sign-in could
+                          // not even be pressed.
+                          if (connectPhase !== "connecting") return;
+                          // Refused, failed or timed out — the card says which.
+                          // The button goes back to what it was offering rather
+                          // than spinning on a login that is not coming.
+                          connectingSinceRef.current = null;
+                          setConnectCredentialStored(false);
+                          setConnectPhase(
+                            phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
+                          );
+                        }}
                         onConnected={() => {
+                          if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+                          setConnectAuthUrl(null);
+                          // Not into a card the customer has left. The panel is
+                          // still mounted through Back's exit, and a login that
+                          // finished there pulled the step back into "Connecting"
+                          // and on into a hire they had just backed away from.
+                          // The login is stored either way; what this refuses is
+                          // only the step moving forward after they chose to go.
+                          if (
+                            connectPhase !== "loading" &&
+                            connectPhase !== "ready" &&
+                            connectPhase !== "waiting" &&
+                            connectPhase !== "connecting"
+                          ) {
+                            return;
+                          }
                           // The hold before the step advances is the phase's own
                           // beat, above, so that backing out during it cancels
-                          // the hire.
+                          // the hire. It counts from the paste when there was
+                          // one, and from here for a login that finished without
+                          // one — a resumed session, or a code handed out rather
+                          // than pasted back.
+                          if (connectingSinceRef.current === null) {
+                            connectingSinceRef.current = Date.now();
+                          }
+                          setConnectCredentialStored(true);
                           setConnectPhase("connecting");
                         }}
                         onStored={() => {
@@ -3159,13 +2888,10 @@ function OnboardingWizardInner({
                           });
                         }}
                       />
-                    ) : connectStepHasNoSandbox ? (
-                      /* The one thing that can be wrong here before anything is
-                         pressed, and the one worth saying out loud: without a
-                         sandbox there is nothing to sign in against. */
-                      <p className="text-xs text-muted-foreground">
-                        No managed sandbox is available to sign in against yet.
-                      </p>
+                    ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
+                      canUseLocalLogin && managedProvider ? (
+                        <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                      ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
                     ) : null}
                   </motion.div>
 
@@ -3176,14 +2902,21 @@ function OnboardingWizardInner({
                       way to judge one — and the agent's model is changeable
                       later, where its work gives the choice meaning. */}
 
-                  {/* The environment check runs without being shown: Connect
-                      probes the adapter before hiring (see handleGiveHeartbeat)
-                      and blocks the hire on a fail. The idle card — probe
-                      explainer plus a "Test now" button — is gone from this
-                      step, so this block renders only when a probe has actually
-                      found something: the checks the blocking error tells the
-                      customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {/* Progress is shown above; failed checks remain actionable here. */}
+                  {/* Not while the hire is in flight. The probe's result lands
+                      before the hire it gates has finished, so a warn that does
+                      not block — the identity and target INFO checks, which
+                      every run reports — rendered a block of diagnostics for the
+                      moment between the probe returning and the step advancing.
+                      It read as an error thrown up by a sign-in that had just
+                      succeeded.
+
+                      `loading` is the right gate rather than the connect phase:
+                      it is false again by the time a blocking result has stopped
+                      the hire, because `handleGiveHeartbeat` clears it in its
+                      `finally` after the early return — so a genuine block still
+                      shows its checks, which is the whole reason this is here. */}
+                  {isLocalAdapter && !loading && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
@@ -3319,8 +3052,9 @@ function OnboardingWizardInner({
                       />
                     </div>
                   )}
-                </div>
+                </motion.div>
               )}
+              </AnimatePresence>
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
               {/* Step 5: nothing. The heading names the agent and says it is
@@ -3336,11 +3070,9 @@ function OnboardingWizardInner({
               )}
 
               {/* Step 1 shares the arc's footer so the pair keeps its shape and
-                  position from the first screen onward. Its Back is the only one
-                  that leaves the wizard's steps rather than walking them: step 1
-                  is where a company is named, and behind it is the path chooser,
-                  so `canGoBackFromOnboardingStep` — which bounds a run to the
-                  steps it entered on — does not decide this one. */}
+                  position from the first screen onward. It has no Back: step 1
+                  is the first screen now that the front door is gone, and
+                  `canGoBackFromOnboardingStep` returns false for it. */}
               {(isAgentArcStep || step === 1) && (
                 <FooterNav
                   onBack={
@@ -3348,11 +3080,6 @@ function OnboardingWizardInner({
                     // only means "the previous step" once nothing is running.
                     step === 4 && connectPhase !== "idle"
                       ? unwindConnectStep
-                      : step === 1
-                      ? () => {
-                          setOnboardingPath(null);
-                          setStep(0);
-                        }
                       : canGoBackFromOnboardingStep({ currentStep: step, entryStep })
                         ? () => setStep(backStepFrom(step))
                         : undefined
@@ -3396,10 +3123,8 @@ function OnboardingWizardInner({
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
-                    if (step === 1) {
-                      if (skipsMissionStep) void handleCreateCompany();
-                      else setStep(2);
-                    } else if (step === 3) setStep(4);
+                    if (step === 1) void handleCreateCompany();
+                    else if (step === 3) setStep(4);
                     // One button, two jobs — start the sign-in, or hire — and
                     // Cmd+Enter has to do the same thing. See
                     // `handleConnectStepPrimary`.
@@ -3408,97 +3133,7 @@ function OnboardingWizardInner({
                   }}
                 />
               )}
-
-              {/* Footer navigation for the steps that still use the old pair. */}
-              {!isAgentArcStep && step !== 1 && (
-              <div className="flex items-center justify-between mt-8">
-                <div>
-                  {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setStep(backStepFrom(step))}
-                      disabled={loading}
-                    >
-                      <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back
-                    </Button>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {step === 2 && (
-                    <Button
-                      size="sm"
-                      disabled={!companyName.trim() || !companyGoal.trim() || loading}
-                      onClick={handleConfirmMission}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Confirm mission"}
-                    </Button>
-                  )}
-                  {step === 3 && (
-                    <Button
-                      size="sm"
-                      disabled={!agentName.trim()}
-                      onClick={() => setStep(4)}
-                    >
-                      Next
-                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                    </Button>
-                  )}
-                  {step === 4 && (
-                    <Button
-                      size="sm"
-                      disabled={
-                        !agentName.trim() ||
-                        loading ||
-                        adapterEnvLoading ||
-                        missionUnresolvedForHire
-                      }
-                      onClick={handleGiveHeartbeat}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Connecting..." : "Connect"}
-                    </Button>
-                  )}
-                  {step === 5 && (
-                    <Button
-                      size="sm"
-                      onClick={handleLaunchToDashboard}
-                      disabled={loading || launchStateIncomplete}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Launching..." : "Get started"}
-                    </Button>
-                  )}
-                </div>
-              </div>
-              )}
             </div>
-          </div>
-          )}
-
-          {/* Right half — ASCII art (hidden on mobile, only for the team
-              name + mission steps) */}
-          <div
-            className={cn(
-              "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-(--tp-width-opacity) duration-500 ease-in-out",
-              step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
-            )}
-          >
-            <AsciiArtAnimation />
           </div>
         </div>
       </DialogPortal>

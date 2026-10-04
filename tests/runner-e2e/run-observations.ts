@@ -1,3 +1,28 @@
+/** Read the complete durable stream; never grade a silently truncated page. */
+export async function collectRunEvents<T extends { seq?: number }>(
+  loadPage: (afterSeq: number, limit: number) => Promise<unknown>,
+): Promise<T[]> {
+  const pageSize = 1000;
+  const events: T[] = [];
+  let afterSeq = 0;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    const page = await loadPage(afterSeq, pageSize);
+    if (!Array.isArray(page) || page.length > pageSize) {
+      throw new Error("Run event evidence returned an invalid page");
+    }
+    for (const event of page) {
+      const seq = event?.seq;
+      if (!Number.isSafeInteger(seq) || seq <= afterSeq) {
+        throw new Error("Run event evidence has a missing or non-increasing sequence");
+      }
+      afterSeq = seq;
+      events.push(event as T);
+    }
+    if (page.length < pageSize) return events;
+  }
+  throw new Error("Run event evidence exceeded 100 pages; refusing incomplete evidence");
+}
+
 export interface ObservableRunState {
   status?: string | null;
   errorCode?: string | null;
@@ -22,6 +47,12 @@ export interface ObservableMatcherResult {
     count?: unknown;
   };
   passed: boolean;
+}
+
+export interface ObservableInteraction {
+  kind?: string | null;
+  status?: string | null;
+  payload?: unknown;
 }
 
 export interface OpenRouterHelloTerminalVarianceObservation {
@@ -75,11 +106,53 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+export function reasoningProjectionFailures(events: readonly ObservableRunEvent[]): string[] {
+  const misclassified = events.filter((event) => {
+    const envelope = record(record(event.payload).prpEvent);
+    const payload = record(envelope.payload);
+    return envelope.eventType === "item.delta" &&
+      payload.kind === "agentMessage" &&
+      record(payload.update).kind === "reasoning";
+  });
+  return misclassified.length === 0 ? [] : [
+    `provider reasoning was projected as assistant text in ${misclassified.length} durable events`,
+  ];
+}
+
 export function isNonExecutingReviewFenceRun(run: ObservableRunState) {
   return (
     run.status === "cancelled" &&
     run.errorCode === "issue_continuation_waiting_on_review"
   );
+}
+
+export function hasTerminalMalformedPlanConfirmation(input: {
+  runs: readonly ObservableRunState[];
+  interactions: readonly ObservableInteraction[];
+  minimumRunCount: number;
+}) {
+  if (
+    input.runs.length < input.minimumRunCount ||
+    !input.runs.every((run) => run.status === "succeeded")
+  ) {
+    return false;
+  }
+
+  return input.interactions.some((interaction) => {
+    if (
+      interaction.kind !== "request_confirmation" ||
+      interaction.status !== "pending"
+    ) {
+      return false;
+    }
+    const target = record(record(interaction.payload).target);
+    return !(
+      target.type === "issue_document" &&
+      target.key === "plan" &&
+      typeof target.revisionId === "string" &&
+      target.revisionId.trim().length > 0
+    );
+  });
 }
 
 function normalizeMessage(value: string) {

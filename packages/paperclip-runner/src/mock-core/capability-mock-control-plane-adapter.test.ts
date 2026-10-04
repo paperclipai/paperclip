@@ -343,7 +343,7 @@ describe("CapabilityMockControlPlaneAdapter", () => {
     expect(restored.context("run-1")).toEqual(adapter.context("run-1"));
   });
 
-  it("reconciles terminal state, releases locks, and schedules dependent wakes", async () => {
+  it.each(["blocked", "backlog"] as const)("reconciles terminal state and respects a %s dependent", async dependentStatus => {
     const adapter = new CapabilityMockControlPlaneAdapter({
       tasks: [
         {
@@ -368,7 +368,7 @@ describe("CapabilityMockControlPlaneAdapter", () => {
           identifier: "MCK-2",
           title: "Dependent task",
           description: null,
-          status: "blocked",
+          status: dependentStatus,
           priority: "high",
           workMode: "standard",
           parentId: null,
@@ -440,11 +440,16 @@ describe("CapabilityMockControlPlaneAdapter", () => {
       checkoutRunId: null,
       executionRunId: null,
     });
-    expect(snapshot.tasks.find((task) => task.id === "task-2")?.status).toBe("todo");
-    expect(snapshot.blockers).toEqual([]);
-    expect(snapshot.wakes).toMatchObject([
-      { taskId: "task-2", reason: "blockers_resolved", status: "scheduled" },
-    ]);
+    expect(snapshot.tasks.find((task) => task.id === "task-2")?.status).toBe(dependentStatus === "backlog" ? "backlog" : "todo");
+    if (dependentStatus === "backlog") {
+      expect(snapshot.blockers).toMatchObject([{ taskId: "task-2", blockedByTaskId: "task-1" }]);
+      expect(snapshot.wakes).toEqual([]);
+    } else {
+      expect(snapshot.blockers).toEqual([]);
+      expect(snapshot.wakes).toMatchObject([
+        { taskId: "task-2", reason: "blockers_resolved", status: "scheduled" },
+      ]);
+    }
     expect(snapshot.runs[0]?.status).toBe("succeeded");
   });
 

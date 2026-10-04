@@ -59,6 +59,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { closeWarmNativeSessionsForEnvironment } from "../services/native-runtime/native-session-executor.js";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1294,10 +1295,23 @@ export function environmentRoutes(
       && impact.reusableSandboxLeaseCount > 0
       && impact.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease")
     ) {
-      const destroyResult = await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+      const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
-        failureReason: "environment_deleted",
+        reason: "environment deleted",
       });
+      if (warmSessions.busy > 0 || warmSessions.failed > 0) {
+        throw conflict(
+          warmSessions.busy > 0
+            ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
+            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+          { nativeRunnerSessions: warmSessions },
+        );
+      }
+      const destroyResult =
+        await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+          environmentId: existing.id,
+          failureReason: "environment_deleted",
+        });
       destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
       impact = await svc.getDeleteBlastRadius(existing.id);
       if (!impact) {

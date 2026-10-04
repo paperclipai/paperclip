@@ -22,7 +22,8 @@ alternative peer dependencies — install exactly **one**, matching
 `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
-packages are imported and there is zero runtime overhead.
+packages are imported and there is no SDK or exporter overhead. Local request
+timings still use the performance clock.
 
 `server/package.json` declares each optional package at the exact version the
 server tests against; install that exact version. Our Dependabot cannot bump
@@ -33,6 +34,33 @@ decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
 maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
+
+## Task detail loading
+
+`GET /api/issues/:id` returns `Server-Timing` with `paperclip_issue` for the
+whole handler and `issue_<phase>` for its reads. The total includes the final
+execution-blocker read after recovery revalidation. Concurrent phases overlap;
+do not sum them to obtain request duration.
+
+With the existing operator-configured OTLP endpoint, the same reads produce
+`issue.read.<phase>` child spans through the `paperclip.issue-read` tracer.
+There are no custom attributes, identifiers, content, or exception messages.
+The closed phase names in `server/src/services/issue-read-timing.ts` are:
+`lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
+`relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
+`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+Without an OTLP endpoint, spans remain no-ops. This adds no first-party
+Telemetry events or run-log events.
+
+The browser's `issue-detail:navigate→content-paint` User Timing measure ends
+after the redesigned conversation is revealed and painted, rather than when
+the comments request completes while the conversation is still hidden. Durable
+messages can paint before run history and plan enrichment. Runtime-only threads
+wait for initial output; late history retains the existing scroll-anchor behavior.
+Use Chrome's request waterfall and this mark together to distinguish API wait,
+request dependencies, and rendering time. A hard-load trace also includes auth,
+company selection, and JavaScript startup before the task navigation mark.
 
 ## Enabling tracing
 
@@ -148,6 +176,7 @@ task.run
 │   ├── environment.startup
 │   │   ├── environment.acquire
 │   │   └── environment.workspace.realize
+│   ├── skills.prepare
 │   ├── heartbeat.prepare_before_environment
 │   ├── heartbeat.prepare_after_environment
 │   └── native.coordinator.claim
@@ -167,7 +196,9 @@ task.run
 │   │   └── runner.turn.submit
 │   └── agent.turn
 │       ├── provider.turn.queue
-│       └── provider.time_to_first_agent_event
+│       ├── provider.time_to_first_agent_event
+│       ├── tool.request.input_stream
+│       └── tool.execute
 └── task.settle
     ├── native.result.finalize
     └── session.checkpoint.persist
@@ -187,6 +218,28 @@ session records `runner.session.resume`. `agent.turn` begins at
 `turn.submitted` and ends at the provider terminal event. `task.settle` begins
 at that terminal event and remains open through finalization and checkpoint
 persistence, so settlement work does not appear to outlive its parent.
+
+`provider.time_to_first_agent_event` ends at the first meaningful provider
+activity: a nonempty assistant/reasoning delta, a tool announcement with an
+execution identity, or an existing assistant/reasoning/tool item start or
+completion. Usage updates and empty deltas do not count. This is a first
+activity metric, not time to a finished answer.
+
+`tool.request.input_stream` measures the observed request-input window: from
+an ACP tool announcement to its last input update before the provider reports
+the tool complete. It can include provider buffering and transport. It is not
+a claim about the exact end of model generation or the start of API execution.
+The span is omitted when no subsequent input update is observed.
+
+For native control-plane tools, `tool.execute` measures authorization and
+execution inside the server authority, including time spent in HTTP requests.
+Provider tool IDs and MCP request IDs are separate namespaces; the trace does
+not guess a pairing by tool name or arrival order. Both spans belong to the
+current run's `agent.turn`, including when a warm provider session is reused.
+Their `operation` attribute is a known semantic tool name or `other`. Only a
+boolean input-update marker crosses the provider-event boundary; no arguments,
+argument hashes, or raw call IDs are exported by these spans. Concurrent tools
+have separate durations; overlapping spans must not be summed as wall time.
 
 The active native scope is also published through the existing asynchronous
 runtime-parent seam. Provider execution, plugin, websocket/duplex, daemon, and
@@ -316,6 +369,22 @@ event. These pages run signed out:
 session response arrives is not captured. The gate opens only after the
 session query resolves.
 
+### Environment attribution
+
+Set `SENTRY_ENVIRONMENT` to the deployment environment, such as `staging`
+or `production`. The server SDK reads this value from its process environment.
+The authenticated session sends the same value in `sentryEnvironment`, and
+`SentryGate` passes it to the browser SDK. This is runtime configuration, so the
+same built image can report correctly in different environments. It does not
+infer an environment from the page URL or include a tenant identifier.
+
+When the variable is absent or empty, the session sends `null` and the browser
+keeps the SDK's default environment. The field is optional in the session
+schema so a newer browser can still read a response from an older server.
+A session refetch that changes the environment closes and restarts monitoring;
+signing out still closes it. The browser release continues to identify the
+loaded bundle, even if the server has since deployed another version.
+
 ### Privacy settings
 
 The feature uses built-in Sentry options only.
@@ -356,10 +425,152 @@ context the other kept default integrations add: the host name, the
 runtime version, and the dependency list. See "Default capture set"
 below.
 
+### Run failure context
+
+Terminal run failures also carry the run and task IDs, adapter, error code,
+run status, and redacted error message. Their fingerprint is the error code
+and adapter. These fields are passed directly to that event's capture call.
+They do not change the ambient Sentry scope, whose isolation is unavailable
+without an OpenTelemetry context manager. Later, unrelated exceptions must
+not inherit a previous run's identity or fingerprint.
+
+The `run_failure` context also includes the recorded process `exitCode` and
+`signal`, so a generic adapter error can still distinguish a nonzero exit from
+a signal termination. Exit codes must fit the database's signed 32-bit integer;
+missing or malformed values become `null`. Signals must match the reporting
+host's Node signal constants; missing values become `null` and unrecognized
+values become `unknown`. A signal such as `SIGKILL` does not establish who sent
+it or prove an out-of-memory kill. These fields do not change error grouping
+or run outcomes, and do not include process output or adapter result payloads.
+
+An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
+the run UUID, built-in adapter type, native/legacy runtime mode, configured
+wait duration, and whether abort was requested. Invalid identities become
+`null`, and unknown adapter/runtime values become `unknown`. The report does
+not include stop reasons, prompts, process output, provider responses, or
+credentials. It preserves default error grouping and does not acknowledge
+termination, remove the live execution control, or change the timeout. The
+context is sent only through the existing opt-in Sentry gate and never leaks
+into unrelated captures.
+
+The context also samples the pending execution `phase` and `phaseElapsedMs`
+when the Stop timer expires. An in-memory tracker belongs to the exact live
+execution control; a replaced or missing owner reports `unknown` with a null
+elapsed time. Labels come from a closed list and elapsed time uses a monotonic
+clock, capped at one day. Nested scopes remain visible while their awaits are
+pending, including ACP session close, transport stop, instruction collection,
+workspace restore, and host instruction or lease cleanup. `phase_reporting`
+means a step is waiting to write timing or teardown error diagnostics. `adapter_execution` and
+`host_execution` are coarse labels for work outside those narrower scopes.
+The tracker clears when its executor finishes. A phase is diagnostic context,
+not evidence that a provider stopped or that files were recovered. No new
+run-log or Telemetry event is emitted by this tracker.
+
+The shared reporter also attaches bounded diagnostic contexts for both legacy
+and native runs:
+
+- `run_execution`: runtime mode, execution stage/native phase, driver and version,
+  duration, ACP activity, failure phase, stop reason, error family,
+  and timeout settings when available.
+- `adapter_failure`: selected adapter error fields such as phase, category,
+  protocol code, retryability, cause message, stack preview, HTTP status, and request ID.
+- `provider_failure`: the saved provider failure category, title, and details.
+- `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
+  statuses, and request IDs for a caught exception and up to three causes.
+
+ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
+`acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before
+usage reads, error logging, and cleanup. The age measures time since the last
+runtime event and is omitted if no event was observed or the clock is invalid.
+Timeout and cleanup log messages do not reset this age. The pending count uses
+known tool statuses; an incomplete inventory cannot establish that no work is
+pending. Recent events do not prove useful progress. These fields contain only
+numbers and a boolean, never tool names, IDs, arguments, or event content, and
+do not change the execution timeout, cancellation, or recovery policy.
+
+ACP results retain the adapter's resolved wall-clock timeout as
+`adapterExecutionTimeout` in the instance run result. Finalization uses it for
+`effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
+`configured`, `sandbox_default`, or `unlimited`; `timeoutConfigured` identifies an
+explicit override, including a negative value that disables the timer. An untouched
+sandbox value of zero reports the four-hour default, while a local zero reports
+unlimited. Older adapters without a valid resolution retain the config-based
+metadata fallback. This does not change timers, Stop acknowledgement, or recovery.
+
+When settlement records a workspace restore failure, `run_execution` also
+includes `workspaceRestoreFailure` with one of the shared, path-free codes:
+`restore_permission_denied`, `restore_lock_timeout`, `restore_unsafe_archive`,
+or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
+pre-restore result data are not included. A later successful run does not, by
+itself, establish that an earlier failed restore recovered the workspace files.
+
+A caught directory-merge lock timeout also records `restoreLockOwnerState`
+(`alive`, `dead`, `unknown`, `missing`, or `invalid`), `restoreLockKnownLocalHolder`,
+and, when available, `restoreLockOwnerSameProcess`, `restoreLockOwnerPredatesProcess`,
+`restoreLockOwnerAgeMs`, and `restoreLockWaitMs` in `run_execution`. Ages are capped
+at seven days. These fields omit paths, PIDs, owner records, and absolute timestamps.
+The local-holder flag covers this module's active acquisitions only. Process-age
+comparison uses the wall clock and a one-second margin; it is a clue to PID reuse,
+not proof of ownership or permission to remove a lock. Diagnostic reads can race
+with release. The extra diagnostic owner read has a 100 ms budget; a stalled or
+unreadable read leaves the owner state `unknown`, while malformed JSON is `invalid`.
+These fields do not change lock acquisition, reclamation, or retries.
+Agent-directory callers also supply `restoreLockOperation`: `agent_directory_release`,
+`agent_directory_collect`, `agent_directory_checkpoint`, or `agent_directory_handoff`.
+This identifies the operation waiting for the lock, including cleanup after a
+completed adapter turn when the recorded execution stage has not advanced.
+
+The execution and setup catch paths pass the original exception to the reporter.
+It snapshots and rebuilds only these selected fields and the original message and
+stack. Sentry receives the sanitized cause chain rather than a stack created at
+the reporting call. Saved adapter results use an available adapter stack preview;
+without one, the report has no synthetic reporting stack.
+
+Credential patterns, the current user's home path, registered run-secret values,
+and known host/runtime environment credentials are removed before truncation.
+Declared environment secret bindings are included even when their key has no
+credential-like name. Runtime values are used only for redaction and are never
+copied into an event. Stack fields are limited to 8,192 characters,
+exception messages to 2,048, provider titles to 4,096, and provider details to
+12,288. Other diagnostic strings are limited to 200 characters (adapter cause
+messages: 2,048). Truncation is marked in the text and in
+`run_execution.truncatedFields`; cyclic and deeper cause chains are marked too.
+Request/response objects, headers, environment/configuration, prompts, stdout,
+stderr, and arbitrary adapter result fields are not copied. The existing DSN
+opt-in gate and error-code/adapter fingerprint remain unchanged. These reports
+cannot recover diagnostic data that a provider or adapter discarded upstream.
+
 ### Browser data
 
 The browser sends no page URL, no referrer, no user agent, and no
 breadcrumb.
+
+Application and route error-boundary reports also include:
+
+- `react_error_boundary`: `app` or `route`.
+- `react.componentStack`: up to 40 React component names. Frame locations,
+  URLs, arguments, and unrecognized lines are omitted. Parsing examines at
+  most 16 KiB of input. Production builds preserve function names so this
+  trace remains useful after minification; this adds some bundle size.
+
+All browser error reports, including global promise rejections, include:
+
+- `browser_build_mode`: `development` or `production`, from the loaded bundle.
+- `browser_rejection_kind`: the primitive type of an unhandled rejected value
+  (or `null`). The diagnostic does not read object properties or copy the value.
+- `browser_state`: document readiness, visibility, and a boolean indicating
+  the `translated-ltr` or `translated-rtl` root class used by browser translation.
+  The marker is evidence of DOM translation, not proof of the error's cause;
+  its absence does not exclude other translators or DOM-changing extensions.
+
+Boundary state is captured at the failure, before asynchronous reporting.
+Global reports without that snapshot read document state before sending.
+All fields are attached only to that event. They include no component props,
+DOM text, HTML,
+element identifiers, arbitrary CSS classes, route, or query string. Failed
+diagnostic reads do not prevent the original exception from being reported.
+The monitoring gate and sign-out behavior still apply. This context does not
+suppress errors, change DOM operations, or disable browser translation.
 
 ### Fail-open behavior
 
@@ -374,11 +585,51 @@ sends, so an operator can read what the feature does before turning it on.
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
+**Release attribution**
+
+The server sets `release` to the full source commit from its build metadata.
+An explicit `SENTRY_RELEASE` overrides that default. If neither is available,
+the server leaves the release unset.
+
+The browser also sets `release`, using the full `PAPERCLIP_BUILD_COMMIT`
+supplied when its bundle is built, or the checkout commit for source and npm
+builds. The server reads its packaged build stamp when no deployment marker
+is present. Docker passes the same commit to both
+application builds. A cached browser bundle keeps its own release after a
+server deployment, so its errors are attributed to the code actually loaded.
+Browser builds without a valid full commit leave the release unset. The
+browser does not read a release from the current server, page URL, or session.
+These fields contain build identifiers; they add no tenant or user identity.
+
+**Server identity**
+
+- `server_name` — every server event carries the host name of the process.
+  The `@sentry/node` client already sets this value by default when the
+  operator does not pass a `serverName` option; this feature passes the
+  value directly, so the server keeps sending it even if a later SDK
+  version changes its default. To send a different value in place of the
+  host name, set the environment variable `SENTRY_NAME` to that value.
+
 **Server events this feature adds**
 
 - An Express `HttpError` with `status >= 500`.
 - Any unknown throw that is not a `ZodError`. It always answers 500.
 - A server startup failure.
+- A run that ends with the status `failed` or the status `timed_out`. The
+  event carries five context fields: `taskId`, `runId`, `errorMessage`,
+  `errorCode`, and `agentAdapter`. The server redacts the error message and
+  the error code before it sends the event.
+
+Native runner identity and harness failures retain their existing error prefixes.
+Their terminal messages now include a bounded guard reason, such as
+`session_scope_mismatch`, `durable_identity_unreadable`, or
+`backup_without_reusable_lease`. Provider-pack read failures distinguish a missing
+file, invalid JSON, permission denial, invalid path type, and other I/O errors.
+These reasons contain no session identifiers, provider output, or filesystem
+paths. They help diagnose recurrence; they do not authorize a retry, quarantine,
+replacement, or a weaker identity check. Existing chat recovery recognizes the
+same failure category with or without a reason suffix; it still requires the
+exact cleanup receipt, checkpoint, and absence of provider work.
 
 **Server events the default integrations add**
 
@@ -433,6 +684,18 @@ integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
 - A Zod validation error, which answers 400.
 - Each `HttpError` below status 500, such as 401, 403, 404, 409, and 422.
+- A remote app's recognized OAuth sign-in challenge. Connecting an app or
+  refreshing its catalog returns 422 with `oauth_challenge` and the existing
+  setup/reconnect links. Other upstream failures still return 502 and are
+  reported, including an unexplained upstream HTTP 400.
+- Expired OAuth credentials without a refresh token, or a rejected refresh token
+  that requires reauthorization. Discovery and health checks return 422 with
+  `oauth_refresh_missing` or `oauth_reauthorization_required` and the existing
+  reconnect instructions. Unexpected refresh failures remain reportable.
+- Slack's explicit response that its app has not enabled MCP access. Discovery
+  and health checks return 422 with `slack_mcp_access_disabled` and setup
+  instructions. This requires Slack's exact MCP endpoint and known error;
+  other HTTP 400 responses remain reportable.
 - A performance trace and a profile, because `tracesSampleRate` is 0.
 
 ### Operator responsibilities
@@ -753,16 +1016,93 @@ To add a name or an enum value, extend the literal constant in
 
 ### Known behavior: aggregate retained body bytes
 
-The HTTP/2 bridge bounds retained body bytes for one route only. Each route
-holds up to 8,388,608 bytes (8 MiB) at its own peak (see
-`HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`). The host
-process admits up to 128 concurrent routes (see
-`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). The
-process can therefore retain up to 1,073,741,824 bytes (1 GiB) of body data
-across every route at the same time.
+Each HTTP/2 bridge route holds up to 168,820,736 bytes (161 MiB) at its own
+peak (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`).
+The host process admits up to 128 concurrent routes (see
+`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). Those
+two figures alone would let the process retain up to 21,609,054,208 bytes
+(about 20.1 GiB) of body data across every route at the same time.
 
-This is accepted, known behavior. The process tracks no aggregate byte
-ledger across routes: a per-route bound stops one busy route from starving
-another route's own budget, but the host enforces no smaller ceiling on the
-sum across every route.
+The process does not reach that figure, on two levels.
+`HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (`http2-bridge-server.ts`) enforces a
+real, live ledger: 1,073,741,824 bytes (1 GiB) across every route, not merely
+an accepted paper ceiling. Every HTTP/2 stream creates one `BridgeBodyReservation` owner over
+its lifetime, and every source-level full-body buffer that stream retains —
+its request-body chunk array, the concatenated request body, the
+response-body chunk array, and the concatenated response body — reserves
+against that one owner before it allocates. A reservation that would pass the
+process total is denied before it copies anything, and the host answers 503
+instead of accepting the body. The reservation stays live for the response
+body until the HTTP/2 write actually finishes flowing to the peer or the
+stream closes, not merely until the write call returns, so a slow or
+backpressured peer cannot hold response bytes in memory the ledger no longer
+counts.
+
+`HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES` adds a second, per-route ledger on top of
+that process-wide one: each route's own reservations also check a ceiling
+scoped to that one route (its own 168,820,736-byte peak from above), so one
+busy or malicious route can pass its own ceiling and get denied with a 503,
+but it can never spend the whole process-wide total and deny every sibling
+route admission. This accounting covers source-level full-body buffers only:
+internal Node.js and Undici copies (socket buffers, HTTP/2 frame buffers,
+decompression buffers) stay outside it.
+
+The generated gateway process inside the sandbox (`getSandboxCallbackBridgeServerSource`
+in `sandbox-callback-bridge.ts`) enforces its own separate ledger, independent
+of the two host-side ledgers above: each side bounds only the memory in its
+own process. `readBodyBytes` reserves a request body's chunk bytes as they
+arrive, then reserves the concatenated buffer's own byte count before
+`Buffer.concat` allocates it, against a ceiling of `maxBodyBytes * 8` (4
+concurrent bodies, each counted twice for its two live copies). A denied
+reservation answers 503 with no forward call. Each request handler releases
+its own reservation once the whole request settles: a completed response, a
+thrown error, a client abort, or a deadline timeout all reach the same
+release call.
+
 Keep every dimension low-cardinality and free of user content.
+
+### Shared skill preparation
+
+`skills.prepare` measures the shared inventory listing and runtime materialization
+inside `task.prepare`. It is also contained in the broader
+`heartbeat.prepare_before_environment` interval; do not add those two durations.
+Preparation failures emit a failed span even when no native session starts.
+It carries no skill contents, identifiers, locations, or credentials. It uses the
+existing run performance events and operator-configured OpenTelemetry endpoint;
+no first-party Telemetry event is added.
+
+Runtime preparation refreshes the company inventory once per listing. Local and
+catalog directories remain direct sources, so edits are visible on the next
+preparation. Explicit version selections still use their stored snapshots.
+
+Reconstructed skills use `__runtime_cache_v1__/<skill-id>/<fingerprint>/files`
+beneath company skill storage, with a sibling manifest of paths, sizes, and SHA-256
+content digests. Every warm hit validates the manifest and exact file contents;
+it does not fetch upstream, rewrite files, or remove directories. The fingerprint
+includes installed source identity, revision, file inventory, and stored Markdown,
+and excludes display names, stars, and general update timestamps. Manifests stay
+outside the directory delivered to agents.
+
+GitHub and skills.sh imports are cached only when pinned to a full commit SHA.
+Remote freshness is explicit: update or reimport selects a new revision, including
+supporting-file-only changes. A branch advancing upstream does not change an
+installed revision. Legacy mutable refs retain uncached behavior until updated.
+URL-only skills use stored Markdown. An unavailable new revision reports missing;
+it never silently reuses an older revision. Stored `SKILL.md` remains a fallback,
+but missing supporting files prevent publication of a reusable partial cache.
+
+Builds publish read-only files and directories from unique staging directories.
+A skill-scoped lock serializes builds and cleanup across processes. Cold builders
+recheck that the skill still exists under its original key before reading files
+and before atomic publication. Existing valid
+revisions stay readable during updates. Invalid entries are quarantined in the
+same skill cache root for inspection; rename/removal cleans up that skill's cache.
+Read-only listings validate caches without downloading or repairing them. A
+publication lock left by an abruptly terminated process is reported for operator
+cleanup; remove it only after confirming its recorded PID is no longer running.
+
+Run `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-skill-preparation.ts` for an isolated embedded
+PostgreSQL benchmark with 114 mixed skills and at least 400 remote files. It
+reports one cold sample and ten warm samples (one in a new process), refresh and
+fetch counts, rebuilds, missing entries, and content checks. Upstream responses are
+deterministic fixtures; use real deployed run spans for user-facing latency.

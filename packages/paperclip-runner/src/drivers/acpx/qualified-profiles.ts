@@ -11,34 +11,37 @@ export interface QualifiedAcpxProfile {
   readonly protocolVersion: typeof ACPX_DRIVER_PROTOCOL_VERSION;
   readonly acpxVersion: typeof QUALIFIED_ACPX_VERSION;
   readonly agent: QualifiedAcpxAgent;
-  readonly agentProfileVersion: 1;
+  readonly agentProfileVersion: 1 | 2 | 3 | 4 | 5;
+  readonly qualificationStatus?: "pending";
+  readonly modelPolicy?: "explicit-provider-verified";
+  /** Wire identity: an npm package name or a runner-owned builtin: identifier. */
   readonly agentServerPackage: string;
   readonly agentServerVersion: string;
   readonly agentRuntimePackage: string | null;
   readonly agentRuntimeVersion: string | null;
   readonly commandDigest: string;
   readonly qualificationModel: string;
-  /**
-   * Model identifier the pinned ACP server accepts and reports. Profile
-   * resolution first binds the caller's exact canonical model request. Most
-   * agents use that same identifier at the ACP boundary; Claude exposes its
-   * stable SDK selector (`sonnet`) while the SDK resolves it to the canonical
-   * wire model (`claude-sonnet-5`). Paperclip selects only this profile-pinned
-   * identifier and verifies the provider reports it before publishing the
-   * canonical model as the qualified effective model.
-   */
+  /** Exact model ID sent to ACP; catalogs are suggestions, not an allowlist. */
   readonly reportedModelId: string;
   readonly permissionPolicy: "interactive";
 }
 
 /**
  * Digests bind the closed profile declaration (package, version, runtime and
- * model), not a caller-controlled executable. The environment probe separately
+ * executable), not a caller-controlled executable. The environment probe separately
  * verifies the resolved package files before a billable prompt is admitted.
  */
 export const QUALIFIED_ACPX_PROFILES: Readonly<
   Record<QualifiedAcpxAgent, QualifiedAcpxProfile>
 > = deepFreeze({
+  grok: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "grok", agentProfileVersion: 1,
+    agentServerPackage: "builtin:grok-acp", agentServerVersion: "1",
+    agentRuntimePackage: "native:grok", agentRuntimeVersion: "1.0.13",
+    commandDigest: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+    qualificationModel: "grok-4.7", reportedModelId: "grok-4.7", permissionPolicy: "interactive",
+  },
   pi: {
     driverKind: ACPX_DRIVER_KIND,
     protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
@@ -55,6 +58,28 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     reportedModelId: "openrouter/deepseek/deepseek-v4-flash-0731",
     permissionPolicy: "interactive",
   },
+  cursor: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 2,
+    agentServerPackage: "cursor-agent", agentServerVersion: "2026.09.26-dd393fe",
+    agentRuntimePackage: null, agentRuntimeVersion: null,
+    commandDigest: "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+    // Authenticated discovery has not established a qualification model. Never
+    // turn this empty declaration into a default; callers must select an ID.
+    qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",
+    modelPolicy: "explicit-provider-verified", qualificationStatus: "pending",
+  },
+  copilot: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "copilot", agentProfileVersion: 2,
+    agentServerPackage: "@github/copilot", agentServerVersion: "1.0.88",
+    agentRuntimePackage: null, agentRuntimeVersion: null,
+    commandDigest: "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+    // Authenticated discovery has not established a qualification model. Never
+    // turn this empty declaration into a default; callers must select an ID.
+    qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",
+    modelPolicy: "explicit-provider-verified", qualificationStatus: "pending",
+  },
   claude: {
     driverKind: ACPX_DRIVER_KIND,
     protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
@@ -62,13 +87,13 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "claude",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-    agentServerVersion: "0.70.0",
+    agentServerVersion: "0.73.0",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-    agentRuntimeVersion: "0.3.232",
+    agentRuntimeVersion: "0.3.280",
     commandDigest:
       "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     qualificationModel: "claude-sonnet-5",
-    reportedModelId: "sonnet",
+    reportedModelId: "claude-sonnet-5",
     permissionPolicy: "interactive",
   },
   codex: {
@@ -80,9 +105,9 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentServerPackage: "@agentclientprotocol/codex-acp",
     agentServerVersion: "1.6.2",
     agentRuntimePackage: "@openai/codex",
-    agentRuntimeVersion: "0.148.0",
+    agentRuntimeVersion: "0.156.0",
     commandDigest:
-      "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
+      "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
     qualificationModel: "gpt-5.6-sol",
     reportedModelId: "gpt-5.6-sol",
     permissionPolicy: "interactive",
@@ -94,12 +119,13 @@ export function resolveQualifiedAcpxProfile(
   requestedModel: string,
 ): QualifiedAcpxProfile {
   const profile = QUALIFIED_ACPX_PROFILES[agent];
-  if (requestedModel !== profile.qualificationModel) {
+  if (!requestedModel.trim()) throw new Error("ACPX model must not be empty");
+  if (agent !== "claude" && agent !== "grok" && profile.modelPolicy !== "explicit-provider-verified" && requestedModel !== profile.qualificationModel) {
     throw new Error(
       `ACPX ${agent} profile requires exact model ${profile.qualificationModel}; received ${requestedModel}`,
     );
   }
-  return structuredClone(profile);
+  return { ...structuredClone(profile), qualificationModel: requestedModel, reportedModelId: requestedModel };
 }
 
 function deepFreeze<T>(value: T): T {

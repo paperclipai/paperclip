@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -43,6 +43,7 @@ export function reorderQueuedMessageEntries(
   activeId: string,
   overId: string,
 ) {
+  if (entries.some((entry) => entry.source?.kind === "interaction")) return null;
   const from = entries.findIndex((entry) => entry.comment.id === activeId);
   const to = entries.findIndex((entry) => entry.comment.id === overId);
   if (from < 0 || to < 0 || from === to) return null;
@@ -94,9 +95,11 @@ function SortableQueuedMessage({
   onInterrupt?: () => void;
   onDiscard: () => void;
 }) {
+  const immutableResponse = entry.source?.kind === "interaction";
+  const label = immutableResponse ? entry.comment.body.split("\n")[0] : entry.comment.body;
   const sortable = useSortable({
     id: entry.comment.id,
-    disabled: queueMutationDisabled,
+    disabled: queueMutationDisabled || immutableResponse,
   });
   const style = {
     transform: CSS.Transform.toString(sortable.transform),
@@ -127,7 +130,7 @@ function SortableQueuedMessage({
         ref={sortable.setActivatorNodeRef}
         {...sortable.attributes}
         {...sortable.listeners}
-        disabled={queueMutationDisabled}
+        disabled={queueMutationDisabled || immutableResponse}
         aria-label={`Reorder queued message: ${entry.comment.body}`}
         className="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
       >
@@ -139,15 +142,15 @@ function SortableQueuedMessage({
         aria-hidden
       />
       <span className="min-w-0 flex-1 truncate px-1" title={entry.comment.body}>
-        {entry.comment.body}
+        {label}
       </span>
 
-      {queue.protocol === "legacy" ? (
+      {queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
-          disabled={busy || !queue.targetRunId || !onInterrupt}
-          title="Interrupt the active turn; this message stays queued"
+          disabled={busy || !queue.queueId || !onInterrupt}
+          title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -200,7 +203,7 @@ function SortableQueuedMessage({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            disabled={queueMutationDisabled}
+            disabled={queueMutationDisabled || immutableResponse}
             title="Queued message actions"
             aria-label={`Queued message actions: ${entry.comment.body}`}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
@@ -229,6 +232,9 @@ export function TaskChatQueuedMessages({
   onDiscard,
 }: TaskChatQueuedMessagesProps) {
   const [entries, setEntries] = useState(queue.entries);
+  const latestQueue = useRef(queue);
+  latestQueue.current = queue;
+  const optimisticDeliveryIds = useRef(new Set<string>());
   const [pending, setPending] = useState<{
     commentId: string;
     action: Exclude<QueueAction, null>;
@@ -244,7 +250,10 @@ export function TaskChatQueuedMessages({
   );
 
   useEffect(() => {
-    setEntries(queue.entries);
+    // Polling can return the old queue while delivery is still in flight.
+    setEntries(queue.entries.filter(
+      (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+    ));
   }, [queue.entries, queue.revision]);
 
   const ids = useMemo(
@@ -306,21 +315,24 @@ export function TaskChatQueuedMessages({
     ) {
       return;
     }
-    const previous = entries;
+    const deliveredIds = action === "interrupt"
+      ? entries.map((entry) => entry.comment.id)
+      : action === "steer" ? [commentId] : [];
+    for (const id of deliveredIds) optimisticDeliveryIds.current.add(id);
+    if (deliveredIds.length) {
+      setEntries((current) => current.filter(
+        (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+      ));
+    }
     setPending({ commentId, action });
     setVisibleError(null);
     setAnnouncement(
       action === "steer"
         ? "Steering queued message."
         : action === "interrupt"
-          ? "Interrupting the active turn."
+          ? "Sending queued messages."
           : "Discarding queued message.",
     );
-    if (action === "steer") {
-      setEntries((current) =>
-        current.filter((entry) => entry.comment.id !== commentId),
-      );
-    }
     try {
       if (action === "steer") await onSteer(commentId, queue.revision);
       else if (action === "interrupt") await onInterrupt?.();
@@ -334,11 +346,16 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "Message steered into the active turn."
           : action === "interrupt"
-            ? "Active turn interrupted. Message remains queued."
+            ? "Queued messages will be sent when the previous run has stopped."
             : "Queued message discarded.",
       );
     } catch (error) {
-      if (action === "steer") setEntries(previous);
+      for (const id of deliveredIds) optimisticDeliveryIds.current.delete(id);
+      if (deliveredIds.length) {
+        setEntries(latestQueue.current.entries.filter(
+          (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+        ));
+      }
       setAnnouncement("");
       const code = queueActionErrorCode(error);
       setVisibleError(
@@ -357,7 +374,7 @@ export function TaskChatQueuedMessages({
     }
   }
 
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && !visibleError) return null;
 
   return (
     <div
@@ -365,6 +382,11 @@ export function TaskChatQueuedMessages({
       data-testid="task-chat-queued-messages"
       aria-label="Queued messages"
     >
+      {queue.executionWait && (
+        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
+          {queue.executionWait.message}
+        </div>
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}

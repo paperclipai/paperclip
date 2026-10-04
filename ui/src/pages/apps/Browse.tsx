@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  connectionSetupVerbForApp,
+  isRetiredComposioConnection,
+  RETIRED_COMPOSIO_MESSAGE,
+} from "@paperclipai/shared";
+import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -16,17 +22,28 @@ import {
 } from "lucide-react";
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import {
-  appSupportsCatalogSetup,
   getAppDefinitionForUrl,
+  isMemoryConnectorId,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
+  aiSubscriptionNeedsIsolatedLogin,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
+import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
+import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
+import { appCopyFor } from "@/lib/app-gallery-copy";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import { emailApi } from "@/api/email";
+import {
+  chatEndpointsApi,
+  type ChatEndpoint,
+  type ChatProvider,
+} from "@/api/chatEndpoints";
 import { accessApi } from "@/api/access";
 import {
   AlertDialog,
@@ -52,6 +69,7 @@ import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
+  appConnectionSourceSlug,
   appDefinitionDarkLogoUrl,
   appDefinitionDescription,
   appDefinitionLogoUrl,
@@ -59,8 +77,11 @@ import {
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import { appSourceConnectHref, appSourceResumeHref } from "./app-connect-policy";
-import { composioChildParentConnectionId } from "./composio-services";
+import {
+  appSourceConnectHref,
+  appSourceResumeHref,
+  appSupportsToolCatalogSetup,
+} from "./app-connect-policy";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -79,6 +100,7 @@ type ConnectorRowModel = {
   entry: AppGalleryDisplayEntry | null;
   applications: ToolApplication[];
   connections: ToolConnection[];
+  chatEndpoints: ChatEndpoint[];
 };
 
 type ConnectionState = {
@@ -92,13 +114,51 @@ type ConnectionRemovalTarget = {
   accountName: string;
   providerName: string;
   remainingConnectionCount: number;
-  childConnectionCount: number;
-};
+} & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
+
+// Temporary, page-only hold until Google OAuth verification is approved.
+// Keep definitions, direct setup/management routes, and runtime access intact.
+// Remove this filter after approval; reviewer instances stay on their pinned build.
+const GOOGLE_CONNECTOR_SLUGS = new Set(
+  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug),
+);
+
+function chatProviderForSlug(slug: string): ChatProvider | null {
+  const method = getAppStoreDefinition(slug)?.methods.find(
+    (candidate) =>
+      candidate.purpose === "channel" &&
+      candidate.provider,
+  );
+  return method?.provider ?? null;
+}
+
+function chatConnectHref(
+  slug: string,
+  toolHref: string | null,
+  agentId?: string | null,
+): string | null {
+  const definition = getAppStoreDefinition(slug);
+  const provider = chatProviderForSlug(slug);
+  if (!definition || !provider) return null;
+  const params = new URLSearchParams({ provider });
+  const hasToolMethod = definition.methods.some(
+    (method) => method.purpose === "tool" && method.transport !== "chat_sdk",
+  );
+  const effectiveToolHref = hasToolMethod
+    ? (toolHref ?? `/apps/connect?source=${slug}`)
+    : null;
+  if (effectiveToolHref) params.set("toolHref", effectiveToolHref);
+  else params.set("purpose", "chat");
+  if (agentId) params.set("agentId", agentId);
+  return `/apps/chat/connect?${params.toString()}`;
+}
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
   const definition = getAppStoreDefinition(slug);
-  return appSupportsCatalogSetup(definition) ? appSourceConnectHref(slug) : null;
+  return appSupportsToolCatalogSetup(definition)
+    ? appSourceConnectHref(slug)
+    : null;
 }
 
 function additionalConnectionHref(
@@ -116,6 +176,9 @@ function additionalConnectionHref(
 }
 
 function connectionState(connection: ToolConnection): ConnectionState {
+  if (isRetiredComposioConnection(connection)) {
+    return { kind: "attention", label: "Retired", message: RETIRED_COMPOSIO_MESSAGE };
+  }
   if (connection.status === "draft") {
     return {
       kind: "draft",
@@ -130,7 +193,7 @@ function connectionState(connection: ToolConnection): ConnectionState {
       message: "Agents can’t use this account right now.",
     };
   }
-  if (isToolConnectionAttentionHealth(connection.healthStatus)) {
+  if ((connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config))) || isToolConnectionAttentionHealth(connection.healthStatus)) {
     return {
       kind: "attention",
       label: "Needs attention",
@@ -150,17 +213,33 @@ function connectionRank(connection: ToolConnection): number {
 }
 
 function rowRank(row: ConnectorRowModel): number {
-  if (row.connections.some((connection) => connectionRank(connection) === 1)) return 2;
-  return row.connections.length > 0 ? 1 : 0;
+  if (
+    row.chatEndpoints.some((endpoint) => endpoint.status !== "draft") ||
+    row.connections.some((connection) => connectionRank(connection) === 1)
+  )
+    return 2;
+  return row.connections.length > 0 || row.chatEndpoints.length > 0 ? 1 : 0;
 }
 
-function connectorAction(row: ConnectorRowModel): {
+function connectorAction(
+  row: ConnectorRowModel,
+  chatConnectorsEnabled: boolean,
+  agentId?: string | null,
+): {
   label: string;
   href: string | null;
   title?: string;
 } {
   const applicationId = row.applications[0]?.id ?? null;
-  if (row.connections.length > 0) {
+  const chatHref = (row.slug === "agentmail" || chatConnectorsEnabled)
+    ? chatConnectHref(
+        row.slug,
+        row.entry ? connectHrefFor(row.entry) : null,
+        agentId,
+      )
+    : null;
+  if (row.connections.length > 0 || row.chatEndpoints.length > 0) {
+    if (chatHref) return { label: "Add connection", href: chatHref };
     if (row.entry && applicationId) {
       return {
         label: "Add account",
@@ -177,17 +256,30 @@ function connectorAction(row: ConnectorRowModel): {
     return {
       label: "Unavailable",
       href: null,
-      title: row.entry.availability.reason ?? "This connector is unavailable on this instance.",
+      title:
+        row.entry.availability.reason ??
+        "This connector is unavailable on this instance.",
     };
   }
-  if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
+  if (chatHref) return { label: "Connect", href: chatHref };
+  // PAP-659 C4: the card's verb comes from the same four-state resolver the
+  // connect screen uses, so "Connect" never turns out to mean "paste a key".
+  if (row.entry) {
+    return {
+      label: connectionSetupVerbForApp(row.entry),
+      href: connectHrefFor(row.entry),
+    };
+  }
   return {
     label: "Connect",
     href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
   };
 }
 
-function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): string {
+function accountActionHref(
+  row: ConnectorRowModel,
+  connection: ToolConnection,
+): string {
   if (connection.status === "draft" && row.entry) {
     return appSourceResumeHref(row.slug, connection.id);
   }
@@ -199,14 +291,21 @@ function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): 
  * surface. Connected providers sort first and expand in place to show every
  * account; unconnected providers retain the same catalog setup flows.
  */
-export function Browse() {
+export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
   const navigate = useNavigate();
+  const preselectedChatAgentId =
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get("chatAgentId");
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
+  const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
-  const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
+  const [connectionToRemove, setConnectionToRemove] =
+    useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Connectors" }]);
@@ -228,25 +327,52 @@ export function Browse() {
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const chatEndpointsQuery = useQuery({
+    queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const userDirectoryQuery = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
+    queryKey: queryKeys.access.companyUserDirectory(
+      selectedCompanyId ?? "__none__",
+    ),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const removeConnection = useMutation({
-    mutationFn: (target: ConnectionRemovalTarget) =>
-      toolsApi.archiveConnection(target.id, {
-        confirmComposioChildren: target.childConnectionCount > 0,
-      }),
+    mutationFn: async (target: ConnectionRemovalTarget) => {
+      if (target.kind === "chat") {
+        if (target.provider === "agentmail") {
+          await emailApi.control(target.id, "remove");
+        } else {
+          await chatEndpointsApi.setup(target.id, { action: "remove" });
+        }
+      } else {
+        await toolsApi.archiveConnection(target.id);
+      }
+    },
     onSuccess: (_connection, target) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: ["email-inboxes", selectedCompanyId!] });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tools.connections(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tools.applications(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.apps.attention(selectedCompanyId!),
+      });
       pushToast({
         title: "Connection removed",
-        body: target.remainingConnectionCount > 0
-          ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-          : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        body:
+          target.kind === "chat"
+            ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`
+            : target.remainingConnectionCount > 0
+            ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
         tone: "success",
       });
       setConnectionToRemove(null);
@@ -259,7 +385,17 @@ export function Browse() {
       }),
   });
 
-  const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
+  const gallery = (
+    (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[]
+  ).filter((entry) => {
+    if (!memoryConnectorsEnabled && isMemoryConnectorId(appDefinitionSlug(entry))) return false;
+    const definition = getAppStoreDefinition(appDefinitionSlug(entry));
+    return (
+      appDefinitionSlug(entry) === "agentmail" || chatConnectorsEnabled ||
+      !definition?.methods.some((method) => method.purpose === "channel") ||
+      appSupportsToolCatalogSetup(definition)
+    );
+  });
   const userProfileById = useMemo(
     () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
     [userDirectoryQuery.data],
@@ -267,10 +403,17 @@ export function Browse() {
 
   const rows = useMemo<ConnectorRowModel[]>(() => {
     const activeConnections = (connectionsQuery.data?.connections ?? []).filter(
-      (connection) => connection.status !== "archived",
+      (connection) =>
+        connection.status !== "archived" &&
+        connection.connectionPurpose !== "channel",
     );
-    const activeApplications = (applicationsQuery.data?.applications ?? []).filter(
-      (application) => application.status !== "archived",
+    const activeApplications = (
+      applicationsQuery.data?.applications ?? []
+    ).filter(
+      (application) =>
+        application.status !== "archived" &&
+        application.type !== "chat" &&
+        application.metadata?.purpose !== "channel",
     );
     const connectionsByApplicationId = new Map<string, ToolConnection[]>();
     for (const connection of activeConnections) {
@@ -280,7 +423,9 @@ export function Browse() {
       ]);
     }
 
-    const gallerySlugs = new Set(gallery.map((entry) => appDefinitionSlug(entry)));
+    const gallerySlugs = new Set(
+      gallery.map((entry) => appDefinitionSlug(entry)),
+    );
     const gallerySlugByName = new Map(
       gallery.map((entry) => [
         appDefinitionName(entry).trim().toLocaleLowerCase(),
@@ -294,19 +439,81 @@ export function Browse() {
         key: `gallery:${slug}`,
         slug,
         name: appDefinitionName(entry),
-        description: appDefinitionDescription(entry),
+        description:
+          !chatConnectorsEnabled && slug !== "agentmail" && chatProviderForSlug(slug)
+            ? appCopyFor(slug).tagline
+            : appDefinitionDescription(entry),
         brandKey: slug,
         logoUrl: appDefinitionLogoUrl(entry),
         darkLogoUrl: appDefinitionDarkLogoUrl(entry),
         entry,
         applications: [],
         connections: [],
+        chatEndpoints: [],
+      });
+    }
+    const nativeChatApps = [
+      { slug: "agentmail", name: "AgentMail", description: "Give agents email inboxes and handle each conversation as a task." },
+      { slug: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
+      {
+        slug: "slack",
+        name: "Slack",
+        description:
+          "Chat with agents from Slack channels and direct messages.",
+      },
+      {
+        slug: "github-code-review-bot",
+        name: "GitHub Code Review Bot",
+        description:
+          "Have an agent review pull requests and respond to GitHub mentions.",
+      },
+      {
+        slug: "discord",
+        name: "Discord",
+        description:
+          "Chat with agents from Discord channels, threads, and direct messages.",
+      },
+      {
+        slug: "microsoft-teams",
+        name: "Microsoft Teams",
+        description: "Chat with agents from Teams channels and conversations.",
+      },
+      {
+        slug: "telegram",
+        name: "Telegram",
+        description:
+          "Chat with agents from Telegram direct messages, groups, and topics.",
+      },
+    ] as const;
+    for (const item of nativeChatApps.filter(item => item.slug === "agentmail" || chatConnectorsEnabled)) {
+      if (rowsBySlug.has(item.slug)) continue;
+      rowsBySlug.set(item.slug, {
+        key: `native-chat:${item.slug}`,
+        slug: item.slug,
+        name: item.name,
+        description: item.description,
+        brandKey: item.slug,
+        entry: null,
+        applications: [],
+        connections: [],
+        chatEndpoints: [],
       });
     }
 
     const customRows: ConnectorRowModel[] = [];
     for (const application of activeApplications) {
-      const appConnections = connectionsByApplicationId.get(application.id) ?? [];
+      const applicationSlug = appApplicationSourceSlug(application);
+      const savedAppConnections =
+        connectionsByApplicationId.get(application.id) ?? [];
+      const appConnections = savedAppConnections.filter(
+        (connection) => !GOOGLE_CONNECTOR_SLUGS.has(appConnectionSourceSlug(connection) ?? ""),
+      );
+      // Hide source-only Google rows, but keep independently identified connectors.
+      if (
+        (!applicationSlug || applicationSlug === "link") &&
+        savedAppConnections.length > 0 &&
+        appConnections.length === 0
+      ) continue;
       const configuredConnectionSlug = appConnections
         .map(
           (connection) =>
@@ -318,20 +525,26 @@ export function Browse() {
             typeof value === "string" && gallerySlugs.has(value),
         );
       const endpointMatchedSlug = appConnections
-        .flatMap((connection) => [connection.config?.url, connection.transportConfig?.url])
+        .flatMap((connection) => [
+          connection.config?.url,
+          connection.transportConfig?.url,
+        ])
         .map((value) =>
           typeof value === "string"
             ? appDefinitionSlug(getAppDefinitionForUrl(value, gallery)) || null
             : null,
         )
         .find((value): value is string => Boolean(value));
-      const applicationSlug = appApplicationSourceSlug(application);
       const resolvedSlug =
-        applicationSlug && applicationSlug !== "link" && gallerySlugs.has(applicationSlug)
+        applicationSlug &&
+        applicationSlug !== "link" &&
+        gallerySlugs.has(applicationSlug)
           ? applicationSlug
           : (configuredConnectionSlug ??
             endpointMatchedSlug ??
-            gallerySlugByName.get(application.name.trim().toLocaleLowerCase()) ??
+            gallerySlugByName.get(
+              application.name.trim().toLocaleLowerCase(),
+            ) ??
             null);
       const galleryRow = resolvedSlug ? rowsBySlug.get(resolvedSlug) : null;
       if (galleryRow) {
@@ -344,30 +557,75 @@ export function Browse() {
         key: `application:${application.id}`,
         slug: applicationSlug ?? application.id,
         name: application.name,
-        description: application.description ?? "A custom connector configured for this organization.",
+        description:
+          application.description ??
+          "A custom connector configured for this organization.",
         brandKey: applicationSlug ?? application.name,
         entry: null,
         applications: [application],
         connections: appConnections,
+        chatEndpoints: [],
       });
     }
 
+    for (const endpoint of (chatEndpointsQuery.data ?? []).filter(endpoint => endpoint.provider === "agentmail" || chatConnectorsEnabled)) {
+      if (endpoint.status === "archived") continue;
+      let target = [...rowsBySlug.values()].find(
+        (row) => chatProviderForSlug(row.slug) === endpoint.provider,
+      );
+      if (!target) {
+        const names = {
+          slack: "Slack",
+          github: "GitHub",
+          discord: "Discord",
+          "microsoft-teams": "Microsoft Teams",
+          telegram: "Telegram",
+          "imessage-photon": "iMessage Photon",
+  agentmail: "AgentMail",
+        } as const;
+        target = {
+          key: `chat:${endpoint.provider}`,
+          slug: endpoint.provider,
+          name: names[endpoint.provider],
+          description: `Chat with agents through ${names[endpoint.provider]}.`,
+          brandKey: endpoint.provider,
+          entry: null,
+          applications: [],
+          connections: [],
+          chatEndpoints: [],
+        };
+        customRows.push(target);
+      }
+      target.chatEndpoints.push(endpoint);
+    }
+
     return [...rowsBySlug.values(), ...customRows]
+      .filter((row) => !GOOGLE_CONNECTOR_SLUGS.has(row.slug))
       .map((row) => ({
         ...row,
         connections: [...row.connections].sort(
           (left, right) =>
             connectionRank(right) - connectionRank(left) ||
-            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+            left.name.localeCompare(right.name, undefined, {
+              sensitivity: "base",
+            }),
         ),
       }))
       .sort(
         (left, right) =>
           rowRank(right) - rowRank(left) ||
-          left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) ||
+          left.name.localeCompare(right.name, undefined, {
+            sensitivity: "base",
+          }) ||
           left.key.localeCompare(right.key),
       );
-  }, [applicationsQuery.data, connectionsQuery.data, gallery]);
+  }, [
+    applicationsQuery.data,
+    chatEndpointsQuery.data,
+    chatConnectorsEnabled,
+    connectionsQuery.data,
+    gallery,
+  ]);
 
   const trimmed = query.trim().toLocaleLowerCase();
   const visibleRows = useMemo(() => {
@@ -378,6 +636,9 @@ export function Browse() {
         row.description.toLocaleLowerCase().includes(trimmed) ||
         row.connections.some((connection) =>
           connection.name.toLocaleLowerCase().includes(trimmed),
+        ) ||
+        row.chatEndpoints.some((endpoint) =>
+          endpoint.assignedAgentName.toLocaleLowerCase().includes(trimmed),
         ),
     );
   }, [rows, trimmed]);
@@ -393,9 +654,15 @@ export function Browse() {
   }
 
   const loading =
-    galleryQuery.isLoading || applicationsQuery.isLoading || connectionsQuery.isLoading;
+    galleryQuery.isLoading ||
+    applicationsQuery.isLoading ||
+    connectionsQuery.isLoading ||
+    chatEndpointsQuery.isLoading;
   const loadFailed =
-    galleryQuery.isError || applicationsQuery.isError || connectionsQuery.isError;
+    galleryQuery.isError ||
+    applicationsQuery.isError ||
+    connectionsQuery.isError ||
+    chatEndpointsQuery.isError;
   const nothingMatches = visibleRows.length === 0 && !showCustomConnector;
 
   return (
@@ -421,7 +688,8 @@ export function Browse() {
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <p className="min-w-0 flex-1">
-            Couldn’t load every connector. Existing accounts are shown where available.
+            Couldn’t load every connector. Existing accounts are shown where
+            available.
           </p>
           <Button
             type="button"
@@ -431,6 +699,7 @@ export function Browse() {
               void galleryQuery.refetch();
               void applicationsQuery.refetch();
               void connectionsQuery.refetch();
+              void chatEndpointsQuery.refetch();
             }}
           >
             Try again
@@ -453,12 +722,14 @@ export function Browse() {
         <div className="space-y-3" role="list" aria-label="Connector list">
           {visibleRows.map((row) => (
             <ConnectorCard
+              renderAccountDetails={renderAccountDetails}
               key={row.key}
               row={row}
-              allConnections={connectionsQuery.data?.connections ?? []}
               userProfileById={userProfileById}
               onNavigate={navigate}
               onRequestRemove={setConnectionToRemove}
+              preselectedAgentId={preselectedChatAgentId}
+              chatConnectorsEnabled={chatConnectorsEnabled}
             />
           ))}
           {showCustomConnector ? (
@@ -479,24 +750,32 @@ export function Browse() {
               Remove {connectionToRemove?.accountName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {connectionToRemove && connectionToRemove.childConnectionCount > 0
-                ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
-                : connectionToRemove && connectionToRemove.remainingConnectionCount > 0
-                ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
-                : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+              {connectionToRemove?.kind === "chat"
+                ? `This connection will stop receiving new work from ${connectionToRemove.providerName}. Existing Paperclip tasks and conversation history remain available. This does not delete the app, bot, or account in ${connectionToRemove.providerName}.`
+                : connectionToRemove &&
+                    connectionToRemove.remainingConnectionCount > 0
+                  ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
+                  : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={removeConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={removeConnection.isPending}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={!connectionToRemove || removeConnection.isPending}
               onClick={(event) => {
                 event.preventDefault();
-                if (connectionToRemove) removeConnection.mutate(connectionToRemove);
+                if (connectionToRemove)
+                  removeConnection.mutate(connectionToRemove);
               }}
             >
-              {removeConnection.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 />}
+              {removeConnection.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 />
+              )}
               {removeConnection.isPending ? "Removing…" : "Remove connection"}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -506,25 +785,37 @@ export function Browse() {
   );
 }
 
-function ConnectorCard({
+export function ConnectorCard({
+  renderAccountDetails,
   row,
-  allConnections,
   userProfileById,
   onNavigate,
   onRequestRemove,
+  preselectedAgentId,
+  chatConnectorsEnabled,
 }: {
+  renderAccountDetails?: (connection: ToolConnection) => ReactNode;
   row: ConnectorRowModel;
-  allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   onNavigate: (href: string) => void;
   onRequestRemove: (target: ConnectionRemovalTarget) => void;
+  preselectedAgentId?: string | null;
+  chatConnectorsEnabled: boolean;
 }) {
-  const action = connectorAction(row);
+  const action = connectorAction(
+    row,
+    chatConnectorsEnabled,
+    preselectedAgentId,
+  );
   return (
     <div
       role="listitem"
       data-app-slug={row.slug}
-      data-connected={row.connections.length > 0 ? "true" : "false"}
+      data-connected={
+        row.connections.length > 0 || row.chatEndpoints.length > 0
+          ? "true"
+          : "false"
+      }
       className="overflow-hidden rounded-xl border border-border"
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-4">
@@ -537,7 +828,9 @@ function ConnectorCard({
         />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-foreground">{row.name}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {row.description}
+          </p>
         </div>
         <Button
           type="button"
@@ -546,7 +839,8 @@ function ConnectorCard({
           disabled={!action.href}
           title={action.title}
           onClick={() => {
-            if (action.href) onNavigate(action.href);
+            if (action.href) onNavigate(row.slug === "agentmail"
+              ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
           }}
           aria-label={`${action.label} ${row.name}`}
         >
@@ -558,6 +852,7 @@ function ConnectorCard({
         <div className="divide-y divide-border border-t border-border">
           {row.connections.map((connection) => (
             <ConnectionAccountRow
+              details={renderAccountDetails?.(connection)}
               key={connection.id}
               row={row}
               connection={connection}
@@ -579,12 +874,82 @@ function ConnectorCard({
                       candidate.status === "active" &&
                       candidate.enabled,
                   ).length,
-                  childConnectionCount: allConnections.filter(
-                    (candidate) => composioChildParentConnectionId(candidate) === connection.id,
-                  ).length,
                 });
               }}
             />
+          ))}
+        </div>
+      ) : null}
+      {row.chatEndpoints.length > 0 ? (
+        <div className="divide-y divide-border border-t border-border">
+          {row.chatEndpoints.map((endpoint) => (
+            <div
+              key={endpoint.id}
+              className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3"
+            >
+              <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  className="block max-w-full truncate text-left text-sm font-medium hover:underline"
+                  onClick={() =>
+                    onNavigate(`/apps/chat/${endpoint.id}/settings`)
+                  }
+                >
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
+                </button>
+                <p className="truncate text-xs text-muted-foreground">
+                  {endpoint.providerAccountLabel ??
+                    endpoint.botLabel ??
+                    "Provider identity"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {endpoint.status.replace(/_/g, " ")}
+                </span>
+                {endpoint.status === "draft" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onNavigate(`/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}`)}
+                  >
+                    Finish setup
+                  </Button>
+                ) : null}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Manage ${endpoint.assignedAgentName} ${row.name} connection`}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => onNavigate(`/apps/chat/${endpoint.id}/settings`)}>
+                      Manage
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={() => onRequestRemove({
+                        kind: "chat",
+                        provider: endpoint.provider,
+                        id: endpoint.id,
+                        accountName: `${endpoint.assignedAgentName} · ${row.name}`,
+                        providerName: row.name,
+                        remainingConnectionCount: 0,
+                      })}
+                    >
+                      <Trash2 />
+                      Remove connection
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
           ))}
         </div>
       ) : null}
@@ -593,12 +958,14 @@ function ConnectorCard({
 }
 
 function ConnectionAccountRow({
+  details,
   row,
   connection,
   owner,
   onNavigate,
   onRemove,
 }: {
+  details?: ReactNode;
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
@@ -607,7 +974,11 @@ function ConnectionAccountRow({
 }) {
   const state = connectionState(connection);
   const actionHref = accountActionHref(row, connection);
-  const accountName = connectionDisplayNameForOwner(connection, row.name, owner);
+  const accountName = connectionDisplayNameForOwner(
+    connection,
+    row.name,
+    owner,
+  );
 
   return (
     <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center">
@@ -622,6 +993,7 @@ function ConnectionAccountRow({
           >
             {accountName}
           </button>
+          {details}
           {state.message ? (
             <div
               className={
@@ -648,7 +1020,11 @@ function ConnectionAccountRow({
             variant="outline"
             onClick={() => onNavigate(actionHref)}
           >
-            {state.kind === "attention" ? "Reconnect" : "Finish setup"}
+            {state.kind === "attention"
+              ? connection.requiresReauthorization === false
+                ? "Retry access"
+                : "Reconnect"
+              : "Finish setup"}
           </Button>
         ) : null}
         <DropdownMenu>
@@ -663,7 +1039,9 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}>
+            <DropdownMenuItem
+              onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
+            >
               Permissions
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -681,7 +1059,10 @@ function ConnectionAccountRow({
 function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   if (state.kind === "connected") {
     return (
-      <span className="mt-0.5 text-emerald-600 dark:text-emerald-400" title={state.label}>
+      <span
+        className="mt-0.5 text-emerald-600 dark:text-emerald-400"
+        title={state.label}
+      >
         <Check className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">{state.label}</span>
       </span>
@@ -697,7 +1078,10 @@ function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   }
   if (state.kind === "draft") {
     return (
-      <span className="mt-0.5 text-amber-600 dark:text-amber-400" title={state.label}>
+      <span
+        className="mt-0.5 text-amber-600 dark:text-amber-400"
+        title={state.label}
+      >
         <Clock3 className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">{state.label}</span>
       </span>
@@ -711,7 +1095,11 @@ function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   );
 }
 
-function CustomConnectorCard({ onNavigate }: { onNavigate: (href: string) => void }) {
+function CustomConnectorCard({
+  onNavigate,
+}: {
+  onNavigate: (href: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -725,7 +1113,9 @@ function CustomConnectorCard({ onNavigate }: { onNavigate: (href: string) => voi
           <Link2 className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">Connect your own tool</h2>
+          <h2 className="text-sm font-semibold text-foreground">
+            Connect your own tool
+          </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Add a custom MCP server or paste an existing configuration.
           </p>
@@ -786,8 +1176,12 @@ function CustomConnectorOption({
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-semibold text-foreground">{title}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
+        <span className="block text-sm font-semibold text-foreground">
+          {title}
+        </span>
+        <span className="block text-xs text-muted-foreground">
+          {description}
+        </span>
       </span>
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </button>

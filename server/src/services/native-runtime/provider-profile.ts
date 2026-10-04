@@ -1,26 +1,34 @@
 import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   resolvePaperclipRunnerPermissionMode,
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
+  codexLocalReasoningEffortsForModel,
+  isCodexLocalKnownModel,
+} from "@paperclipai/adapter-codex-local";
+import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
+import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.17" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.32" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
 
 export const QUALIFIED_ACPX_RUNNER_MODELS = {
+  grok: "grok-4.7",
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
   keyof typeof QUALIFIED_ACPX_RUNNER_MODELS;
+type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate;
 
 export type PaperclipRunnerProviderProfile =
   | {
@@ -51,7 +59,7 @@ export type PaperclipRunnerProviderProfile =
       provider: "acpx";
       backend: "acpx_runtime";
       model: string;
-      acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
+      acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
     };
 
 export type PaperclipRunnerNativeProviderInput =
@@ -59,6 +67,7 @@ export type PaperclipRunnerNativeProviderInput =
       provider: "codex";
       model: string | null;
       codexApprovalPolicy: "never" | "on-request" | "untrusted";
+      codexReasoningEffort?: string;
     }
   | {
       provider: "opencode";
@@ -108,8 +117,8 @@ export type PaperclipRunnerNativeProviderInput =
   | {
       provider: "acpx";
       model: string;
-      acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
-      acpxPermissionMode: "approve-all" | "approve-reads" | "deny-all";
+      acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
+      acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -132,6 +141,29 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+/** A task may change a local Runner model (and Codex effort), but not provider identity. */
+export function projectPaperclipRunnerTaskConfig(
+  backend: "codex_app_server" | "opencode_server",
+  agentConfig: unknown,
+  taskOverrides: unknown,
+): Record<string, unknown> {
+  const base = asRecord(agentConfig);
+  const task = asRecord(taskOverrides);
+  const config = { ...base };
+  const model = optionalString(task.model);
+  const effortKey = backend === "codex_app_server"
+    ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
+    : undefined;
+  if (backend === "codex_app_server" && ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined)) {
+    delete config.modelReasoningEffort;
+    delete config.reasoningEffort;
+    delete config.effort;
+  }
+  if (model !== null) config.model = model;
+  if (effortKey !== undefined) config.modelReasoningEffort = task[effortKey];
+  return config;
 }
 
 function positiveNumberOrNull(
@@ -403,15 +435,31 @@ export function resolvePaperclipRunnerProviderProfile(
     };
   }
 
-  const acpxAgent = config.acpxAgent;
-  if (acpxAgent !== "claude" && acpxAgent !== "codex") {
+  const acpxAgent = config.acpxAgent ?? "claude";
+  const pendingAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === acpxAgent && !profile.qualified);
+  if (pendingAcpxProfile) {
+    if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
+    // Qualification authority belongs to the isolated server operator. Never
+    // read this allowlist from adapter config, credential refs, or run env.
+    let qualification: AcpxQualificationCandidate | undefined;
+    try {
+      qualification = resolveAcpxQualification({ kind: "acpx", agent: pendingAcpxProfile.value, model }, process.env);
+    } catch {
+      throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_qualification_invalid", "ACPX qualification requires an exact host-authorized candidate and model.");
+    }
+    if (qualification) {
+      return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: qualification };
+    }
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting local and Daytona qualification. Its profile is not enabled for production runs.`);
+  }
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
-      "Paperclip Runner ACPX requires the qualified Claude or Codex agent profile; Pi is not available.",
+      "Paperclip Runner ACPX requires a qualified agent profile.",
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (model !== qualifiedModel) {
+  if (acpxAgent === "codex" && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
@@ -420,7 +468,7 @@ export function resolvePaperclipRunnerProviderProfile(
   return {
     provider: "acpx",
     backend: "acpx_runtime",
-    model,
+    model: model || qualifiedModel,
     acpxAgent,
   };
 }
@@ -476,7 +524,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
         "acpx",
         config.acpxPermissionMode,
-      ) as "approve-all" | "approve-reads" | "deny-all",
+      ) as "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all",
     };
   }
   if (profile.provider === "claude_managed") {
@@ -630,6 +678,18 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       },
     };
   }
+  const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
+  const allowedEfforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  if (effort !== undefined && effort !== null && effort !== "" && (
+    typeof effort !== "string" || !allowedEfforts.includes(effort)
+    || (profile.model && isCodexLocalKnownModel(profile.model)
+      && !codexLocalReasoningEffortsForModel(profile.model).includes(effort as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+  )) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_codex_effort_invalid",
+      "Paperclip Runner Codex reasoning effort is not supported for this model.",
+    );
+  }
   return {
     provider: "codex",
     model: profile.model,
@@ -637,5 +697,6 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "codex",
       config.codexPermissionMode,
     ) as "never" | "on-request" | "untrusted",
+    ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
   };
 }

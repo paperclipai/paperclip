@@ -3,24 +3,41 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const ordinaryPrTrustedWorkflowRevision =
-  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
+// PR #13470 uses the code-owner-reviewed default branch for this first-party workflow.
+const ordinaryPrTrustedWorkflowRevision = "master";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,?\s*\]/u;
 const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
+const everydayOracleImage =
+  "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
-  it("pins ordinary PR CI to the trusted Node-before-pnpm workflow", async () => {
+  it("keeps the manual EC2 image build credential-free and pins the authorized target", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
+    const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
+    expect(manual.match(/AWS_CI_TRUSTED_USER_IDS/gu)).toHaveLength(2);
+    expect(manual.match(/test "\$REPOSITORY_ID" = 1170821064/gu)).toHaveLength(2);
+    expect(manual).toContain('runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci');
+    expect(manual).toContain('repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH');
+    expect(manual).toContain('ref: ${{ needs.authorize_manual.outputs.target_sha }}');
+    expect(manual).toContain('SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}');
+    expect([...manual.matchAll(/secrets\.([A-Z_]+)/gu)].map(match => match[1])).toEqual(["GITHUB_TOKEN"]);
+    expect(manual).toContain('pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile');
+    expect(manual).toContain('PAPERCLIP_RUNNER_LOCK_SHA256=$lock_sha');
+    expect(manual).toContain('docker logout ghcr.io');
+  });
+
+  it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {
     const ordinaryPrWorkflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/pr.yml"),
       "utf8",
     );
     const trustedWorkflowCalls = [
       ...ordinaryPrWorkflow.matchAll(
-        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([0-9a-f]{40})$/gmu,
+        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
       ),
     ];
 
@@ -46,7 +63,9 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      expect(pnpmSetupSteps, workflowName).toHaveLength(
+        workflowName === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -75,7 +94,8 @@ describe("public repository paid workflow security", () => {
       },
       {
         name: "pr-trusted.yml",
-        expectedCachedSetupNodeSteps: 7,
+        // PR #13300 restores shared stores directly without setup-node cache writes.
+        expectedCachedSetupNodeSteps: 0,
       },
     ];
 
@@ -89,7 +109,9 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(7);
+      expect(pnpmSetupStepIndexes, name).toHaveLength(
+        name === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
@@ -113,7 +135,7 @@ describe("public repository paid workflow security", () => {
         );
       }
 
-      expect(workflow.match(/^\s+cache: pnpm$/gmu), name).toHaveLength(
+      expect(workflow.match(/^\s+cache: pnpm$/gmu) ?? [], name).toHaveLength(
         expectedCachedSetupNodeSteps,
       );
     }
@@ -121,15 +143,18 @@ describe("public repository paid workflow security", () => {
 
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
-        async (name) => ({
-          name,
-          contents: await readFile(
-            path.join(repositoryRoot, ".github/workflows", name),
-            "utf8",
-          ),
-        }),
-      ),
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+        "e2e.yml",
+      ].map(async (name) => ({
+        name,
+        contents: await readFile(
+          path.join(repositoryRoot, ".github/workflows", name),
+          "utf8",
+        ),
+      })),
     );
 
     for (const { name, contents } of workflows) {
@@ -189,6 +214,14 @@ describe("public repository paid workflow security", () => {
     const daytonaImageJob = fullStack.slice(
       fullStack.indexOf("  daytona_image:"),
       fullStack.indexOf("  build_runner_artifacts:"),
+    );
+    expect(daytonaImageJob).toMatch(buildRunnerNeeds);
+    expect(daytonaImageJob).toContain(
+      "runs-on: ${{ needs.authorize.outputs.test_runner }}",
+    );
+    expect(daytonaImageJob).not.toContain("name: runner-e2e-paid");
+    expect(daytonaImageJob).not.toMatch(
+      /(?:(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI)_API_KEY|GROK_AUTH_JSON)/,
     );
     expect(authorizeJob).toContain(
       "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
@@ -272,13 +305,52 @@ describe("public repository paid workflow security", () => {
     const hostedChromiumInstall = paidJob.indexOf(
       "- name: Install Chromium headless shell on GitHub-hosted fallback",
     );
+    const everydayOraclePreparation = paidJob.indexOf(
+      "- name: Prepare pinned Python artifact oracle image",
+    );
     const paidExecution = paidJob.indexOf("- name: Run paid cell");
     expect(paidInstall).toBeGreaterThan(0);
     expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
     expect(awsFfmpegInstall).toBeGreaterThan(daytonaPluginPreparation);
     expect(hostedChromiumInstall).toBeGreaterThan(awsFfmpegInstall);
+    expect(everydayOraclePreparation).toBeGreaterThan(hostedChromiumInstall);
     expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
+    expect(paidExecution).toBeGreaterThan(everydayOraclePreparation);
+    const grokPreparation = paidJob.indexOf("- name: Install checksum-verified Grok executable");
+    expect(grokPreparation).toBeGreaterThan(paidInstall);
+    expect(paidExecution).toBeGreaterThan(grokPreparation);
+    expect(paidJob).toContain("if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')");
+    expect(paidJob).toContain("run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok");
+
+    const everydayOracleStep = paidJob.slice(
+      everydayOraclePreparation,
+      paidExecution,
+    );
+    expect(everydayOracleStep).toContain(
+      "if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification' || matrix.suiteId == 'grok-subscription-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
+    );
+    expect(everydayOracleStep).toContain(
+      `oracle_image='${everydayOracleImage}'`,
+    );
+    expect(everydayOracleStep).toContain(
+      "timeout 30s docker version --format '{{.Server.Version}}'",
+    );
+    expect(everydayOracleStep).toContain(
+      'timeout 120s docker pull "$oracle_image"',
+    );
+    expect(everydayOracleStep).toContain(
+      "timeout 30s docker image inspect \"$oracle_image\" --format '{{.Id}}'",
+    );
+    const artifactSource = await readFile(
+      path.join(repositoryRoot, "tests/runner-e2e/everyday-artifact.py"),
+      "utf8",
+    );
+    const artifactImage = artifactSource.match(
+      /^SANDBOX_IMAGE = '([^']+)'$/mu,
+    )?.[1];
+    expect(artifactImage).toBe(everydayOracleImage);
+    expect(everydayOracleStep).not.toMatch(/secrets\./u);
     const awsFfmpegStep = paidJob.slice(
       awsFfmpegInstall,
       hostedChromiumInstall,
@@ -324,6 +396,10 @@ describe("public repository paid workflow security", () => {
     );
     expect(authorizeJob).toContain('echo "max_parallel_limit=100"');
     expect(fullStack).toContain('[ "$MAX_PARALLEL_LIMIT" -gt 100 ]');
+    expect(fullStack).toContain("REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}");
+    expect(fullStack).toContain('[ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]');
+    expect(fullStack).toContain('[[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]]');
+
     expect(fullStack).toContain(
       '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
     );
@@ -352,6 +428,30 @@ describe("public repository paid workflow security", () => {
     );
     expect(daytonaImageJob).toContain('echo "source_revision="');
     expect(daytonaImageJob).toContain('echo "content_id="');
+    expect(daytonaImageJob).toContain(
+      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
+    );
+    expect(daytonaImageJob).toContain(
+      "TARGET_REF: ${{ needs.authorize.outputs.target_ref }}",
+    );
+    expect(daytonaImageJob).toContain(
+      "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+    );
+    const cacheRead = daytonaImageJob.indexOf(
+      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
+    );
+    const trustedTargetCheck = daytonaImageJob.indexOf(
+      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
+    );
+    const cacheWrite = daytonaImageJob.indexOf(
+      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
+    );
+    expect(cacheRead).toBeGreaterThan(0);
+    expect(trustedTargetCheck).toBeGreaterThan(cacheRead);
+    expect(cacheWrite).toBeGreaterThan(trustedTargetCheck);
+    expect(daytonaImageJob.slice(trustedTargetCheck, cacheWrite)).not.toContain(
+      "secrets.",
+    );
     const targetCodeJobs = [
       fullStack.slice(
         fullStack.indexOf("  catalog:"),
@@ -444,6 +544,8 @@ describe("public repository paid workflow security", () => {
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
       OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
+      XAI_API_KEY: "matrix.credentialName == 'XAI_API_KEY'",
+      GROK_AUTH_JSON: "matrix.credentialName == 'GROK_AUTH_JSON'",
       DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
     })) {
       expect(fullStack).toContain(
@@ -458,6 +560,7 @@ describe("public repository paid workflow security", () => {
       "e2e.yml",
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
+      "runner-protocol-live-evals.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),
@@ -470,7 +573,7 @@ describe("public repository paid workflow security", () => {
       );
       const providerSecretReferences = [
         ...contents.matchAll(
-          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g,
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g,
         ),
       ];
       if (providerSecretReferences.length > 0) {
@@ -484,7 +587,11 @@ describe("public repository paid workflow security", () => {
 
   it("runs paid scheduled campaigns only on Sundays", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+      ].map((name) =>
         readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );
@@ -610,6 +717,23 @@ describe("public repository paid workflow security", () => {
     );
   });
 
+  it("resolves each trusted reporting lockfile before frozen install and AWS credentials", async () => {
+    const workflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8",
+    );
+    for (const jobName of ["report", "publish_history"]) {
+      const job = workflow.split(`\n  ${jobName}:`)[1]!.split(/\n  [a-z_]+:/u)[0]!;
+      const resolve = job.indexOf("pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile");
+      const install = job.indexOf("pnpm install --frozen-lockfile");
+      expect(job).toContain("ref: ${{ github.sha }}");
+      expect(job).not.toContain("resolved-target-lockfile");
+      expect(resolve, jobName).toBeGreaterThan(-1);
+      expect(install, jobName).toBeGreaterThan(resolve);
+      const credentials = job.indexOf("aws-actions/configure-aws-credentials@");
+      if (credentials >= 0) expect(install).toBeLessThan(credentials);
+    }
+  });
+
   it("binds rerun evidence and Pages artifacts to the exact workflow attempt", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
@@ -638,6 +762,12 @@ describe("public repository paid workflow security", () => {
     expect(report).toContain("tests/runner-e2e/select-rerun-artifacts.ts");
     expect(report).toContain(
       "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
+    );
+    expect(report).toContain(
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}",
+    );
+    expect(report).toContain(
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}",
     );
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
@@ -670,12 +800,24 @@ describe("public repository paid workflow security", () => {
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");
+    expect(workflow).toContain("Verify normalized history source report");
+    expect(workflow).not.toContain("sanitized_screenshot=");
     expect(workflow).toContain(
-      "Verify history source report and private screenshot evidence",
+      "Publish S3 history and Pages bundle with declared screenshots",
     );
-    expect(workflow).toContain("private_screenshot=");
-    expect(workflow).toContain("Publish pruned immutable history");
-    expect(workflow).toContain("Publish latest structured dashboard");
+    expect(workflow).toContain(
+      "Publish trusted summary and declared screenshots to public bundles",
+    );
+    expect(publisher).toContain(
+      "pnpm exec playwright install --with-deps --only-shell chromium",
+    );
+    expect(workflow).toContain(
+      "Package pruned dashboard with declared screenshots for GitHub Pages",
+    );
+    expect(workflow).toContain("path: runner-e2e-merged-report/pages");
+    expect(workflow).toContain(
+      "Publish latest dashboard with declared screenshots",
+    );
     expect(workflow).not.toContain("dashboard_ready");
     expect(workflow).not.toContain("Publish latest screenshot dashboard");
     expect(

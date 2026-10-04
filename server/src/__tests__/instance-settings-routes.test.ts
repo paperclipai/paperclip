@@ -23,11 +23,16 @@ const mockEnvironmentService = vi.hoisted(() => ({
   findManagedSandboxEnvironment: vi.fn(),
   update: vi.fn(),
 }));
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
@@ -52,8 +57,12 @@ function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>)
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
+// Rows the lifecycle read-back's plain `db.select().from(companies)` sees;
+// tests assign per case.
+let mockCompanyRows: Array<{ id: string; status: string }> = [];
 const mockDb = {
   transaction: vi.fn(defaultTransactionImplementation),
+  select: vi.fn(() => ({ from: () => Promise.resolve(mockCompanyRows) })),
 };
 
 describe("instance settings routes", () => {
@@ -115,7 +124,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: null,
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -140,7 +148,6 @@ describe("instance settings routes", () => {
     });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
@@ -165,7 +172,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: "env-1",
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -192,7 +198,6 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       },
     });
@@ -279,6 +284,18 @@ describe("instance settings routes", () => {
       .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run")
       .send({ lookbackHours: 24 })
       .expect(404);
+  });
+
+  it.each([true, false])("allows only instance admins to change chat connector visibility (%s)", async (isInstanceAdmin) => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin, companyIds: ["company-1"] });
+    const response = await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true });
+    expect(response.status).toBe(isInstanceAdmin ? 200 : 403);
+    if (isInstanceAdmin) {
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      expect(mockLogActivity).toHaveBeenCalled();
+    } else {
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    }
   });
 
   it("accepts the instance-wide Streamlined UI preference", async () => {
@@ -572,7 +589,6 @@ describe("instance settings routes", () => {
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -580,14 +596,12 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
@@ -607,7 +621,6 @@ describe("instance settings routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
   });
@@ -639,7 +652,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true, keyboardShortcuts: true });
+      .send({ censorUsernameInLogs: true });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
@@ -680,7 +693,6 @@ describe("instance settings routes", () => {
     it("rejects a write that changes executionMode", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -709,7 +721,6 @@ describe("instance settings routes", () => {
     it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -717,12 +728,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+        .send({ executionMode: "kubernetes", censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         executionMode: "kubernetes",
-        keyboardShortcuts: true,
+        censorUsernameInLogs: true,
       });
     });
 
@@ -731,11 +742,11 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
-      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ censorUsernameInLogs: true });
     });
 
     it("keeps executionMode writable on self-hosted instances", async () => {
@@ -788,12 +799,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ censorUsernameInLogs: false, keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: false, feedbackDataSharingPreference: "allowed" });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         censorUsernameInLogs: false,
-        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
       });
     });
 
@@ -801,7 +812,6 @@ describe("instance settings routes", () => {
       process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.backupRetention";
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       });
@@ -827,6 +837,40 @@ describe("instance settings routes", () => {
         .patch("/api/instance/settings/experimental")
         .send({ enableEnvironments: true });
 
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("enforces a wildcard allowlist at the API and preserves hidden values", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableIsolatedWorkspaces";
+      const app = await createApp(adminActor);
+
+      const rejected = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true, enableIsolatedWorkspaces: true });
+      expect(rejected.status).toBe(403);
+      expect(rejected.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+
+      // Existing full-form clients may echo hidden values without changing them.
+      const allowed = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: false, enableIsolatedWorkspaces: true });
+      expect(allowed.status).toBe(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+        enableEnvironments: false, enableIsolatedWorkspaces: true,
+      });
+    });
+
+    it("does not let an allowlist exception bypass an explicit API restriction", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableEnvironments,instance.experimental.enableEnvironments";
+      const app = await createApp(adminActor);
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true });
       expect(res.status).toBe(403);
       expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
       expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
@@ -1275,6 +1319,159 @@ describe("instance settings routes", () => {
       expect(negativeRes.status).toBe(400);
 
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("cloud lifecycle read-back and unarchive", () => {
+    const STACK_ID = "stack-lifecycle-routes";
+    const adminActor = {
+      type: "board",
+      userId: "paperclip-cloud",
+      source: "cloud_control",
+      isInstanceAdmin: true,
+      companyIds: [],
+    };
+    const memberActor = {
+      type: "board",
+      userId: "member-1",
+      source: "cloud_tenant",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    };
+    // The pinned primary company id the routes derive from the stack id.
+    let primaryId: string;
+
+    beforeEach(async () => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+      process.env.PAPERCLIP_CLOUD_STACK_ID = STACK_ID;
+      const { cloudTenantPrimaryCompanyId } = await vi.importActual<
+        typeof import("../services/cloud-instance.js")
+      >("../services/cloud-instance.js");
+      primaryId = cloudTenantPrimaryCompanyId(STACK_ID);
+      mockCompanyRows = [];
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      delete process.env.PAPERCLIP_CLOUD_STACK_ID;
+    });
+
+    it("reports the primary company status and how many other companies are not archived", async () => {
+      mockCompanyRows = [
+        { id: primaryId, status: "archived" },
+        { id: "company-sibling-live", status: "active" },
+        { id: "company-sibling-paused", status: "paused" },
+        { id: "company-sibling-archived", status: "archived" },
+      ];
+      const app = await createApp(adminActor);
+
+      const res = await request(app).get("/api/instance/lifecycle");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        primaryCompanyId: primaryId,
+        primaryCompanyStatus: "archived",
+        // paused counts: any non-archived sibling keeps the stack alive.
+        otherUnarchivedCompanyCount: 2,
+      });
+    });
+
+    it("reports a missing primary company without failing", async () => {
+      mockCompanyRows = [{ id: "company-other", status: "active" }];
+      const app = await createApp(adminActor);
+
+      const res = await request(app).get("/api/instance/lifecycle");
+
+      expect(res.status).toBe(200);
+      expect(res.body.primaryCompanyStatus).toBe("missing");
+    });
+
+    it("hides the cross-company lifecycle summary from non-admin board members", async () => {
+      mockCompanyRows = [{ id: primaryId, status: "archived" }];
+      const app = await createApp(memberActor);
+
+      const res = await request(app).get("/api/instance/lifecycle");
+
+      expect(res.status).toBe(403);
+    });
+
+    it("answers 404 when the instance is not cloud-managed", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      delete process.env.PAPERCLIP_CLOUD_STACK_ID;
+      const readRes = await request(await createApp(adminActor)).get("/api/instance/lifecycle");
+      expect(readRes.status).toBe(404);
+
+      // The admin gate runs first, so prove the 404 with an admin actor.
+      const unarchiveRes = await request(await createApp(adminActor))
+        .post("/api/instance/lifecycle/unarchive-primary")
+        .send({});
+      expect(unarchiveRes.status).toBe(404);
+      expect(mockCompanyService.update).not.toHaveBeenCalled();
+    });
+
+    it("unarchives an archived primary company as a system actor", async () => {
+      mockCompanyService.getById.mockResolvedValue({ id: "", status: "archived" });
+      mockCompanyService.update.mockImplementation(async (id: string) => ({ id, status: "active" }));
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .post("/api/instance/lifecycle/unarchive-primary")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: "active", changed: true });
+      expect(mockCompanyService.update).toHaveBeenCalledWith(
+        primaryId,
+        { status: "active" },
+        { actorType: "system", actorId: "paperclip-cloud", agentId: null, runId: null },
+      );
+    });
+
+    it("attributes a human admin's unarchive to that admin, not to Cloud", async () => {
+      mockCompanyService.getById.mockResolvedValue({ id: "", status: "archived" });
+      mockCompanyService.update.mockImplementation(async (id: string) => ({ id, status: "active" }));
+      const humanAdmin = {
+        type: "board",
+        userId: "human-admin",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: ["company-1"],
+      };
+      const app = await createApp(humanAdmin);
+
+      const res = await request(app)
+        .post("/api/instance/lifecycle/unarchive-primary")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockCompanyService.update).toHaveBeenCalledWith(
+        primaryId,
+        { status: "active" },
+        expect.objectContaining({ actorType: "user", actorId: "human-admin" }),
+      );
+    });
+
+    it("is idempotent: an unarchived primary company reports changed:false", async () => {
+      mockCompanyService.getById.mockResolvedValue({ id: "", status: "active" });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .post("/api/instance/lifecycle/unarchive-primary")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: "active", changed: false });
+      expect(mockCompanyService.update).not.toHaveBeenCalled();
+    });
+
+    it("requires instance admin rights to unarchive", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/instance/lifecycle/unarchive-primary")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockCompanyService.update).not.toHaveBeenCalled();
     });
   });
 });

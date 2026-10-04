@@ -3,7 +3,7 @@ export type PaperclipRunnerProvider =
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
-export type AcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type AcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export type PaperclipRunnerPermissionMode =
   CodexPermissionMode | OpenCodePermissionMode | AcpxPermissionMode;
@@ -12,6 +12,8 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
+  acpx: "claude-sonnet-5",
+  opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
 export interface PaperclipRunnerPermissionOption<
@@ -66,7 +68,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "ask",
+    defaultMode: "allow",
     description:
       "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
@@ -104,7 +106,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-reads",
+    defaultMode: "approve-all",
     description:
       "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [
@@ -114,10 +116,16 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         description: "Approve ACPX operations without approval pauses.",
       },
       {
-        value: "approve-reads",
-        label: "Conservative (fail closed)",
+        value: "approve-paperclip",
+        label: "Automatic Paperclip actions",
         description:
-          "Delegate ACPX permission requests and fail closed until a verified interactive approval bridge is available.",
+          "Automatically run assigned Paperclip planning and task tools, including reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
+      },
+      {
+        value: "approve-reads",
+        label: "Allow Paperclip reads",
+        description:
+          "Automatically allow assigned Paperclip read tools. Other operations request a supported permission decision. Company permissions and execution boundaries still apply.",
       },
       {
         value: "deny-all",
@@ -171,3 +179,56 @@ export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {
     ? value
     : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
 }
+
+/** Defaults for converting a local adapter; the operator may override the provider. */
+export function paperclipRunnerTransitionConfig(
+  previousAdapterType: string,
+  previousModel: unknown,
+  providerOverride?: unknown,
+): Record<string, unknown> {
+  const previousProvider =
+    previousAdapterType === "claude_local"
+      ? "acpx"
+      : previousAdapterType === "opencode_local"
+        ? "opencode"
+        : "codex";
+  const provider =
+    providerOverride === "codex" ||
+    providerOverride === "opencode" ||
+    providerOverride === "acpx"
+      ? providerOverride
+      : previousProvider;
+  return {
+    provider,
+    model: resolvePaperclipRunnerModel(
+      provider,
+      provider === previousProvider ? previousModel : undefined,
+    ),
+    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+    [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
+      PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
+    lifecycleMode: "per_turn",
+  };
+}
+
+/** Old ACPX Codex agent settings use native Codex on their next configuration write. */
+export function normalizeLegacyRunnerProvider(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (config.provider !== "acpx" || config.acpxAgent !== "codex") return config;
+  const {
+    acpxAgent: _agent,
+    acpxPermissionMode: _permission,
+    ...rest
+  } = config;
+  return { ...rest, provider: "codex", codexPermissionMode: "never" };
+}
+
+/** Qualification is a release property, never an operator-configurable bypass. */
+export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
+  { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: false, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "pi", label: "Pi", qualified: false, credentialEnvironment: ["OPENROUTER_API_KEY"] },
+] as const);

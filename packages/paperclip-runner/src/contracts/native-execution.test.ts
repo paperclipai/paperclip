@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInputV1 } from "./native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInputV1 } from "./native-execution.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -96,10 +97,44 @@ describe("NativeExecutionInputV1", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", model: null, approvalPolicy: "on-request" },
     });
+    const withDelta = parseNativeExecutionInput({ ...current, continuationPrompt: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}' });
+    // No checkpoint / failed provider recovery must retain full bootstrap input.
+    expect(buildNativeModelEnvelope(withDelta)).toEqual(buildNativeModelEnvelope(current));
+    const delta = buildNativeModelEnvelope(withDelta, { resumedSession: true });
+    expect(delta).toEqual({
+      schema: "paperclip.native-continuation.v1",
+      events: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}',
+      completion: { revision: "1", criterionIds: ["objective"] },
+    });
+    expect(JSON.stringify(delta)).not.toContain(input.task.title);
+    expect(JSON.stringify(delta)).not.toContain(input.completionContract.contract.objective);
+    expect(JSON.stringify(delta)).not.toContain("opaque-binding");
+    const withGuidance = parseNativeExecutionInput({ ...current, initialCommunicationGuidance: "Saved Slack instructions" });
+    expect(buildNativeModelEnvelope(withGuidance).task.prompt).toBe(`Saved Slack instructions\n\n${current.task.prompt}`);
+    // Structured question/approval resumes may use a full envelope rather than
+    // a delta. They still must not repeat initial communication instructions.
+    expect(buildNativeModelEnvelope(withGuidance, { resumedSession: true })).toEqual(buildNativeModelEnvelope(current));
+    expect(buildNativeModelEnvelope(parseNativeExecutionInput({ ...withGuidance, continuationPrompt: "new message" }), { resumedSession: true })).not.toHaveProperty("task");
+    expect(buildNativeModelEnvelope(withGuidance).task.prompt.match(/Saved Slack instructions/g)).toHaveLength(1);
     expect(current).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
+    const withEffort = parseNativeExecutionInput({
+      ...current,
+      schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    });
+    expect(withEffort.provider).toMatchObject({ kind: "codex", reasoningEffort: "ultra" });
+    expect(parseNativeExecutionInput(withEffort)).toEqual(withEffort);
+    expect(() => parseNativeExecutionInput({
+      ...withEffort,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "impossible" },
+    })).toThrow("reasoningEffort");
+    expect(() => parseNativeExecutionInput({
+      ...current,
+      provider: { kind: "codex", model: null, approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    })).toThrow("input.provider");
     expect(() => parseNativeExecutionInput({
       ...parsed,
       schema: "paperclip.native-execution-input.v4",
@@ -235,7 +270,7 @@ describe("NativeExecutionInputV1", () => {
           contextBucket: "paperclip-agentcore-context",
           contextPrefix: "paperclip/runtime",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           eventExpiryDays: 90,
         },
         maxEstimatedSessionCostUsd: 1,
@@ -260,7 +295,7 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it("accepts only a closed ACPX profile matching the driver and agent", () => {
+  it.each([1, 2, 3, 4, 5] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -271,7 +306,7 @@ describe("NativeExecutionInputV1", () => {
         protocolVersion: 1,
         acpxVersion: "0.13.1",
         agent: "pi",
-        agentProfileVersion: 1,
+        agentProfileVersion,
         agentServerPackage: "pi-acp",
         agentServerVersion: "0.0.33",
         agentRuntimePackage: "@earendil-works/pi-coding-agent",
@@ -292,6 +327,13 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    for (const unsupportedVersion of [0, 6, 1.5, "5", null]) {
+      expect(() => parseNativeExecutionInput({
+        ...input,
+        session: { ...input.session, driverKind: "acpx_runtime" },
+        provider: { ...provider, profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
+      })).toThrow("qualified ACPX v1 profile");
+    }
     expect(buildNativeModelEnvelope(parsed).workspace).toEqual({ cwd: "/safe/workspace" });
     expect(() => parseNativeExecutionInput({
       ...input,
@@ -417,5 +459,123 @@ describe("NativeExecutionInputV2 ask mode", () => {
         reviewContext: {},
       },
     })).toThrow("plan execution mode requires planning work mode");
+  });
+});
+
+
+describe("native task context ownership", () => {
+  function currentInput() {
+    const digest = "0".repeat(64);
+    const context = {
+      prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+      instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
+      skills: [],
+      mcp: { assignmentSetId: "none", digest, bindingId: null },
+    } as const;
+    return parseNativeExecutionInput({
+      ...input,
+      schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+      task: { ...input.task, description: "Use $assigned-skill. Repeat this. Repeat this.", prompt: "# PAP-1\n\nIssue description:\nUse $assigned-skill. Repeat this. Repeat this." },
+      provider: { kind: "codex", model: null, approvalPolicy: "never" },
+      executionMode: "default",
+      planningContext: null,
+      runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+    });
+  }
+
+  it.each([
+    ["v4", "paperclip.native-execution-input.v4", "paperclip.native-model-envelope.v2"],
+    ["v5", NATIVE_EXECUTION_INPUT_SCHEMA, "paperclip.native-model-envelope.v3"],
+  ] as const)("applies communication guidance once for fresh %s input and never on resume", (_label, schema, envelopeSchema) => {
+    const guidance = "Saved Slack instructions";
+    const v5 = currentInput();
+    const source = {
+      kind: "description" as const,
+      id: v5.binding.issueId,
+      revision: createHash("sha256").update(v5.task.description!).digest("hex"),
+    };
+    const contract = {
+      ...v5.completionContract.contract,
+      criteria: [{ id: "objective", requirement: v5.task.description! }],
+    };
+    const parsed = parseNativeExecutionInput({
+      ...v5,
+      schema,
+      initialCommunicationGuidance: guidance,
+      ...(schema === NATIVE_EXECUTION_INPUT_SCHEMA ? {
+        completionContract: { ...v5.completionContract, contract },
+        completionSources: {
+          promptSha256: createHash("sha256").update(v5.task.prompt).digest("hex"),
+          contractRevision: contract.revision,
+          criteria: [{ id: "objective", source }],
+        },
+      } : {}),
+    });
+    const fresh = buildNativeModelEnvelope(parsed);
+    expect(fresh.schema).toBe(envelopeSchema);
+    expect(fresh.task.prompt).toBe(`${guidance}\n\n${parsed.task.prompt}`);
+    expect(fresh.task.prompt.match(/Saved Slack instructions/g)).toHaveLength(1);
+    if (schema === NATIVE_EXECUTION_INPUT_SCHEMA) {
+      expect(fresh.task).not.toHaveProperty("description");
+      expect(fresh.completionContract.criteria).toEqual([
+        { id: "objective", source: { ...source, location: "task.prompt" } },
+      ]);
+    } else {
+      expect(fresh.task).toHaveProperty("description", parsed.task.description);
+    }
+
+    const fullResume = buildNativeModelEnvelope(parsed, { resumedSession: true });
+    expect(fullResume.schema).toBe(envelopeSchema);
+    expect(fullResume.task.prompt).toBe(parsed.task.prompt);
+    expect(fullResume.task.prompt).not.toContain(guidance);
+
+    const compactResume = buildNativeModelEnvelope(
+      parseNativeExecutionInput({ ...parsed, continuationPrompt: "new message" }),
+      { resumedSession: true },
+    );
+    expect(compactResume).toMatchObject({ schema: "paperclip.native-continuation.v1" });
+    expect(JSON.stringify(compactResume)).not.toContain(guidance);
+  });
+
+  it("selects model fields without losing the internal skill-selection description", () => {
+    const execution = currentInput();
+    const envelope = buildNativeModelEnvelope(execution);
+    expect(envelope.task).toEqual({
+      identifier: execution.task.identifier,
+      title: execution.task.title,
+      prompt: execution.task.prompt,
+      workMode: execution.task.workMode,
+    });
+    expect(execution.task.description).toBe("Use $assigned-skill. Repeat this. Repeat this.");
+    expect(envelope.task.prompt).toContain("Repeat this. Repeat this.");
+    expect(envelope.completionContract).toEqual(execution.completionContract.contract);
+  });
+
+  it("references only verified criterion sources and preserves independent requirements", () => {
+    const execution = currentInput();
+    const source = { kind: "description", id: execution.binding.issueId, revision: createHash("sha256").update(execution.task.description!).digest("hex") };
+    const contract = { ...execution.completionContract.contract, criteria: [
+      { id: "objective", requirement: execution.task.description! },
+      { id: "independent", requirement: "Also report a measured result." },
+    ] };
+    const completeInput = parseNativeExecutionInput({
+      ...execution,
+      completionContract: { ...execution.completionContract, contract },
+      completionSources: { promptSha256: createHash("sha256").update(execution.task.prompt).digest("hex"), contractRevision: contract.revision, criteria: [{ id: "objective", source }] },
+    });
+    const before = structuredClone(completeInput.completionContract);
+    const envelope = buildNativeModelEnvelope(completeInput);
+    expect(envelope.completionContract.criteria).toEqual([
+      { id: "objective", source: { ...source, location: "task.prompt" } },
+      { id: "independent", requirement: "Also report a measured result." },
+    ]);
+    expect(completeInput.completionContract).toEqual(before);
+    // A different prompt or contract revision invalidates the projection, never the saved contract.
+    for (const stale of [
+      { ...completeInput, task: { ...completeInput.task, prompt: "Recovery without the original brief" } },
+      { ...completeInput, completionContract: { ...completeInput.completionContract, contract: { ...contract, revision: "new" } } },
+    ]) {
+      expect(buildNativeModelEnvelope(stale).completionContract).toEqual(stale.completionContract.contract);
+    }
   });
 });

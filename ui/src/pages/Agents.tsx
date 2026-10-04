@@ -1,3 +1,5 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -6,7 +8,6 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -15,7 +16,6 @@ import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
@@ -194,6 +194,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+  const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -210,15 +211,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   useEffect(() => {
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
-
-  const { data: boardAccess } = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
-  });
-  const canUseProviderTrace =
-    boardAccess?.source === "local_implicit" ||
-    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -369,10 +361,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
-    // Lifecycle chip + inline `Set up`. Rendered inline in
-    // `meta` at xl (where there's room and the meta columns align) and on a
-    // dedicated full-width line beneath the name below xl, so the chips never
-    // starve the name — the row's primary identifier — at narrow widths.
+    // Keep lifecycle controls with the metadata only when the content area
+    // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
       <>
         <BuiltInLifecycleChip status={builtInState.status} />
@@ -398,41 +388,34 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <EntityRow
         key={agent.id}
         title={agent.name}
-        // Fixed (truncating) title width at xl so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Below xl the meta columns are hidden, so
-        // the title flexes instead: a fixed width there let the shrink-0
-        // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
+        titleTextClassName="truncate"
+        subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
-          "group",
+          "group py-3",
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={agent.status} />
+          <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
+        secondaryRow={builtInCluster && (
+          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+            {builtInCluster}
+          </div>
+        )}
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
+              <div className="hidden @5xl:flex items-center gap-1.5">
                 {builtInCluster}
               </div>
             )}
-            <div className="hidden xl:flex items-center gap-3">
+            <div className="hidden @5xl:flex items-center gap-3">
               <AgentMetaColumns
                 agent={agent}
                 environment={resolveRenderedEnvironment(agent.id)}
@@ -441,9 +424,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             </div>
           </div>
         }
-        metaSpacerClassName="hidden xl:block"
+        metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
+            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
@@ -455,23 +439,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                  canRunWithProviderTrace={canUseProviderTrace}
-                />
-              </div>
               <StarToggle
                 size="row"
                 starred={agentStarred}
@@ -511,11 +478,12 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   return (
     <div className={cn(
+      "@container",
       effectiveView === "org"
         ? "flex h-full min-h-0 flex-col gap-4"
         : "space-y-4",
     )}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={visibleTabItems}
@@ -669,7 +637,7 @@ function OrgTreeNode({
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={node.status} />
+          <AgentAvatar agent={agent ?? node} size={24} />
         )}
         <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
           {/* Name floor + `truncate` keeps the primary identifier readable; the

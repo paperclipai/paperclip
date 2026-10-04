@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -371,6 +371,94 @@ describe("device-login credential promotion", () => {
     expect(result.outcome).toBe("promoted");
     const homeAuth = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
     expect(JSON.parse(homeAuth).tokens.account_id).toBe(ACCOUNT);
+  });
+
+  it("a strictly-newer same-account login refreshes the company default home", async () => {
+    // The sign-in loop this pins: a company home already holding a shape-usable
+    // credential for this account must still pick up the login the user just
+    // completed, or every environment test after the login keeps staging the
+    // old credential and keeps reporting authentication as missing.
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: OLDER, marker: "old" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "new" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
+    expect(homeAuth.last_refresh).toBe(NEWER);
+    expect(homeAuth.tokens.refresh_token).toContain("new");
+  });
+
+  it("an older same-account login keeps the company default home", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "keep" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: OLDER, marker: "older" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
+    expect(homeAuth.tokens.refresh_token).toContain("keep");
+  });
+
+  it("a strictly-newer same-account login replaces a symlinked company auth.json without writing its target", async () => {
+    // The company home often symlinks auth.json at the host login (the shared
+    // source seeding does exactly that). The refresh must swap the symlink for
+    // a regular file holding the login credential — atomically, at the link
+    // itself — and must never write through the link into the file it names.
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const hostAuthPath = path.join(home, "host-auth.json");
+    const hostBytes = subscriptionAuth({ accountId: ACCOUNT, lastRefresh: OLDER, marker: "host" });
+    await writeFile(hostAuthPath, hostBytes);
+    const companyHome = resolveManagedCodexHomeDir(env, COMPANY_A);
+    await mkdir(companyHome, { recursive: true, mode: 0o700 });
+    await symlink(hostAuthPath, companyHomeAuthPath(env, COMPANY_A));
+
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "fresh" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+
+    const stat = await lstat(companyHomeAuthPath(env, COMPANY_A));
+    expect(stat.isSymbolicLink()).toBe(false);
+    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
+    expect(homeAuth.tokens.refresh_token).toContain("fresh");
+    // The symlink target — standing in for the host's ~/.codex/auth.json — was
+    // never written.
+    expect(await readFile(hostAuthPath, "utf8")).toBe(hostBytes.toString("utf8"));
   });
 
   it("promotion fails the login when the account identifier cannot become a handle", async () => {

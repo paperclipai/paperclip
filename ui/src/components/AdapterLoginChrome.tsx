@@ -49,6 +49,7 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
+  grok_local: "Grok",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -57,8 +58,8 @@ export function connectSourceName(adapterType: string): string {
 }
 
 /**
- * The connect step's login card: an instruction with a Cancel beside it, then
- * the rows the customer works through.
+ * The connect step's login card: an instruction, then the rows the customer
+ * works through.
  *
  * The rows are the caller's, because the two login modes genuinely differ in
  * the last one — Claude takes a code back, OpenAI hands one out — while
@@ -67,7 +68,6 @@ export function connectSourceName(adapterType: string): string {
  */
 export function OnboardingLoginCard({
   instruction,
-  onCancel,
   loading = false,
   children,
 }: {
@@ -77,7 +77,6 @@ export function OnboardingLoginCard({
    * be mono to read as a name rather than as prose.
    */
   instruction: ReactNode;
-  onCancel?: () => void;
   /**
    * Show a spinner instead of the contents, at the same height.
    *
@@ -104,41 +103,25 @@ export function OnboardingLoginCard({
 
   return (
     <div className="flex min-h-(--sz-108px) flex-col gap-4 rounded-xl bg-muted/40 p-4">
-      {/* No `gap`: `justify-between` already holds the two apart, and the eight
-          pixels a gap reserves are eight the instruction does not have. The
-          longest of these strings needs the full width between the inset and
-          Cancel to stay on one line, which is how the design draws it — a gap
-          here wrapped it onto a second.
+      {/* The row is the instruction alone. It shared this line with a Cancel
+          until that button went — it repeated the footer's Back, which is the
+          step's one way out.
 
-          It is still allowed to wrap rather than being pinned to one line: a
-          translation longer than the English will not fit however the row is
-          divided, and two lines is a better failure than an overflow. */}
-      {/* The instruction is a step down from Cancel, which is the hierarchy the
-          design draws — the label describes, the button acts.
+          12px, not 14. The frame's own label measures 281px and this string at
+          12px Inter measures 280px, where at 14px it needs 327px in a row that
+          has 327px to give and wraps on the rounding. Matching the width the
+          design actually renders is the closer reading of it than matching a
+          nominal size in a font it was not drawn in.
 
-          It is also what keeps the longest of these strings on one line. The
-          frame's own label measures 281px, and this string at 12px Inter
-          measures 280px, where at 14px it needs 327px in a row that has 327px
-          to give and wraps on the rounding. Matching the width the design
-          actually renders is the closer reading of it than matching a nominal
-          size in a font it was not drawn in. */}
+          Still allowed to wrap: a translation longer than the English will not
+          fit however the row is divided, and two lines is a better failure
+          than an overflow. */}
       <motion.div
-        className="flex items-center justify-between pl-2"
+        className="flex items-center pl-2"
         initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
         animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_INSTRUCTION }}
       >
         <span className="text-xs text-muted-foreground">{instruction}</span>
-        {onCancel && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 px-2.5 text-sm font-medium"
-            onClick={onCancel}
-          >
-            Cancel
-          </Button>
-        )}
       </motion.div>
       {/* A beat behind the sentence above it, so the card reads as one thing
           unfolding and the instruction has been read by the time the field is
@@ -188,9 +171,12 @@ function LoginCardCopyButton({
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
 
   return (
     <Button
@@ -242,29 +228,73 @@ export function OnboardingLoginCodeRow({
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoCopiedRef = useRef(false);
 
-  useEffect(() => () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!autoCopy || autoCopiedRef.current) return;
-    autoCopiedRef.current = true;
-    void copyTextToClipboard(code)
-      .then(() => {
-        // Written now, said later: the clipboard should be ready the instant
-        // the code is readable, but the claim waits for the rest of the card to
-        // stop moving — see COPIED_REVEAL_DELAY_MS.
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
-      })
-      .catch(() => {
-        // Refused, most likely for want of user activation. The button stays.
-      });
+    // An empty code is not a code. The row renders before the server's one-time
+    // prompt has a value on some paths, and the previous version latched on
+    // that first run — so the copy that mattered never ran, and the card said
+    // "Copied!" over an empty clipboard.
+    if (!autoCopy || autoCopiedRef.current || !code) return;
+
+    let cancelled = false;
+    // The success latch is taken when the write resolves, so it cannot also
+    // stand in for "a write is already running" — a focus event landing while
+    // one was in flight started a second. Same text either way, but it doubles
+    // the reveal timers and there is no reason to ask twice.
+    let inFlight = false;
+
+    const attempt = () => {
+      if (cancelled || autoCopiedRef.current || inFlight) return;
+      // A write from an unfocused document is refused, and worse, some engines
+      // resolve it without writing. Wait for focus rather than spend the one
+      // attempt on it.
+      if (typeof document !== "undefined" && !document.hasFocus()) return;
+      inFlight = true;
+      void copyTextToClipboard(code)
+        .then(() => {
+          if (cancelled) return;
+          // Latched on success, not before it. Latching up front made the first
+          // refusal permanent — and the first attempt is the one most likely to
+          // be refused, since it fires while the card is still arriving.
+          autoCopiedRef.current = true;
+          window.removeEventListener("focus", attempt);
+          // Written now, said later: the clipboard should be ready the instant
+          // the code is readable, but the claim waits for the rest of the card
+          // to stop moving — see COPIED_REVEAL_DELAY_MS.
+          if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          timeoutRef.current = setTimeout(
+            () => setCopied(true),
+            COPIED_REVEAL_DELAY_MS,
+          );
+        })
+        .catch(() => {
+          // Refused. The listener gives it another go when the document comes
+          // back, and the button is there the whole time regardless.
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+
+    attempt();
+    window.addEventListener("focus", attempt);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", attempt);
+    };
   }, [autoCopy, code]);
 
   return (
     <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{code}</span>
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {code}
+      </span>
       <AnimatePresence initial={false}>
         {copied && (
           <motion.span
@@ -342,7 +372,12 @@ export function OnboardingCardField({
   disabled?: boolean;
   label?: string;
   placeholder?: string;
-  /** A provider key is a credential; a one-time browser code is not. */
+  /**
+   * Dots instead of the value. The key card asks for it because a provider key
+   * is a credential that goes on living. The Claude card asks too: its code
+   * stays in the field after the paste so the customer can see something
+   * landed, and that is all they need to see of it.
+   */
   masked?: boolean;
   /**
    * Take focus when the card opens.
@@ -376,4 +411,85 @@ export function OnboardingCardField({
       className={onboardingCardInputClass}
     />
   );
+}
+
+/** Shared authentication presentation. Hosts retain their existing session lifecycle. */
+export function ProviderSubscriptionCard({
+  providerName,
+  authorizationUrl,
+  mode,
+  loading,
+  children,
+}: {
+  providerName: string;
+  authorizationUrl?: string;
+  mode: "submitted_code" | "displayed_code";
+  loading?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <OnboardingLoginCard
+      loading={loading}
+      instruction={
+        <>
+          <a
+            href={authorizationUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Sign in to {providerName}
+          </a>
+          {mode === "submitted_code"
+            ? " then come back and enter authorization code"
+            : " by providing the authorization code below"}
+        </>
+      }
+    >
+      {children}
+    </OnboardingLoginCard>
+  );
+}
+
+export function ProviderApiKeyCard({
+  providerName,
+  ...field
+}: Omit<Parameters<typeof OnboardingCardField>[0], "masked" | "label"> & {
+  providerName: string;
+}) {
+  return (
+    <OnboardingLoginCard
+      instruction={`Provide your ${providerName} API key to connect`}
+    >
+      <OnboardingCardField {...field} label="API key" masked />
+    </OnboardingLoginCard>
+  );
+}
+
+/** Shared instructions for local subscription setup in every authentication host. */
+export function LocalProviderLoginInstructions({ adapterType, login }: {
+  adapterType: string;
+  login?: { isolated?: boolean; command?: string; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+}) {
+  const [showCommand, setShowCommand] = useState(false);
+  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
+  const command = isolated ? login?.command : "claude auth login";
+  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Checking local {provider} sign-in…</p>;
+  const ready = login?.status === "ready";
+  return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
+    {ready ? <>
+      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{provider} is signed in. Click Connect to use this account.</p>
+      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => setShowCommand(true)}>Use a different account</button>}
+    </> : <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
+    {(!ready || showCommand) && !login?.error && <>
+      <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
+      {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
+        <LoginCardCopyButton value={command} label="Copy sign-in command" />
+      </div>}
+    </>}
+    {login?.error && <p role="alert">{login.error}</p>}
+    {login && !login.preparing && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+  </div>;
 }

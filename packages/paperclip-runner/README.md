@@ -14,6 +14,33 @@ session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
 
+Connection continuations inspect the harness descriptor's optional
+`toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
+OpenCode, and qualified Claude/Codex/Grok ACPX profiles expose it; unqualified
+harnesses leave it false or absent. Changing tools can replace a provider process while retaining
+the provider conversation. Company, agent, task, workspace, model, instruction,
+and skill compatibility still gate recovery. An MCP-only assignment change can
+resume only when the selected harness explicitly supports refreshing tools.
+
+When recovery needs a fresh conversation, the server supplies a deterministic
+handoff through a lazy history loader at the fresh attempt boundary.
+It includes the original request, recent messages, resolved interaction
+summaries, agent replies, and document excerpts, with source identities and
+retrieval instructions. Reads and excerpts are bounded; the handoff has a
+24,000-byte ceiling and explicit truncation/omission markers. Conversation
+reset boundaries, deleted messages, source quarantine, and secret redaction
+apply before model submission. Successful recovery does not fetch or replay the
+handoff.
+Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
+harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
+Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
+invocation with current endpoints and credentials, including resumed turns. ACP reloads
+current MCP bindings, including run-scoped credentials, while preserving the
+conversation; an unqualified/custom harness retains its restart fence.
+Legacy fresh attempts receive the same bounded handoff, including resume-failure
+fallbacks. Provider
+authentication repairs retain their existing fresh-session recovery behavior.
+
 ## Public package surfaces
 
 - `@paperclipai/paperclip-runner` — production contracts, clients/backends,
@@ -41,10 +68,81 @@ route/service authorities; it does not copy those rules into this package.
 
 ## Quick start
 
+Native provider debug-trace correlation uses an incremental index owned by its transport. Pending
+event lookups read only newly appended bytes, with a 1 MiB read budget per lookup;
+they retry until the observed suffix is indexed. Partial records remain pending,
+and trace replacement or truncation invalidates the index. Closing a transport
+clears its index. Other active transports cannot evict its progress. Records over
+64 KiB are skipped by the correlation index without buffering or parsing their
+full contents; the original trace file retains them. Do not restore a full
+synchronous trace scan for each pending event: it blocks event delivery and can
+leave the board showing an active run after the provider turn has already ended.
+
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
-and terminal settlement at the process boundary. Pi remains unavailable.
+and terminal settlement at the process boundary. Cursor, Copilot and Pi have
+separate candidate branches and remain unavailable in production until local
+and Daytona qualification passes. Their verified distributions are build-owned;
+no candidate accepts an arbitrary executable. See
+[the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+
+Remote Codex sessions relay assigned app tools through the server's configured
+gateway. Small catalogs are sent directly. When a catalog would exceed the
+runner's 256-operation or 768 KiB contract limit, the server exposes
+`paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search returns bounded pages of names, descriptions, and input schemas. Each
+page intersects the session's pinned assignments with current gateway grants.
+An individual schema that exceeds a page returns an `inputSchemaRef`. The same
+search tool retrieves that schema in chunks via `schemaTool` and
+`schemaOffset`; discovery can continue past the large tool.
+Calls retain task ownership, work-mode restrictions, gateway authorization,
+approvals, and audit. Core task tools and the runner's completion tools keep
+their reserved space; no assigned tools are silently removed to fit the limit.
+
+Native Claude skill assignments travel in the runtime-context snapshot through
+runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
+host materializes the assigned bundles under the isolated Claude home's
+`skills/` directory before launch. Reopening a provider refreshes that snapshot;
+project and ambient host settings remain excluded. This path is separate from
+the legacy `claude_local` adapter's remote skill staging.
+
+The isolated Claude settings pin both `model` and `availableModels` to the
+user's requested ID. This keeps ACP from replacing an exact ID with a picker
+alias during selection and verification. Users can keep selecting models from
+the normal Claude catalog or entering custom IDs; unavailable models still fail
+at the provider rather than silently falling back.
+
+ACPX Claude defaults to `approve-all`, shown as **Full auto (approve all)**.
+OpenCode defaults to `allow`; native Codex defaults to `never` (no approval
+pauses). These defaults cover all assigned tools and connections, including
+provider-native operations. Full auto is resolved consistently for agent
+creation, adapter conversion, direct driver launches, and fresh/resumed turns.
+Explicitly stored restrictive modes still apply.
+
+The runner's authenticated bridge and controller still enforce company access,
+action claims, task modes, and governed approvals. Provider permission defaults
+do not change workspace isolation or grant credentials or connection access.
+`approve-paperclip` remains an optional narrower mode for assigned planning and
+task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
+None of these restrictive modes is the default.
+
+Restrictive profiles route supported permission decisions through durable runtime
+requests and the existing task interaction controls. Requests are persisted
+before presentation; answers are checked against the offered decisions and
+acknowledged by the sidecar before settlement. Unknown, stale and duplicate
+responses fail. Missing provider decision support remains a blocked disposition,
+not implicit approval. Company access checks still run for each Paperclip tool.
+Provider death expires pending promises; approvals are never replayed into a
+replacement process.
+
+Automatic Paperclip/read allowances currently require the Claude SDK dispatch
+boundary. Grok preserves these restricted settings, but its ACP requests lack
+independently bound tool authority. Those operations require a supported operator
+permission decision; a missing interactive responder stops with
+`approval_required`. An explicitly selected `approve-all` policy permits unattended
+Grok work in an assigned sandbox. Paperclip authorization and governed approvals
+still apply.
 
 Runnerd selects only qualified provider profiles. Claude Managed and AWS
 AgentCore receive immutable company-profile snapshots with explicit retention,
@@ -68,7 +166,25 @@ tool, input, permission, and terminal events require the exact active binding.
 A package-local payload boundary decodes events only after that scope check. It
 validates control identities, terminal status, question sets, and the admitted
 runtime event types and bounded fields. It redacts diagnostic and retained
-event values again before they can enter provider state.
+event values again before they can enter provider state. Authoritative semantic
+tool arguments are validated for transport bounds and forwarded unchanged,
+including credential-bearing document and instruction content. The provider
+harness owns credential policy; redaction of logs and audit previews must not
+reject or rewrite execution arguments. Diagnostic detection requires explicit
+credential fields/assignments or recognizable key, Bearer, JWT, or PEM formats,
+not ordinary prose such as "credential handling" or dotted filenames.
+
+Human question tools accept one complete `payload.questionSet` for text and
+choice questions. The control plane generates legacy `questions` entries with
+stable free-text option IDs. Legacy callers remain supported. Calls that supply
+both forms must describe the same complete form; partial forms remain invalid.
+The native recovery bridge uses the same projection for answer delivery.
+
+The server validates canonical answer constraints before persistence. Regex
+matching runs in isolated workers with a one-second deadline and at most four
+active workers. A timeout or capacity error leaves the question pending. The
+ordinary and native answer paths both await this validation before persistence.
+Saved native answer delivery does not repeat regex matching.
 
 Validated ACPX runtime events normalize into the same provider-neutral activity
 families as the direct Codex transport. Reasoning contents stay private. Tool
@@ -190,7 +306,25 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
-## Live, chaos, and AWS AgentCore operations
+## Direct live protocol qualification
+
+The canonical direct live protocol suite lives in the separate
+`paperclip-evals` repository under `evals/paperclip-runner/`. Its
+`live-mini.json` roster is the complete 35-case Codex qualification lane. Build
+this package's TypeScript output, release `paperclip-runnerd`, package tarball,
+and `dist-issue-thread` viewer, then use the roster runner documented in that
+repository. The package ships the required orchestration entry point as
+`paperclip-runner-eval-session` (`dist/cli/eval-session.js`). Evalbook owns the
+consistent HTML matrix and read-only attempt drill-down pages.
+
+The hosted full-campaign workflow, parallel matrix, credential boundaries,
+canonical report merge, and versioned S3 index are documented in
+[`docs/runner-protocol-live-evals.md`](docs/runner-protocol-live-evals.md).
+
+This direct protocol qualification is separate from the stress-derived Runner
+workflow schedule below and from the full-stack browser model E2E suite.
+
+## Stress-derived workflow, chaos, and AWS AgentCore operations
 
 The deterministic workflow scorer and the chaos schedule do not require
 provider credentials:
@@ -200,22 +334,35 @@ pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
 pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 ```
 
-`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
-the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex
+requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
-matrix admits no Pi profile and does not persist credential values. Set
+matrix remains qualified-only and does not persist credential values. Candidate
+qualification uses `eval-session --candidate-profile <pi|cursor|copilot>` with an
+explicit model and a separately materialized pinned candidate pack. This option
+is a constructor-bound diagnostic opt-in; session JSON cannot enable a candidate.
+Missing credentials or unverifiable spend block paid qualification. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound
 additional scheduling after the observed campaign total reaches that value:
 
 ```sh
 PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD=12 \
+  PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
   pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+
+# Run two scheduled native Codex executions only.
+PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
+  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals -- \
+  --candidate codex-luna --limit 2
 ```
 
 GitHub-hosted live campaigns additionally require the default branch, an
 allowlisted numeric actor ID, the protected `runner-e2e-paid` environment, and
-an explicit repository variable before scheduled runs are enabled. Uploaded
-reports contain redacted observations and trace digests, not raw provider
+an explicit repository variable before scheduled runs are enabled. Manual
+dispatches accept the same candidate, case, and execution-limit selectors. The
+paid job uses the reviewed RunsOn Fleet label when `RUNNER_E2E_AWS_ENABLED=true`
+and otherwise stays on `ubuntu-latest`. Uploaded reports contain redacted
+observations and trace digests, not raw provider
 frames, prompts, credentials, tool arguments, or hidden reasoning.
 
 The AgentCore proof-of-concept uses an AWS CLI v2 profile to provision a
@@ -233,6 +380,21 @@ pnpm --filter @paperclipai/paperclip-runner aws-agentcore:lab
 pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
 pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
+
+To admit the hosted direct-eval workflow, provision with the account-local
+GitHub Actions OIDC provider and keep the default exact repository and protected
+environment binding:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- \
+  --aws-profile paperclip-dev \
+  --github-oidc-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
+```
+
+This adds only `repo:paperclipai/paperclip:environment:runner-e2e-paid` as a
+web-identity subject on the scoped invocation role. The generated nonsecret
+profile records that role as both the local invocation role and the hosted
+execution role.
 
 Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
 networking charges. Provisioning refuses to modify a colliding stack unless its
@@ -256,8 +418,8 @@ recorded lab unless `--force` is also supplied.
 | `check:clean-consumers`                                 | Pack the runner and install its root, evals, and testing exports in a clean consumer.                                                       |
 | `test:eval-slice`                                       | Run the credential-free eval bundle, scoring, and behavior/fault slice.                                                                     |
 | `test:runner-workflow-evals`                            | Run the deterministic provider-neutral workflow matrix.                                                                                     |
-| `report:runner-workflow-evals`                          | Validate deterministic results and write local reports only when every scoreable result passes.                                             |
-| `report:runner-live-evals`                              | Execute the paid forty-execution provider schedule with qualification and campaign-cost guards.                                             |
+| `report:runner-workflow-evals`                          | Validate deterministic fail-closed results and write JSON, Markdown, JUnit, and GitHub-safe reports.                                        |
+| `report:runner-live-evals`                              | Execute the paid provider schedule and render its immutable attempts with the canonical `paperclip-evals` HTML grid.                        |
 | `report:runner-chaos-evals`                             | Write the credential-free eight-scenario chaos schedule.                                                                                    |
 | `test:aws-agentcore-provisioning`                       | Validate the AgentCore template and wrapper safety contracts without provisioning.                                                          |
 | `aws-agentcore:provision` / `probe` / `lab` / `destroy` | Manage the scoped AgentCore proof-of-concept lifecycle.                                                                                     |
@@ -327,3 +489,5 @@ then open the protocol inspector to review events and reducer state. Expand a
 Terminal row and its nested **Debug details** disclosure to inspect every
 canonical event retained for that command. The header marker `🖇️ v0.1.2`
 identifies the current console iteration.
+
+`create_task` accepts an optional initial `status` of `backlog` or `todo`. Use `backlog` when the user wants a saved task or plan without execution: assignment and the initial plan are committed without scheduling a wake, even when dependencies are already complete. Omitting status preserves immediate delegation (`todo`, or `blocked` for unresolved dependencies).

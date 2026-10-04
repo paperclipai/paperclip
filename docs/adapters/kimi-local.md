@@ -3,7 +3,7 @@ title: Kimi Code CLI
 summary: Kimi Code CLI local adapter setup and configuration
 ---
 
-The `kimi_local` adapter runs the Kimi Code CLI (`kimi`) locally. It has two execution engines: the default **ACP engine** (`kimi acp`, streaming transcript with live tool status, matching `claude_local`/`gemini_local`) and a **CLI lane** (`kimi -p --output-format stream-json`) used as an automatic fallback. It supports session persistence, per-run skill delivery via `--skills-dir`, thinking-effort control, and structured output parsing.
+The `kimi_local` adapter runs the Kimi Code CLI (`kimi`) locally. It has two execution engines: the default **ACP engine** (`kimi acp`, streaming transcript with live tool status, matching `claude_local`/`gemini_local`) and a **CLI lane** (`kimi -p --output-format stream-json`) selected explicitly with `engine: cli`. It supports session persistence, per-run skill delivery via `--skills-dir`, thinking-effort control, and structured output parsing.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ The `kimi_local` adapter runs the Kimi Code CLI (`kimi`) locally. It has two exe
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `engine` | string | No | Execution engine: `acp` (default; streaming ACP lane via `kimi acp`), `cli` (headless `kimi -p` lane), or unset/`auto` (ACP with automatic CLI fallback when ACP prerequisites fail). |
+| `engine` | string | No | Execution engine: `acp` (default; streaming ACP lane via `kimi acp`), `cli` (headless `kimi -p` lane), or unset/`auto` (ACP; unavailable prerequisites fail the run). |
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
 | `model` | string | No | Kimi model alias (`provider/model`). Defaults to `kimi-code/kimi-for-coding`. When empty, Kimi uses `default_model` from its own `config.toml`. |
 | `promptTemplate` | string | No | Prompt used for all runs |
@@ -35,7 +35,7 @@ By default the adapter runs Kimi through the **ACP engine** (`kimi acp`, an Agen
 
 Engine selection (`engine` config field):
 
-- unset or `auto`: use ACP when its prerequisites pass (Node >= 20, resolvable `kimi acp` command, a bidirectional process target), otherwise fall back to the CLI lane with a diagnostic note.
+- unset or `auto`: use ACP when its prerequisites pass (Node >= 20, resolvable `kimi acp` command, a bidirectional process target), otherwise fail with an actionable setup error.
 - `acp`: require ACP; startup failures surface as run errors rather than falling back.
 - `cli`: pin the headless CLI lane described below.
 
@@ -51,7 +51,7 @@ When `instructionsFilePath` points at a managed instruction bundle, the entry fi
 
 ## Thinking Effort
 
-The `effort` field applies to the **headless CLI lane only** (`engine: cli`, or the automatic fallback when ACP prerequisites fail). On the default ACP engine lane it is currently **not forwarded**: Kimi's ACP interface exposes a separate `thinking` config option that Paperclip does not wire yet, so an effort configured on an ACP-lane agent leaves Kimi's own default behavior in place. Pin `engine: cli` when thinking-effort control matters. On the CLI lane, `effort` is forwarded as the `KIMI_MODEL_THINKING_EFFORT` operational override, which applies to Kimi providers including managed OAuth models. Kimi has no per-invocation effort flag and no `medium` tier, so `medium` is mapped to `high`; `low`, `high`, and `max` pass through. Effort is only sent for models that advertise `support_efforts` (currently `kimi-code/k3`) to avoid provider rejections; extend `EFFORT_CAPABLE_MODELS` in the adapter as more models gain support.
+The `effort` field applies to the **headless CLI lane only** (`engine: cli`). On the default ACP engine lane it is currently **not forwarded**: Kimi's ACP interface exposes a separate `thinking` config option that Paperclip does not wire yet, so an effort configured on an ACP-lane agent leaves Kimi's own default behavior in place. Pin `engine: cli` when thinking-effort control matters. On the CLI lane, `effort` is forwarded as the `KIMI_MODEL_THINKING_EFFORT` operational override, which applies to Kimi providers including managed OAuth models. Kimi has no per-invocation effort flag and no `medium` tier, so `medium` is mapped to `high`; `low`, `high`, and `max` pass through. Effort is only sent for models that advertise `support_efforts` (currently `kimi-code/k3`) to avoid provider rejections; extend `EFFORT_CAPABLE_MODELS` in the adapter as more models gain support.
 
 ## Session Persistence
 
@@ -80,5 +80,5 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 
 ## Notes
 
-- Both execution engines are supported: the ACP engine (`kimi acp`, default) and the headless CLI lane (fallback / `engine=cli`).
+- Both execution engines are supported: the ACP engine (`kimi acp`, default) and the headless CLI lane (`engine=cli`).
 - Available model aliases on a standard install: `kimi-code/kimi-for-coding` (K2.7 Coding), `kimi-code/kimi-for-coding-highspeed` (K2.7 Coding Highspeed), `kimi-code/k3` (K3).

@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { TaskChatExpansionState, useTaskChatExpansion } from "./expansion-state";
+import { useContext, useEffect, type ReactNode } from "react";
 import { Brain, ChevronRight, CircleEllipsis } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -62,10 +63,11 @@ export function TaskChatActivityPhase({
             child.surface === "runtime_request" &&
             child.status === "pending"),
       )));
-  const [open, setOpen] = useState(shouldAutoOpen);
+  const [open, setOpen] = useTaskChatExpansion(item.id, shouldAutoOpen);
+  const expansionMemory = useContext(TaskChatExpansionState);
   useEffect(() => {
-    if (shouldAutoOpen) setOpen(true);
-  }, [shouldAutoOpen]);
+    if (shouldAutoOpen && !expansionMemory?.has(item.id)) setOpen(true);
+  }, [shouldAutoOpen, expansionMemory, item.id, setOpen]);
   const expandable = item.items.length > 0;
   const runnerAppearance = appearance === "runner";
   const SummaryIcon = runnerAppearance ? representativeIcon(item) : null;

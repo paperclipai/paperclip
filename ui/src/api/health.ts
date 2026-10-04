@@ -1,5 +1,7 @@
 import type { ServerInfoSnapshot } from "@paperclipai/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { ApiError } from "./client";
+import { ApiUnavailableError, readApiJson } from "./response";
 
 export type DevServerHealthStatus = {
   enabled: true;
@@ -24,10 +26,13 @@ export type CloudInstanceHealthStatus = {
 };
 
 export type HealthStatus = {
-  status: "ok";
+  status: "ok" | "starting";
   version?: string;
+  /** Commit of the running server; null when build metadata is unavailable. */
+  commit?: string | null;
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
+  localAiLoginSupported?: boolean;
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
@@ -49,14 +54,17 @@ export const healthApi = {
     const res = await fetch("/api/health", {
       credentials: "include",
       headers: { Accept: "application/json" },
+      cache: "no-store",
     });
+    const payload = await readApiJson<HealthStatus & { error?: string } | null>(res);
     if (!res.ok) {
-      const payload = await res.json().catch(() => null) as { error?: string } | null;
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
       if (recovery) return recovery;
-      throw new Error(payload?.error ?? `Failed to load health (${res.status})`);
+      throw new ApiError(payload?.error ?? `Failed to load health (${res.status})`, res.status, payload);
     }
-    return res.json();
+    // Startup recovery can still serve sign-in and deployment metadata.
+    if (payload?.status !== "ok" && payload?.status !== "starting") throw new ApiUnavailableError(res.status);
+    return payload;
   },
   requestDevServerRestart: async (): Promise<void> => {
     const res = await fetch("/api/health/dev-server/restart", {

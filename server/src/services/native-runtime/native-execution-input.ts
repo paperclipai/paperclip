@@ -1,8 +1,12 @@
+import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
+import { createHash } from "node:crypto";
+import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
   NativeAcpxAgent,
   NativeAcpxPermissionMode,
   NativeCodexApprovalPolicy,
-  NativeExecutionInputV4,
+  NativeExecutionInputV5,
+  NativeCompletionSource,
   NativeInteractionResponseEnvelope,
   NativeOpenCodePermissionMode,
   NativePlanningContext,
@@ -13,7 +17,17 @@ import {
   parseNativeExecutionInput,
   resolveQualifiedAcpxProfile,
 } from "../../vendor/paperclip-runner/index.js";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import {
+  isPaperclipExternalChatContractTurn,
+  isPaperclipExternalChatQuestionResponseTurn,
+  selectPaperclipPromptSections,
+} from "@paperclipai/adapter-utils/server-utils";
+
+const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
+  "## GitHub attachment recovery navigation",
+  "Paperclip owns recovery navigation for unavailable GitHub attachments. It may append an authenticated task link after an accepted response, only when the current source remains authorized and a safe configured Board URL is available. The model does not select or authorize that link.",
+  "A task URL missing from your prompt or tool results is not evidence that no task link can be provided; do not claim that a link is unavailable merely because you cannot see its URL. Do not invent a URL or promise that a link will appear. Briefly explain the unavailable input and ask the user to attach it directly to this Paperclip task or paste the needed text. Never infer the file's contents or substitute an older file.",
+].join("\n");
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
 export function buildNativeExecutionInput(input: {
@@ -27,6 +41,9 @@ export function buildNativeExecutionInput(input: {
     workMode: string;
   };
   taskPrompt: string;
+  initialCommunicationGuidance?: string | null;
+  /** Bounded, redacted background restored only after a fresh provider bootstrap. */
+  freshSessionHandoff?: string | null;
   /**
    * The already-sanitized Paperclip wake envelope for this run. Native drivers
    * receive a closed execution input rather than the legacy adapter context,
@@ -34,7 +51,11 @@ export function buildNativeExecutionInput(input: {
    * that legacy adapters place in their provider prompt.
    */
   wakePayload?: unknown;
+  /** Additive source ownership emitted by the server task/wake builders. */
+  turnContext?: unknown;
   resumedSession?: boolean;
+  previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
+  conversationMode?: boolean;
   agentId: string;
   workspace: {
     id: string;
@@ -47,24 +68,25 @@ export function buildNativeExecutionInput(input: {
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
+  codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   model?: string | null;
   managedProfile?: Extract<
-    NativeExecutionInputV4["provider"],
+    NativeExecutionInputV5["provider"],
     { kind: "claude_managed" }
   >["managedProfile"];
   maxSessionListCostUsd?: number;
   agentCoreProfile?: Extract<
-    NativeExecutionInputV4["provider"],
+    NativeExecutionInputV5["provider"],
     { kind: "aws_agentcore" }
   >["agentCoreProfile"];
   maxEstimatedSessionCostUsd?: number;
   invocationLimits?: Extract<
-    NativeExecutionInputV4["provider"],
+    NativeExecutionInputV5["provider"],
     { kind: "aws_agentcore" }
   >["invocationLimits"];
-  lifecyclePolicy?: NativeExecutionInputV4["session"]["lifecyclePolicy"];
+  lifecyclePolicy?: NativeExecutionInputV5["session"]["lifecyclePolicy"];
   executionMode?: "default" | "plan";
   planningContext?: NativePlanningContext | null;
   interactionResponses?: NativeInteractionResponseEnvelope[];
@@ -73,9 +95,10 @@ export function buildNativeExecutionInput(input: {
     sha256: string;
     schemaVersion: string;
     contract: StrictCompletionContractInput;
+    sources?: Array<{ id: string; source: NativeCompletionSource }>;
   };
   runtimeContext: NativeRuntimeContextSnapshot;
-}): NativeExecutionInputV4 {
+}): NativeExecutionInputV5 {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
   }
@@ -87,15 +110,96 @@ export function buildNativeExecutionInput(input: {
         input.model ?? "",
       )
     : null;
-  const wakePrompt = renderPaperclipWakePrompt(input.wakePayload, {
-    resumedSession: input.resumedSession === true,
-    suppressIssueDescription: input.taskPrompt.trim().length > 0,
+  // Answers are materialized from the authoritative interaction only for this
+  // invocation; do not persist a duplicate answer in the durable wake snapshot.
+  const wake =
+    input.wakePayload &&
+    typeof input.wakePayload === "object" &&
+    !Array.isArray(input.wakePayload)
+      ? (input.wakePayload as Record<string, unknown>)
+      : null;
+  const question = wake?.externalChatQuestionResponse
+    ? input.interactionResponses?.find(
+        (response) =>
+          response.interactionId === wake.interactionId &&
+          response.kind === "ask_user_questions" &&
+          response.response.status === "answered",
+      )
+    : null;
+  const answerResult = question?.response.result as
+    Record<string, unknown> | undefined;
+  // The server supplies only the revalidated answer chain, in source order.
+  // Keep prior choices available even when this continuation starts a fresh
+  // provider session; never recover them from model prose or a transcript.
+  const answerChain = question
+    ? input.interactionResponses?.filter((response) =>
+        response.kind === "ask_user_questions" &&
+        response.response.status === "answered" &&
+        typeof (response.response.result as Record<string, unknown> | undefined)
+          ?.summaryMarkdown === "string")
+    : null;
+  const answerSummary =
+    answerChain && answerChain.length > 1 &&
+    answerChain.at(-1)?.interactionId === question?.interactionId
+      ? answerChain.map((response, index) => {
+          const label = index === answerChain.length - 1
+            ? "Latest answered question" : `Earlier answer ${index + 1}`;
+          return `${label}:\n${(response.response.result as Record<string, unknown>).summaryMarkdown}`;
+        }).join("\n\n")
+      : answerResult?.summaryMarkdown;
+  const wakePayload =
+    question && typeof answerSummary === "string"
+      ? {
+          ...wake,
+          questionResponse: {
+            interactionId: question.interactionId,
+            summaryMarkdown: answerSummary,
+          },
+        }
+      : input.wakePayload;
+  // Build the full bootstrap through the same owner as legacy adapters.
+  // Verified native resume selection stays at the existing session boundary.
+  const { taskContextNote, wakePrompt } = selectPaperclipPromptSections({
+    paperclipTaskMarkdownAssignment: input.taskPrompt,
+    paperclipWake: wakePayload,
+    conversationMode: input.conversationMode,
+  }, {
+    resumedSession: false,
+    includeCommunicationGuidance: false,
+    nativeWakeReaderAvailable: true,
   });
-  const taskPrompt = [wakePrompt, input.taskPrompt.trim()]
+  const externalChatTurn =
+    isPaperclipExternalChatContractTurn(wakePayload) ||
+    isPaperclipExternalChatQuestionResponseTurn(wakePayload);
+  const taskPrompt = [
+    wakePrompt,
+    // Durable task questions must survive the current provider turn.
+    // Keep routing visible before deferred tool discovery; usage belongs in the tool schema.
+    "Use Paperclip's request_human_input for durable task questions.",
+    externalChatTurn && wake?.externalChatProvider === "github"
+      ? NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE
+      : "",
+    taskContextNote,
+  ]
     .filter((section) => section.length > 0)
     .join("\n\n");
+  const completionSources = !externalChatTurn && !input.conversationMode && input.taskPrompt.trim()
+    ? verifiedCompletionSources(input.turnContext, input.completionContract.sources ?? [])
+    : [];
   return parseNativeExecutionInput({
-    schema: "paperclip.native-execution-input.v4",
+    schema: "paperclip.native-execution-input.v5",
+    ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
+      initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
+    } : {}),
+    ...(input.resumedSession && input.previousTurn && !input.conversationMode ? {
+      continuationPrompt: buildNativeContinuationPrompt({
+        wakePayload: input.wakePayload,
+        previousRunId: input.previousTurn.runId,
+        previousIssue: input.previousTurn.task,
+        allowExternalChat: true,
+        issue: input.issue,
+      }),
+    } : {}),
     executionMode,
     planningContext: input.planningContext ?? null,
     binding: {
@@ -107,8 +211,14 @@ export function buildNativeExecutionInput(input: {
     },
     task: {
       identifier: input.issue.identifier ?? input.issue.id,
-      title: input.issue.title,
-      description: input.issue.description,
+      // The issue title is durable background context and may itself contain an
+      // exact-output instruction from the thread's first message. Repeating it
+      // as the native turn title can override a newer provider message in small
+      // models. Keep the canonical title and description in task.prompt as
+      // explicitly labeled background, but give authenticated external-chat
+      // turns neutral structured fields.
+      title: externalChatTurn ? "External chat follow-up" : input.issue.title,
+      description: externalChatTurn ? null : input.issue.description,
       prompt: taskPrompt,
       workMode: input.issue.workMode,
     },
@@ -152,7 +262,7 @@ export function buildNativeExecutionInput(input: {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-reads",
+          permissionMode: input.acpxPermissionMode ?? "approve-all",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -170,16 +280,44 @@ export function buildNativeExecutionInput(input: {
         ? {
             kind: "opencode",
             model: input.model,
-            permissionMode: input.opencodePermissionMode ?? "ask",
+            permissionMode: input.opencodePermissionMode ?? "allow",
           }
         : {
             kind: "codex",
             model: input.model ?? null,
             approvalPolicy: input.codexApprovalPolicy ?? "never",
+            ...(input.codexReasoningEffort ? { reasoningEffort: input.codexReasoningEffort } : {}),
           },
-    completionContract: input.completionContract,
+    completionContract: {
+      id: input.completionContract.id,
+      sha256: input.completionContract.sha256,
+      schemaVersion: input.completionContract.schemaVersion,
+      contract: input.completionContract.contract,
+    },
+    ...(completionSources.length ? { completionSources: {
+      promptSha256: createHash("sha256").update(taskPrompt).digest("hex"),
+      contractRevision: input.completionContract.contract.revision,
+      criteria: completionSources,
+    } } : {}),
     interactionResponses: input.interactionResponses ?? [],
     credentialBindings: [],
     runtimeContext: input.runtimeContext,
-  }) as NativeExecutionInputV4;
+  }) as NativeExecutionInputV5;
+}
+
+
+/** Verify source identities and revisions, never guess provenance from requirement text. */
+function verifiedCompletionSources(
+  value: unknown,
+  sources: Array<{ id: string; source: NativeCompletionSource }>,
+): Array<{ id: string; source: NativeCompletionSource }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const context = value as Partial<PaperclipTurnContext>;
+  if (context.version !== 1) return [];
+  return sources.filter(({ source }) => {
+    if (source.kind === "description") {
+      return context.assignment?.owner === "task_markdown" && context.assignment.description?.id === source.id && context.assignment.description.revision === source.revision;
+    }
+    return context.events?.owner === "wake_prompt" && Array.isArray(context.events.comments) && context.events.comments.some((comment) => comment.id === source.id && comment.revision === source.revision);
+  });
 }

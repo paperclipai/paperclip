@@ -139,10 +139,23 @@ policy in the closed provider configuration: `approvalPolicy` for Codex and
 provider-session identity, so an incompatible idle or recovered session is
 replaced on the next execution. An active turn is never mutated in place.
 
-Persisted v1-v3 inputs remain replayable. Missing Codex and OpenCode policy
-fields retain their historical effective behavior. Legacy ACPX
-`permissionPolicy: "interactive"` is interpreted as `approve-reads`, while a
-new v4 ACPX execution defaults to `approve-all` at the server boundary.
+`paperclip.native-execution-input.v5` is the current input format. It retains
+the v4 permission pinning and adds optional completion-source references;
+`paperclip.native-model-envelope.v3` is the corresponding explicit model
+projection. Readers continue to accept persisted v1-v4 inputs, and v5 readers
+must preserve the historical behavior of inputs that do not carry the new
+optional fields. Missing Codex and OpenCode policy fields retain their
+historical effective behavior. Legacy ACPX `permissionPolicy: "interactive"`
+is interpreted as `approve-reads`, while new v4 and v5 ACPX executions default
+to `approve-all` at the server boundary.
+
+When a healthy provider session is resumed, its persisted v4 or v5 input format
+is retained even if the newly built input uses the other format. This avoids
+rotating an active session for a presentation-only schema change. A safe
+rollback from v5 to v4 removes only the optional completion-source references;
+it retains the task, contract, provider, workspace, and permission fields.
+Format changes still go through the normal provider-session identity checks,
+and an active turn is never mutated in place.
 
 See [Adding a harness](adding-a-harness.md) for the permission catalog,
 isolation rules, and provider conformance requirements.
@@ -193,6 +206,13 @@ These envelopes are local Local runner implementation contracts.
 - A one-use bootstrap bearer capability returns a short-lived connection lease
   in `welcome`. Later connections use that lease. Neither raw capability is
   durable state.
+- `welcome.payload.connectionLeaseRenewalVersion: 1` opts into authenticated
+  `lease_renew` / `lease_renewed` control frames. Renewal extends the persisted
+  expiry on the same live authority without restarting provider work. Identity,
+  protocol, and revocation epoch remain fixed; expired or revoked leases cannot
+  renew. See [durable recovery](durable-recovery.md#execution-duration-and-operation-deadlines)
+  for retry and warm-handoff rules. Peers lacking this capability retain their
+  original lease expiry.
 - `hello.resume` reports the last processed controller sequence, next source
   sequence, cumulative ACK cursor, and current unacknowledged range.
 - `welcome` selects the one overlapping protocol version, returns the core's

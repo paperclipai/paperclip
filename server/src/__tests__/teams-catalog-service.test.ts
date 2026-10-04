@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import { parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
 import type { CatalogTeam } from "@paperclipai/shared";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -34,12 +36,13 @@ vi.mock("../services/activity-log.js", () => ({
 
 const {
   collectCatalogTeamSkillPreparations,
+  listCatalogTeams,
   readCatalogTeamProvenance,
   teamsCatalogService,
 } = await import("../services/teams-catalog.js");
 
 const CORE_EXEC_TEAM_ID = "paperclipai:bundled:company-defaults:core-exec-team";
-const CORE_EXEC_TEAM_HASH = "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1";
+const CORE_EXEC_TEAM_HASH = (await listCatalogTeams()).find((team) => team.id === CORE_EXEC_TEAM_ID)!.contentHash;
 
 function agentWithCatalogTeam(originHash: string | null, extra: Record<string, unknown> = {}) {
   return {
@@ -112,6 +115,39 @@ describe("teamsCatalogService", () => {
     expect(prepared.source.files[".paperclip.yaml"]).toEqual(expect.stringContaining("reportsToExistingAgentId: \"manager-1\""));
     expect(prepared.source.files[".paperclip.yaml"]).toEqual(expect.stringContaining("reportsToExistingAgentSlug: \"engineering-manager\""));
   });
+
+  it.each(["core-exec-team", "product-engineering", "product-design", "content-machine"])(
+    "preserves %s role files and canonical skill references through catalog import",
+    async (teamRef) => {
+      const svc = teamsCatalogService({} as any);
+      const prepared = await svc.prepareCatalogTeamSource("company-1", teamRef);
+      expect(prepared.errors).toEqual([]);
+      for (const slug of prepared.team.agentSlugs) {
+        const filePath = `agents/${slug}/AGENTS.md`;
+        const original = parseFrontmatterMarkdown(await readFile(
+          new URL(`../../../packages/teams-catalog/${prepared.team.path}/${filePath}`, import.meta.url),
+          "utf8",
+        ));
+        const imported = parseFrontmatterMarkdown(prepared.source.files[filePath] as string);
+        const requiredSkills = (original.frontmatter.skills as string[]).map((ref) => {
+          const requirement = prepared.team.requiredSkills.find((skill) => skill.ref === ref && skill.agentSlugs.includes(slug));
+          expect(requirement, `${filePath}: ${ref}`).toMatchObject({ resolved: true });
+          return requirement?.type === "catalog" ? requirement.catalogSkillKey : ref;
+        });
+        expect(imported.frontmatter, filePath).toEqual({ ...original.frontmatter, skills: requiredSkills });
+        expect(imported.body, filePath).toBe(original.body);
+      }
+
+      await svc.installCatalogTeam("company-1", teamRef);
+      const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
+      expect(importInput.source.files).toEqual(prepared.source.files);
+      const requiredCatalogIds = prepared.skillPreparations
+        .filter((skill) => skill.action === "catalog_install_required")
+        .map((skill) => skill.catalogSkillId).sort();
+      expect(mockCompanySkillService.installFromCatalog.mock.calls.map((call) => call[1].catalogSkillId).sort())
+        .toEqual(requiredCatalogIds);
+    },
+  );
 
   it("resolves target-manager slug against same-company agents before rendering reparent metadata", async () => {
     mockAgentService.list.mockResolvedValue([
