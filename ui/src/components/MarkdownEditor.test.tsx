@@ -1322,6 +1322,40 @@ describe("MarkdownEditor", () => {
     expect(shouldSubmitOnPlainReturn({ ...base, submitKey: "mod-enter" })).toBe(false);
   });
 
+  it('submitKey="enter": Return still sends when @ text has no matches and no menu is shown', async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="@Zzzz"
+          onChange={() => {}}
+          onSubmit={onSubmit}
+          submitKey="enter"
+          mentions={[{ id: "agent:a1", kind: "agent", name: "Alpha", agentId: "a1" } as never]}
+        />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const textNode = editable.firstChild!;
+    const range = document.createRange();
+    range.setStart(textNode, "@Zzzz".length);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await flush();
+    expect(document.body.querySelector('[data-testid="mention-autocomplete-menu"]')).toBeNull();
+    act(() => {
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
   it('submitKey="enter": Return is not swallowed while sending is blocked', async () => {
     const onSubmit = vi.fn();
     const root = createRoot(container);

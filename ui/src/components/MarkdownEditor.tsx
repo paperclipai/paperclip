@@ -1465,7 +1465,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           && isSubmitKeyEvent(e, submitKey)
           && shouldSubmitOnPlainReturn({
             submitKey,
-            autocompleteOpen: mentionActive,
+            // Only a visible menu owns Return; unmatched @ or / text still sends.
+            autocompleteOpen: mentionActive && filteredMentions.length > 0,
             inCodeBlock: e.target instanceof Element && Boolean(e.target.closest(".cm-editor")),
             submitDisabled,
           })
