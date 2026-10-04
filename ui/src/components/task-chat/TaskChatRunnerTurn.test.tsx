@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerTurn } from "./TaskChatRunnerTurn";
+import { TaskChatViewModeProvider } from "./focus-mode";
 import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type {
   TaskChatItem,
@@ -15,6 +16,8 @@ import type {
   TaskChatRuntimeRequestDecision,
   TaskChatRuntimeRequestItem,
 } from "./task-chat-model";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("TaskChatRunnerTurn", () => {
   let container: HTMLDivElement;
@@ -1433,6 +1436,103 @@ describe("TaskChatRunnerTurn", () => {
     expect(timeline?.compareDocumentPosition(final!)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it("preserves chronological order around persistent rows in focus mode", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ThemeProvider>
+            <TaskChatViewModeProvider mode="focus">
+              <TaskChatRunnerTurn
+                runId="run-1"
+                agentName="Runner"
+                items={[
+                  {
+                    id: "commentary-before",
+                    kind: "message",
+                    author: "agent",
+                    text: "Before question.",
+                    interstitial: true,
+                    channel: "progress",
+                  },
+                  {
+                    id: "tool-before",
+                    kind: "tool",
+                    name: "Read",
+                    rawName: "read_file",
+                    status: "completed",
+                  },
+                  resolvedQuestion("questions-mid", "Which core loop?"),
+                  {
+                    id: "commentary-after",
+                    kind: "message",
+                    author: "agent",
+                    text: "After question.",
+                    interstitial: true,
+                    channel: "progress",
+                  },
+                  {
+                    id: "tool-after",
+                    kind: "tool",
+                    name: "Bash",
+                    rawName: "bash",
+                    status: "completed",
+                  },
+                  {
+                    id: "final",
+                    kind: "message",
+                    author: "agent",
+                    text: "Done.",
+                    channel: "final",
+                  },
+                ]}
+                status="succeeded"
+                startedAtMs={Date.now() - 2_000}
+                finishedAtMs={Date.now()}
+              />
+            </TaskChatViewModeProvider>
+          </ThemeProvider>
+        </MemoryRouter>,
+      ),
+    );
+
+    const folds = container.querySelectorAll(
+      '[data-testid="task-chat-focus-fold"]',
+    );
+    expect(folds).toHaveLength(2);
+
+    const receipt = container.querySelector(
+      '[data-timeline-row-id="questions-mid"]',
+    );
+    expect(receipt).not.toBeNull();
+
+    // The persistent receipt sits physically between the two folds
+    expect(
+      folds[0]!.compareDocumentPosition(receipt!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      receipt!.compareDocumentPosition(folds[1]!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // Expanding every fold preserves the exact chronological timeline row order
+    const foldButtons = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="task-chat-focus-fold"] > button',
+    );
+    for (const btn of foldButtons) {
+      act(() => btn.click());
+    }
+
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="task-chat-turn-timeline-row"]'),
+    );
+    expect(rows.map((r) => r.getAttribute("data-timeline-row-id"))).toEqual([
+      "commentary-before:phase",
+      "questions-mid",
+      "commentary-after:phase",
+    ]);
   });
 
   it("expands a grouped live phase without hiding its commentary", () => {

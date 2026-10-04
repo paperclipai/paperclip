@@ -9,15 +9,23 @@ export type TaskChatViewMode = "full" | "focus";
 
 export const TASK_CHAT_VIEW_MODE_STORAGE_KEY = "paperclip.task-chat.view-mode.v1";
 
-export function readTaskChatViewMode(): TaskChatViewMode {
+/**
+ * Guarded storage read shared by production and Storybook. Returns null when
+ * storage is blocked or the stored value is not a known mode, so each caller
+ * keeps its own default instead of throwing during render.
+ */
+export function readStoredTaskChatViewMode(): TaskChatViewMode | null {
   try {
-    return localStorage.getItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY) === "focus"
-      ? "focus"
-      : "full";
+    const stored = localStorage.getItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY);
+    return stored === "full" || stored === "focus" ? stored : null;
   } catch {
-    // Private browsing/storage limits: keep the full view.
-    return "full";
+    return null;
   }
+}
+
+export function readTaskChatViewMode(): TaskChatViewMode {
+  // Private browsing/storage limits: keep the full view.
+  return readStoredTaskChatViewMode() ?? "full";
 }
 
 export function saveTaskChatViewMode(mode: TaskChatViewMode) {
@@ -60,6 +68,34 @@ export function isTaskChatFocusPersistentRow(row: {
     row.kind === "plan_document" ||
     (row.kind === "protocol" && row.surface === "runtime_request")
   );
+}
+
+export type TaskChatFocusSegment<Row extends { kind: string; surface?: string }> =
+  | { kind: "fold"; rows: Row[] }
+  | { kind: "persistent"; row: Row };
+
+/**
+ * Split timeline rows into Focus-view segments without reordering. Contiguous
+ * non-persistent rows share one fold; each persistent row stays at its own
+ * timeline slot, so expanding every fold restores the exact original order.
+ */
+export function segmentTaskChatFocusRows<
+  Row extends { kind: string; surface?: string },
+>(rows: readonly Row[]): TaskChatFocusSegment<Row>[] {
+  const segments: TaskChatFocusSegment<Row>[] = [];
+  for (const row of rows) {
+    if (isTaskChatFocusPersistentRow(row)) {
+      segments.push({ kind: "persistent", row });
+      continue;
+    }
+    const last = segments[segments.length - 1];
+    if (last?.kind === "fold") {
+      last.rows.push(row);
+    } else {
+      segments.push({ kind: "fold", rows: [row] });
+    }
+  }
+  return segments;
 }
 
 /**

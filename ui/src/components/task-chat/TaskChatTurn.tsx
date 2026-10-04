@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
-  isTaskChatFocusPersistentRow,
+  segmentTaskChatFocusRows,
   TaskChatFocusFold,
   useTaskChatFocusMode,
 } from "./focus-mode";
@@ -100,9 +100,9 @@ export function TaskChatTurn({
   // request receipts, and plan artifacts. The classic task interface continues
   // to use the run-wide fold below.
   if (item.standaloneHeader) {
-    const foldedChildren = item.items.filter(
-      (child) => !isTaskChatFocusPersistentRow(child),
-    );
+    // Chronological segments, same rule as the live Runner turn: expanding the
+    // folds must restore the exact timeline order around persistent rows.
+    const focusSegments = segmentTaskChatFocusRows(item.items);
     return (
       <div
         data-testid="task-chat-turn"
@@ -134,12 +134,18 @@ export function TaskChatTurn({
             data-testid="task-chat-turn-timeline"
           >
             {focusMode ? (
-              <>
-                <TaskChatFocusFold stepCount={foldedChildren.length}>
-                  {foldedChildren.map(renderTimelineRow)}
-                </TaskChatFocusFold>
-                {item.items.filter(isTaskChatFocusPersistentRow).map(renderTimelineRow)}
-              </>
+              focusSegments.map((segment) =>
+                segment.kind === "fold" ? (
+                  <TaskChatFocusFold
+                    key={`focus-fold:${segment.rows[0]?.id ?? "empty"}`}
+                    stepCount={segment.rows.length}
+                  >
+                    {segment.rows.map(renderTimelineRow)}
+                  </TaskChatFocusFold>
+                ) : (
+                  renderTimelineRow(segment.row)
+                ),
+              )
             ) : (
               item.items.map(renderTimelineRow)
             )}

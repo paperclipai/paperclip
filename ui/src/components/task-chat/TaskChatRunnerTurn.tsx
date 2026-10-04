@@ -15,7 +15,7 @@ import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import {
-  isTaskChatFocusPersistentRow,
+  segmentTaskChatFocusRows,
   TaskChatFocusFold,
   useTaskChatFocusMode,
 } from "./focus-mode";
@@ -207,10 +207,9 @@ export function TaskChatRunnerTurn({
   );
 
   const focusMode = useTaskChatFocusMode();
-  const persistentTimelineRows = timelineRows.filter(isTaskChatFocusPersistentRow);
-  const foldedTimelineRows = timelineRows.filter(
-    (row) => !isTaskChatFocusPersistentRow(row),
-  );
+  // One fold per contiguous activity segment keeps the timeline chronological:
+  // a persistent receipt or plan stays between the activity that surrounds it.
+  const focusSegments = segmentTaskChatFocusRows(timelineRows);
   const renderTimelineRow = (row: (typeof timelineRows)[number]) => (
     <div
       className="min-w-0"
@@ -277,12 +276,18 @@ export function TaskChatRunnerTurn({
           data-testid="task-chat-turn-timeline"
         >
           {focusMode ? (
-            <>
-              <TaskChatFocusFold stepCount={foldedTimelineRows.length}>
-                {foldedTimelineRows.map(renderTimelineRow)}
-              </TaskChatFocusFold>
-              {persistentTimelineRows.map(renderTimelineRow)}
-            </>
+            focusSegments.map((segment) =>
+              segment.kind === "fold" ? (
+                <TaskChatFocusFold
+                  key={`focus-fold:${segment.rows[0]?.id ?? "empty"}`}
+                  stepCount={segment.rows.length}
+                >
+                  {segment.rows.map(renderTimelineRow)}
+                </TaskChatFocusFold>
+              ) : (
+                renderTimelineRow(segment.row)
+              ),
+            )
           ) : (
             timelineRows.map(renderTimelineRow)
           )}

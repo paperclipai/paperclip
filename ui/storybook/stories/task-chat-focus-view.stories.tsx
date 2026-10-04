@@ -2,8 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import {
+  readStoredTaskChatViewMode,
   saveTaskChatViewMode,
-  TASK_CHAT_VIEW_MODE_STORAGE_KEY,
   TaskChatViewModeProvider,
   TaskChatViewModeToggle,
   type TaskChatViewMode,
@@ -94,11 +94,11 @@ function FocusViewReview({
   locale?: string;
 }) {
   // Like TaskChatThread, a stored choice wins over the story default and
-  // survives a reload. Each visual test starts with empty storage.
-  const [mode, setMode] = useState<TaskChatViewMode>(() => {
-    const stored = localStorage.getItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY);
-    return stored === "full" || stored === "focus" ? stored : initialMode;
-  });
+  // survives a reload. Each visual test starts with empty storage. The guarded
+  // read keeps the story default when storage is blocked.
+  const [mode, setMode] = useState<TaskChatViewMode>(
+    () => readStoredTaskChatViewMode() ?? initialMode,
+  );
   const changeMode = (next: TaskChatViewMode) => {
     setMode(next);
     saveTaskChatViewMode(next);

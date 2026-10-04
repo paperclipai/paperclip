@@ -10,8 +10,10 @@ import { i18n } from "@/i18n";
 import en from "@/i18n/locales/en.json";
 import fr from "@/i18n/locales/fr.json";
 import {
+  readStoredTaskChatViewMode,
   readTaskChatViewMode,
   saveTaskChatViewMode,
+  segmentTaskChatFocusRows,
   TASK_CHAT_VIEW_MODE_STORAGE_KEY,
   taskChatThreadHasFocusTurns,
   TaskChatViewModeProvider,
@@ -115,6 +117,16 @@ const foldButton = () =>
   container.querySelector<HTMLButtonElement>(
     '[data-testid="task-chat-focus-fold"] > button',
   );
+const foldButtons = () =>
+  Array.from(
+    container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="task-chat-focus-fold"] > button',
+    ),
+  );
+const timelineRowIds = () =>
+  Array.from(
+    container.querySelectorAll('[data-testid="task-chat-turn-timeline-row"]'),
+  ).map((row) => row.getAttribute("data-timeline-row-id"));
 
 describe("task chat view mode storage", () => {
   it("defaults to the full view when nothing is stored", () => {
@@ -135,6 +147,74 @@ describe("task chat view mode storage", () => {
     });
     expect(readTaskChatViewMode()).toBe("full");
     expect(() => saveTaskChatViewMode("focus")).not.toThrow();
+  });
+
+  it("returns the stored mode from the guarded read", () => {
+    localStorage.setItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY, "focus");
+    expect(readStoredTaskChatViewMode()).toBe("focus");
+    localStorage.setItem(TASK_CHAT_VIEW_MODE_STORAGE_KEY, "full");
+    expect(readStoredTaskChatViewMode()).toBe("full");
+  });
+
+  it("returns null from the guarded read when storage is blocked", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(readStoredTaskChatViewMode()).toBeNull();
+  });
+
+  it("keeps a caller default when the guarded read cannot see storage", () => {
+    // Story initializers use `readStoredTaskChatViewMode() ?? initialMode`.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(readStoredTaskChatViewMode() ?? "focus").toBe("focus");
+  });
+});
+
+describe("segmentTaskChatFocusRows", () => {
+  const tool = (id: string) =>
+    ({ id, kind: "tool", name: "Read", status: "completed" }) as const;
+  const request = (id: string) =>
+    ({
+      id,
+      kind: "protocol",
+      surface: "runtime_request",
+      status: "resolved",
+    }) as const;
+  const plan = (id: string) =>
+    ({ id, kind: "plan_document", document: { key: "plan" } }) as const;
+
+  it("groups only contiguous foldable rows and keeps timeline order", () => {
+    expect(
+      segmentTaskChatFocusRows([
+        tool("a1"),
+        tool("a2"),
+        request("r1"),
+        tool("a3"),
+        plan("p1"),
+        tool("a4"),
+      ]),
+    ).toEqual([
+      { kind: "fold", rows: [tool("a1"), tool("a2")] },
+      { kind: "persistent", row: request("r1") },
+      { kind: "fold", rows: [tool("a3")] },
+      { kind: "persistent", row: plan("p1") },
+      { kind: "fold", rows: [tool("a4")] },
+    ]);
+  });
+
+  it("keeps a single fold when no persistent row interrupts the activity", () => {
+    expect(segmentTaskChatFocusRows([tool("a1"), tool("a2")])).toEqual([
+      { kind: "fold", rows: [tool("a1"), tool("a2")] },
+    ]);
+  });
+
+  it("emits no fold when every row is persistent", () => {
+    expect(segmentTaskChatFocusRows([request("r1"), plan("p1")])).toEqual([
+      { kind: "persistent", row: request("r1") },
+      { kind: "persistent", row: plan("p1") },
+    ]);
   });
 });
 
@@ -242,5 +322,85 @@ describe("Focus view", () => {
     expect(foldButton()?.textContent).toBe(
       "Activité masquée, cliquer pour déplier (étapes : 2)",
     );
+  });
+});
+
+describe("Focus view chronological order (standalone header)", () => {
+  const RESOLVED_REQUEST: TaskChatTurnChildItem = {
+    ...RUNTIME_REQUEST,
+    id: "request-mid",
+    requestId: "req-mid",
+    status: "resolved",
+    resolvedAction: "accept",
+  };
+  const INTERLEAVED_TURN: TaskChatTurnItem = {
+    id: "t-interleaved",
+    kind: "turn",
+    settled: true,
+    standaloneHeader: true,
+    summary: { durationLabel: "12s", toolCount: 2, added: 0, removed: 0 },
+    items: [
+      { id: "tool-before", kind: "tool", name: "Read", status: "completed" },
+      RESOLVED_REQUEST,
+      { id: "tool-after", kind: "tool", name: "Edit", status: "completed" },
+    ],
+    finalResponse: {
+      id: "final-mid",
+      kind: "message",
+      author: "agent",
+      text: "Done around the receipt.",
+      channel: "final",
+    },
+  };
+
+  function InterleavedHarness() {
+    return (
+      <MemoryRouter>
+        <ThemeProvider>
+          <TaskChatViewModeProvider mode="focus">
+            <TaskChatTurn
+              item={INTERLEAVED_TURN}
+              renderChild={(child) => (
+                <span data-child-id={child.id}>{child.id}</span>
+              )}
+            />
+          </TaskChatViewModeProvider>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+  }
+
+  it("folds each contiguous activity segment and keeps the receipt in place", () => {
+    act(() => root.render(<InterleavedHarness />));
+
+    expect(foldButtons()).toHaveLength(2);
+    expect(renderedChildIds()).toEqual(["request-mid"]);
+    const folds = Array.from(
+      container.querySelectorAll('[data-testid="task-chat-focus-fold"]'),
+    );
+    const receipt = container.querySelector('[data-child-id="request-mid"]')
+      ?.parentElement;
+    expect(receipt).not.toBeNull();
+    expect(
+      folds[0]!.compareDocumentPosition(receipt!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      receipt!.compareDocumentPosition(folds[1]!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("restores the exact timeline order when every fold is expanded", () => {
+    act(() => root.render(<InterleavedHarness />));
+
+    for (const button of foldButtons()) {
+      act(() => button.click());
+    }
+    expect(renderedChildIds()).toEqual([
+      "tool-before",
+      "request-mid",
+      "tool-after",
+    ]);
   });
 });
