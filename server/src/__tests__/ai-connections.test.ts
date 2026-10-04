@@ -448,21 +448,26 @@ describe("managed AI connections", () => {
 
       const removal = () => toolAccessService(db).archiveConnection(initial.connectionId, raceCompanyId);
       const connect = () => service.save(raceCompanyId, "dave", { ...account, name: "Next" }, `fixture-next-${order}`);
-      let removed: Promise<unknown>;
-      let connected: Promise<{ connectionId: string }>;
-      if (order === "removal first") {
-        removed = removal();
-        await waitForLockWaiters(1, "The removal");
-        connected = connect();
-        await waitForLockWaiters(2, "The connect");
-      } else {
-        connected = connect();
-        await waitForLockWaiters(1, "The connect");
-        removed = removal();
-        await waitForLockWaiters(2, "The removal");
+      let removed: Promise<unknown> | undefined;
+      let connected: Promise<{ connectionId: string }> | undefined;
+      try {
+        if (order === "removal first") {
+          removed = removal();
+          await waitForLockWaiters(1, "The removal");
+          connected = connect();
+          await waitForLockWaiters(2, "The connect");
+        } else {
+          connected = connect();
+          await waitForLockWaiters(1, "The connect");
+          removed = removal();
+          await waitForLockWaiters(2, "The removal");
+        }
+      } finally {
+        // Release even when a waiter check fails, so no blocked transaction outlives this test.
+        releaseLock();
+        await holder;
+        await Promise.allSettled([removed, connected]);
       }
-      releaseLock();
-      await holder;
       const [, next] = await Promise.all([removed, connected]);
 
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, next.connectionId));
