@@ -116,9 +116,17 @@ describe("SendKeyMenu", () => {
     expect(menu()).toBeNull();
   });
 
+  const pointerDown = (pointerType: string) =>
+    act(() => {
+      const event = new Event("pointerdown", { bubbles: true });
+      Object.defineProperty(event, "pointerType", { value: pointerType });
+      anchor().dispatchEvent(event);
+    });
+
   it("does not send on the finger lift after a long press opens the menu", () => {
     const onSend = vi.fn();
     act(() => root.render(<Harness onSend={onSend} />));
+    pointerDown("touch");
     act(() => {
       anchor().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     });
@@ -129,11 +137,41 @@ describe("SendKeyMenu", () => {
     });
     expect(onSend).not.toHaveBeenCalled();
     // The next deliberate tap sends again.
-    act(() => {
-      anchor().dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    });
+    pointerDown("touch");
     act(() => {
       send().click();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("a mouse right-click does not swallow a later keyboard send", () => {
+    const onSend = vi.fn();
+    act(() => root.render(<Harness onSend={onSend} />));
+    pointerDown("mouse");
+    act(() => {
+      anchor().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    expect(menu()).not.toBeNull();
+    // Enter/Space on a focused button dispatches a click without pointerdown.
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the touch suppression when the menu closes", () => {
+    const onSend = vi.fn();
+    act(() => root.render(<Harness onSend={onSend} />));
+    pointerDown("touch");
+    act(() => {
+      anchor().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    act(() => {
+      document.querySelector<HTMLElement>('[data-testid="send-key-menu-enter"]')!.click();
+    });
+    expect(menu()).toBeNull();
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click();
     });
     expect(onSend).toHaveBeenCalledTimes(1);
   });

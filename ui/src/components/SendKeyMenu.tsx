@@ -37,7 +37,9 @@ export function SendKeyMenu({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // A touch long press fires contextmenu; the click on finger lift is not a send.
+  // Only touch/pen arms this, and it is cleared once the menu closes.
   const swallowClickRef = useRef(false);
+  const lastPointerTypeRef = useRef<string>("mouse");
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -75,6 +77,9 @@ export function SendKeyMenu({
     cancelClose();
   }, []);
   useEffect(() => {
+    if (!open) swallowClickRef.current = false;
+  }, [open]);
+  useEffect(() => {
     if (disabled) {
       clearTimer();
       setOpen(false);
@@ -105,7 +110,8 @@ export function SendKeyMenu({
             clearTimer();
             if (open) scheduleClose();
           }}
-          onPointerDown={() => {
+          onPointerDown={(event) => {
+            lastPointerTypeRef.current = event.pointerType || "mouse";
             swallowClickRef.current = false;
           }}
           onClickCapture={(event) => {
@@ -120,7 +126,7 @@ export function SendKeyMenu({
             if (disabled) return;
             event.preventDefault();
             clearTimer();
-            swallowClickRef.current = true;
+            swallowClickRef.current = lastPointerTypeRef.current !== "mouse";
             setOpen(true);
           }}
         >
