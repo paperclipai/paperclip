@@ -429,6 +429,8 @@ class OpenCodeHarnessSession implements HarnessSession {
   #resultTurnId: string | null;
   #semanticResultTextBoundary: number | null = null;
   #semanticResultProviderMessageId: string | null = null;
+  #semanticResultProviderTextBoundary: number | null = null;
+  #semanticResultProviderPartBoundaries = new Map<string, number>();
   #lastNonTerminalToolSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   readonly #conversationMode: "task" | "prepared";
@@ -527,6 +529,8 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#resultTurnId = null;
     this.#semanticResultTextBoundary = null;
     this.#semanticResultProviderMessageId = null;
+    this.#semanticResultProviderTextBoundary = null;
+    this.#semanticResultProviderPartBoundaries.clear();
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
@@ -560,6 +564,17 @@ class OpenCodeHarnessSession implements HarnessSession {
   }): Promise<{ turnId: string }> {
     if (this.#activeTurnId !== null)
       throw new Error("OpenCode session already has an active turn");
+    // Answer selection is turn-local even when the run and provider session
+    // continue. Keep the run's semantic-result commitment, but never select
+    // text or correlate terminal parts from a previous turn.
+    this.#semanticResultTextBoundary = null;
+    this.#semanticResultProviderMessageId = null;
+    this.#semanticResultProviderTextBoundary = null;
+    this.#semanticResultProviderPartBoundaries.clear();
+    this.#lastNonTerminalToolSourceSeq = 0;
+    this.#completedTextPartIds.clear();
+    this.#completedReasoningPartIds.clear();
+    this.#completedTextParts.length = 0;
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#activeTurnId = turnId;
     this.#emit("turn.submitted", {
@@ -1609,6 +1624,17 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   #emitAssistantPart(part: Record<string, unknown>, turnId: string): void {
+    if (turnId !== this.#activeTurnId) {
+      // Reject before mutating selection state: the emission gate alone
+      // cannot stop a late part from becoming the next turn's final answer.
+      this.#emit("harness.diagnostic", {
+        code: "opencode_late_terminal_turn_event_dropped",
+        message: "OpenCode sent an assistant part for a turn that already reached a terminal state.",
+        droppedEventType: "message.part.updated",
+        turnId,
+      });
+      return;
+    }
     const partId = text(part.id, `${turnId}:part`);
     const partType = text(part.type, "unknown");
     const messageId = text(part.messageID, text(part.messageId)) || null;
@@ -1629,7 +1655,17 @@ class OpenCodeHarnessSession implements HarnessSession {
       // part from the same assistant message complete. Correlating by native
       // message identity selects that response while excluding both earlier
       // commentary messages and later acknowledgement-only messages.
-      this.#semanticResultProviderMessageId = messageId;
+      // The MCP response and provider SSE stream can arrive in either order.
+      // Remember each attempt's first position in the provider stream. Only a
+      // completed call establishes the result identity; rejected attempts and
+      // repeated completion frames must not move its text boundary.
+      if (!this.#semanticResultProviderPartBoundaries.has(partId)) {
+        this.#semanticResultProviderPartBoundaries.set(partId, this.#completedTextParts.length);
+      }
+      if (record(part.state).status === "completed" && this.#semanticResultProviderMessageId === null) {
+        this.#semanticResultProviderMessageId = messageId;
+        this.#semanticResultProviderTextBoundary = this.#semanticResultProviderPartBoundaries.get(partId)!;
+      }
     }
     for (const canonical of canonicalProviderEventsFromOpenCodePart(part)) {
       this.#emit(canonical.eventType, canonical.payload, {
@@ -1821,7 +1857,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       part,
       index: this.#completedTextParts.indexOf(part),
     }));
-    const boundary = this.#semanticResultTextBoundary;
+    const boundary = this.#semanticResultProviderTextBoundary ?? this.#semanticResultTextBoundary;
     const beforeResult = indexed.filter(
       ({ index }) => boundary !== null && index < boundary,
     );

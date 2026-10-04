@@ -673,6 +673,50 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+          if (String(parsedPrompt.message ?? "").includes("retry-terminal")) {
+            emit({
+              type: "message.part.updated",
+              id: "event-pending-rejected-tool-part",
+              properties: {
+                sessionID: session.id,
+                part: {
+                  id: "part-rejected-tool",
+                  messageID: "message-assistant",
+                  type: "tool",
+                  tool: "paperclip_paperclip_finish",
+                  state: { status: "running" },
+                },
+              },
+            });
+            emit({
+              type: "message.part.updated",
+              id: "event-rejected-tool-part",
+              properties: {
+                sessionID: session.id,
+                part: {
+                  id: "part-rejected-tool",
+                  messageID: "message-assistant",
+                  type: "tool",
+                  tool: "paperclip_paperclip_finish",
+                  state: { status: "error", error: "Invalid result; retry the completion call." },
+                },
+              },
+            });
+            emit({
+              type: "message.part.updated",
+              id: "event-retry-commentary",
+              properties: {
+                sessionID: session.id,
+                part: {
+                  id: "part-retry-commentary",
+                  messageID: "message-assistant",
+                  type: "text",
+                  text: "I will retry the completion call.",
+                  time: { start: 2, end: 3 },
+                },
+              },
+            });
+          }
           await callTerminalTool(promptPayload);
           emit({
             type: "message.part.updated",
@@ -684,7 +728,10 @@ const server = createServer(async (request, response) => {
                 messageID: "message-assistant",
                 type: "tool",
                 tool: "paperclip_paperclip_finish",
-                state: { status: "completed", output: "accepted" },
+                state: {
+                  status: String(parsedPrompt.message ?? "").includes("delayed-terminal") ? "running" : "completed",
+                  output: "accepted",
+                },
               },
             },
           });
@@ -714,6 +761,44 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+          if (/repeat-terminal|delayed-terminal/.test(String(parsedPrompt.message ?? ""))) {
+            emit({
+              type: "message.part.updated",
+              id: "event-tool-part-repeated",
+              properties: {
+                sessionID: session.id,
+                part: {
+                  id: "part-tool",
+                  messageID: "message-assistant",
+                  type: "tool",
+                  tool: "paperclip_paperclip_finish",
+                  state: { status: "completed", output: "accepted" },
+                },
+              },
+            });
+            emit({
+              type: "message.updated",
+              id: "event-post-tool-ack-message",
+              properties: {
+                sessionID: session.id,
+                info: { id: "message-post-tool-ack", sessionID: session.id, role: "assistant" },
+              },
+            });
+            emit({
+              type: "message.part.updated",
+              id: "event-post-tool-ack",
+              properties: {
+                sessionID: session.id,
+                part: {
+                  id: "part-post-tool-ack",
+                  messageID: "message-post-tool-ack",
+                  type: "text",
+                  text: "Acknowledged.",
+                  time: { start: 5, end: 6 },
+                },
+              },
+            });
+          }
         } else if (correlatedFinal) {
           emit({
             type: "message.part.updated",
