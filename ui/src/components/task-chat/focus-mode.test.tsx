@@ -317,10 +317,10 @@ describe("Focus view", () => {
 
     const group = container.querySelector('[data-testid="task-chat-view-mode-toggle"]');
     expect(group?.getAttribute("aria-label")).toBe(fr.taskChat.focus.viewGroup);
-    expect(toggleButton("full").textContent).toBe("Toute l'activité");
+    expect(toggleButton("full").textContent).toBe("Toute l’activité");
     expect(toggleButton("focus").textContent).toBe("Vue focus");
     expect(foldButton()?.textContent).toBe(
-      "Activité masquée, cliquer pour déplier (étapes : 2)",
+      "Activité masquée, cliquer pour déplier (étapes\u00a0: 2)",
     );
   });
 });
