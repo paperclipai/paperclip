@@ -40,14 +40,29 @@ per-request spool directory under the instance data dir
 (`server/src/services/issue-attachment-uploads.ts`), and streams the spool file
 into the storage provider. Peak memory on that path is one stream chunk.
 
-Two invariants keep the spool from becoming a disk leak:
+Three invariants keep the spool from becoming a disk leak:
 
-- The spool directory is released on **every** exit path, including the
-  `LIMIT_FILE_SIZE` rejection where multer never sets `req.file`. The spooler
-  tracks the directory it created in a `WeakMap` keyed on the request for
-  exactly this case.
-- Orphan spool directories from a hard crash are swept after 24h
-  (`startAttachmentUploadSpoolSweeper`, wired into server startup/shutdown).
+- **Aggregate budget.** `MAX_ISSUE_ATTACHMENT_BYTES` bounds one request, not N
+  of them, so the spooler also reserves an instance-wide byte budget
+  (`PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES`) *before* multer writes the
+  first byte. An upload that would exceed the budget is refused with 429 and
+  `Retry-After` instead of consuming disk. The default is one full-size upload,
+  the most conservative value that still admits a single large deliverable;
+  operators with disk to spare raise it. The reservation keys off the declared
+  `Content-Length` of the multipart body, falling back to the full per-request
+  ceiling for a chunked request, and it is released with the spool plus a
+  response-`close` backstop so an aborted handler cannot leak it.
+- **Release on every exit path**, including the `LIMIT_FILE_SIZE` rejection where
+  multer never sets `req.file`. The spooler tracks the directory it created in a
+  `WeakMap` keyed on the request for exactly this case.
+- **Explicit liveness for the sweep.** Orphan spool directories from a hard
+  crash, and any left behind by a failed `fs.rm`, are swept after 1h
+  (`startAttachmentUploadSpoolSweeper`, wired into server
+  startup/shutdown). Liveness is decided by an in-process registry of active
+  spool directories, not by the directory's mtime: an mtime does not advance
+  while the file inside it is written or read, so an mtime rule would reap a
+  slow upload underneath an active request. A failed cleanup is logged at warn
+  and then retried by the sweep rather than silently swallowed.
 
 `PutFileInput` requires an exact `byteSize` and `sha256` up front for a streamed
 body, so the digest comes from a second disk read of the spool file
@@ -66,9 +81,19 @@ before recording an attachment row.
 - The issue route now writes to the instance data dir. An operator running with a
   read-only data dir, or with `diskStorage` unavailable, sees upload failures
   rather than silent truncation.
-- Disk, not memory, is the new failure surface: concurrent large uploads consume
-  transient disk proportional to file size. The spool sweep bounds the tail after
-  a crash, but not the peak during normal operation.
+- Disk, not memory, is the new failure surface. The aggregate budget caps peak
+  spool usage at `PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES` rather than at
+  N x file size, so the peak is bounded by configuration instead of by how many
+  large uploads happen to overlap. The cost is a new failure mode: a caller can
+  now be refused with 429 while capacity is busy. That is deliberate — the
+  alternative is an instance that runs out of disk.
+- The spool sweep threshold drops from 24h to 1h because liveness is tracked
+  explicitly, so the shorter age no longer risks reaping a live upload. A failed
+  cleanup is retried within an hour instead of a day.
+- The budget is process-scoped. A multi-process deployment behind a load
+  balancer gets one budget per process, so the effective instance-wide ceiling
+  scales with process count. A shared quota store would be the fix if that ever
+  matters; it is not worth the dependency at the current scale.
 
 ## Alternatives considered
 
@@ -87,11 +112,16 @@ before recording an attachment row.
 ## Test plan
 
 - `server/src/__tests__/issue-attachment-uploads.test.ts` — spool lifecycle:
-  per-request isolation, release, and the 24h orphan sweep.
+  per-request isolation, release, and the orphan sweep; aggregate budget
+  reserve/refuse/release including the response-`close` backstop and the
+  ceiling fallback for a request with no declared length; sweep liveness,
+  asserting an in-flight directory is never reaped however old it looks and
+  that a leftover is reclaimed.
 - `server/src/__tests__/issue-attachment-routes.test.ts` — a 70 MB video attaches
   in one call, storage receives a stream rather than a buffer, the stored object's
-  size and SHA-256 match, and no spool survives the success, empty-file,
-  missing-file, or over-cap paths.
+  size and SHA-256 match, no spool survives the success, empty-file,
+  missing-file, or over-cap paths, and an upload over the aggregate budget is
+  refused with 429 before any byte reaches storage or disk.
 - Rollback: revert this change. Nothing in it is a schema or migration change, so
   there is no data to unwind; the only residue is spool directories, which the
-  sweep clears within 24h.
+  sweep clears within 1h.

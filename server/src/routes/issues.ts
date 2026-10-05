@@ -18519,6 +18519,19 @@ export function issueRoutes(
       )
         return;
 
+      // Bound aggregate spool disk before multer writes a single byte. The
+      // per-request ceiling bounds one upload; only an aggregate budget bounds
+      // the volume that also holds the instance database when an authorized
+      // caller runs several large uploads at once.
+      const admission = attachmentSpooler.admit(req, res);
+      if (!admission.admitted) {
+        res.setHeader("Retry-After", String(admission.retryAfterSeconds));
+        res.status(429).json({
+          error: `Instance upload capacity is busy (${formatAttachmentSize(admission.inFlightBytes)} of ${formatAttachmentSize(admission.maxInFlightBytes)} in flight)`,
+        });
+        return;
+      }
+
       // The spool directory is created by multer before the size limit is
       // enforced, so it has to be released on every exit path below — including
       // the `LIMIT_FILE_SIZE` rejection, where multer never sets `req.file`.

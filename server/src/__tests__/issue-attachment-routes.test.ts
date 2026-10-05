@@ -1056,6 +1056,38 @@ describe("issue attachment large media", () => {
     expect(await waitForSpoolEmpty()).toEqual([]);
   });
 
+  it("rejects an upload with 429 once the aggregate spool budget is exhausted", async () => {
+    // The per-request ceiling bounds one upload; the aggregate budget is what
+    // stops N concurrent ones from filling the instance volume.
+    const previous = process.env.PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES;
+    process.env.PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES = "1024";
+    try {
+      const storage = createStorageService();
+      mockIssueService.createAttachment.mockResolvedValue(
+        makeAttachment("video/mp4", "episode-3.mp4"),
+      );
+
+      const app = await createApp(storage);
+      const res = await request(app)
+        .post(`/api/companies/company-1/issues/${ISSUE_ID}/attachments`)
+        .attach("file", makeVideoBytes(64 * 1024), {
+          filename: "episode-3.mp4",
+          contentType: "video/mp4",
+        });
+
+      expect(res.status).toBe(429);
+      expect(res.headers["retry-after"]).toBeTruthy();
+      expect(String(res.body.error)).toContain("upload capacity is busy");
+      // Refused before any byte reached storage or disk.
+      expect(storage.__calls.putFile).toBeUndefined();
+      expect(await waitForSpoolEmpty()).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES;
+      else process.env.PAPERCLIP_ISSUE_ATTACHMENT_MAX_INFLIGHT_BYTES = previous;
+      vi.resetModules();
+    }
+  });
+
   it("leaves no spool when attachment registration is rejected", async () => {
     const storage = createStorageService();
     const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
