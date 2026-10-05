@@ -558,6 +558,22 @@ describe("AppDetail", () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Composio"]')?.disabled).toBe(true);
   });
 
+  it.each([
+    ["UNVERIFIED", "Not verified"],
+    ["INITIATED", "Waiting for sign-in"],
+    ["EXPIRED", "Needs sign-in"],
+  ])("shows %s provider health as %s", async (status, label) => {
+    useComposioConnection();
+    const observed = aggregatorApps([observedApp("notion", "Notion", {
+      accounts: [{ id: "account", alias: null, status, isDefault: false }],
+    })]);
+    listAggregatorAppsMock.mockResolvedValue(observed);
+    syncAggregatorAppsMock.mockResolvedValue(observed);
+    await renderAppDetail();
+    await vi.waitFor(() => expect(container.textContent).toContain("Apps refreshed."));
+    expect(container.querySelector('ul[aria-label="Connected Composio apps"]')?.textContent).toBe(`Notion${label}`);
+  });
+
   it("does not request manager-only account inventory without configuration access", async () => {
     useComposioConnection();
     listConnectionGrantsMock.mockResolvedValue({ grants: [], capabilities: fullCapabilities({ canConfigure: false }), currentUserId: "user-1", members: [] });

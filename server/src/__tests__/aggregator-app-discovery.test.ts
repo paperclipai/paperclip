@@ -57,6 +57,7 @@ describe("aggregator inventory adapters", () => {
     expect(() => inventoryPayload({ content: [{ type: "text", text: "No accounts" }] })).toThrow();
   });
   it("validates browser destinations without leaking credentials", () => {
+    expect(aggregatorManagementUrl("composio")).toBe("https://dashboard.composio.dev/~/org/connect/apps");
     for (const url of ["javascript:alert(1)", "https://user:password@executor.example/", "https://executor.example/?api_key=secret"]) expect(aggregatorManagementUrl("executor", url)).toBeNull();
     expect(aggregatorManagementUrl("arcade", "https://other.example")).toBeNull();
     expect(aggregatorManagementUrl("executor", "https://executor.example/team/accounts")).toBe("https://executor.example/team/accounts");

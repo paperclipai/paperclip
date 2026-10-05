@@ -46,6 +46,6 @@ export function aggregatorManagementUrl(provider: AppCatalogAggregator, configur
       return url.toString();
     } catch { return null; }
   }
-  return provider === "composio" ? "https://dashboard.composio.dev/"
+  return provider === "composio" ? "https://dashboard.composio.dev/~/org/connect/apps"
     : provider === "arcade" ? "https://app.arcade.dev/" : null;
 }

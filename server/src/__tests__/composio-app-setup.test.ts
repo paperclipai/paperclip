@@ -73,6 +73,7 @@ const support = await getEmbeddedPostgresTestSupport();
     let accounts = [{ id: accountId, alias: "Work", status: "initiated", is_default: true, access_token: "never-store-this-token" }];
     let onList = async () => {};
     let listResult: unknown = undefined;
+    let failedToolkit: string | undefined;
     let mutationStatus = 200;
     let applyMutation = true;
     const operations: string[] = [];
@@ -91,7 +92,8 @@ const support = await getEmbeddedPostgresTestSupport();
           if (toolkit.action === "rename") accounts = accounts.map(account => account.id === toolkit.account_id ? { ...account, alias: toolkit.alias } : account);
           if (toolkit.action === "remove") accounts = accounts.filter(account => account.id !== toolkit.account_id);
         }
-        results[toolkit.name] = toolkit.action === "add" ? { redirect_url: "https://connect.composio.dev/link/test" }
+        results[toolkit.name] = toolkit.name === failedToolkit ? { toolkit: toolkit.name, accounts: [{ status: "ACTIVE" }] }
+          : toolkit.action === "add" ? { redirect_url: "https://connect.composio.dev/link/test" }
           : listResult ?? { toolkit: toolkit.name, accounts: toolkit.name === "circleback_mcp" ? accounts : [] };
       }
       return Response.json({ jsonrpc: "2.0", id: request.id, result: { structuredContent: { data: { results } } } });
@@ -100,6 +102,7 @@ const support = await getEmbeddedPostgresTestSupport();
       activate: () => { accounts = accounts.map(account => ({ ...account, status: "active" })); },
       disconnect: () => { accounts = []; },
       setListResult: (result: unknown) => { listResult = result; },
+      failToolkit: (toolkit: string) => { failedToolkit = toolkit; },
       setMutationStatus: (status: number) => { mutationStatus = status; },
       refuseMutation: () => { applyMutation = false; },
       onList: (callback: () => Promise<void>) => { onList = callback; } };
@@ -270,6 +273,16 @@ const support = await getEmbeddedPostgresTestSupport();
     f.setListResult(undefined);
     await f.access.syncComposioApps(f.connection.id, true, f.actor);
     expect((await finishSync(f)).apps.find(app => app.toolkit === "circleback_mcp")?.errorAt).toBeNull();
+  });
+
+  it("reports an incomplete sync when a toolkit without prior accounts fails", async () => {
+    const f = await fixture(); f.activate(); f.failToolkit("hubspot");
+    await f.access.syncComposioApps(f.connection.id, true, f.actor);
+    const result = await finishSync(f);
+    expect(result.sync).toMatchObject({ status: "error", checked: 3, total: 3, failed: 1 });
+    expect(result.sync.error).toBeTruthy();
+    expect(result.apps.find(app => app.toolkit === "circleback_mcp")?.accounts[0].id).toBe(f.accountId);
+    expect(result.apps.find(app => app.toolkit === "hubspot")).toBeUndefined();
   });
 
   it("rejects observations when credentials change while a provider request is in flight", async () => {

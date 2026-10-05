@@ -30,6 +30,7 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { createUuid } from "../lib/uuid";
 import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -1115,7 +1116,7 @@ export function NewIssueDialog() {
     // Reuse the request key only for retries of the same submitted draft.
     const fingerprint = JSON.stringify(createData);
     if (createRequestRef.current?.fingerprint !== fingerprint) {
-      createRequestRef.current = { fingerprint, idempotencyKey: crypto.randomUUID() };
+      createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
     }
     createIssue.mutate({
       ...createData,

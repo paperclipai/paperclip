@@ -1049,6 +1049,24 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("creates a task on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      dialogState.newIssueDefaults = { title: "LAN preview task" };
+      const { root } = renderDialog(container);
+      await flush();
+      act(() => Array.from(container.querySelectorAll("button"))
+        .find(button => button.textContent?.includes("Create Task"))!.click());
+      await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey)
+        .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      act(() => root.unmount());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([undefined, false, true])("navigates after creation only when navigateOnCreate is true (%s)", async (navigateOnCreate) => {
     dialogState.newIssueDefaults = { title: "Connect Circleback through Composio", navigateOnCreate };
     const { root } = renderDialog(container);

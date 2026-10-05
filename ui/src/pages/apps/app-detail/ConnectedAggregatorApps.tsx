@@ -77,6 +77,7 @@ export function ConnectedAggregatorApps({ connection }: { connection: ToolConnec
           const stale = loadFailed || syncFailed || unavailable || snapshots.some(snapshot => snapshot.freshness === "stale" || snapshot.errorAt);
           const connected = !stale && accounts.some(account => account.status === "ACTIVE");
           const status = stale ? "Not verified" : connected ? "Connected"
+            : accounts.some(account => account.status === "UNVERIFIED") ? "Not verified"
             : accounts.some(account => account.status === "INITIATED") ? "Waiting for sign-in" : "Needs sign-in";
           const logoUrl = catalogBySlug.get(app.appSlug)?.routes.find(route => route.provider === provider)?.logoUrl;
           return <li key={app.appSlug} className="flex items-center gap-3 px-3 py-3">

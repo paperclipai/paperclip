@@ -3795,7 +3795,7 @@ export function toolAccessService(
             failed += result.failedToolkits.length;
             await updateLease({ checked: start + batch.length, failed });
           }
-          await updateLease({ status: failed === toolkits.length ? "error" : "ready", lastCompletedAt: new Date(), failed });
+          await updateLease({ status: failed > 0 ? "error" : "ready", lastCompletedAt: new Date(), failed });
         } catch {
           const [activeLease] = await db.select({ id: toolConnectionAppSyncs.id }).from(toolConnectionAppSyncs)
             .where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId)));
