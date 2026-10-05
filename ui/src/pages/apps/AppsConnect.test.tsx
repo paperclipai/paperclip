@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
@@ -376,6 +376,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
+    const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
+    experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });
+    listGalleryMock.mockResolvedValue({ apps: [honcho] });
+    function WorkspaceSetup() {
+      const [workspace, setWorkspace] = useState("");
+      return <ConnectionSetupFlow
+        serviceSlug="honcho"
+        connectionSettings={<label>Honcho workspace<input aria-label="Honcho workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} /></label>}
+        additionalSettings={<p>Provider instructions</p>}
+        additionalSettingsValid={Boolean(workspace.trim())}
+      />;
+    }
+    await render(undefined, false, <WorkspaceSetup />);
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const workspace = container.querySelector<HTMLInputElement>('input[aria-label="Honcho workspace"]')!;
+    expect(workspace.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.textContent).toContain("Provider instructions");
+    await act(async () => setInputValue(key, "test-honcho-key"));
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await act(async () => buttonByText("Connect")?.click());
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => setInputValue(workspace, "paperclip-acme"));
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    await act(async () => buttonByText("Connect")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledOnce();
+  });
 
   it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
     const onComplete = vi.fn();
