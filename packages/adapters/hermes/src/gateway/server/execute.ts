@@ -484,7 +484,7 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
-  const delta = asString(record?.delta) || asString(record?.text_delta);
+  const delta = asString(record?.delta, "") || asString(record?.text_delta, "");
   const sanitizedDelta = eventName === "message.delta" && delta ? redactText(delta) : null;
   const redacted = redactForLog(parsed, [], 0, redactText);
   const eventData = sanitizedDelta !== null
