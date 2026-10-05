@@ -795,12 +795,25 @@ export function issueTreeControlService(db: Db) {
       reason?: string | null;
       releasePolicy?: IssueTreeHoldReleasePolicy | null;
       actor: ActorInput;
+      // Dark internal opt-in; no production caller enables this yet.
+      lifecycleFence?: boolean;
     },
   ): Promise<{
     hold: IssueTreeHold;
     preview: IssueTreeControlPreview;
     resumedPauseHoldIds?: string[];
   }> {
+    if (input.lifecycleFence) {
+      // The owning boundary must precede every domain read, not just INSERT.
+      // Deliberately narrow until cancel/restore/resume policy paths migrate.
+      if (input.mode !== "pause" || input.releasePolicy != null) {
+        throw unprocessable("Fenced tree creation currently supports only pause with the default manual release policy");
+      }
+      const captured = { companyId, rootIssueId, reason: input.reason,
+        actor: { actorType: input.actor.actorType, actorId: input.actor.actorId,
+          agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId } };
+      return db.transaction((tx) => createIssueTreePauseHoldInTransaction(tx, captured));
+    }
     if (input.mode === "cancel") {
       const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
         eq(issues.id, rootIssueId), eq(issues.companyId, companyId), sql`${issues.conversationAgentId} is not null`,
