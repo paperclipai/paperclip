@@ -10705,7 +10705,32 @@ export function issueService(db: Db) {
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
-        await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        if (options.lifecycleFence && data.parentId !== null) {
+          // Dark parent edits require a complete same-company ancestry snapshot.
+          // Other writers do not yet participate: this is not serialization.
+          const visited = new Set<string>([id]);
+          let parentId: string | null = data.parentId;
+          for (let depth = 0; parentId !== null; depth++) {
+            if (depth >= 100 || visited.has(parentId)) {
+              throw unprocessable("Lifecycle parent ancestry is cyclic or exceeds depth limit");
+            }
+            visited.add(parentId);
+            const [parent] = await dbOrTx.select({
+              id: issues.id, companyId: issues.companyId, parentId: issues.parentId,
+              conversationAgentId: issues.conversationAgentId,
+            }).from(issues).where(and(eq(issues.id, parentId), eq(issues.companyId, existing.companyId)));
+            if (!parent || parent.companyId !== existing.companyId || parent.id !== parentId
+              || (parent.parentId !== null && typeof parent.parentId !== "string")) {
+              throw unprocessable("Lifecycle parent ancestry is incomplete");
+            }
+            if (depth === 0 && parent.conversationAgentId) {
+              throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
+            }
+            parentId = parent.parentId;
+          }
+        } else {
+          await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        }
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
