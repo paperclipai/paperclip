@@ -1,3 +1,4 @@
+import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
@@ -1395,7 +1396,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "instructions" && (
-        <PromptsTab
+        <div><PromptsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
           showSaveNotice={false}
@@ -1404,6 +1405,8 @@ export function AgentDetail() {
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
         />
+        {resolvedCompanyId && <AgentConnectionInstructions companyId={resolvedCompanyId} agentId={agent.id} />}
+        </div>
       )}
 
       {activeView === "runtime" && (

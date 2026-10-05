@@ -1,4 +1,4 @@
-import { getConnectableAppDefinition, instanceExperimentalSettingsSchema } from "@paperclipai/shared";
+import { defaultConnectionAgentInstructions, getConnectableAppDefinition, instanceExperimentalSettingsSchema } from "@paperclipai/shared";
 import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { storybookAgents } from "./paperclipData";
@@ -9,10 +9,13 @@ export const GUIDANCE_CONNECTION = "connection-guidance-preview";
 export const guidanceAgents = storybookAgents.slice(0, 2).map((agent, i) => ({ ...agent, name: i ? "Morgan" : "Ada" }));
 
 /** All connector requests remain in the story, including mutations from the real pages. */
-export function installConnectionGuidanceFixtures(client: QueryClient, provider: "Honcho" | "Notion", options: { setup: boolean; askFirst: boolean }) {
+export function installConnectionGuidanceFixtures(client: QueryClient, provider: "Honcho" | "Notion", options: { setup: boolean; askFirst: boolean; template?: string | null; disabled?: boolean; missingWorkspace?: boolean; failSave?: boolean }) {
   const company = GUIDANCE_COMPANY;
   const id = GUIDANCE_CONNECTION;
-  const app = getConnectableAppDefinition(provider.toLowerCase())!;
+  const app = structuredClone(getConnectableAppDefinition(provider.toLowerCase())!);
+  if (options.template === null) delete app.agentInstructions;
+  else if (options.template) app.agentInstructions = { id: `${app.slug}.storybook`, version: 1, text: options.template };
+  let failSave = options.failSave ?? false;
   const timestamp = "2026-10-04T12:00:00.000Z";
   let connected = !options.setup;
   const connection = {
@@ -21,7 +24,8 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
     authKind: provider === "Honcho" ? "api_key" : "oauth", status: "active", enabled: true,
     healthStatus: "ok", healthMessage: null, requiresReauthorization: false,
     createdByUserId: "user-storybook", createdByAgentId: null,
-    config: { sourceTemplateKey: app.slug, connectionMethodKey: app.methods[0]?.key, url: app.methods[0]?.defaults?.serverUrl },
+    agentInstructions: app.agentInstructions ? { ...defaultConnectionAgentInstructions(app.agentInstructions)!, enabled: !options.disabled } : null,
+    config: { methodConfig: { workspaceId: options.missingWorkspace ? "" : "paperclip-acme" }, sourceTemplateKey: app.slug, connectionMethodKey: app.methods[0]?.key, url: app.methods[0]?.defaults?.serverUrl },
     createdAt: timestamp, updatedAt: timestamp,
   };
   const application = { id: "guidance-app", companyId: company, applicationKey: app.slug, name: app.name, status: "active", metadata: { sourceTemplateKey: app.slug } };
@@ -40,7 +44,7 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
   const capabilities = { canConfigure: true, canCreateOrganizationGrant: true, canSetCompanyInstall: true, canConnectAsCurrentUser: true, canManageAgentInstalls: true, canViewOtherPersonalIdentities: true };
   let profile = { profileKey: `app:${id}`, entries: catalog.map(entry => ({ effect: "include", catalogEntryId: entry.id })), bindings: guidanceAgents.map(agent => ({ targetType: "agent", targetId: agent.id })) };
   let policies = options.askFirst ? catalog.filter(t => !t.isReadOnly).map(t => ({ policyType: "require_approval", enabled: true, config: { source: "app_gallery_finish", connectionId: id, catalogEntryId: t.id } })) : [];
-  let installs: Array<{ targetType: string; targetId: string }> = [];
+  let installs: Array<{ targetType: string; targetId: string }> = [{ targetType: "company", targetId: company }];
   const grants = { connection: { id, uid: id }, capabilities, currentUserId: "user-storybook", members: [], grants: [{
     id: "guidance-grant", companyId: company, connectionId: id, kind: "organization", subjectUserId: null, subjectAgentId: null,
     status: "active", isDefault: true, providerTenant: { name: "Acme" }, members: [], capabilities: { canRevoke: true, canEditAudience: true },
@@ -65,6 +69,7 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
     [`/api/companies/${company}/tools/profiles`, () => ({ profiles: [profile] })],
     [`/api/companies/${company}/tools/policies`, () => ({ policies })],
   ]);
+  for (const agent of guidanceAgents) responses.set(`/api/companies/${company}/tools/profiles/effective/agents/${agent.id}`, () => ({ agentId: agent.id, profiles: [], entries: [], bindings: [], allowedTools: catalog, allowedToolNames: catalog.map(t => t.toolName), installedConnections: [connection] }));
   const seeds: Array<[readonly unknown[], unknown]> = [
     [queryKeys.access.companyUserDirectory(company), directory],
     [queryKeys.agents.list(company), guidanceAgents], [queryKeys.apps.gallery(company), gallery],
@@ -84,11 +89,15 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
     if (path === "/api/instance/settings/experimental") return Response.json(settings);
     if (path === `/api/companies/${company}/tools/apps/connect`) {
       connected = true;
+      const next = body();
+      if (next.agentInstructions !== undefined) connection.agentInstructions = next.agentInstructions;
+      if (next.configValues !== undefined) connection.config.methodConfig = next.configValues;
       return Response.json({ connectionId: id, connection, application, catalog,
         actions: { readOnly: catalog.filter(t => t.isReadOnly), canMakeChanges: catalog.filter(t => !t.isReadOnly) }, suggestedDefaults: {}, auth: null });
     }
     if (path.endsWith(`/apps/${id}/finish`)) {
       const next = body();
+      if (next.agentInstructions !== undefined) connection.agentInstructions = next.agentInstructions;
       profile = { ...profile, entries: (next.enabledCatalogEntryIds ?? []).map((catalogEntryId: string) => ({ effect: "include", catalogEntryId })),
         bindings: next.access === "all_agents" ? [{ targetType: "company", targetId: company }] : (next.access?.agentIds ?? []).map((targetId: string) => ({ targetType: "agent", targetId })) };
       policies = (next.askFirstCatalogEntryIds ?? []).map((catalogEntryId: string) => ({ policyType: "require_approval", enabled: true, config: { source: "app_gallery_finish", connectionId: id, catalogEntryId } }));
@@ -96,6 +105,7 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
     }
     if (path === `/api/tool-connections/${id}/installs` && method === "PUT") installs = body().installs ?? [];
     if (path === `/api/tool-connections/${id}` && method === "PATCH") {
+      if (failSave) { failSave = false; return Response.json({ error: "Couldn’t save instructions. Your changes are still here. Try again." }, { status: 503 }); }
       Object.assign(connection, body());
       return Response.json(connection);
     }

@@ -1130,6 +1130,10 @@ const specialMethodsFor = (entry) => {
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,
       consoleLinks: { keys: entry.slug === "mem0" ? "https://app.mem0.ai/dashboard/api-keys" : "https://app.honcho.dev", docs: entry.docsUrl },
+      ...(entry.slug === "honcho" ? { tenantFields: [{
+        key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
+        placeholder: "Workspace ID", validation: { maxLength: 512 },
+      }] } : {}),
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1753,6 +1757,21 @@ for (const app of apps) {
         : { key: "write", label: "Read and write", description: "Query and change the databases you authorize in PlanetScale." };
     }
   }
+}
+
+// Optional connection capability: providers opt in through reviewed defaults.
+const instructionTemplates = JSON.parse(fs.readFileSync(
+  path.join(root, "doc/connections/agent-instruction-templates.json"), "utf8",
+)).templates;
+const instructionApps = new Set();
+for (const template of instructionTemplates) {
+  const app = apps.find((entry) => entry.slug === template.app);
+  if (!app || instructionApps.has(template.app) || !template.id || !Number.isInteger(template.version)
+    || template.version < 1 || !template.text?.trim() || template.text.length > 2000 || !template.evidence?.length) {
+    throw new Error(`${template.app}: invalid or duplicate agent instruction template`);
+  }
+  instructionApps.add(template.app);
+  app.agentInstructions = { id: template.id, version: template.version, text: template.text.trim() };
 }
 
 const validateApp = (app) => {

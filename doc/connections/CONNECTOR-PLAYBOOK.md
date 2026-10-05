@@ -122,7 +122,7 @@ read/write proof separately and never describe metadata discovery as live proof.
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
-- [Optional agent instructions (proposed convention)](#optional-agent-instructions-proposed-convention)
+- [Optional agent instructions](#optional-agent-instructions)
 - [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
@@ -148,16 +148,16 @@ A complete connector proposal produces:
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
 
-## Optional agent instructions (proposed convention)
+## Optional agent instructions
 
 Some connections need standing guidance: tools tell an agent what it *can* do,
 while a short paragraph explains when it should use them. Memory is the first
-design case. The [connection instructions and memory evaluation plan](../plans/2026-10-03-connection-instructions-and-memory-evals.md)
-and **Design explorations → Connections → Agent instructions** in Storybook
-define the proposed pattern. These are design specimens, not a shipped manifest
-field or runtime feature.
+use case. See [Connection instructions](CONNECTION-INSTRUCTIONS.md) for the
+generic catalog metadata, saved settings, API, runtime, and integration contracts.
+**Design explorations → Connections → Agent instructions** in Storybook uses
+production components with mocked APIs.
 
-When implementing this capability:
+When adding a template:
 
 - Show the section only when the connector explicitly provides a nonempty
   instruction template. Use **Agent instructions** and the checkbox

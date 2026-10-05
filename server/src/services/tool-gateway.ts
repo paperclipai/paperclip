@@ -1,3 +1,4 @@
+import { composeConnectionInstructions } from "./connection-instructions.js";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
@@ -2974,9 +2975,10 @@ export function createToolGatewayService(
   async function listToolsForContext(
     session: ToolGatewaySession,
     signal?: AbortSignal,
+    includeOnDemandTargets = false,
   ): Promise<ToolGatewayDescriptor[]> {
     try {
-      return await toolDiscoveryScheduler.run(() => buildToolsForContext(session, signal), signal);
+      return await toolDiscoveryScheduler.run(() => buildToolsForContext(session, signal, includeOnDemandTargets), signal);
     } catch (error) {
       if (error instanceof ToolDiscoveryBusyError) {
         throw new ToolGatewayHttpError(503, error.message, "tool_discovery_busy");
@@ -2988,6 +2990,7 @@ export function createToolGatewayService(
   async function buildToolsForContext(
     session: ToolGatewaySession,
     signal?: AbortSignal,
+    includeOnDemandTargets = false,
   ): Promise<ToolGatewayDescriptor[]> {
     signal?.throwIfAborted();
     if (session.agentId) {
@@ -3002,7 +3005,7 @@ export function createToolGatewayService(
       ...allTools(),
       ...await githubBotToolsForSession(db, session),
       ...await slackToolsForSession(db, session),
-      ...allConnectedTools.filter((tool) => !isOnDemandRemoteTool(tool)),
+      ...allConnectedTools.filter((tool) => includeOnDemandTargets || !isOnDemandRemoteTool(tool)),
     ].filter(
       (tool) =>
         session.agentId ||
@@ -4802,7 +4805,7 @@ export function createToolGatewayService(
   ): Promise<unknown> {
     if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return parameters;
     const { connection, entry } = await resolveConnectedRemoteTool(session, tool);
-    return projectedConnectionToolArguments(connection, parameters, entry.toolName);
+    return projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
   }
 
   async function approvedManagedArgumentsRemainCurrent(
@@ -9018,6 +9021,34 @@ export function createToolGatewayService(
         const decision = await policyService.decide(policyInputForTool({ session, tool, consumeRateLimit: false }));
         return decision.allowed || decision.decision === "require_approval";
       } catch { return false; }
+    },
+
+    /** Standing instructions use exactly the same authorization as tool discovery. */
+    async resolveConnectionInstructionsForRun(binding: { companyId: string; agentId: string; runId: string }) {
+      const candidates = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, binding.companyId), eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"), sql`${toolConnections.agentInstructions}->>'enabled' = 'true'`,
+      ));
+      if (!candidates.length) return null;
+      const runContext = await resolveRunContext(binding);
+      const session = await captureSessionIdentity({
+        ...binding, ...runContext, id: randomUUID(), token: "", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+      });
+      const visible = new Set((await listToolsForContext(session, undefined, true)).flatMap((tool) => tool.connectionId ? [tool.connectionId] : []));
+      const sources: Parameters<typeof composeConnectionInstructions>[0] = [];
+      for (const connection of candidates) {
+        if (!visible.has(connection.id)) continue;
+        try {
+          const grant = await resolveConnectionGrant(session, connection, false);
+          sources.push({ connection, grantId: grant.id });
+        } catch (error) {
+          // A missing/revoked identity makes this connection unavailable, without
+          // opening an interaction or blocking unrelated work at prompt assembly.
+          if (!(error instanceof ToolGatewayHttpError) && !(error instanceof HttpError)) throw error;
+          if (error.status >= 500) throw error;
+        }
+      }
+      return composeConnectionInstructions(sources);
     },
 
     async browserUseResources(binding: { companyId: string; agentId: string; runId?: string; issueId?: string }) {

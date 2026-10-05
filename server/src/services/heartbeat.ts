@@ -1,4 +1,6 @@
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
+import { prepareConnectionInstructionDelivery } from "./connection-instructions.js";
+import { resolveAssignedConnectionInstructionsForRun } from "./native-runtime/assigned-mcp-tools.js";
 import { externalObjectService } from "./external-objects.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
@@ -21796,7 +21798,10 @@ export function heartbeatService(
       const connectorDelivery = await prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType);
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
-      let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
+      let runtimeConfig = await prepareConnectionInstructionDelivery({
+        resolve: () => resolveAssignedConnectionInstructionsForRun(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id }),
+        context, config: connectorDelivery.config, native: agent.adapterType === "paperclip_runner",
+      });
       const resolvedFailureSecrets = readFailureReportSecrets();
       readFailureReportSecrets = () => [
         ...resolvedFailureSecrets,

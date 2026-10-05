@@ -37,7 +37,9 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
 
 /** Controlled presentation shared by provider setup, configuration imports and review stories.
  * Authentication, persistence and calls belong to the controller, never these views. */
-export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, companyId, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl, upstreamServiceName, onCancel }: {
+export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, companyId, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl, upstreamServiceName, onCancel, additionalSettings, settingsValid = true }: {
+  additionalSettings?: ReactNode;
+  settingsValid?: boolean;
   companyId: string;
   onCancel?: () => void;
   upstreamServiceName?: string;
@@ -187,8 +189,9 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
                   </div>}
                 </div>)}
             </fieldset>
+            {additionalSettings}
             {busy && <p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin motion-reduce:animate-none" />Connecting and discovering tools…</p>}
-            {footer(<>{s.setupComplete ? <Button type="button" variant="outline" disabled={busy} onClick={a.finish}>Back</Button> : <span />}<Button type="submit" disabled={busy || !s.url.trim()}>{busy ? "Connecting…" : error || s.connectStatus === "cancelled" ? "Try again" : `Connect ${provider.name}`}</Button></>)}
+            {footer(<>{s.setupComplete ? <Button type="button" variant="outline" disabled={busy} onClick={a.finish}>Back</Button> : <span />}<Button type="submit" disabled={busy || !s.url.trim() || !settingsValid}>{busy ? "Connecting…" : error || s.connectStatus === "cancelled" ? "Try again" : `Connect ${provider.name}`}</Button></>)}
           </form>}
         </>}
 

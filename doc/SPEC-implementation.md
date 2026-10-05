@@ -1906,3 +1906,15 @@ unavailable. Preserve current ownership and newer-work fences. See
   endpoints delegate to sources while retaining response shapes.
 - GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
   or pull-request creation in this milestone.
+
+### Connection instructions
+
+Connections can store optional, versioned agent instructions independently of
+provider and transport. Catalog templates control editor visibility; saved
+settings and runtime delivery also support connections without a template.
+The server includes instructions only when the connection and at least one
+action are available to the run's agent and responsible identity. An immutable
+per-turn snapshot participates in session compatibility, so subsequent turns
+remove stale instructions after edits or access revocation. See
+[Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
+UI conventions, custom adapter integration, and initial memory templates.

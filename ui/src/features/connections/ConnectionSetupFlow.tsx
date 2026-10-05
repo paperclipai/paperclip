@@ -1,3 +1,5 @@
+import { ConnectionInstructionsEditor } from "./ConnectionInstructions";
+import { defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
 import { RemoteMcpProductionSetup } from "./remote-mcp/RemoteMcpProductionSetup";
 import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
@@ -679,6 +681,7 @@ function StandardConnectionSetupFlow({
   const [curatedOAuthClientSecret, setCuratedOAuthClientSecret] = useState("");
   const [vercelConnector, setVercelConnector] = useState("");
   const [connectionMethodKey, setConnectionMethodKey] = useState(aiConnection && aiConnection.mode !== "responsible_user" ? `ai-${aiConnection.method}` : "");
+  const [instructionDraft, setInstructionDraft] = useState<{ slug: string; value: ConnectionAgentInstructions } | null>(null);
   const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
   const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
   const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
@@ -1217,17 +1220,32 @@ function StandardConnectionSetupFlow({
     }
   };
 
+  const instructionConnection = resumeConnection ?? reconnectConnection ?? resumableOAuthConnection;
+  const instructionTemplate = entry?.agentInstructions;
+  const instructionValue = entry && instructionTemplate
+    ? instructionDraft?.slug === entry.slug ? instructionDraft.value
+      : instructionConnection ? instructionConnection.agentInstructions ?? { ...defaultConnectionAgentInstructions(instructionTemplate)!, enabled: false }
+      : defaultConnectionAgentInstructions(instructionTemplate)
+    : null;
+  const instructionsValid = !instructionValue || Boolean(instructionValue.text.trim());
+
   const oauthStartMutation = useMutation({
     // Retry/reconnect reads identity from the durable connection. Provider is
     // not identity: an organization Notion connection must stay organization-
     // scoped, while a personal one must put its token back on that user grant.
-    mutationFn: (connection: ToolConnection) => toolsApi.startOAuth(connection.id, {
+    mutationFn: async (connection: ToolConnection) => {
+      // Persist before navigation, including retries that reuse an existing OAuth draft.
+      if (instructionValue && JSON.stringify(instructionValue) !== JSON.stringify(connection.agentInstructions)) {
+        await toolsApi.updateConnection(connection.id, { agentInstructions: instructionValue });
+      }
+      return toolsApi.startOAuth(connection.id, {
       asCurrentUser: connection.credentialPolicy === "per_user",
       ...(connection.credentialPolicy === "per_agent"
         ? { asAgentId: configuredAgentIdentity(connection) ?? [...installAgentIds][0] }
         : {}),
       ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
-    }),
+      });
+    },
     onSuccess: (start) => void prepareAndOpenOAuth(start),
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -1289,6 +1307,7 @@ function StandardConnectionSetupFlow({
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: connectEntry.slug,
+          ...(instructionValue ? { agentInstructions: instructionValue } : {}),
           ...(connectionMethodKey ? { connectionMethodKey } : {}),
           name: connectionName,
           credentialSource,
@@ -1629,11 +1648,9 @@ function StandardConnectionSetupFlow({
 
   useEffect(() => {
     const savedConnection = resumeConnection ?? reconnectConnection;
-    const savedOAuth = savedConnection?.config?.oauth as Record<string, unknown> | undefined;
     if (
       !savedConnection
       || !entry
-      || (savedConnection.status !== "draft" && savedOAuth?.clientRegistrationSource !== "manual")
       || hydratedResumeConnectionIdRef.current === savedConnection.id
     ) return;
     const storedConfig = savedConnection.config && typeof savedConnection.config === "object"
@@ -1724,6 +1741,7 @@ function StandardConnectionSetupFlow({
       const finished = await toolsApi.finishApp(selectedCompanyId!, connected.connectionId, {
         enabledCatalogEntryIds: enabledIds,
         askFirstCatalogEntryIds: askFirstIds,
+        ...(instructionValue ? { agentInstructions: instructionValue } : {}),
         access: selection,
         ...(requestedAgentId ? { preserveExistingAccess: true } : {}),
       });
@@ -1986,6 +2004,7 @@ function StandardConnectionSetupFlow({
       preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}
     />
+    {entry && instructionTemplate && instructionValue && <div className="mt-6"><ConnectionInstructionsEditor provider={entry.name} template={instructionTemplate} value={instructionValue} onChange={(value) => setInstructionDraft({ slug: entry.slug, value })} disabled={connectMutation.isPending || oauthStartMutation.isPending} /></div>}
     {additionalSettings && <div className="mt-6">{additionalSettings}</div>}
     </>
     )
@@ -2067,6 +2086,7 @@ function StandardConnectionSetupFlow({
           </div>
         ) : null}
         defaults={curatedOAuthDefaults}
+        settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
           const firstAttempt = !directOAuthAccessConfirmedRef.current;
@@ -2394,7 +2414,7 @@ function StandardConnectionSetupFlow({
         </div>
       ) : step === "key" && entry && credentialStep !== undefined ? credentialStep : step === "key" && entry ? (
         <KeyStep
-          settingsValid={additionalSettingsValid}
+          settingsValid={additionalSettingsValid && instructionsValid}
           entry={entry}
           error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : "Please check your key and try again.") : null}
           values={credentials}
@@ -2658,6 +2678,7 @@ export function OAuthConnectStateScreen({
   guidance,
   defaults,
   onRetry,
+  settingsValid = true,
   onOpenAuthorization,
   onBack,
   onCancel,
@@ -2689,6 +2710,7 @@ export function OAuthConnectStateScreen({
   guidance?: ReactNode;
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
+  settingsValid?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
   onBack: () => void;
@@ -2776,7 +2798,7 @@ export function OAuthConnectStateScreen({
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
-            <Button type="button" onClick={onRetry}>
+            <Button type="button" onClick={onRetry} disabled={!settingsValid}>
               {phase === "entry"
                 ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
                 : "Try again"}
@@ -4057,9 +4079,12 @@ function MethodConfigField({
           value={typeof value === "string" ? value : ""}
           onChange={(event) => onChange(event.target.value)}
           placeholder={field.placeholder}
+          aria-label={field.label}
+          maxLength={field.validation?.maxLength}
           className="mt-2 h-11"
         />
       )}
+      {field.required && (typeof value !== "string" || !value.trim()) && <p className="mt-2 text-xs text-muted-foreground">{field.label} is required.</p>}
       {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">{field.helperMd}</p>}
     </div>
   );

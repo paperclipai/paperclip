@@ -252,6 +252,9 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     instructions: { ...instructions, ...(input.instructionWorkingCopy ? { workingCopy: input.instructionWorkingCopy } : {}) },
     skills,
     mcp,
+    ...(input.runtimeConfig.paperclipConnectionInstructions ? {
+      connectionInstructions: input.runtimeConfig.paperclipConnectionInstructions as { text: string; digest: string },
+    } : {}),
   };
   return parseNativeRuntimeContext({ ...snapshot, aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot) });
 }

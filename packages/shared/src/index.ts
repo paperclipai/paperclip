@@ -2821,3 +2821,5 @@ export * from "./types/skill-source.js";
 export * from "./validators/skill-source.js";
 export * from "./github-skill-repository.js";
 export { isAppAggregator, aggregatorManagementUrl, aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema, type AggregatorAppSnapshot, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "./aggregator-apps.js";
+
+export * from "./connection-instructions.js";

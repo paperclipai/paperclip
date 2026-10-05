@@ -1,7 +1,8 @@
+import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { REMOTE_MCP_CONNECTOR_METHODS, type ToolConnection } from "@paperclipai/shared";
 import { isAppAggregator, aggregatorManagementUrl } from "@paperclipai/shared/aggregator-apps";
+import { REMOTE_MCP_CONNECTOR_METHODS, defaultConnectionAgentInstructions, getConnectableAppDefinition, type ToolConnection } from "@paperclipai/shared";
 import { askFirstCatalogEntryIdsFor } from "../connection-defaults";
 import { RemoteMcpAccountChoice } from "./RemoteMcpAccountChoice";
 import { readConnectionIntentOAuthOutcome, type ConnectionSetupFlowProps } from "../ConnectionSetupFlow";
@@ -30,6 +31,11 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   upstreamServiceName, requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
 }: ConnectionSetupFlowProps & { providerId: RemoteMcpProviderId; connection?: ToolConnection }) {
   const provider = remoteMcpProviders[providerId];
+  const template = getConnectableAppDefinition(providerId)?.agentInstructions;
+  const [instructions, setInstructions] = useState(() => connection
+    ? connection.agentInstructions ?? (template ? { ...defaultConnectionAgentInstructions(template)!, enabled: false } : null)
+    : defaultConnectionAgentInstructions(template));
+  const instructionsValid = !instructions || Boolean(instructions.text.trim());
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -120,7 +126,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     else navigate(`/apps/${id}/permissions`);
   };
   const submit = async (saveDraft = false) => {
-    if (busy.current || !selectedCompanyId || (connection && !installs.data)) return;
+    if (busy.current || !selectedCompanyId || !instructionsValid || (connection && !installs.data)) return;
     try {
       const url = new URL(state.url.trim());
       if (!["http:", "https:"].includes(url.protocol)) throw new Error();
@@ -153,6 +159,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         name: provider.name, link: state.url.trim(), grantKind: state.grantKind,
         authMode: state.auth === "headers" ? "custom_headers" : state.auth,
         credentialValues: credentials, saveDraft,
+        ...(template && instructions ? { agentInstructions: instructions } : {}),
         ...(prior ? prior.status === "draft" ? { resumeConnectionId: prior.id } : { reconnectConnectionId: prior.id } : {}),
       });
       if (managementUrl) {
@@ -248,5 +255,5 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.
-  return <RemoteMcpConnectionSetup companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
+  return <RemoteMcpConnectionSetup additionalSettings={template && instructions ? <ConnectionInstructionsEditor provider={provider.name} template={template} value={instructions} onChange={setInstructions} disabled={state.connectStatus === "connecting"} /> : undefined} settingsValid={instructionsValid} companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
 }

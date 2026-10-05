@@ -1,7 +1,12 @@
 # Connection instructions and a small memory smoke suite
 
-Status: UX proposal with interactive Storybook specimens; runtime implementation
-and live provider evaluation are not part of this change.
+Implementation update (2026-10-05): the generic capability is specified in
+[Connection instructions](../connections/CONNECTION-INSTRUCTIONS.md). The
+Storybooks now use production components. Model evaluations in this original
+design plan remain deferred.
+
+Status: original UX proposal. The production implementation now follows the
+linked capability contract. Live model evaluations remain deferred.
 
 ## Decision
 

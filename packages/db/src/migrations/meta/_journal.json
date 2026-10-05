@@ -2073,6 +2073,13 @@
       "when": 1791233758328,
       "tag": "0297_foamy_swordsman",
       "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791241297512,
+      "tag": "0298_connection_agent_instructions",
+      "breakpoints": true
     }
   ]
 }
