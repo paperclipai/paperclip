@@ -475,10 +475,13 @@ import {
 } from "./execution-workspace-branch-ownership.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
+  HEARTBEAT_TASK_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  prepareHeartbeatTaskScratch,
   type HeartbeatRunScratch,
+  type HeartbeatTaskScratch,
 } from "./run-scratch.js";
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
@@ -20488,6 +20491,7 @@ export function heartbeatService(
     const executionPhaseContext = { onExecutionPhase: executionControl.phases.enter };
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
+    let taskScratch: HeartbeatTaskScratch | null = null;
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
@@ -22855,10 +22859,37 @@ export function heartbeatService(
             issueId: issueRef?.id ?? null,
             issueIdentifier: issueRef?.identifier ?? null,
           });
+          // The durable half of the pair, so working material an agent needs
+          // across heartbeats has somewhere to live that is neither the run
+          // directory nor the synced workspace. It is prepared in its own
+          // try/catch: losing it costs the task its durable directory, and must
+          // not also cost the run its run-scoped scratch.
+          if (issueRef?.id) {
+            try {
+              taskScratch = await prepareHeartbeatTaskScratch({
+                companyId: agent.companyId,
+                agentId: agent.id,
+                issueId: issueRef.id,
+                issueIdentifier: issueRef.identifier ?? null,
+              });
+            } catch (taskScratchPrepareError) {
+              taskScratch = null;
+              logger.warn(
+                {
+                  err: taskScratchPrepareError,
+                  runId: run.id,
+                  issueId,
+                  agentId: agent.id,
+                },
+                "failed to prepare heartbeat task scratch directory; continuing with run-scoped scratch only",
+              );
+            }
+          }
           const existingRuntimeEnv = parseObject(runtimeConfig.env);
           const scratchEnv = buildHeartbeatRunScratchEnv(
             existingRuntimeEnv,
             runScratch,
+            taskScratch,
           );
           runtimeConfig = {
             ...runtimeConfig,
@@ -22873,9 +22904,19 @@ export function heartbeatService(
             cleanupPolicy: "terminal_run",
             marker: HEARTBEAT_RUN_SCRATCH_MARKER,
             tempKeysApplied: scratchEnv.tempKeysApplied,
+            // The task directory is swept when the issue reaches a terminal
+            // state, not when this run ends, so it is reported separately.
+            ...(taskScratch
+              ? {
+                  taskDir: taskScratch.dir,
+                  taskCleanupPolicy: "terminal_issue",
+                  taskMarker: HEARTBEAT_TASK_SCRATCH_MARKER,
+                }
+              : {}),
           };
         } catch (scratchPrepareError) {
           runScratch = null;
+          taskScratch = null;
           delete context.paperclipScratch;
           logger.warn(
             {

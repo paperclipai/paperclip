@@ -245,12 +245,19 @@ const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = [
   "issue.tree_hold_wakeup_deferred",
 ] as const;
 
-export type IssuePostCommitAction = {
-  type: "cancel_native_question_run";
-  runId: string;
-  issueId: string;
-  issueStatus: string;
-};
+export type IssuePostCommitAction =
+  | {
+      type: "cancel_native_question_run";
+      runId: string;
+      issueId: string;
+      issueStatus: string;
+    }
+  | {
+      type: "sweep_task_scratch";
+      companyId: string;
+      issueId: string;
+      issueStatus: string;
+    };
 
 /** Execute side effects that must never run before the issue transaction commits. */
 export async function executeIssuePostCommitActions(
@@ -261,7 +268,40 @@ export async function executeIssuePostCommitActions(
   const { heartbeatService } = await import("./heartbeat.js");
   const heartbeat = heartbeatService(db);
   const cancelledRunIds = new Set<string>();
+  const sweptIssueIds = new Set<string>();
   for (const action of actions) {
+    if (action.type === "sweep_task_scratch") {
+      if (sweptIssueIds.has(action.issueId)) continue;
+      sweptIssueIds.add(action.issueId);
+      try {
+        const { sweepHeartbeatTaskScratchForIssue } = await import("./run-scratch.js");
+        const sweep = await sweepHeartbeatTaskScratchForIssue({
+          companyId: action.companyId,
+          issueId: action.issueId,
+        });
+        if (sweep.removed.length > 0 || sweep.skipped.length > 0) {
+          logger.info(
+            {
+              issueId: action.issueId,
+              issueStatus: action.issueStatus,
+              removed: sweep.removed,
+              skipped: sweep.skipped,
+            },
+            "swept task scratch for terminal issue",
+          );
+        }
+      } catch (err) {
+        // Leaving the directory behind costs disk, never correctness: the next
+        // run of this issue adopts it, and the sweep is addressed by company
+        // and issue so it is safe to repeat. A post-commit failure must not
+        // read as though the committed issue transition had rolled back.
+        logger.warn(
+          { err, issueId: action.issueId },
+          "task scratch sweep failed for terminal issue",
+        );
+      }
+      continue;
+    }
     if (cancelledRunIds.has(action.runId)) continue;
     cancelledRunIds.add(action.runId);
     try {
@@ -11091,6 +11131,28 @@ export function issueService(db: Db) {
           }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // The task's durable scratch directory outlives every run of the
+            // task, so the run teardown is the wrong place to remove it. Queue
+            // the removal for after the commit: a rolled-back transition must
+            // not take the working material of a still-open task with it.
+            if (dbOrTx !== db && !postCommitActions) {
+              // This branch is guarded by a status change, so it does not fire
+              // again on a later write that leaves the issue terminal. An
+              // external transaction that runs no post-commit queue therefore
+              // leaves the directory behind until the issue is reopened and
+              // closed again. Say so rather than drop the action in silence.
+              logger.warn(
+                { issueId: updated.id, issueStatus: updated.status },
+                "task scratch sweep skipped: terminal transition ran in an external transaction without a post-commit action queue",
+              );
+            } else {
+              queuedPostCommitActions.push({
+                type: "sweep_task_scratch",
+                companyId: updated.companyId,
+                issueId: updated.id,
+                issueStatus: updated.status,
+              });
+            }
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
             // that never touch the HTTP routes, so pending interaction cards

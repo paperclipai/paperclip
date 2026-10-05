@@ -549,7 +549,11 @@ describeEmbeddedPostgres("native question bridge", () => {
       expect(runInsideTransaction?.status).toBe("running");
     });
 
-    expect(postCommitActions).toHaveLength(1);
+    // A terminal transition queues more than one kind of action, so assert on
+    // the cancellation this test is about rather than on the queue's length.
+    expect(
+      postCommitActions.filter((action) => action.type === "cancel_native_question_run"),
+    ).toHaveLength(1);
     await executeIssuePostCommitActions(db, postCommitActions);
     const [persistedRun] = await db.select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
