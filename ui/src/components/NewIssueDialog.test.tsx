@@ -454,7 +454,8 @@ describe("NewIssueDialog", () => {
   });
 
   it("submits remembered effort with the agent's default model", async () => {
-    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    mockAgentsApi.list.mockResolvedValue(defaultAgents.map((agent) => agent.id === "ceo"
+      ? { ...agent, adapterConfig: { model: "claude-opus-5" } } : agent));
     mockAgentsApi.adapterModels.mockResolvedValue([{ id: "claude-opus-5", label: "Claude Opus 5" }]);
     rememberComposerEffort("company-1", "high");
     const { root } = renderDialog(container);

@@ -58,13 +58,23 @@ afterEach(() => {
 
 describe("composer assignee picker", () => {
   it.each([
-    { adapterType: "claude_local", config: {}, label: "Claude Opus 5" },
+    { adapterType: "claude_local", config: {}, label: "Default" },
+    { adapterType: "claude_local", config: { model: "claude-opus-5" }, label: "Claude Opus 5" },
+    { adapterType: "claude_local", config: { env: { ANTHROPIC_MODEL: "claude-opus-5" } }, label: "Claude Opus 5" },
     { adapterType: "codex_local", config: {}, label: "Default" },
   ])("labels the $adapterType default honestly", ({ adapterType, config, label }) => {
     const defaultAgent = { ...agent, adapterType, adapterConfig: config } as Agent;
     render(vi.fn(), vi.fn(), false, { settings: null, agents: new Map([[agent.id, defaultAgent]]),
       modelOptionsOverride: [{ id: "claude-opus-5", label: "Claude Opus 5" }] });
     expect(container!.querySelector('[data-testid="task-chat-composer-model-label"]')?.textContent).toBe(label);
+  });
+
+  it("does not offer effort levels for an unknown Claude default", async () => {
+    const defaultAgent = { ...agent, adapterType: "claude_local", adapterConfig: {} } as Agent;
+    render(vi.fn(), vi.fn(), false, { settings: null, agents: new Map([[agent.id, defaultAgent]]),
+      modelOptionsOverride: [{ id: "claude-opus-5", label: "Claude Opus 5" }] });
+    await click("Select model and effort");
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
   });
 
   it.each([

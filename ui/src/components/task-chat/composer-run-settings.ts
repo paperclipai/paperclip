@@ -1,5 +1,5 @@
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
-import { claudeLocalReasoningEffortsForModel, resolveClaudeModel } from "@paperclipai/adapter-claude-local";
+import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { resolvePaperclipRunnerModel } from "@paperclipai/adapter-utils";
 import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { DEFAULT_KIMI_LOCAL_MODEL, modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
@@ -26,7 +26,7 @@ export function supportsComposerModel(agent: Agent | undefined): boolean {
   return Boolean(agent && MODEL_ADAPTERS.has(agent.adapterType));
 }
 
-/** Resolve only defaults chosen by Paperclip; a local CLI's own config is unknown. */
+/** Resolve visible defaults; host environment and a local CLI's own config are unknown. */
 export function composerDefaultModel(agent: Agent | undefined): string {
   if (!agent) return "";
   const config = agent.adapterConfig;
@@ -35,7 +35,9 @@ export function composerDefaultModel(agent: Agent | undefined): string {
   if (agent.adapterType === "claude_local") {
     const env = config.env && typeof config.env === "object" && !Array.isArray(config.env)
       ? config.env as Record<string, unknown> : {};
-    return resolveClaudeModel(config.model, env);
+    // The server merges host env too, which may select a different model or
+    // Bedrock/Vertex. Without an explicit agent setting, the default is unknown.
+    return typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL.trim() : "";
   }
   if (agent.adapterType === "grok_local") return DEFAULT_GROK_LOCAL_MODEL;
   if (agent.adapterType === "kimi_local") return DEFAULT_KIMI_LOCAL_MODEL;

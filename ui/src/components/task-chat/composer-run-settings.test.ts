@@ -11,9 +11,12 @@ const agent = (adapterType: Agent["adapterType"], provider?: string) => ({
 
 describe("composer run settings", () => {
   it("resolves known adapter defaults without guessing local CLI settings", () => {
-    expect(composerDefaultModel(agent("claude_local"))).toBe("claude-opus-5");
+    expect(composerDefaultModel(agent("claude_local"))).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { model: "claude-opus-5" } })).toBe("claude-opus-5");
     expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: "claude-sonnet-5" } } })).toBe("claude-sonnet-5");
     expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { CLAUDE_CODE_USE_VERTEX: "1" } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: { type: "secret_ref", secretId: "model-secret" } } } })).toBe("");
     expect(composerDefaultModel({ ...agent("codex_local"), adapterConfig: { model: " private-codex " } })).toBe("private-codex");
     expect(composerDefaultModel(agent("codex_local"))).toBe("");
     expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-5.6-sol");

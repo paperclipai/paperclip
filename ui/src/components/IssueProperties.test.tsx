@@ -1788,7 +1788,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("remembers task property project selections and No project in the current company", async () => {
+  it("leaves project memory unchanged until task property edits are persisted", async () => {
     localStorage.clear();
     mockProjectsApi.list.mockResolvedValue([createProject({ name: "Remembered Project" })]);
     const root = renderProperties(container, {
@@ -1799,11 +1799,11 @@ describe("IssueProperties", () => {
     const option = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Remembered Project")!;
     expect(option).toBeDefined();
     act(() => option.click());
-    expect(getLastProjectId("company-1")).toBe("project-1");
+    expect(getLastProjectId("company-1")).toBeUndefined();
     await act(() => findRowTrigger(container, "Project")!.click());
     const none = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "No project")!;
     act(() => none.click());
-    expect(getLastProjectId("company-1")).toBe("");
+    expect(getLastProjectId("company-1")).toBeUndefined();
     expect(getLastProjectId("company-2")).toBeUndefined();
     act(() => root.unmount());
     localStorage.clear();

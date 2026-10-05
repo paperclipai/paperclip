@@ -39,7 +39,7 @@ import {
   trackRecentAssignee,
   trackRecentAssigneeUser,
 } from "../../lib/recent-assignees";
-import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projects";
+import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
@@ -1995,7 +1995,6 @@ export function IssueProperties({
               onClick={() => {
                 if (option.kind === "project") {
                   const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  trackRecentProject(option.project.id, companyId ?? undefined);
                   onUpdate({
                     projectId: option.project.id,
                     projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
@@ -2006,7 +2005,6 @@ export function IssueProperties({
                       : null,
                   });
                 } else {
-                  trackRecentProject("", companyId ?? undefined);
                   onUpdate({
                     projectId: null,
                     projectWorkspaceId: null,
