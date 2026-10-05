@@ -10,9 +10,17 @@ type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export async function restoreDependencyReadyIssueInTransaction(
   tx: Transaction,
   input: { companyId: string; dependentIssueId: string; resolvedBlockerIssueId: string },
+  owner: {
+    db: Db;
+    activityPublications: NonNullable<Parameters<ReturnType<typeof issueService>["update"]>[3]>;
+    actions: NonNullable<Parameters<ReturnType<typeof issueService>["update"]>[4]>;
+  },
 ): Promise<string | null> {
-  // Capture routing scalars before any await.
+  // Capture routing and caller-owned queues before any await. The caller must
+  // publish/execute these queues only AFTER the outer transaction commits.
   const { companyId, dependentIssueId, resolvedBlockerIssueId } = input;
+  const { db, activityPublications, actions } = owner;
+  if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
   const [dependent] = await tx.select().from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, dependentIssueId)))
     .for("update");
@@ -42,8 +50,8 @@ export async function restoreDependencyReadyIssueInTransaction(
   if (await findExistingIssueBlockersResolvedWakeForReadyState(tx as unknown as Db, {
     companyId, dependentIssueId, blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt,
   })) return null;
-  const restored = await issueService(tx as unknown as Db).update(dependentIssueId,
-    { status: "todo", companyGuard: companyId }, tx);
+  const restored = await issueService(db).update(dependentIssueId,
+    { status: "todo", companyGuard: companyId }, tx, activityPublications, actions);
   if (!restored || restored.status !== "todo") throw new Error("dependency_restore_not_persisted");
   const [intent] = await tx.insert(agentWakeupRequests).values({
     companyId, agentId: dependent.assigneeAgentId, source: "automation", triggerDetail: "system",

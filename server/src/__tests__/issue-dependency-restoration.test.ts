@@ -43,9 +43,10 @@ function fixture() {
   service.listWakeableBlockedDependents.mockResolvedValue([{ id: row.id,
     assigneeAgentId: row.assigneeAgentId, blockerIssueIds: ["blocker-1"], blockedTransitionAt: row.blockedTransitionAt }]);
   service.update.mockImplementation(async () => { events.push("canonical-update"); return { ...row, status: "todo" }; });
-  return { row, interactions, approvals, wakes, events, intents, tx,
+  const owner = { db: {} as any, activityPublications: [], actions: [] };
+  return { row, interactions, approvals, wakes, events, intents, tx, owner,
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
-      companyId: "company-1", dependentIssueId: row.id, resolvedBlockerIssueId: "blocker-1" }) };
+      companyId: "company-1", dependentIssueId: row.id, resolvedBlockerIssueId: "blocker-1" }, owner) };
 }
 
 describe("dark dependency restoration coordinator (mock-only)", () => {
@@ -108,7 +109,7 @@ describe("dark dependency restoration coordinator (mock-only)", () => {
     const f = fixture();
     expect(await f.run()).toBe("intent-1");
     expect(service.update).toHaveBeenCalledWith("dependent-1", {
-      status: "todo", companyGuard: "company-1" }, f.tx);
+      status: "todo", companyGuard: "company-1" }, f.tx, f.owner.activityPublications, f.owner.actions);
     expect(f.events.indexOf("canonical-update")).toBeLessThan(f.events.indexOf("intent"));
     expect(f.events).toContain("lock:update");
     expect(f.intents).toEqual([expect.objectContaining({ companyId: "company-1", agentId: "agent-1",
