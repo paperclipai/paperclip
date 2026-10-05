@@ -99,7 +99,16 @@ PATCH /api/projects/{projectId}
 
 `PATCH /api/projects/{projectId}` rejects `budgetMonthlyCents` with HTTP 422.
 Set a project budget through `POST /api/companies/{companyId}/budgets/policies`
-with `scopeType: "project"` and the project ID as `scopeId`.
+with `scopeType: "project"`, the project ID as `scopeId`, and a nonnegative
+integer `amount`.
+
+```json
+{
+  "scopeType": "project",
+  "scopeId": "{projectId}",
+  "amount": 5000
+}
+```
 
 ## Project Workspaces
 
