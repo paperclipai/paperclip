@@ -665,8 +665,10 @@ After a productive successful run, recovery checks that the issue is still `in_p
 Successful-run handoff exhaustion is scoped to the current execution owner.
 A former owner's corrective run cannot exhaust the new owner's handoff budget.
 A corrective run cancelled before it starts does not count as a spent attempt.
-Recovery leaves the current owner's task state and scheduled monitor intact in
-these cases. Completed current-owner attempts retain the existing bounded
+Recovery preserves a current durable wait, including a scheduled monitor. If
+the owner has no live or waiting path, normal recovery resumes only that owner's
+eligible history or queues a fresh continuation without the former owner's
+retry context. Completed current-owner attempts retain the existing bounded
 retry and escalation rules.
 
 The same bounded rule applies when the previous heartbeat reported waiting on a local/background watcher and that watcher was killed, disappeared, or was never represented by a durable Paperclip primitive. Paperclip queues at most one continuation for the same recovery fingerprint. If the continuation also leaves only local watcher evidence, Paperclip must surface a real blocker or explicit recovery action instead of repeating continuation recovery. A new monitor, scheduled wake, healthy delegated blocker issue, or other durable source mutation resolves that recovery fingerprint normally.
