@@ -259,6 +259,21 @@ export interface TaskChatMarkerItem {
   planHref?: string;
 }
 
+/**
+ * Per-run transcript slot (REK-311). The conversation reveals as soon as the
+ * messages are in, so a run whose log has not hydrated yet keeps its own row at
+ * its chronological position in the list instead of blocking the whole thread
+ * behind a loading overlay. A hydration failure reuses the same row and is
+ * retryable from there, scoped to that one run.
+ */
+export interface TaskChatTranscriptPlaceholderItem {
+  id: string;
+  kind: "transcript_placeholder";
+  runId: string;
+  state: "loading" | "error";
+  agentName?: string;
+}
+
 /** A second-tier live token/cost readout (ACP UsageUpdate). */
 export interface TaskChatUsageItem {
   id: string;
@@ -583,6 +598,7 @@ export type TaskChatItem =
   | TaskChatInteractionItem
   | TaskChatPlanDocumentItem
   | TaskChatTurnItem
+  | TaskChatTranscriptPlaceholderItem
   | TaskChatBriefItem
   | TaskChatProtocolItem;
 

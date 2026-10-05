@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { taskChatContentKey } from "./TaskChatThreadView";
 import type { TranscriptEntry } from "@/adapters";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import {
@@ -2727,6 +2728,59 @@ describe("assembleThreadItems (PAP-367)", () => {
     ]);
     expect(out.map((i) => i.id)).toEqual(["u1", "run-x:turn", "u2"]);
     expect(out[out.length - 1].id).toBe("u2");
+  });
+
+  it("puts a run's transcript placeholder where that transcript will land (REK-311)", () => {
+    // The placeholder exists so the reader can see a run is still loading
+    // without the thread waiting for it. That only works if it sorts on the
+    // SAME key the real turn will use: the run's own startMs.
+    const backbone = [
+      entry("u1", 1_000),
+      entry("a1", 2_000, { author: "agent", authorName: "CEO" }),
+      entry("u2", 3_000),
+    ];
+    // The lane arrives sorted by startMs, exactly as TaskChatThread hands it over.
+    const out = assembleThreadItems(backbone, noAnchors, [
+      {
+        turn: {
+          id: "run-y:transcript-placeholder",
+          kind: "transcript_placeholder",
+          runId: "run-y",
+          state: "loading",
+        },
+        startMs: 1_500,
+      },
+      { turn: settledTurn("run-x:turn"), startMs: 2_500 },
+    ]);
+    expect(out.map((i) => i.id)).toEqual([
+      "u1",
+      "run-y:transcript-placeholder",
+      "a1",
+      "run-x:turn",
+      "u2",
+    ]);
+  });
+
+  it("advances the auto-follow content key when a placeholder appears and resolves", () => {
+    // The scroller reconciles on contentKey, and its anchor compensation is the
+    // only thing that keeps the reader in place when a batch lands above them.
+    // If the placeholder did not move that key, the hold would never run.
+    const placeholder: TaskChatItem = {
+      id: "run-y:transcript-placeholder",
+      kind: "transcript_placeholder",
+      runId: "run-y",
+      state: "loading",
+    };
+    const backbone = [entry("u1", 1_000)];
+    const before = assembleThreadItems(backbone, noAnchors, []);
+    const loading = assembleThreadItems(backbone, noAnchors, [
+      { turn: placeholder, startMs: 500 },
+    ]);
+    const resolved = assembleThreadItems(backbone, noAnchors, [
+      { turn: settledTurn("run-y:turn"), startMs: 500 },
+    ]);
+    expect(taskChatContentKey(loading)).not.toBe(taskChatContentKey(before));
+    expect(taskChatContentKey(resolved)).not.toBe(taskChatContentKey(loading));
   });
 
   it("keeps anchored turns directly after their run's reply comment", () => {

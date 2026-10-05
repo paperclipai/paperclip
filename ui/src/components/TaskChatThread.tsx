@@ -106,7 +106,6 @@ import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -1473,6 +1472,66 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // heavy assembly memo doesn't recompute on every parent render.
   const hasBrief = Boolean(issueBrief);
 
+  // Where one run's transcript stands (REK-311). "ready" means the run owns a
+  // row already, or has nothing to read; "loading" and "error" both keep a
+  // placeholder in the list at the run's own position. "error" outranks
+  // "loading" so a failed read is retryable from its own row instead of
+  // disappearing behind a spinner.
+  const transcriptSlotState = (
+    run: (typeof runs)[number],
+  ): "ready" | "loading" | "error" => {
+    // A scheduled retry has not started and has no log to hydrate yet.
+    if (run.status === "scheduled_retry") return "ready";
+    if (run.runtimeMode === "native") {
+      // An error on a run that already has entries still belongs on its row.
+      // The thread-level Retry no longer refetches logs, so a silent partial
+      // transcript would leave the reader with no notice and no way to re-read.
+      if (nativeTranscriptErrorsByRun.has(run.id)) return "error";
+      // A settled native run with no event history is read from its legacy log
+      // as a fallback (`logRuns` above). When THAT read fails there is no native
+      // error to see, so without this the run looks "ready" with an empty
+      // transcript: the thread-level bar no longer covers per-run failures, so
+      // the failure would be silent and un-retryable.
+      //
+      // Only while the native transport still has nothing to show. Once native
+      // events arrive they are the transcript, the fallback is no longer the
+      // source, and the log hook keeps a cleared read's error around for a grace
+      // period after a successful re-read. Treating that stale error as live put
+      // an error row beside a perfectly readable transcript.
+      if (
+        logErrorsByRun?.has(run.id) &&
+        (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0
+      )
+        return "error";
+      const hydrating = hydratedNativeRunIds
+        ? !hydratedNativeRunIds.has(run.id)
+        : nativeEventsAreInitiallyHydrating;
+      return hydrating ? "loading" : "ready";
+    }
+    if (logErrorsByRun?.has(run.id)) return "error";
+    const hydrating =
+      run.status !== "queued" && hydratedLogRunIds
+        ? !hydratedLogRunIds.has(run.id)
+        : logsAreInitiallyHydrating;
+    return hydrating ? "loading" : "ready";
+  };
+  const transcriptSlotStates = useMemo(
+    () => new Map(runs.map((run) => [run.id, transcriptSlotState(run)] as const)),
+    // The map is derived per render from these; `runs` identity changes with the
+    // hydration counters it is derived from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      runs,
+      transcriptByRun,
+      logErrorsByRun,
+      nativeTranscriptErrorsByRun,
+      hydratedLogRunIds,
+      hydratedNativeRunIds,
+      logsAreInitiallyHydrating,
+      nativeEventsAreInitiallyHydrating,
+    ],
+  );
+
   const { items, settledRunIds, settledReplyRunIds } = useMemo<{
     items: TaskChatItem[];
     settledRunIds: Set<string>;
@@ -1490,8 +1549,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // terminal request receipts remain in transcript order. Final text is
     // owned by a posted completion comment when one exists. Yielded interaction
     // runs remain activity/waiting state and never occupy a final-response slot.
+    // The chronological lane below: settled turns plus (REK-311) the per-run
+    // transcript placeholder, both keyed by the run's own startMs.
     const settledTurns: {
-      turn: TaskChatTurnItem;
+      turn: TaskChatItem;
       anchorCommentId: string | null;
       startMs: number;
     }[] = [];
@@ -2072,14 +2133,47 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         }
       }
     }
+    // REK-311: a run whose transcript has not arrived yet keeps a row of its own
+    // at its chronological position, whether or not it also rendered a marker.
+    // A run that already shows transcript entries is skipped, so the placeholder
+    // is always REPLACED by the transcript rather than sitting beside it.
+    for (const source of runs) {
+      const state = transcriptSlotStates.get(source.id);
+      if (state !== "loading" && state !== "error") continue;
+      // A run that already shows transcript entries is skipped, so the
+      // placeholder is always REPLACED by the transcript rather than sitting
+      // beside it. An error row is the exception: it is a notice, not a
+      // placeholder, and it is the only way to re-read a partial transcript
+      // now that the thread-level Retry no longer touches logs.
+      if (state === "loading" && (transcriptByRun.get(source.id)?.length ?? 0) > 0) {
+        continue;
+      }
+      if (liveRun && source.id === liveRun.id) continue;
+      const meta = linkedRunMetaById.get(source.id);
+      const startMs = toMs(meta?.startedAt ?? meta?.createdAt);
+      settledTurns.push({
+        turn: {
+          id: `${source.id}:transcript-placeholder`,
+          kind: "transcript_placeholder",
+          runId: source.id,
+          state,
+          agentName: meta?.agentName,
+        },
+        anchorCommentId: null,
+        startMs: startMs > 0 ? startMs : Number.POSITIVE_INFINITY,
+      });
+    }
+
     settledTurns.sort((a, b) =>
       a.startMs < b.startMs ? -1 : a.startMs > b.startMs ? 1 : 0,
     );
 
     const turnsByAnchor = new Map<string, TaskChatTurnItem[]>();
-    const unanchored: { turn: TaskChatTurnItem; startMs: number }[] = [];
+    const unanchored: { turn: TaskChatItem; startMs: number }[] = [];
     for (const { turn, anchorCommentId, startMs } of settledTurns) {
-      if (anchorCommentId) {
+      // Only a settled turn can hang off a reply comment; the transcript
+      // placeholder is always chronological.
+      if (anchorCommentId && turn.kind === "turn") {
         const list = turnsByAnchor.get(anchorCommentId) ?? [];
         list.push(turn);
         turnsByAnchor.set(anchorCommentId, list);
@@ -2139,6 +2233,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     planDocumentSourceRunId,
     planTurnItem,
     agentMap,
+    transcriptSlotStates,
   ]);
 
   // Hand off once the settled turn or its reply comment is in the thread; a
@@ -2799,6 +2894,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // and track auto-follow against window scroll. Both paths include takeover
   // state so opening or closing composer input preserves bottom pinning.
   const { isMobile } = useSidebar();
+  // REK-311: the reveal gate is upstream #14727's shape (durable messages
+  // render immediately, only a thread with no messages at all waits for
+  // transcripts) with the runs list no longer in the sum.
   const initialCommentWindow = useRef<{
     oldestAt: number;
     ids: Set<string>;
@@ -2857,15 +2955,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const historyPending = initialHistoryPending || (
     comments.length === 0 && !issueBrief?.description && (planLoading || transcriptHistoryPending)
   );
-  const historyError =
-    initialHistoryError ||
-    planError ||
-    runs.some((run) =>
-      run.runtimeMode === "native"
-        ? nativeTranscriptErrorsByRun.has(run.id) &&
-          (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
-        : Boolean(logErrorsByRun?.has(run.id)),
-    );
+  // Message-level failures keep the thread-level notice. Per-run transcript
+  // failures are deliberately NOT folded in here (REK-311): one unreadable log
+  // used to raise a bar over the whole thread, and the thread-wide Retry then
+  // refetched every log on the issue. Each failed run now renders on its own
+  // row in the list and is retried from there, scoped to that one run.
+  const historyError = initialHistoryError || planError;
   const [revealedIssue, setRevealedIssue] = useState<string | null | undefined>(
     () => (historyPending ? undefined : issueId),
   );
@@ -2882,11 +2977,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if (!historyRevealed || !issueId) return;
     scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
   }, [historyRevealed, issueId]);
+  // `retryHistory` is scoped to the message layer on purpose (REK-311):
+  // transcript reads are retried from the run's own row, so one broken run no
+  // longer costs a refetch of every log on the issue.
   const retryHistory = () => {
     onRetryInitialHistory?.();
-    retryLogs?.();
-    retryNativeEvents?.();
     void retryPlan();
+  };
+  const retryTranscriptForRun = (runId: string) => {
+    if (runs.find((run) => run.id === runId)?.runtimeMode === "native") {
+      retryNativeEvents?.(runId);
+    } else {
+      retryLogs?.(runId);
+    }
   };
 
   return (
@@ -2921,30 +3024,26 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   </Button>
                 </div>
               ) : null}
-              {!historyRevealed ? (
-                <div
-                  className="absolute inset-0 z-10 overflow-hidden bg-background"
-                  data-testid="task-chat-history-loading"
-                  role="status"
-                  aria-label="Loading conversation"
-                >
-                  <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
-                    {threadHeader}
-                    <Skeleton className="h-16 w-3/4 animate-none" />
-                    <Skeleton className="h-24 w-4/5 self-end animate-none" />
-                    <Skeleton className="h-16 w-3/4 animate-none" />
-                  </div>
-                </div>
-              ) : null}
+              {/* REK-311: no thread-level loading overlay and no concealed
+                  copy of the thread. What is already loaded renders; a run
+                  whose transcript is still in flight holds a placeholder row of
+                  its own inside the list (TaskChatTranscriptSlot). The
+                  reveal latch below still governs `aria-busy` and scroll
+                  readiness, so navigation keeps restoring into a measured
+                  thread once the messages are in. */}
               <div
                 className={cn(
                   "flex flex-col",
                   !isMobile && "min-h-0 flex-1",
-                  !historyRevealed && "invisible",
                 )}
-                inert={!historyRevealed}
               >
-                {items.length === 0 && !tailRunId ? (
+                {/* REK-311: the empty state is a claim about the conversation,
+                    so it waits for the message load. The thread-level overlay
+                    that used to cover this is gone, and without the gate a
+                    reader would be told "No messages yet." before the messages
+                    arrive. `historyRevealed` is latched per issue, so this
+                    cannot flip back on a later refetch. */}
+                {items.length === 0 && !tailRunId && historyRevealed ? (
                   <div
                     className={
                       isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
@@ -3001,6 +3100,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     }
                     onRetryFailedRun={retryFailedRunHandler}
                     retryFailedRunId={retryFailedRunId}
+                    onRetryTranscript={retryTranscriptForRun}
                     onOpenSkill={onOpenSkill}
                     onOpenBrowser={onOpenBrowser}
                     tail={

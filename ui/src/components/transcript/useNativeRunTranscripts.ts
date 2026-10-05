@@ -39,7 +39,16 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   const [errorsByRun, setErrorsByRun] = useState<Map<string, NativeRunTranscriptError>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<ReadonlySet<string>>(new Set());
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const retry = useCallback(() => setRetryGeneration((value) => value + 1), []);
+  // Retry scope for the next effect pass: null = every run (the thread-level
+  // retry), a one-entry set = exactly that run (REK-311 per-row retry). The
+  // scope is consumed by the effect run it triggers, so a later restart for an
+  // unrelated reason (runs list changed) still reads everything.
+  const retryRunIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const retry = useCallback((runId?: string) => {
+    retryRunIdsRef.current = runId ? new Set([runId]) : null;
+    if (runId) cursorByRunRef.current.delete(runId);
+    setRetryGeneration((value) => value + 1);
+  }, []);
   const projectionCacheRef = useRef(new Map<string, { events: HeartbeatRunEvent[]; transcript: TranscriptEntry[] }>());
   const cursorByRunRef = useRef(new Map<string, number>());
 
@@ -119,7 +128,19 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         timers.add(timer);
       }
     };
-    for (const run of nativeRuns) void refreshRun(run);
+    // A scoped retry reads the run whose row asked for it, plus the reads this
+    // restart interrupted: bumping `retryGeneration` runs the cleanup below,
+    // which aborts the shared controller, and line 122 only marks a run
+    // hydrated on a completed read. A terminal run is not polled afterwards, so
+    // an unhydrated run would keep its "Loading" row forever.
+    const retryScope = retryRunIdsRef.current;
+    retryRunIdsRef.current = null;
+    for (const run of nativeRuns) {
+      if (retryScope && !retryScope.has(run.id) && hydratedRunIds.has(run.id)) {
+        continue;
+      }
+      void refreshRun(run);
+    }
     return () => {
       cancelled = true;
       controller.abort();

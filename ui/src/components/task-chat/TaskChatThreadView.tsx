@@ -25,6 +25,7 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { TaskChatTranscriptSlot } from "./TaskChatTranscriptSlot";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
@@ -75,6 +76,12 @@ interface TaskChatThreadViewProps {
   scroll?: boolean;
   attachments?: IssueAttachment[];
   onOpenSkill?: (skillId: string, name: string) => void;
+  /**
+   * Re-reads ONE run's transcript (REK-311). Scoped on purpose: the old
+   * thread-level Retry refetched every run's log, which on a long issue meant
+   * hundreds of requests for one broken run.
+   */
+  onRetryTranscript?: (runId: string) => void;
   onOpenBrowser?: (browserId: string) => void;
 }
 
@@ -97,6 +104,7 @@ function renderItem(
   retryFailedRunId?: string | null,
   attachments: IssueAttachment[] = [],
   onOpenSkill?: (skillId: string, name: string) => void,
+  onRetryTranscript?: (runId: string) => void,
   onOpenBrowser?: (browserId: string) => void,
 ) {
   switch (item.kind) {
@@ -226,6 +234,8 @@ function renderItem(
       );
     case "brief":
       return renderBrief ? renderBrief() : null;
+    case "transcript_placeholder":
+      return <TaskChatTranscriptSlot item={item} onRetry={onRetryTranscript} />;
     case "turn":
       return (
         <TaskChatTurn
@@ -270,6 +280,7 @@ function renderItem(
 function isSystemLikeItem(item: TaskChatItem): boolean {
   return (
     item.kind === "marker" ||
+    item.kind === "transcript_placeholder" ||
     (item.kind === "message" && item.author === "system")
   );
 }
@@ -287,6 +298,30 @@ export function taskChatItemSpacingClass(
   if (item.kind === "interaction" || previousItem.kind === "interaction")
     return "mt-4";
   return "mt-6";
+}
+
+/**
+ * Stable identity for a rendered row, used as the React key and as
+ * `data-thread-anchor`. The scroll holder matches on this value, so it has to
+ * survive a row being replaced in place.
+ *
+ * A *loading* placeholder and the settled turn it resolves into are one logical
+ * row with two item ids (`<runId>:transcript-placeholder` and `<runId>:turn`).
+ * Keying the placeholder on the id of the row that replaces it means the holder
+ * keeps a match across the swap, so a transcript that grows above the reader is
+ * still corrected. Without this, a placeholder that was the first visible row
+ * leaves the holder with no anchor to correct and the messages below it move
+ * instead.
+ *
+ * An *error* row keeps its own id. That row is not replaced by the turn: a run
+ * with partial entries and a failed later read shows the turn and the error
+ * side by side, and both would carry the same key and anchor.
+ */
+function threadAnchorId(item: TaskChatItem): string {
+  if (item.kind === "transcript_placeholder" && item.state === "loading") {
+    return `${item.runId}:turn`;
+  }
+  return item.kind === "message" ? (item.renderKey ?? item.id) : item.id;
 }
 
 /**
@@ -308,6 +343,7 @@ export function TaskChatThreadView({
   tryAgainNoLiveExecutionPathPending = false,
   onRetryFailedRun,
   retryFailedRunId = null,
+  onRetryTranscript,
   tail,
   contentKey,
   className,
@@ -351,6 +387,7 @@ export function TaskChatThreadView({
               retryFailedRunId,
               attachments,
               onOpenSkill,
+              onRetryTranscript,
               onOpenBrowser,
             ),
           }))
@@ -361,12 +398,8 @@ export function TaskChatThreadView({
         {streamlined
           ? renderedItems.map(({ item, content }, index) => (
               <div
-                key={
-                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-                }
-                data-thread-anchor={
-                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-                }
+                key={threadAnchorId(item)}
+                data-thread-anchor={threadAnchorId(item)}
                 id={item.kind === "message" ? `comment-${item.id}` : undefined}
                 className={taskChatItemSpacingClass(
                   item,
@@ -381,12 +414,8 @@ export function TaskChatThreadView({
             ))
           : items.map((item, index) => (
               <div
-                key={
-                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-                }
-                data-thread-anchor={
-                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-                }
+                key={threadAnchorId(item)}
+                data-thread-anchor={threadAnchorId(item)}
                 id={item.kind === "message" ? `comment-${item.id}` : undefined}
                 className={cn(
                   index > 0 &&
@@ -411,6 +440,7 @@ export function TaskChatThreadView({
                   retryFailedRunId,
                   attachments,
                   onOpenSkill,
+                  onRetryTranscript,
                   onOpenBrowser,
                 )}
               </div>
@@ -421,7 +451,8 @@ export function TaskChatThreadView({
     items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
-    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill,
+    onRetryTranscript, onOpenBrowser,
   ]);
   const body = (
     <div
@@ -478,6 +509,12 @@ function signatureOf(it: TaskChatItem): number {
       (n, child) => n + signatureOf(child),
       it.items.length + headerSig + (it.finalResponse?.text.length ?? 0),
     );
+  }
+  if (it.kind === "transcript_placeholder") {
+    // Must not collide with a resolved settled turn (which signs as 1): the
+    // scroller reconciles — and holds the reading position — on this key, so
+    // "placeholder" and "transcript" have to be different keys.
+    return it.state === "error" ? 3 : 2;
   }
   if (it.kind === "activity_phase") {
     return it.items.reduce(

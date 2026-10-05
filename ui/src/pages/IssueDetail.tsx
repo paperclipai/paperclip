@@ -2433,13 +2433,19 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               // Saved replies and the description can render while supporting
               // history loads. Only an otherwise empty thread needs that data
               // before deciding whether it has anything to show.
+              //
+              // REK-311: `linkedRunsPending` (the /runs list, 4,9 s on
+              // REK-234, 29-09 11:3xZ) is deliberately NOT gated here any more,
+              // not even on the classic interface. Runs gate their own
+              // transcript placeholders below, and `linkedRunsError` stays in
+              // the message error bar, so an empty thread degrades to "no
+              // messages" instead of waiting out the list route.
               ((classicTaskInterfaceEnabled || (commentsForThread.length === 0 && !issueBrief?.description)) && (
                 initialMetadataPending ||
                 activityPending ||
-                linkedRunsPending ||
                 !runtimeSelectionKnown
-              )))
-            }
+              ))
+            )}
             initialHistoryError={
               initialHistoryError ||
               activityError ||
