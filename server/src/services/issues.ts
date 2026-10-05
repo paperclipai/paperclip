@@ -10636,9 +10636,25 @@ export function issueService(db: Db) {
     ) => {
       // Dark opt-in only. Capture caller-owned values synchronously, before
       // transaction startup or fence suspension. Keep executor/queue identities.
-      if (options.lifecycleFence) {
-        options = { ...options };
-        data = structuredClone(data);
+      const lifecycleFence = options.lifecycleFence;
+      if (lifecycleFence) {
+        options = {
+          lifecycleFence,
+          bindRuntimeSharedWorkspace: options.bindRuntimeSharedWorkspace,
+        };
+        // JSON columns accept persistence-compatible values (including toJSON),
+        // not only structured-clone-compatible objects. Materialize their
+        // driver representation before cloning timestamps and relation arrays.
+        const snapshot = { ...data };
+        for (const [key, column] of Object.entries(getTableColumns(issues))) {
+          if (column.dataType !== "json" || !(key in snapshot)) continue;
+          const value = snapshot[key as keyof typeof snapshot];
+          if (value === null || value === undefined) continue;
+          Object.assign(snapshot, {
+            [key]: column.mapFromDriverValue(column.mapToDriverValue(value)),
+          });
+        }
+        data = structuredClone(snapshot);
       }
       // Callers supply trusted routing before domain reads;
       // an outer transaction must enter here before taking other row locks.
