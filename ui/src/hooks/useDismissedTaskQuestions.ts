@@ -16,7 +16,8 @@ export function useDismissedTaskQuestions(issueId?: string | null, userId?: stri
   const dismissedQuestionIds = useMemo(() => state.storageKey === storageKey
     ? state.ids : loadDismissedQuestions(storageKey), [state, storageKey]);
   const dismissQuestion = useCallback((interactionId: string) => {
-    const ids = new Set(dismissedQuestionIds);
+    // Another tab may have saved more dismissals since this thread rendered.
+    const ids = new Set([...loadDismissedQuestions(storageKey), ...dismissedQuestionIds]);
     ids.add(interactionId);
     try {
       if (storageKey) localStorage.setItem(storageKey, JSON.stringify([...ids]));

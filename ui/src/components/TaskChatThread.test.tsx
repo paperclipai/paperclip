@@ -3013,6 +3013,19 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(container.querySelectorAll('[data-testid="task-chat-unanswered-question"]')).toHaveLength(2);
   });
 
+  it("preserves a question dismissal saved by another tab", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    // The other tab saves after this thread has loaded its dismissal state.
+    localStorage.setItem("paperclip:task-question-dismissals:user-board:issue-1", JSON.stringify([newer.id]));
+    await dismiss();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    render(<TaskChatThread {...props} comments={[]} interactions={[old, newer]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelectorAll('[data-testid="task-chat-unanswered-question"]')).toHaveLength(2);
+  });
+
   it("scopes dismissal to the person and task", async () => {
     const show = (userId: string, issueId: string) => render(<TaskChatThread {...props} currentUserId={userId} issueId={issueId} comments={[]} interactions={[old]} />);
     show("user-board", "issue-1");
