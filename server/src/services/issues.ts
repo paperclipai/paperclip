@@ -10878,6 +10878,7 @@ export function issueService(db: Db) {
           existing.companyId,
           null,
           nextProjectWorkspaceId,
+          options.lifecycleFence ? dbOrTx : db,
         );
         validatedProjectWorkspace = workspace;
         nextProjectId = workspace.projectId;
@@ -10888,6 +10889,7 @@ export function issueService(db: Db) {
           existing.companyId,
           null,
           nextExecutionWorkspaceId,
+          options.lifecycleFence ? dbOrTx : db,
         );
         validatedExecutionWorkspace = workspace;
         nextProjectId = workspace.projectId;
@@ -10899,6 +10901,7 @@ export function issueService(db: Db) {
             existing.companyId,
             nextProjectId,
             nextProjectWorkspaceId,
+            options.lifecycleFence ? dbOrTx : db,
           );
         }
       }
@@ -10908,6 +10911,7 @@ export function issueService(db: Db) {
             existing.companyId,
             nextProjectId,
             nextExecutionWorkspaceId,
+            options.lifecycleFence ? dbOrTx : db,
           );
         }
       }
