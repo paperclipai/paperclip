@@ -29,6 +29,32 @@ export function classifyToolDefinitionFailure(
   }
   return null;
 }
+// Failures whose root cause is the session itself — the transport dropped
+// mid-response, or the accumulated conversation no longer fits the context
+// window / failed to compact. Resuming the same session only replays the same
+// oversized/broken conversation, so the recovery path must rotate to a fresh
+// session instead of growing the failed one toward the compaction cliff.
+// Otherwise a transient blip becomes a per-task death spiral: every retry
+// resumes the failed session and grows it further, never recovering.
+const CONNECTION_LOSS_FAILURE =
+  /connection (?:closed|lost|reset|aborted)|closed mid-response|socket hang\s?up|econnreset|epipe|stream (?:closed|ended|disconnected)|premature close|channel (?:was )?lost|closed before (?:the )?(?:response|completion|turn)/i;
+const CONTEXT_SIZE_FAILURE =
+  /prompt is too long|prompt too long|context (?:length|window) (?:exceeded|too large|limit)|too many (?:input )?tokens|maximum context (?:length|window)|exceeds the (?:maximum|context)|input (?:is )?too (?:large|long)/i;
+const COMPACTION_FAILURE =
+  /compact(?:ion)? (?:failed|error)|failed to compact|unable to compact|compaction (?:threshold|limit)/i;
+
+/** True when a failure means the session must be reset (not resumed) on the
+ * next attempt. Pure and side-effect free so it can be unit-tested directly and
+ * reused by both the terminal-failure and mid-turn error paths. */
+export function isSessionResetWorthyFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return (
+    CONNECTION_LOSS_FAILURE.test(message) ||
+    CONTEXT_SIZE_FAILURE.test(message) ||
+    COMPACTION_FAILURE.test(message)
+  );
+}
+
 // Leave room under the server's 64 KiB run-log chunk limit even when every
 // retained character needs JSON escaping. The transcript stores the text once.
 const FIELD_LIMITS = { title: 4096, details: 24576 } as const;
