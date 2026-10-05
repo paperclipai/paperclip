@@ -8,16 +8,10 @@ vi.mock("../services/instance-settings.ts", () => ({
   instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }) }),
 }));
 vi.mock("../services/chat-completion-delivery.js", () => ({ recordChatCompletion: async () => undefined }));
-vi.mock("../services/issues.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/issues.js")>();
-  return { ...actual, issueService: (db: any) => ({ ...actual.issueService(db),
-    // Readiness remains synthetic; canonical update is the real implementation.
-    listWakeableBlockedDependents: async () => [{ id: "dependent-1", blockerIssueIds: ["blocker-1", "blocker-2"] }],
-  }) };
-});
 
 // No SQL, DB, server or adapter. Distinct root/tx identities expose accidental
-// transaction ownership; actual canonical update records its writes and cleanup.
+// transaction ownership; actual readiness/update run over synthetic projected
+// rows. Predicates identify issue targets, but SQL/join semantics are not tested.
 function fixture() {
   let row: Record<string, any> = { id: "dependent-1", companyId: "company-1", status: "blocked",
     title: "Dependency work", parentId: null, projectId: null, goalId: null,
@@ -26,12 +20,13 @@ function fixture() {
     executionRunId: null, checkoutRunId: null, conversationAgentId: null,
     unblockDescriptor: null, executionState: null, executionPolicy: null };
   const before = structuredClone(row);
+  const blockers = ["blocker-1", "blocker-2"].map((id) => ({ id, companyId: "company-1", status: "done" }));
   const writes: Array<{ table: string; values: Record<string, unknown> }> = [];
   const events: string[] = [];
   const root = { transaction: vi.fn(() => { throw new Error("root-transaction-not-owned"); }),
     select: () => { throw new Error("root-read-outside-transaction"); } };
-  function query(rows: unknown[]) {
-    const q = { where: (_predicate: SQL) => q, innerJoin: () => q, leftJoin: () => q,
+  function query(rows: unknown[], resolveTarget?: (predicate: SQL) => unknown[]) {
+    const q = { where: (predicate: SQL) => { if (resolveTarget) rows = resolveTarget(predicate); return q; }, innerJoin: () => q, leftJoin: () => q,
       limit: () => q, orderBy: () => q, returning: () => q,
       for: (lock: string) => { events.push(`lock:${lock}`); return q; },
       then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject) };
@@ -41,9 +36,19 @@ function fixture() {
     "issue_relations", "issue_labels", "labels", "issue_watchdogs", "goals", "projects"]);
   const tx = {
     transaction: vi.fn(() => { throw new Error("nested-transaction-not-owned"); }),
-    select: () => ({ from: (table: any) => {
+    select: (projection: Record<string, unknown> = {}) => ({ from: (table: any) => {
       const name = getTableName(table); events.push(`read:${name}`);
-      if (name === "issues") return query([{ ...row }]);
+      if (name === "issues") return query([], (predicate) => {
+        const params = new PgDialect().sqlToQuery(predicate).params;
+        if (params.includes(row.id)) return [{ ...row }];
+        const blocker = blockers.find((b) => params.includes(b.id));
+        if (blocker) return [{ ...blocker }];
+        throw new Error("Unmodeled canonical issue read target");
+      });
+      if (name === "issue_relations" && "assigneeAgentId" in projection) return query([{ ...row }]);
+      if (name === "issue_relations" && "blockerStatus" in projection) return query(blockers.map((b) => ({
+        issueId: row.id, blockerIssueId: b.id, blockerStatus: b.status, blockerExecutionWorkspaceId: null,
+      })));
       if (emptyReads.has(name)) return query([]);
       throw new Error(`Unmodeled canonical read: ${name}`);
     } }),
@@ -62,13 +67,20 @@ function fixture() {
     } }),
   };
   const postCommit = { db: root, activityPublications: [], actions: [] };
-  return { tx, root, before, writes, events, postCommit, getRow: () => structuredClone(row),
+  return { tx, root, before, blockers, writes, events, postCommit, getRow: () => structuredClone(row),
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
       companyId: "company-1", dependentIssueId: "dependent-1", resolvedBlockerIssueId: "blocker-1",
     }, postCommit as any) };
 }
 
 describe("dark coordinator with actual canonical update (mock recording, not atomicity)", () => {
+  it.each(["in_progress", "blocked", "cancelled"])("actual readiness vetoes unresolved second blocker %s before canonical writes", async (status) => {
+    const f = fixture(); f.blockers[1].status = status;
+    expect(await f.run()).toBeNull();
+    expect(f.getRow()).toEqual(f.before); expect(f.writes).toEqual([]);
+    expect(f.events).toContain("read:issue_relations");
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
   it("does not return a commit snapshot when durable insert rejects after canonical cleanup", async () => {
     const f = fixture();
     f.tx.insert = () => ({ values: () => { throw new Error("intent-insert-rejected"); } }) as any;

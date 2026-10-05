@@ -21,6 +21,14 @@ export async function restoreDependencyReadyIssueInTransaction(
   const { companyId, dependentIssueId, resolvedBlockerIssueId } = input;
   const { db, activityPublications, actions } = owner;
   if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  // Caller input is routing, not proof that the blocker completed. Keep its
+  // authoritative status stable through this transaction. This is still dark:
+  // graph-wide writer lock ordering/fences are not established by this lock.
+  const [blocker] = await tx.select({ id: issues.id, companyId: issues.companyId, status: issues.status }).from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, resolvedBlockerIssueId)))
+    .for("share");
+  if (!blocker || blocker.id !== resolvedBlockerIssueId || blocker.companyId !== companyId
+    || blocker.status !== "done") return null;
   const [dependent] = await tx.select().from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, dependentIssueId)))
     .for("update");
@@ -39,7 +47,8 @@ export async function restoreDependencyReadyIssueInTransaction(
   if (gates.some((row) => row.status === "pending" || row.status === "revision_requested")) return null;
   const candidates = await issueService(tx as unknown as Db).listWakeableBlockedDependents(resolvedBlockerIssueId);
   const candidate = candidates.find((row) => row.id === dependentIssueId);
-  if (!candidate || !candidate.blockerIssueIds.includes(resolvedBlockerIssueId)) return null;
+  if (!candidate || candidate.assigneeAgentId !== dependent.assigneeAgentId
+    || !candidate.blockerIssueIds.includes(resolvedBlockerIssueId)) return null;
   // Capture the cycle BEFORE canonical metadata cleanup.
   const blockerIssueIds = [...candidate.blockerIssueIds];
   const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
