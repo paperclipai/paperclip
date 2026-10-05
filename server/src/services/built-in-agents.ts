@@ -148,6 +148,9 @@ export interface RequiredBuiltInAgent {
 }
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
+// Legacy synthetic actor that older releases persisted as a built-in routine's
+// responsible_user_id. Kept here only so reconciliation can detect and repair it.
+const BUILT_IN_BUNDLES_ACTOR = "built-in-bundles";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -1409,11 +1412,31 @@ export function builtInAgentService(db: Db) {
     return resumed as Agent;
   }
 
-  async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
+  async function createOrResetRoutine(
+    agent: Agent,
+    definition: BuiltInAgentDefinition,
+    existing: Routine | null,
+    mode: "reconcile" | "reset",
+    options: { responsibleUserOnly?: boolean } = {},
+  ) {
     const routine = definition.bundle!.routine;
-    const actor = { agentId: null, userId: "built-in-bundles" };
-    const nextRoutine = existing
-      ? await routineSvc.update(existing.id, {
+    // Bundle reconciliation is a platform mutation with no human actor. Passing a
+    // synthetic userId here used to land in routines.responsible_user_id, and every
+    // issue the routine spawned inherited it — the authorization layer then denied
+    // the assignee's own reads and writes with RESPONSIBLE_USER_UNAVAILABLE because
+    // no such user exists. Leave it null so the routine service resolves the
+    // company's default responsible user. Provenance is still recorded via
+    // origin_kind/origin_id and the activity-log actor below.
+    const actor = { agentId: null, userId: null };
+    const replaceResponsibleUser = existing?.responsibleUserId === BUILT_IN_BUNDLES_ACTOR;
+    let nextRoutine: Routine | null;
+    if (existing && options.responsibleUserOnly) {
+      // Repair-only: rewrite the responsible user without touching any other stock
+      // field, so operator customizations to title, description, status, schedule, or
+      // variables survive the heal.
+      nextRoutine = await routineSvc.update(existing.id, {}, actor, { replaceResponsibleUser });
+    } else if (existing) {
+      nextRoutine = await routineSvc.update(existing.id, {
         title: routine.title,
         description: routine.description,
         assigneeAgentId: agent.id,
@@ -1422,8 +1445,9 @@ export function builtInAgentService(db: Db) {
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
-      }, actor)
-      : await routineSvc.create(agent.companyId, {
+      }, actor, { replaceResponsibleUser });
+    } else {
+      nextRoutine = await routineSvc.create(agent.companyId, {
         title: routine.title,
         description: routine.description,
         assigneeAgentId: agent.id,
@@ -1433,6 +1457,7 @@ export function builtInAgentService(db: Db) {
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
       }, actor);
+    }
     if (!nextRoutine) throw notFound("Built-in routine not found");
     await db
       .update(routines)
@@ -1443,28 +1468,31 @@ export function builtInAgentService(db: Db) {
       })
       .where(eq(routines.id, nextRoutine.id));
 
-    const currentTriggers = await db
-      .select()
-      .from(routineTriggers)
-      .where(eq(routineTriggers.routineId, nextRoutine.id))
-      .then((rows) => rows as RoutineTrigger[]);
-    const firstSchedule = currentTriggers.find((trigger) => trigger.kind === "schedule");
-    const stockTrigger = routine.triggers[0];
-    if (stockTrigger && firstSchedule) {
-      await routineSvc.updateTrigger(firstSchedule.id, {
-        label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
-        cronExpression: stockTrigger.cronExpression,
-        timezone: stockTrigger.timezone,
-      }, actor);
-    } else if (stockTrigger) {
-      await routineSvc.createTrigger(nextRoutine.id, {
-        kind: "schedule",
-        label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
-        cronExpression: stockTrigger.cronExpression,
-        timezone: stockTrigger.timezone,
-      }, actor);
+    // Repair-only mode leaves the schedule exactly as the operator left it.
+    if (!options.responsibleUserOnly) {
+      const currentTriggers = await db
+        .select()
+        .from(routineTriggers)
+        .where(eq(routineTriggers.routineId, nextRoutine.id))
+        .then((rows) => rows as RoutineTrigger[]);
+      const firstSchedule = currentTriggers.find((trigger) => trigger.kind === "schedule");
+      const stockTrigger = routine.triggers[0];
+      if (stockTrigger && firstSchedule) {
+        await routineSvc.updateTrigger(firstSchedule.id, {
+          label: stockTrigger.label,
+          enabled: stockTrigger.enabled,
+          cronExpression: stockTrigger.cronExpression,
+          timezone: stockTrigger.timezone,
+        }, actor);
+      } else if (stockTrigger) {
+        await routineSvc.createTrigger(nextRoutine.id, {
+          kind: "schedule",
+          label: stockTrigger.label,
+          enabled: stockTrigger.enabled,
+          cronExpression: stockTrigger.cronExpression,
+          timezone: stockTrigger.timezone,
+        }, actor);
+      }
     }
     await logActivity(db, {
       companyId: agent.companyId,
@@ -1507,8 +1535,17 @@ export function builtInAgentService(db: Db) {
       mode === "reset"
       || currentState.stockStatus === "missing"
       || currentState.stockStatus === "stock_update_available";
-    const nextRoutine = shouldWrite
-      ? await createOrResetRoutine(agent, definition, routine, mode)
+    // Self-heal: a routine still carrying the legacy system marker has no valid
+    // responsible user, so its spawned issues are locked out. Repair it even when
+    // the stock hash is otherwise current, but only rewrite the responsible user so
+    // operator customizations survive. A full reconcile still wins when drift exists.
+    const repairResponsibleUserOnly =
+      !shouldWrite && routine?.responsibleUserId === BUILT_IN_BUNDLES_ACTOR;
+    const wrote = shouldWrite || repairResponsibleUserOnly;
+    const nextRoutine = wrote
+      ? await createOrResetRoutine(agent, definition, routine, mode, {
+        responsibleUserOnly: repairResponsibleUserOnly,
+      })
       : routine!;
     await upsertManagedResourceBinding({
       companyId: agent.companyId,

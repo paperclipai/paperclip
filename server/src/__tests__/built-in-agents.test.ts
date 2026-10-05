@@ -22,6 +22,7 @@ import {
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
+  routineRevisions,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
@@ -662,6 +663,13 @@ describeEmbeddedPostgres("built-in agents", () => {
       status: "paused",
       assigneeAgentId: state.agentId,
     });
+    // Regression: bundle installs used to persist the synthetic "built-in-bundles"
+    // marker as the routine's responsible user. Every issue the routine spawned
+    // inherited it, and the authorization layer then denied the assignee its own
+    // reads and writes with RESPONSIBLE_USER_UNAVAILABLE. A freshly installed
+    // bundle routine must resolve a real responsible user like any other routine.
+    expect(routine!.responsibleUserId).not.toBe("built-in-bundles");
+    expect(routine!.responsibleUserId).toBe("responsible-user");
     const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
     expect(trigger).toMatchObject({
       kind: "schedule",
@@ -673,6 +681,50 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(coachGrantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
     expect(coachGrantKeys).not.toContain("agents:configure");
     expect(coachGrantKeys).not.toContain("skills:create");
+  });
+
+  it("repairs a legacy built-in routine that persisted the system marker as responsible user", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+
+    const [installed] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // Simulate a routine installed by an older release: it stores the synthetic
+    // marker on both the routine and its latest revision. The operator then
+    // customized the title, so the repair must not clobber it.
+    await db
+      .update(routines)
+      .set({ responsibleUserId: "built-in-bundles", title: "Operator-customized title" })
+      .where(eq(routines.id, installed!.id));
+    await db
+      .update(routineRevisions)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.id, installed!.latestRevisionId!));
+
+    // Reconcile must detect the marker even though the stock hash is otherwise
+    // current, and repair both rows to the real company default without touching
+    // the operator's customization.
+    await builtIns.ensure(companyId, "reflection-coach");
+
+    const [repairedRoutine] = await db.select().from(routines).where(eq(routines.id, installed!.id));
+    const [repairedRevision] = await db
+      .select()
+      .from(routineRevisions)
+      .where(eq(routineRevisions.id, repairedRoutine!.latestRevisionId!));
+    expect(repairedRoutine!.responsibleUserId).toBe("responsible-user");
+    expect(repairedRoutine!.title).toBe("Operator-customized title");
+    expect(repairedRevision!.responsibleUserId).toBe("responsible-user");
+    // Provenance columns are not rewritten to the resolved responsible user.
+    expect(repairedRevision!.createdByUserId).toBeNull();
   });
 
   it("recreates missing managed resource bindings idempotently during concurrent reconcile", async () => {
