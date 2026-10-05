@@ -1701,6 +1701,13 @@ and character stories. Set `PAPERCLIP_STORYBOOK_API_URL` to your isolated
 Paperclip API URL when running dev Storybook. Published Storybook builds automatically
 package avatar PNGs using the API renderer; static hosting needs no API proxy.
 
+### Org chart refresh
+
+The org view retains the user's zoom and pan when polling refreshes the same
+agents and layout, including status-only changes. Adding, removing, or moving
+agents in the graph triggers a new fit. The Fit to screen control still resets
+the view on demand.
+
 ### Investigating polling load
 
 The company heartbeat-run and live-run lists load secret registries in one
