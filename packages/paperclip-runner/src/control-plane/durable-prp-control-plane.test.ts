@@ -2258,6 +2258,27 @@ describe.sequential("DurablePrpControlPlane", () => {
     } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("reports an oversized semantic result without exposing its content or redispatching", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-result-limit-"));
+    const handler = vi.fn(async () => ({ result: { privateContent: "x".repeat(600_000) } }));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      await vi.waitFor(() => expect(core.semanticToolSettlementDiagnostics()).toMatchObject({
+        persistenceFailed: true,
+        failures: [{ callId: "call-1", operationId: "get_task_context", stage: "persist_result", code: "command_payload_too_large" }],
+      }));
+      expect(core.store.state.commands).toEqual([]);
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(JSON.stringify(core.semanticToolSettlementDiagnostics())).not.toContain("privateContent");
+      expect(handler).toHaveBeenCalledOnce();
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(["before_dispatch", "during_effect"] as const)("settles only proven pre-dispatch cancellation (%s)", async (stage) => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-tool-dispatch-boundary-"));
     const handler = vi.fn(async () => {

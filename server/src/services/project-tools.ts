@@ -4,6 +4,30 @@ import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/ind
 import { badRequest } from "../errors.js";
 
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
+const listProjectsSchema = z.object({
+  limit: z.number().int().min(1).max(50).default(50),
+  cursor: z.string().uuid().optional(),
+}).strict();
+
+/** Discovery is bounded independently of project descriptions and workspace configuration. */
+function projectDiscoveryPage(projects: Array<Record<string, unknown>>, page: z.infer<typeof listProjectsSchema>) {
+  const ordered = projects.filter(project => !page.cursor || String(project.id) > page.cursor)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const selected = ordered.slice(0, page.limit);
+  return {
+    projects: selected.map(project => {
+      const description = typeof project.description === "string" ? project.description : null;
+      return {
+        id: project.id,
+        name: String(project.name).slice(0, 500),
+        status: project.status,
+        description: description?.slice(0, 1_000) ?? null,
+        descriptionTruncated: (description?.length ?? 0) > 1_000,
+      };
+    }),
+    nextCursor: ordered.length > selected.length ? selected.at(-1)!.id : null,
+  };
+}
 export function projectToolDefinitions(workMode: string, includeTask = false) {
   return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
     (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && ["create_task", "set_task_title"].includes(tool.operationId))
@@ -21,6 +45,7 @@ export async function callProjectTool(input: {
   companyId: string; issueId: string; agentId: string; conversation: boolean;
 }) {
   const args = input.arguments;
+  const page = input.name === "list_projects" ? listProjectsSchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
   let body: unknown;
   if (input.name === "set_task_title") {
@@ -51,5 +76,5 @@ export async function callProjectTool(input: {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
-  return input.name === "list_projects" ? { projects: result } : result;
+  return page ? projectDiscoveryPage(result, page) : result;
 }

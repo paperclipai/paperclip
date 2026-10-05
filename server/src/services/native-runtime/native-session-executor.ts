@@ -2829,7 +2829,7 @@ export async function reconcileRetainedNativeSessionCleanup(
       const errorCode = run.errorCode ?? failure.errorCode;
       const error = run.error ?? failure.error;
       if (
-        errorCode !== "adapter_failed" ||
+        !["adapter_failed", "provider_transport_failed"].includes(String(errorCode)) ||
         error !==
           "provider_transport_failed: runner did not durably suspend before checkpoint" ||
         execution.binding.companyId !== run.companyId ||

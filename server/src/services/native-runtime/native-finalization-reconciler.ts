@@ -240,7 +240,7 @@ export function reconcileRetainedNativeSessionCleanups(
             ),
             // The accepted-result projector preserves a recovered close failure
             // privately after clearing the visible successful run's stale error.
-            sql`coalesce(${heartbeatRuns.errorCode}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'errorCode') = 'adapter_failed'`,
+            sql`coalesce(${heartbeatRuns.errorCode}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'errorCode') in ('adapter_failed', 'provider_transport_failed')`,
             sql`coalesce(${heartbeatRuns.error}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'error') = 'provider_transport_failed: runner did not durably suspend before checkpoint'`,
             sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_runner_epoch"}]'::jsonb)`,
             sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_source_archive","phase":"operator_required"}]'::jsonb)`,

@@ -1746,6 +1746,34 @@ export async function commitNativeStatusDecision(input: {
         throw error;
       }
     }
+    const recordCoordinatorDecision = async (decisionId: string) => {
+      const finalizationError = input.decision.effects.find(
+        effect => effect.kind === "record_finalization_error",
+      );
+      await tx
+        .update(nativeRunFinalizations)
+        .set({
+          phase: finalizationError ? "retryable_failure" : "committed",
+          assessmentId: input.assessmentId,
+          decisionId,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          failureCode: finalizationError?.cause ?? null,
+          failureDetail: finalizationError
+            ? {
+                originalFailureCode: finalizationError.cause,
+                recoveryOwner: {
+                  kind: "agent",
+                  agentId: finalizationError.agentId,
+                },
+                nextAction: finalizationError.nextAction,
+              }
+            : null,
+          nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(nativeRunFinalizations.runId, input.runId));
+    };
     const decisionJson = {
       statusAction: input.decision.statusAction,
       toStatus: input.decision.toStatus,
@@ -1789,6 +1817,9 @@ export async function commitNativeStatusDecision(input: {
       decisionRow?.applicationState === "applied" ||
       decisionRow?.applicationState === "proposed"
     ) {
+      // The effects already committed, but this retry owns a fresh coordinator
+      // lease. Release it and restore the retry deadline without replaying effects.
+      await recordCoordinatorDecision(decisionRow.id);
       return { decision: decisionRow, issue, replayed: true };
     }
     if (!decisionRow) {
@@ -2042,9 +2073,6 @@ export async function commitNativeStatusDecision(input: {
     const shadowOnly = input.decision.effects.some(
       (effect) => effect.kind === "record_shadow_decision",
     );
-    const finalizationError = input.decision.effects.find(
-      (effect) => effect.kind === "record_finalization_error",
-    );
     const applicationState = shadowOnly ? "proposed" : "applied";
     await tx
       .update(statusDecisions)
@@ -2053,29 +2081,7 @@ export async function commitNativeStatusDecision(input: {
         appliedAt: shadowOnly ? null : new Date(),
       })
       .where(eq(statusDecisions.id, decisionRow.id));
-    await tx
-      .update(nativeRunFinalizations)
-      .set({
-        phase: finalizationError ? "retryable_failure" : "committed",
-        assessmentId: input.assessmentId,
-        decisionId: decisionRow.id,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        failureCode: finalizationError?.cause ?? null,
-        failureDetail: finalizationError
-          ? {
-              originalFailureCode: finalizationError.cause,
-              recoveryOwner: {
-                kind: "agent",
-                agentId: finalizationError.agentId,
-              },
-              nextAction: finalizationError.nextAction,
-            }
-          : null,
-        nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(nativeRunFinalizations.runId, input.runId));
+    await recordCoordinatorDecision(decisionRow.id);
     if (externalChatReviewPresentation && input.reviewResponsePresentation) {
       await restoreNativeChatReviewPresentationInTransaction(
         tx as unknown as Db,

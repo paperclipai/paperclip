@@ -52,6 +52,13 @@ and incomplete result-delivery command IDs and statuses. If execution and
 cleanup both fail, execution retains its original error identity and cleanup is
 attached as `cleanupError`.
 
+Semantic settlement also includes up to 20 content-free failure records, with
+the call ID, operation ID, stage (`dispatch` or `persist_result`), and cause.
+Causes distinguish an oversized command, a full command journal, known storage
+errors, dispatcher rejection, and other persistence failures. Exception messages
+and tool results are excluded. These diagnostics do not authorize replay of an
+operation whose outcome is unknown.
+
 Instruction writes also commit an `agent.instruction_write_attempted` activity
 row and a run-scoped `instructionToolAttempts` entry before permitting the
 filesystem effect. They retain the call ID, operation ID, and input digest, not

@@ -1,3 +1,15 @@
+export const listProjectsInputSchema = {
+  type: "object",
+  properties: {
+    limit: { type: "integer", minimum: 1, maximum: 50, description: "Page size (default 50)." },
+    cursor: { type: "string", format: "uuid", description: "The nextCursor returned by the previous page." },
+  },
+  required: [],
+  additionalProperties: false,
+} as const;
+
+export const listProjectsDescription = "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.";
+
 /** Canonical project discovery definition. */
 export const listProjectsAction = {
   "id": "list_projects",
@@ -29,7 +41,7 @@ export const listProjectsAction = {
   },
   "documentation": {
     "title": "List projects",
-    "description": "Inspect available company projects before selecting a project for new work.",
+    "description": listProjectsDescription,
     "note": null
   },
   "examples": {
@@ -50,7 +62,7 @@ export const listProjectsAction = {
       "operationId": "list_projects",
       "version": 1,
       "title": "List projects",
-      "description": "Inspect available company projects before selecting a project for new work.",
+      "description": listProjectsDescription,
       "effect": "read",
       "requiredClaims": [
         "discovery:projects:read"
@@ -61,12 +73,7 @@ export const listProjectsAction = {
         "planning",
         "skill_test"
       ],
-      "inputSchema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      },
+      "inputSchema": listProjectsInputSchema,
       "outputSchema": {
         "type": "object",
         "additionalProperties": true
@@ -80,13 +87,8 @@ export const listProjectsAction = {
       "operationId": "list_projects",
       "version": 1,
       "title": "List Projects",
-      "description": "List Projects through the Capability discovery capability set.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      },
+      "description": listProjectsDescription,
+      "inputSchema": listProjectsInputSchema,
       "outputSchema": {
         "type": "object",
         "properties": {

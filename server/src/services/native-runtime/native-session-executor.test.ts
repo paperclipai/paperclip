@@ -2641,6 +2641,7 @@ const execution = {
 describe("retained native cleanup activation", () => {
   it.each([
     "settled",
+    "provider_transport_failed",
     "canonical_source",
     "canonical_live_owner",
     "canonical_foreign_owner",
@@ -2955,7 +2956,7 @@ describe("retained native cleanup activation", () => {
       processGroupId: mode.endsWith("live_owner") ? process.pid : 99_999_999,
       completionContractId: "contract",
       completionContractSha256: "sha",
-      errorCode: "adapter_failed",
+      errorCode: mode === "provider_transport_failed" ? "provider_transport_failed" : "adapter_failed",
       error:
         "provider_transport_failed: runner did not durably suspend before checkpoint",
       runnerProfileJson: {
@@ -3822,6 +3823,7 @@ describe("retained native cleanup activation", () => {
         "provider_home",
         "legacy_copy",
         "settled",
+        "provider_transport_failed",
         "activation_commit_stalled",
         "empty_root",
         "distinct_provider_account",

@@ -615,6 +615,16 @@ async function resolveCommittedFinalizationRecovery(db: Db, run: typeof heartbea
   });
 }
 
+function recoveredExecutionFailureMetadata() {
+  // Read the row being updated so a concurrent cleanup diagnostic is retained.
+  return sql`case when ${heartbeatRuns.error} is not null or ${heartbeatRuns.errorCode} is not null
+    then jsonb_build_object('recoveredExecutionFailure', jsonb_build_object(
+      'schema', 'paperclip.recovered_execution_failure.v1',
+      'errorCode', ${heartbeatRuns.errorCode}, 'error', ${heartbeatRuns.error},
+      'observedAt', ${heartbeatRuns.updatedAt}
+    )) else '{}'::jsonb end`;
+}
+
 async function projectCommittedRun(input: {
   db: Db;
   run: typeof heartbeatRuns.$inferSelect;
@@ -658,18 +668,9 @@ async function projectCommittedRun(input: {
             // Capture the row being updated, not the earlier admission read:
             // cleanup may have recorded a new diagnostic in the meantime.
             // Other result metadata and all physical-owner evidence stay put.
-            resultJson: sql`case
-              when ${heartbeatRuns.error} is not null or ${heartbeatRuns.errorCode} is not null
-              then coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object(
-                'recoveredExecutionFailure', jsonb_build_object(
-                  'schema', 'paperclip.recovered_execution_failure.v1',
-                  'errorCode', ${heartbeatRuns.errorCode},
-                  'error', ${heartbeatRuns.error},
-                  'observedAt', ${heartbeatRuns.updatedAt}
-                )
-              )
-              else coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
-            end || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
+              || ${recoveredExecutionFailureMetadata()}
+              || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
           }
         : { resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)` }),
       updatedAt: now,
@@ -1197,7 +1198,7 @@ export async function finalizeNativeRun(input: {
   // One follow-up may repair an incomplete report. Repeated incomplete results
   // require a visible recovery action instead of an unbounded wake loop.
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
-  let supersedesAssessmentId: string | null = null;
+  let supersedesAssessmentId: string | null = coordinator.assessmentId;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const authoritativeIssue = await input.db
       .select()
@@ -1322,12 +1323,15 @@ export async function finalizeNativeRun(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       assessment,
       supersedesAssessmentId,
+      workspaceFinalizeStatus: input.workspaceFinalizeStatus,
     });
     await input.db
       .update(nativeRunFinalizations)
       .set({
         phase: "arbitrating",
-        assessmentId: assessmentRow.id,
+        // The old decision refers to its original assessment through a
+        // composite foreign key. Replace this pair together in the status
+        // committer, after the new decision and its effects are durable.
         updatedAt: new Date(),
       })
       .where(
@@ -1391,6 +1395,40 @@ export async function finalizeNativeRun(input: {
       const alreadyEmittedByCommittedDecision = decision.effects.some(
         (effect) => effect.kind === "cancel_continuations",
       );
+      const clearExecutionFailure = input.projectRunStatus && finalizationPhase === "committed" && terminalState === "succeeded";
+      const finalizationMetadata = {
+        finalizationPhase,
+        ...(finalizationPhase === "committed" ? { failureCode: null, originalFailureCode: null, nextAttemptAt: null } : {}),
+        assessmentId: assessmentRow.id,
+        decisionId: committed.decision.id,
+        authoritativeDecision: decision.toStatus,
+        finalizationPolicyVersion: decision.policyVersion,
+        finalizationReasonCode: decision.reasonCode,
+        // Only the locked status transaction can mint this presentation
+        // proof. Never carry a runner-provided marker forward.
+        externalChatReviewPresentation: record(
+          committed.decision.decisionJson,
+        ).externalChatReviewPresentation
+          ? {
+              ...record(
+                record(committed.decision.decisionJson)
+                  .externalChatReviewPresentation,
+              ),
+              decisionId: committed.decision.id,
+            }
+          : null,
+        ...(record(committed.decision.decisionJson)
+          .externalChatReviewPresentation
+          ? { nativeResult: result }
+          : {}),
+        verificationCaveats: assessment.verificationCaveats,
+        ignoredAttentionRequests: assessment.ignoredAttentionRequests,
+        issueStatusBefore: authoritativeIssue.status,
+        issueStatusAfter: committed.issue.status,
+        statusVersionBefore: Number(authoritativeIssue.statusVersion),
+        statusVersionAfter: Number(committed.issue.statusVersion),
+        workspaceFinalizeStatus: input.workspaceFinalizeStatus,
+      };
       const [updatedRun] = await input.db
         .update(heartbeatRuns)
         .set({
@@ -1408,40 +1446,10 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          resultJson: {
-            ...record(run.resultJson),
-            finalizationPhase,
-            ...(finalizationPhase === "committed" ? { failureCode: null, originalFailureCode: null, nextAttemptAt: null } : {}),
-            assessmentId: assessmentRow.id,
-            decisionId: committed.decision.id,
-            authoritativeDecision: decision.toStatus,
-            finalizationPolicyVersion: decision.policyVersion,
-            finalizationReasonCode: decision.reasonCode,
-            // Only the locked status transaction can mint this presentation
-            // proof. Never carry a runner-provided marker forward.
-            externalChatReviewPresentation: record(
-              committed.decision.decisionJson,
-            ).externalChatReviewPresentation
-              ? {
-                  ...record(
-                    record(committed.decision.decisionJson)
-                      .externalChatReviewPresentation,
-                  ),
-                  decisionId: committed.decision.id,
-                }
-              : null,
-            ...(record(committed.decision.decisionJson)
-              .externalChatReviewPresentation
-              ? { nativeResult: result }
-              : {}),
-            verificationCaveats: assessment.verificationCaveats,
-            ignoredAttentionRequests: assessment.ignoredAttentionRequests,
-            issueStatusBefore: authoritativeIssue.status,
-            issueStatusAfter: committed.issue.status,
-            statusVersionBefore: Number(authoritativeIssue.statusVersion),
-            statusVersionAfter: Number(committed.issue.statusVersion),
-            workspaceFinalizeStatus: input.workspaceFinalizeStatus,
-          },
+          ...(clearExecutionFailure ? { error: null, errorCode: null } : {}),
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
+            || ${JSON.stringify(finalizationMetadata)}::jsonb
+            || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`,
           updatedAt: now,
         })
         .where(eq(heartbeatRuns.id, run.id))

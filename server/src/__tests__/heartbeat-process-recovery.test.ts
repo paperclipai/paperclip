@@ -1798,7 +1798,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(0);
   });
 
-  it.each(["settled", "rejected", "late_callback"] as const)(
+  it.each(["settled", "rejected", "late_callback", "provider_transport_failed"] as const)(
     "joins startup and reap retained cleanup, keeps recovery live, and drains its %s operation",
     async (outcome) => {
       await withTempPaperclipHome(async () => {
@@ -1882,7 +1882,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .set({
             resultJson: sql`${heartbeatRuns.resultJson} || ${JSON.stringify({
               recoveredExecutionFailure: {
-                errorCode: "adapter_failed",
+                errorCode: outcome === "provider_transport_failed" ? "provider_transport_failed" : "adapter_failed",
                 error:
                   "provider_transport_failed: runner did not durably suspend before checkpoint",
               },
