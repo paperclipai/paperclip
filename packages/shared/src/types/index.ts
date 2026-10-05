@@ -748,6 +748,7 @@ export type {
   IssueExecutionStagePrincipal,
   IssueReviewRequest,
   IssueExecutionDecision,
+  IssueExecutionReassignment,
   IssueComment,
   IssueRecentComments,
   IssueChatBootstrap,
