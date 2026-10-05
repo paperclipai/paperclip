@@ -7102,6 +7102,16 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   );
 }
 
+// CON-218. The column patch applied when a run starts, extracted so the
+// status/`errorReason` invariant is assertable without a live adapter.
+export function buildAgentRunStartStatusPatch(): {
+  status: "running";
+  errorReason: null;
+  updatedAt: Date;
+} {
+  return { status: "running", errorReason: null, updatedAt: new Date() };
+}
+
 function isCheckoutConflictError(error: unknown): boolean {
   return (
     error instanceof HttpError &&
@@ -23234,7 +23244,10 @@ export function heartbeatService(
         // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
         const runningAgent = await db
           .update(agents)
-          .set({ status: "running", updatedAt: new Date() })
+          // `error` is invokable, so an agent that failed a previous run is
+          // flipped straight to `running` here. The patch clears `errorReason`
+          // (CON-218) so a started run never carries a previous run's cause.
+          .set(buildAgentRunStartStatusPatch())
           .where(
             and(
               eq(agents.id, agent.id),
