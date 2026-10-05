@@ -10634,7 +10634,13 @@ export function issueService(db: Db) {
       postCommitActions?: IssuePostCommitAction[],
       options: { bindRuntimeSharedWorkspace?: boolean; lifecycleFence?: boolean } = {},
     ) => {
-      // Dark opt-in only. Callers supply trusted routing before domain reads;
+      // Dark opt-in only. Capture caller-owned values synchronously, before
+      // transaction startup or fence suspension. Keep executor/queue identities.
+      if (options.lifecycleFence) {
+        options = { ...options };
+        data = structuredClone(data);
+      }
+      // Callers supply trusted routing before domain reads;
       // an outer transaction must enter here before taking other row locks.
       if (options.lifecycleFence && !data.companyGuard) {
         throw new Error("Lifecycle-fenced update requires companyGuard");
