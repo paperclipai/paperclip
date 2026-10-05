@@ -7423,11 +7423,10 @@ export function issueService(db: Db) {
     }
   }
 
-  async function syncBlockedByIssueIds(
+  async function validateBlockedByIssueIds(
     issueId: string,
     companyId: string,
     blockedByIssueIds: string[],
-    actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: any = db,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
@@ -7456,7 +7455,17 @@ export function issueService(db: Db) {
       }
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
+    return deduped;
+  }
 
+  async function syncBlockedByIssueIds(
+    issueId: string,
+    companyId: string,
+    blockedByIssueIds: string[],
+    actor: { agentId?: string | null; userId?: string | null } = {},
+    dbOrTx: any = db,
+  ) {
+    const deduped = await validateBlockedByIssueIds(issueId, companyId, blockedByIssueIds, dbOrTx);
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -10984,6 +10993,12 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
+      // Dark opt-in validates the replacement before canonical writes, on the
+      // fenced preparation executor. Sync still revalidates on its supplied tx;
+      // nonparticipants are not serialized by this local preflight.
+      if (options.lifecycleFence && blockedByIssueIds !== undefined) {
+        await validateBlockedByIssueIds(id, existing.companyId, blockedByIssueIds, dbOrTx);
+      }
       const runUpdate = async (tx: any) => {
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
