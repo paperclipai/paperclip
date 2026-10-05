@@ -524,8 +524,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toGeneralView(row.general);
     },
 
-    getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
-      const row = await getOrCreateRow();
+    getExperimental: async (
+      readOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const row = await getOrCreateRow(readOptions?.db);
       return toExperimentalView(row.experimental);
     },
 

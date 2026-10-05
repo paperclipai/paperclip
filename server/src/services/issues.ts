@@ -10715,7 +10715,9 @@ export function issueService(db: Db) {
         }
       }
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettings.getExperimental(
+          options.lifecycleFence ? { db: dbOrTx } : undefined,
+        )
       ).enableIsolatedWorkspaces;
       if (options.bindRuntimeSharedWorkspace) {
         const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
