@@ -381,7 +381,7 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     const items = await connectionMenu();
     expect(items.map(item => item.textContent?.trim())).toEqual(["Open in Composio"]);
-    expect(items[0].getAttribute("href")).toBe("https://dashboard.composio.dev/");
+    expect(items[0].getAttribute("href")).toBe("https://dashboard.composio.dev/~/org/connect/apps");
     expect(items[0].getAttribute("target")).toBe("_blank");
     expect(navigateMock).not.toHaveBeenCalled();
     expect(manageComposioAppAccountMock).not.toHaveBeenCalled();
@@ -462,7 +462,7 @@ describe("Connectors landing page", () => {
     await clickButton("Manage", container);
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Accounts and sign-in are managed in Composio.");
-    expect(dialog.querySelector('a[href="https://dashboard.composio.dev/"]')?.getAttribute("target")).toBe("_blank");
+    expect(dialog.querySelector('a[href="https://dashboard.composio.dev/~/org/connect/apps"]')?.getAttribute("target")).toBe("_blank");
     expect(dialog.textContent).not.toContain("Rename");
     expect(dialog.textContent).not.toContain("Disconnect");
     const disconnected = { ...snapshot, status: "not_connected", accounts: [] };
@@ -594,7 +594,7 @@ describe("Connectors landing page", () => {
     expect(dialog.textContent).not.toContain("Which agent");
     expect(dialog.textContent).not.toContain("Using");
     expect(dialog.textContent).not.toContain("Use another account");
-    expect(dialog.querySelector('a[href="https://dashboard.composio.dev/"]')).toBeNull();
+    expect(dialog.querySelector('a[href="https://dashboard.composio.dev/~/org/connect/apps"]')).toBeNull();
     expect(listAgentsMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
     await act(() => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
