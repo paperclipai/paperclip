@@ -16,4 +16,16 @@ Initial import: ENOSPC, no tests. No host cleanup performed. Subsequent df repor
 
 Route/writer/human-gate characterization: 27 PASS / 2 original known RED (12.98s), exit 1. Route still observes blocked; blocker writer still commits without a durable wake intent. No typecheck/full gates or DB/server/adapter run. No timeout in this checkpoint.
 
+## JSON boundary follow-up (independent M1/M2)
+
+The dark opt-in now rejects a non-null input whose driver output decodes to JSON null with 422 BEFORE transaction startup/fence/reads/writes/relation deletion. This is an explicit restricted-input contract, NOT preservation of exotic toJSON-null compatibility: decoding it to JS null would silently re-encode it as SQL NULL. Actual offline PgUpdateBuilder demonstrates params=["null"] for toJSON-null versus params=[null] for an explicit null. Explicit null remains supported as SQL NULL; explicit undefined keeps column-omission behavior. Ordinary non-opt-in callers are unchanged.
+
+Absent/non-string encoder output is also rejected with 422 before any effects; a toJSON returning undefined is NOT an omitted caller field. The real encoder is invoked once; successful JSON text is decoded and detached before suspension. A parameterized recorder covers all six schema JSON columns, owned/supplied, null/undefined encoder results, plus throwing encoders, explicit null/undefined, and non-opt-in alias controls. SQL is compiled only, never executed. No server or DB is started.
+
+M1 focused RED: 2 expected failures (resolved instead of rejected), 4.73s. An intermediate implementation mistakenly referenced an unimported badRequest helper; 2 failures were implementation error, NOT product RED. Fixed to existing unprocessable; focused 2 PASS (4.22s). M2 focused RED: 2 expected failures (resolved), 4.19s. After both source fixes initial expanded 109 PASS (13.47s); final expanded 8 files 139 PASS (14.48s), compatibility standalone 49 PASS (4.97s). Same command/env/cwd/pool as above. Final route/writer/human-gates: 27 PASS / 2 original known RED (10.97s), exit 1.
+
+The materialization barrier test races fence entry against update settlement and releases in finally. A temporary throwing-encoder fixture mutation produced 2 immediate failures (barrier-early-rejection; 14ms tests, 4.54s total), no unhandled rejection or timeout; the mutation was removed before final expanded validation.
+
+No timeout in this run. No typecheck/full gates, SQL execution, company isolation/authorization, rollback or concurrency proof. Coordinator remains UNWIRED; this follow-up is not approval to migrate participants, wire restoration, merge, deploy, or activate. Independent exact-head review is still required. Pending human-only DB scope and live queue/queue_hygiene/runtime/policy are unchanged.
+
 Coordinator remains UNWIRED. Shared relation/tree/gate/native/finalize participants, ledger/statusVersion/effects/legacy intents, restoration integration and queue admission/revalidation/orphan expiry/live 15-minute evidence remain unfinished. Pending human-only DB scope and separate merge/deploy/activation gates are unchanged.

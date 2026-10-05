@@ -1,5 +1,5 @@
-import { getTableName, type SQL } from "drizzle-orm";
-import { PgDialect } from "drizzle-orm/pg-core";
+import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
+import { PgDialect, PgUpdateBuilder } from "drizzle-orm/pg-core";
 import { issues } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { issueService } from "../services/issues.js";
@@ -51,12 +51,74 @@ describe("dark canonical compatibility (source/driver recording)", () => {
     const json = { mode: "safe", nested: { delay: 10 } };
     const toJSON = vi.fn(() => json);
     f.data.executionPolicy = { toJSON };
-    const result = f.run(); await f.fenceEntered;
-    json.mode = "changed"; json.nested.delay = 99;
-    f.release();
+    const result = f.run();
+    try {
+      await Promise.race([
+        f.fenceEntered,
+        result.then(() => { throw new Error("Update returned before entering fence"); }),
+      ]);
+      json.mode = "changed"; json.nested.delay = 99;
+    } finally {
+      f.release();
+    }
     await expect(result).resolves.toMatchObject({ executionPolicy: { mode: "safe", nested: { delay: 10 } } });
     expect(toJSON).toHaveBeenCalledOnce();
     expect(f.writes[0].executionPolicy).not.toBe(json);
+  });
+  it.each([false, true])("rejects encoded JSON null rather than silently storing SQL NULL (owned=%s)", async owned => {
+    const f = fixture(owned); f.release(); f.data.blockedByIssueIds = [];
+    const payload = { toJSON() { return null; } };
+    expect(new PgUpdateBuilder(issues, undefined as any, new PgDialect())
+      .set({ executionPolicy: payload }).toSQL().params).toEqual(["null"]);
+    expect(new PgUpdateBuilder(issues, undefined as any, new PgDialect())
+      .set({ executionPolicy: null }).toSQL().params).toEqual([null]);
+    f.data.executionPolicy = payload;
+    await expect(f.run()).rejects.toThrow(/JSON null/);
+    expect(f.root.transaction).not.toHaveBeenCalled();
+    expect(f.tx.execute).not.toHaveBeenCalled(); expect(f.reads).toEqual([]);
+    expect(f.writes).toEqual([]); expect(f.relationDeletes).toEqual([]);
+    expect(f.publications).toEqual([]); expect(f.actions).toEqual([]);
+  });
+  it.each([false, true])("rejects absent encoder output before transaction and relation clear (owned=%s)", async owned => {
+    const f = fixture(owned); f.release(); f.data.blockedByIssueIds = [];
+    const payload = { toJSON() { return undefined; } };
+    expect(issues.executionPolicy.mapToDriverValue(payload)).toBeUndefined();
+    f.data.executionPolicy = payload;
+    await expect(f.run()).rejects.toThrow(/valid JSON text/);
+    expect(f.root.transaction).not.toHaveBeenCalled();
+    expect(f.tx.execute).not.toHaveBeenCalled(); expect(f.reads).toEqual([]);
+    expect(f.writes).toEqual([]); expect(f.relationDeletes).toEqual([]);
+    expect(f.publications).toEqual([]); expect(f.actions).toEqual([]);
+  });
+  it.each(Object.entries(getTableColumns(issues)).filter(([, column]) => column.dataType === "json")
+    .flatMap(([key]) => [false, true].flatMap(owned => [null, undefined].map(output => ({ key, owned, output })))))
+    ("all JSON columns veto ambiguous/absent encoder output: $key owned=$owned output=$output", async ({ key, owned, output }) => {
+      const f = fixture(owned); f.data.blockedByIssueIds = [];
+      f.data[key] = { toJSON() { return output; } };
+      await expect(f.run()).rejects.toMatchObject({ status: 422 });
+      expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.execute).not.toHaveBeenCalled();
+      expect(f.reads).toEqual([]); expect(f.writes).toEqual([]); expect(f.relationDeletes).toEqual([]);
+      expect(f.publications).toEqual([]); expect(f.actions).toEqual([]);
+    });
+  it.each([false, true])("explicit SQL NULL and omitted JSON column remain supported (owned=%s)", async owned => {
+    const f = fixture(owned); f.release(); f.data.executionPolicy = null; f.data.executionState = undefined;
+    await f.run();
+    expect(f.writes[0].executionPolicy).toBeNull(); expect(f.writes[0]).toHaveProperty("executionState", undefined);
+    expect(new PgUpdateBuilder(issues, undefined as any, new PgDialect())
+      .set({ executionPolicy: f.writes[0].executionPolicy, executionState: f.writes[0].executionState }).toSQL().params).toEqual([null]);
+  });
+  it.each([false, true])("throwing encoder is rejected before effects (owned=%s)", async owned => {
+    const f = fixture(owned); f.data.blockedByIssueIds = [];
+    f.data.executionPolicy = { toJSON() { throw new Error("toJSON sentinel"); } };
+    await expect(f.run()).rejects.toThrow("toJSON sentinel");
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.execute).not.toHaveBeenCalled();
+    expect(f.reads).toEqual([]); expect(f.writes).toEqual([]); expect(f.relationDeletes).toEqual([]);
+  });
+  it.each([null, undefined])("non-opt-in retains encoder-nullish alias contract: %s", async output => {
+    const f = fixture(false); f.data.executionPolicy = { toJSON() { return output; } };
+    await f.run({ lifecycleFence: false });
+    expect(f.writes[0].executionPolicy).toBe(f.data.executionPolicy);
+    expect(f.tx.execute).not.toHaveBeenCalled();
   });
   it.each([false, true])("invalid cyclic JSON rejects before transaction or effects (owned=%s)", async owned => {
     const f = fixture(owned); const payload: any = {}; payload.self = payload;

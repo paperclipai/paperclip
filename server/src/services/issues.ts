@@ -10650,9 +10650,17 @@ export function issueService(db: Db) {
           if (column.dataType !== "json" || !(key in snapshot)) continue;
           const value = snapshot[key as keyof typeof snapshot];
           if (value === null || value === undefined) continue;
-          Object.assign(snapshot, {
-            [key]: column.mapFromDriverValue(column.mapToDriverValue(value)),
-          });
+          const encoded = column.mapToDriverValue(value);
+          if (typeof encoded !== "string") {
+            throw unprocessable(`Lifecycle snapshot requires valid JSON text for ${key}`);
+          }
+          const decoded = column.mapFromDriverValue(encoded);
+          // Decoded JSON null would become SQL NULL on the second encoding.
+          // This dark opt-in rejects that ambiguous representation explicitly.
+          if (decoded === null) {
+            throw unprocessable(`Lifecycle snapshot cannot represent JSON null for ${key}`);
+          }
+          Object.assign(snapshot, { [key]: decoded });
         }
         data = structuredClone(snapshot);
       }
