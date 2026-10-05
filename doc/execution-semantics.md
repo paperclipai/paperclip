@@ -458,6 +458,8 @@ ancestry replaces the starting tip instead of being merged with it. The ref
 update checks the expected old commit; a concurrent change retries through the
 normal history integration path. The directory merge still preserves host-only
 file changes under its existing rules. A changed host branch requires recovery.
+An intentional reset to an ancestor exports a full Git bundle so restore keeps
+the actual sandbox tip; an empty delta is reserved for an unchanged tip.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 

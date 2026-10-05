@@ -774,6 +774,12 @@ export function buildRemoteGitDeltaBundleScript(input: {
         `  bundle_base=""`,
         "fi",
       ]),
+    // An empty bundle means "still at baseSha" to the importer. A reset to an
+    // older ancestor has no delta commits either, but must carry its new tip.
+    // Use the full-bundle path so Git advertises that tip instead of losing it.
+    `if [ -n "$bundle_base" ] && [ "$bundle_base" != ${baseSha} ] && [ "$bundle_base" = "$(git -C ${remoteDir} rev-parse HEAD)" ]; then`,
+    `  bundle_base=""`,
+    "fi",
     `if [ -n "$bundle_base" ]; then`,
     `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
     "else",

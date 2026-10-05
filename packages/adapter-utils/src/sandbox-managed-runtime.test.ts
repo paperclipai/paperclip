@@ -891,6 +891,40 @@ describe("sandbox managed runtime", () => {
     expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
   });
 
+  it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "original\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "original"]);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "tracked.txt"), "change to discard\n");
+    await git(host, ["commit", "-am", "later change"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "reset", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["fetch", "--unshallow", host, "work"]);
+    await git(remote, ["reset", "--hard", ancestor]);
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await git(host, ["status", "--porcelain"])).toBe("");
+  });
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);
