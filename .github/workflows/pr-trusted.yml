@@ -656,6 +656,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2
+        with:
+          version: v5.5.1
+
       - name: Verify Compose signing secret forwarding
         run: node --test scripts/docker-compose-secrets.test.mjs
 
