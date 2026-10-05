@@ -1248,6 +1248,136 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("rejects a pi_local hire that omits a model when the install declares no default", async () => {
+    vi.stubEnv("PAPERCLIP_PI_LOCAL_DEFAULT_MODEL", "");
+    vi.stubEnv("PI_PROVIDER", "");
+    vi.stubEnv("PI_MODEL", "");
+
+    try {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: "Pi Builder",
+          role: "engineer",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects a pi_local hire whose model is not in provider/model form", async () => {
+    vi.stubEnv("PAPERCLIP_PI_LOCAL_DEFAULT_MODEL", "");
+    vi.stubEnv("PI_PROVIDER", "");
+    vi.stubEnv("PI_MODEL", "");
+
+    try {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: "Pi Builder",
+          role: "engineer",
+          adapterType: "pi_local",
+          adapterConfig: { model: "not-a-provider-slash-model" },
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("seeds a pi_local hire that omits a model with the install default when one is declared", async () => {
+    vi.stubEnv("PAPERCLIP_PI_LOCAL_DEFAULT_MODEL", "");
+    vi.stubEnv("PI_PROVIDER", "modal");
+    vi.stubEnv("PI_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash");
+
+    try {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: "Pi Builder",
+          role: "engineer",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAgentService.create).toHaveBeenCalledWith(
+        companyId,
+        expect.objectContaining({
+          adapterType: "pi_local",
+          adapterConfig: expect.objectContaining({
+            model: "modal/deepseek-ai/DeepSeek-V4.1-Flash",
+          }),
+        }),
+        { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects a pi_local update that clears the model", async () => {
+    vi.stubEnv("PAPERCLIP_PI_LOCAL_DEFAULT_MODEL", "");
+    vi.stubEnv("PI_PROVIDER", "");
+    vi.stubEnv("PI_MODEL", "");
+
+    try {
+      mockAgentService.getById.mockResolvedValue({
+        ...baseAgent,
+        adapterType: "pi_local",
+        adapterConfig: { model: "modal/deepseek-ai/DeepSeek-V4.1-Flash" },
+      });
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig: { model: "" } }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("normalizes hire requests to disable timer heartbeats by default", async () => {
     const app = await createApp({
       type: "board",

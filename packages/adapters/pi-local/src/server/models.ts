@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { isValidPiModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 
@@ -164,6 +165,22 @@ export async function discoverPiModelsCached(input: {
   const models = await discoverPiModels({ command, cwd, env });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
+}
+
+/**
+ * Rejects a missing or malformed `adapterConfig.model` before a run starts, so a
+ * bad `pi_local` hire fails at creation/update time instead of on its first heartbeat.
+ *
+ * Mirrors the OpenCode adapter's `requireOpenCodeModelId`. This is a shape check
+ * only: whether the model is actually served depends on the host's Pi provider
+ * config, and that is discovered at run time.
+ */
+export function requirePiModelId(input: unknown): string {
+  const model = asString(input, "").trim();
+  if (!isValidPiModelId(model)) {
+    throw new Error("Pi requires `adapterConfig.model` in provider/model format.");
+  }
+  return model;
 }
 
 export async function ensurePiModelConfiguredAndAvailable(input: {

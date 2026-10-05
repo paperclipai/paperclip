@@ -235,6 +235,8 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { resolveDefaultPiLocalModel } from "@paperclipai/adapter-pi-local";
+import { requirePiModelId } from "@paperclipai/adapter-pi-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -2660,6 +2662,13 @@ export function agentRoutes(
       next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "pi_local" && !asNonEmptyString(next.model)) {
+      // Pi routing is gateway/provider specific per company, so there is no safe
+      // universal default. Fall back only to a default this install declared.
+      const instanceDefault = resolveDefaultPiLocalModel();
+      if (instanceDefault) next.model = instanceDefault;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -2673,6 +2682,15 @@ export function agentRoutes(
   ) {
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
+      return;
+    }
+    if (adapterType === "pi_local") {
+      try {
+        requirePiModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid pi_local adapterConfig: ${reason}`);
+      }
       return;
     }
     if (adapterType !== "opencode_local") return;
