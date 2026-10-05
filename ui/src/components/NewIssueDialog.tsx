@@ -22,7 +22,7 @@ import {
 } from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecency, trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
@@ -309,6 +309,7 @@ export function NewIssueDialog() {
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
+  const defaultAssigneePendingRef = useRef(false);
 
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel =
@@ -337,11 +338,11 @@ export function NewIssueDialog() {
     enabled: Boolean(effectiveCompanyId) && newIssueOpen,
     staleTime: 60_000,
   });
-  const { data: session } = useQuery({
+  const { data: session, isFetched: sessionFetched } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const { data: companyMembers } = useQuery({
+  const { data: companyMembers, isFetched: membersFetched } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(effectiveCompanyId!),
     queryFn: () => accessApi.listUserDirectory(effectiveCompanyId!),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen,
@@ -430,6 +431,8 @@ export function NewIssueDialog() {
       return { issue, companyId, failures };
     },
     onSuccess: ({ issue, companyId, failures }) => {
+      if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
+      if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
       if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
@@ -557,6 +560,7 @@ export function NewIssueDialog() {
   useEffect(() => {
     if (!newIssueOpen) {
       initializationKeyRef.current = null;
+      defaultAssigneePendingRef.current = false;
       return;
     }
     const initializationKey = `${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
@@ -566,6 +570,7 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
+    defaultAssigneePendingRef.current = !newIssueDefaults.assigneeAgentId && !newIssueDefaults.assigneeUserId;
     setComposerSettings(null);
     createIssue.reset();
     if (newIssueDefaults.parentId) {
@@ -622,6 +627,7 @@ export function NewIssueDialog() {
           ? defaultProjectId || null
           : null;
     } else if (draft && (draft.title.trim() || draft.description.trim())) {
+      defaultAssigneePendingRef.current = false;
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
@@ -912,6 +918,23 @@ export function NewIssueDialog() {
     ],
     [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
   );
+  // Resolve once after the directory loads, without resetting text typed while
+  // the queries were in flight or replacing an explicit/restored assignee.
+  useEffect(() => {
+    if (!newIssueOpen || !effectiveCompanyId || !defaultAssigneePendingRef.current
+      || !agents || !sessionFetched || !membersFetched) return;
+    defaultAssigneePendingRef.current = false;
+    const available = new Set(assigneeOptions.map((option) => option.id));
+    const scopedRecents = getRecentAssigneeSelectionIds(effectiveCompanyId);
+    // Older history has no company key. Agent IDs identify their company;
+    // human IDs can belong to several companies and cannot be migrated safely.
+    const recents = scopedRecents.length ? scopedRecents
+      : getRecentAssigneeSelectionIds().filter((value) => value.startsWith("agent:"));
+    const recent = recents.find((value) => available.has(value));
+    const targets = agents.filter(isAgentTaskTarget);
+    const fallback = targets.find((agent) => agent.role === "ceo") ?? targets[0];
+    setAssigneeValue(recent ?? (fallback ? assigneeValueFromSelection({ assigneeAgentId: fallback.id }) : ""));
+  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched]);
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
       orderedProjects.map((project) => ({
@@ -1073,8 +1096,10 @@ export function NewIssueDialog() {
               assigneeAdapterOverrides={inheritedOverrides}
               onPendingAssigneeChange={(value) => {
                 if (value === null) return;
+                defaultAssigneePendingRef.current = false;
                 const next = parseAssigneeValue(value);
-                if (next.assigneeAgentId) trackRecentAssignee(next.assigneeAgentId);
+                if (next.assigneeAgentId) trackRecentAssignee(next.assigneeAgentId, effectiveCompanyId ?? undefined);
+                if (next.assigneeUserId) trackRecentAssigneeUser(next.assigneeUserId, effectiveCompanyId ?? undefined);
                 setAssigneeValue(value);
                 setComposerSettings(null);
                 setAssigneeModelLane("primary");

@@ -1762,11 +1762,11 @@ export function IssueProperties({
       onClick={() => {
         if (option.kind === "agent") {
           selectAssignee({ assigneeAgentId: option.agent.id, assigneeUserId: null }, option.label, () =>
-            trackRecentAssignee(option.agent.id),
+            trackRecentAssignee(option.agent.id, companyId ?? undefined),
           );
         } else if (option.kind === "user") {
           selectAssignee({ assigneeAgentId: null, assigneeUserId: option.userId }, option.label, () =>
-            trackRecentAssigneeUser(option.userId),
+            trackRecentAssigneeUser(option.userId, companyId ?? undefined),
           );
         } else {
           selectAssignee({ assigneeAgentId: null, assigneeUserId: null }, option.label);

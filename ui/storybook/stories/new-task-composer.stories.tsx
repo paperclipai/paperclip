@@ -16,6 +16,7 @@ import { NewIssueDialog } from "@/components/NewIssueDialog";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { trackRecentAssignee, trackRecentAssigneeUser } from "@/lib/recent-assignees";
 import {
   storybookAgents,
   storybookAuthSession,
@@ -25,6 +26,11 @@ import {
 } from "../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
+const NEW_TASK_AGENTS = [...storybookAgents, { ...storybookAgents[2]!, id: "agent-ceo", name: "CEO", role: "ceo" }].map((agent) =>
+  agent.id === "agent-codex"
+    ? { ...agent, adapterConfig: { ...agent.adapterConfig, model: "gpt-6-sol" }, appearance: appearanceForPalette("electric-grove") }
+    : { ...agent, appearance: appearanceForPalette("pink-lemonade") },
+);
 const REQUEST = "Review the sign-in flow and fix the redirect after a session expires.";
 const SKILLS = [{ id: "skill-test-drive", key: "test-it-for-real", slug: "test-it-for-real", name: "Test it for real", description: "Walk through the feature in the browser." }];
 const ROUTINES = [{ id: "routine-daily-check", title: "Daily check-in", status: "active" }];
@@ -42,10 +48,12 @@ function NewTaskStory({
   scenario = "empty",
   worktrees = "ready",
   isolation = true,
+  rememberedAssignee = "none",
 }: {
   scenario?: "empty" | "prefilled" | "title" | "subtask" | "planning" | "error" | "saving" | "rich";
   worktrees?: "ready" | "reuse" | "empty" | "loading" | "error";
   isolation?: boolean;
+  rememberedAssignee?: "none" | "agent" | "human";
 }) {
   const client = useQueryClient();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -62,6 +70,7 @@ function NewTaskStory({
         location.origin,
       );
       if (url.pathname === `/api/companies/${COMPANY_ID}/skills`) return Response.json(SKILLS);
+      if (url.pathname === `/api/companies/${COMPANY_ID}/agents`) return Response.json(NEW_TASK_AGENTS);
       if (url.pathname === `/api/companies/${COMPANY_ID}/routines`) return Response.json(ROUTINES);
       if (url.pathname === `/api/companies/${COMPANY_ID}/execution-workspaces`) {
         if (worktrees === "loading") return new Promise<Response>(() => {});
@@ -109,19 +118,15 @@ function NewTaskStory({
     if (opened.current) return;
     opened.current = true;
     localStorage.removeItem("paperclip:issue-draft");
+    localStorage.removeItem("paperclip:recent-assignees");
+    localStorage.removeItem(`paperclip:recent-assignees:${COMPANY_ID}`);
+    if (rememberedAssignee === "agent") trackRecentAssignee("agent-codex", COMPANY_ID);
+    if (rememberedAssignee === "human") trackRecentAssigneeUser(storybookAuthSession.user.id, COMPANY_ID);
     client.setQueryData(queryKeys.health, { hiddenSettings: [] });
     client.setQueryData(queryKeys.auth.session, storybookAuthSession);
     client.setQueryData(
       queryKeys.agents.list(COMPANY_ID),
-      storybookAgents.map((agent) =>
-        agent.id === "agent-codex"
-          ? {
-              ...agent,
-              adapterConfig: { ...agent.adapterConfig, model: "gpt-6-sol" },
-              appearance: appearanceForPalette("electric-grove"),
-            }
-          : { ...agent, appearance: appearanceForPalette("pink-lemonade") },
-      ),
+      NEW_TASK_AGENTS,
     );
     client.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "codex_local"), [
       { id: "gpt-6-sol", label: "GPT-6 Sol" },
@@ -167,7 +172,7 @@ function NewTaskStory({
               : {}),
           },
     );
-  }, [client, isolation, openNewIssue, scenario, selectedCompanyId, setSelectedCompanyId, worktrees]);
+  }, [client, isolation, openNewIssue, rememberedAssignee, scenario, selectedCompanyId, setSelectedCompanyId, worktrees]);
 
   return (
     <div className="min-h-screen bg-background p-8 text-foreground">
@@ -211,7 +216,49 @@ export const Empty: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await expect(await page.findByRole("button", { name: "Create task" })).toBeDisabled();
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CEO"));
+    await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveTextContent("");
+    await expect(page.getByRole("textbox", { name: "editable markdown" }).querySelector('[data-mention-kind]')).toBeNull();
   },
+};
+export const LastAssignee: Story = {
+  args: { rememberedAssignee: "agent" },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CodexCoder"));
+    await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveTextContent("");
+  },
+};
+export const HumanAssignee: Story = {
+  args: { rememberedAssignee: "human" },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("Me"));
+    await expect(page.queryByRole("button", { name: "Select model and effort" })).not.toBeInTheDocument();
+    await expect(page.queryByTestId("task-chat-composer-model-label")).not.toBeInTheDocument();
+  },
+};
+export const AssigneePicker: Story = {
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await page.findByRole("button", { name: "Select assignee" }));
+    await expect(page.getByRole("searchbox", { name: "Search assignees" })).toBeVisible();
+    await expect(page.getByRole("listbox", { name: "Assignees" })).toBeVisible();
+  },
+};
+export const NoAssignee: Story = {
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await page.findByRole("button", { name: "Select assignee" }));
+    await userEvent.click(page.getByRole("option", { name: "No assignee" }));
+    await expect(page.queryByRole("listbox", { name: "Assignees" })).not.toBeInTheDocument();
+    await expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("No assignee");
+    await expect(page.queryByTestId("task-chat-composer-model-label")).not.toBeInTheDocument();
+  },
+};
+export const MobileAssigneePicker: Story = {
+  ...AssigneePicker,
+  globals: { viewport: { value: "mobile", isRotated: false } },
 };
 export const Prefilled: Story = { args: { scenario: "prefilled" } };
 export const InheritedTitle: Story = { args: { scenario: "title" } };
@@ -231,7 +278,7 @@ export const ModelPicker: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await userEvent.click(
       await page.findByRole("button", {
-        name: "Select assignee, model and effort",
+        name: "Select model and effort",
       }),
     );
     await expect(page.getByRole("button", { name: "Choose exact model" })).toBeVisible();

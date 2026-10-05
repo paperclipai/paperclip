@@ -49,6 +49,7 @@ import {
   type MarkdownEditorRef,
 } from "@/components/MarkdownEditor";
 import { nextWorkMode } from "@/lib/work-mode-meta";
+import { trackRecentAssignee, trackRecentAssigneeUser } from "@/lib/recent-assignees";
 import {
   InlineEntitySelector,
   type InlineEntityOption,
@@ -662,6 +663,11 @@ export function TaskChatComposer({
   };
 
   function updatePendingAssignee(value: string | null) {
+    if (!creation && value && companyId) {
+      const selection = parseAssigneeValue(value);
+      if (selection?.assigneeAgentId) trackRecentAssignee(selection.assigneeAgentId, companyId);
+      if (selection?.assigneeUserId) trackRecentAssigneeUser(selection.assigneeUserId, companyId);
+    }
     setPendingAssignee(value);
     onPendingAssigneeChange?.(value);
   }

@@ -76,4 +76,14 @@ describe("recent selection ordering", () => {
     expect(getRecentAssigneeSelectionIds()).toEqual(["user:user-1", "agent:agent-1"]);
     expect(getRecentAssigneeIds()).toEqual(["agent-1"]);
   });
+
+  it("remembers assignees separately in each company", () => {
+    trackRecentAssignee("agent-1", "company-1");
+    trackRecentAssigneeUser("user-1", "company-2");
+    trackRecentAssigneeUser("user-2", "company-1");
+
+    expect(getRecentAssigneeSelectionIds("company-1")).toEqual(["user:user-2", "agent:agent-1"]);
+    expect(getRecentAssigneeSelectionIds("company-2")).toEqual(["user:user-1"]);
+    expect(getRecentAssigneeSelectionIds("company-3")).toEqual([]);
+  });
 });

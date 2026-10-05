@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { NewIssueDialog } from "./NewIssueDialog";
 
 const dialogState = vi.hoisted(() => ({
@@ -140,10 +141,8 @@ vi.mock("../hooks/useProjectOrder", () => ({
   }),
 }));
 
-vi.mock("../lib/recent-assignees", () => ({
-  getRecentAssigneeIds: () => [],
-  sortAgentsByRecency: (agents: unknown[]) => agents,
-  trackRecentAssignee: vi.fn(),
+vi.mock("../api/access", () => ({
+  accessApi: { listUserDirectory: async () => ({ users: [] }) },
 }));
 
 vi.mock("../lib/assignees", () => ({
@@ -154,7 +153,7 @@ vi.mock("../lib/assignees", () => ({
     assigneeAgentId?: string;
     assigneeUserId?: string;
   }) => assigneeAgentId ? `agent:${assigneeAgentId}` : assigneeUserId ? `user:${assigneeUserId}` : "",
-  currentUserAssigneeOption: () => [],
+  currentUserAssigneeOption: (id: string | null) => id ? [{ id: `user:${id}`, label: "Me" }] : [],
   parseAssigneeValue: (value: string) => ({
     assigneeAgentId: value.startsWith("agent:") ? value.slice("agent:".length) : null,
     assigneeUserId: value.startsWith("user:") ? value.slice("user:".length) : null,
@@ -252,6 +251,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+  PopoverAnchor: ({ children }: { children: ReactNode }) => <>{children}</>,
   PopoverContent: ({ children, disablePortal }: { children: ReactNode; disablePortal?: boolean }) => (
     <div data-disable-portal={String(Boolean(disablePortal))}>{children}</div>
   ),
@@ -397,6 +397,88 @@ describe("NewIssueDialog", () => {
       Reflect.deleteProperty(window, "innerHeight");
     }
     document.body.innerHTML = "";
+  });
+
+  const defaultAgents = [
+    { id: "worker", name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    { id: "ceo", name: "CEO", role: "ceo", status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+  ];
+
+  it.each([
+    { recent: "", expected: "CEO" },
+    { recent: "agent:worker", expected: "Worker" },
+    { recent: "user:user-1", expected: "Me" },
+    { recent: "agent:deleted", expected: "CEO" },
+  ])("defaults to $expected for recent selection $recent without inserting a mention", async ({ recent, expected }) => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    if (recent.startsWith("agent:")) trackRecentAssignee(recent.slice(6), "company-1");
+    if (recent.startsWith("user:")) trackRecentAssigneeUser(recent.slice(5), "company-1");
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
+    expect(container.textContent).not.toContain("@CEO");
+    act(() => root.unmount());
+  });
+
+  it("ignores another company's remembered human and keeps explicit launch assignees", async () => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    trackRecentAssigneeUser("user-1", "company-2");
+    dialogState.newIssueDefaults = { assigneeAgentId: "worker" };
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("Worker"));
+    act(() => root.unmount());
+    dialogState.newIssueDefaults = {};
+    const next = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("CEO"));
+    act(() => next.root.unmount());
+  });
+
+  it("uses older agent history only when the agent belongs to the current company", async () => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    trackRecentAssignee("worker");
+    trackRecentAssignee("another-company-agent");
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("Worker"));
+    act(() => root.unmount());
+  });
+
+  it("remembers a chosen human and leaves the request empty", async () => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("CEO"));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Select assignee"]')!.click());
+    const me = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent?.includes("Me"))!;
+    act(() => me.click());
+    expect(localStorage.getItem("paperclip:recent-assignees:company-1")).toContain("user:user-1");
+    expect(container.querySelector('[data-testid="task-chat-composer-model-label"]')).toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
+    act(() => root.unmount());
+  });
+
+  it("applies the default after agents load without replacing a request typed meanwhile", async () => {
+    let resolveAgents!: (agents: typeof defaultAgents) => void;
+    mockAgentsApi.list.mockReturnValue(new Promise((resolve) => { resolveAgents = resolve; }));
+    const { root } = renderDialog(container);
+    await flush();
+    await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "hello there");
+    resolveAgents(defaultAgents);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("CEO"));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("hello there");
+    act(() => root.unmount());
+  });
+
+  it("keeps an explicitly chosen human while agents are still loading", async () => {
+    let resolveAgents!: (agents: typeof defaultAgents) => void;
+    mockAgentsApi.list.mockReturnValue(new Promise((resolve) => { resolveAgents = resolve; }));
+    const { root } = renderDialog(container);
+    await flush();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Select assignee"]')!.click());
+    const me = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent?.includes("Me"))!;
+    act(() => me.click());
+    resolveAgents(defaultAgents);
+    await flush();
+    expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe("Me");
+    act(() => root.unmount());
   });
 
   it("shows sub-issue context only when opened from a sub-issue action", async () => {
@@ -605,7 +687,7 @@ describe("NewIssueDialog", () => {
 
     const { root } = renderDialog(container);
     await waitForAssertion(() => {
-      expect(container.querySelector('[aria-label="Select assignee, model and effort"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Select model and effort"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Effort"]')?.getAttribute("max")).toBe("6");
     });
     expect(container.textContent).not.toContain("Codex options");

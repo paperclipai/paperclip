@@ -163,9 +163,17 @@ checkout, including a non-primary checkout. Changing projects clears the
 previous worktree choice. Switching from reuse to a new worktree or the project
 workspace restores the project default checkout. Task creation uses the selected company and has
 no separate heading or settings control.
+Fresh tasks start with an empty request and the last task assignee chosen in that
+company, including a human. If that assignee is unavailable, the CEO is the
+default, or the first eligible agent when the company has no CEO. Explicit launch
+assignees and saved drafts keep their selection. Selecting an assignee never
+inserts a mention. Clicking the assignee opens its searchable list directly;
+model and effort have a separate trigger and appear only for agents whose
+harness supports those settings.
 Clicking or tapping outside either selector dismisses it and preserves the task
 draft and selections. Mobile sheets return focus to the trigger without reopening.
-Stories cover empty and prefilled drafts, sub-tasks, planning, files, saving,
+Stories cover empty and prefilled drafts, remembered, human, and unassigned
+selections, the direct assignee picker, sub-tasks, planning, files, saving,
 retryable failures, creation, light theme, and mobile, plus worktree reuse,
 loading, empty, error, and isolation-disabled states. Story submissions use local
 fixtures and never start an agent.

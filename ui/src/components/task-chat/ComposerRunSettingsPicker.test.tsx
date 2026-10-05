@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -33,7 +33,7 @@ async function click(label: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false) {
+function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false, props: Partial<ComponentProps<typeof ComposerRunSettingsPicker>> = {}) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -42,7 +42,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
     <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
       options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true }}
       onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange}
-      modelOptionsOverride={useCatalog ? undefined : []} />
+      modelOptionsOverride={useCatalog ? undefined : []} {...props} />
   </QueryClientProvider>));
 }
 
@@ -59,7 +59,7 @@ describe("composer assignee picker", () => {
     render(vi.fn(), vi.fn());
     const trigger = container!.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]');
     const assignee = trigger!.querySelector('[data-testid="task-chat-composer-assignee-label"]');
-    const model = trigger!.querySelector('[data-testid="task-chat-composer-model-label"]');
+    const model = container!.querySelector('[data-testid="task-chat-composer-model-label"]');
 
     expect(trigger?.className).toContain("max-w-full");
     expect(trigger?.className).not.toContain("max-w-64");
@@ -72,8 +72,7 @@ describe("composer assignee picker", () => {
 
   it("finds assignees by their displayed role and harness", async () => {
     render(vi.fn(), vi.fn());
-    await click("Select assignee, model and effort");
-    await click("Choose assignee");
+    await click("Select assignee");
     const input = document.querySelector<HTMLInputElement>('input[aria-label="Search assignees"]');
     expect(input).not.toBeNull();
     const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
@@ -94,7 +93,7 @@ describe("composer assignee picker", () => {
     ]);
     render(vi.fn(), vi.fn(), true);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await click("Select assignee, model and effort");
+    await click("Select model and effort");
     await click("Choose exact model");
     const options = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
       .map((item) => item.textContent ?? "");
@@ -115,7 +114,7 @@ describe("composer assignee picker", () => {
       environmentId: null,
       provider: undefined,
     });
-    await click("Select assignee, model and effort");
+    await click("Select model and effort");
     await click("Choose exact model");
     const choices = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
       .map((item) => item.textContent ?? "");
@@ -127,21 +126,48 @@ describe("composer assignee picker", () => {
     const onAssigneeChange = vi.fn();
     const onSettingsChange = vi.fn();
     render(onAssigneeChange, onSettingsChange);
-    await click("Select assignee, model and effort");
-    await click("Choose assignee");
+    await click("Select assignee");
     await click("Clippy");
     expect(onAssigneeChange).not.toHaveBeenCalled();
     expect(onSettingsChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
   });
 
   it("offers No assignee and clears settings when selected", async () => {
     const onAssigneeChange = vi.fn();
     const onSettingsChange = vi.fn();
     render(onAssigneeChange, onSettingsChange);
-    await click("Select assignee, model and effort");
-    await click("Choose assignee");
+    await click("Select assignee");
     await click("No assignee");
     expect(onAssigneeChange).toHaveBeenCalledWith("");
     expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false });
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it.each(["", "user:me"])("hides model and effort for %s and opens assignees in one click", async (assigneeValue) => {
+    const loadModels = vi.spyOn(agentsApi, "adapterModels");
+    render(vi.fn(), vi.fn(), true, {
+      assigneeValue,
+      currentAssigneeValue: assigneeValue,
+      options: [...options, { id: "user:me", label: "Me" }],
+    });
+    expect(container!.querySelector('[data-testid="task-chat-composer-model-label"]')).toBeNull();
+    expect(container!.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+    expect(container!.textContent).not.toContain("Harness default");
+    expect(container!.textContent).not.toContain("High");
+    await click("Select assignee");
+    expect(document.querySelector('[aria-label="Search assignees"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Choose an agent");
+    expect(loadModels).not.toHaveBeenCalled();
+  });
+
+  it("opens the assignee list directly on mobile", async () => {
+    render(vi.fn(), vi.fn(), false, { mobile: true });
+    await click("Select assignee");
+    expect(document.querySelector('[data-testid="composer-mobile-dialog"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Search assignees"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
   });
 });

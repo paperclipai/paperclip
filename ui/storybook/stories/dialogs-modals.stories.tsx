@@ -742,8 +742,7 @@ export const NewIssueMobileAssigneePicker: Story = {
   ),
   play: async () => {
     const page = within(document.body);
-    await userEvent.click(await page.findByRole("button", { name: "Select assignee, model and effort" }));
-    await userEvent.click(await page.findByRole("button", { name: "Choose assignee" }));
+    await userEvent.click(await page.findByRole("button", { name: "Select assignee" }));
     await expect(await page.findByRole("listbox", { name: "Assignees" })).toBeVisible();
   },
 };

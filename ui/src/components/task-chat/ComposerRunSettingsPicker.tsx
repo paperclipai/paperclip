@@ -7,7 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   composerCatalogProvider, composerEfforts, composerFastAvailable, DEFAULT_COMPOSER_RUN_SETTINGS,
   EFFORT_LABELS, readComposerRunSettings, supportsComposerModel,
@@ -146,9 +146,8 @@ export function ComposerRunSettingsPicker({
   useEffect(() => {
     if (previousAgentId.current === agentId) return;
     previousAgentId.current = agentId;
-    setView("settings");
+    setView((current) => current === "agents" ? "agents" : "settings");
     setModelSearch("");
-    setAssigneeSearch("");
   }, [agentId]);
 
   const chooseAssignee = (value: string) => {
@@ -156,6 +155,7 @@ export function ComposerRunSettingsPicker({
       onAssigneeChange(value);
       onSettingsChange(DEFAULT_COMPOSER_RUN_SETTINGS);
     }
+    setOpen(false);
     setView("settings");
     setAssigneeSearch("");
   };
@@ -166,14 +166,25 @@ export function ComposerRunSettingsPicker({
   };
   const reset = () => onSettingsChange(DEFAULT_COMPOSER_RUN_SETTINGS);
   const closeButton = mobile ? <DialogClose asChild><button type="button" aria-label="Close picker" className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent"><X className="size-4" /></button></DialogClose> : null;
-  const trigger = <button ref={triggerRef} type="button" disabled={disabled} aria-label="Select assignee, model and effort" data-testid="task-chat-composer-assignee"
-    className="flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
-    {renderAssigneeIdentity?.(assigneeValue, agent?.name ?? "Unassigned", "trigger")}
-    <span data-testid="task-chat-composer-assignee-label" className="min-w-0 truncate">{assigneeOptions.find((item) => item.id === assigneeValue)?.label ?? "Unassigned"}</span>
-    <span className="text-muted-foreground" aria-hidden>·</span><span data-testid="task-chat-composer-model-label" className="min-w-0 truncate text-muted-foreground">{modelSupported ? modelName || "Harness default" : "Harness default"}</span>
-    {effort ? <span className="hidden shrink-0 text-muted-foreground sm:inline">{effortLabel}</span> : null}
-    <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-  </button>;
+  const Trigger = mobile ? DialogTrigger : PopoverTrigger;
+  const triggers = <div data-testid="task-chat-composer-selection" className="flex min-w-0 max-w-full items-center rounded-full bg-muted text-xs font-medium">
+    <Trigger asChild><button ref={triggerRef} type="button" disabled={disabled} aria-label="Select assignee" data-testid="task-chat-composer-assignee"
+      onClick={() => { setView("agents"); setHighlightedAssignee(0); }}
+      className="flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full px-2.5 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+      {renderAssigneeIdentity?.(assigneeValue, agent?.name ?? "Unassigned", "trigger")}
+      <span data-testid="task-chat-composer-assignee-label" className="min-w-0 truncate">{assigneeOptions.find((item) => item.id === assigneeValue)?.label ?? "Unassigned"}</span>
+      {!modelSupported ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
+    </button></Trigger>
+    {modelSupported ? <>
+      <span className="text-muted-foreground" aria-hidden>·</span>
+      <button type="button" disabled={disabled} aria-label="Select model and effort" aria-haspopup="dialog" aria-expanded={open && view !== "agents"} onClick={() => { setView("settings"); setOpen(true); }}
+        className="flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full px-2.5 text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+        <span data-testid="task-chat-composer-model-label" className="min-w-0 truncate">{modelName || "Harness default"}</span>
+        {effort ? <span className="hidden shrink-0 sm:inline">{effortLabel}</span> : null}
+        <ChevronDown className="size-3 shrink-0" aria-hidden />
+      </button>
+    </> : null}
+  </div>;
 
   const body = view === "settings" ? <div className="p-3">
     <div className="flex items-center gap-2">
@@ -200,14 +211,17 @@ export function ComposerRunSettingsPicker({
           onChange={(event) => onSettingsChange({ ...selected, effort: Number(event.target.value) === 0 ? null : choices[Number(event.target.value) - 1] })}
           className="composer-run-effort-range mt-3 w-full" style={{ "--fill": `${effortIndex / choices.length * 100}%` } as CSSProperties} />
       </div> : null}
-    </> : <div className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-testid="model-unavailable">{unavailableModelReason(agent)}</div>}
+    </> : agent ? <div className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-testid="model-unavailable">{unavailableModelReason(agent)}</div> : null}
   </div> : view === "agents" ? <div className="p-2">
-    <div className="flex items-center gap-2 px-1 py-1.5"><button type="button" aria-label="Back to selection" onClick={() => setView("settings")} className="grid size-7 place-items-center rounded-md hover:bg-accent"><ArrowLeft className="size-4" /></button><span className="min-w-0 flex-1"><span className="block text-xs font-semibold">Choose assignee</span><span className="block truncate text-xs text-muted-foreground">Each agent keeps its configured harness.</span></span>{closeButton}</div>
+    <div className="flex items-center gap-2 px-1 py-1.5"><span className="min-w-0 flex-1 text-xs font-semibold">Choose assignee</span>{closeButton}</div>
     <div className="relative mt-2"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden /><input autoFocus type="search" aria-label="Search assignees" placeholder="Search assignees…" value={assigneeSearch} onChange={(event) => { setAssigneeSearch(event.target.value); setHighlightedAssignee(0); }} onKeyDown={(event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setHighlightedAssignee((current) => filteredAgents.length ? (current + (event.key === "ArrowDown" ? 1 : -1) + filteredAgents.length) % filteredAgents.length : 0); }
       if (event.key === "Enter" && filteredAgents.length) { event.preventDefault(); chooseAssignee(filteredAgents[Math.min(highlightedAssignee, filteredAgents.length - 1)]!.id); }
     }} className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" /></div>
-    <div className="mt-2 max-h-60 overflow-y-auto" role="listbox" aria-label="Assignees">{filteredAgents.map((item, index) => <button key={item.id} type="button" role="option" aria-selected={item.id === assigneeValue} onMouseEnter={() => setHighlightedAssignee(index)} onClick={() => chooseAssignee(item.id)} className={cn("flex w-full items-center gap-2 rounded-md px-2 py-2 text-left focus-visible:outline-none", highlightedAssignee === index ? "bg-accent" : "hover:bg-accent")}>{renderAssigneeIdentity?.(item.id, item.label, "option")}<span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{item.label}</span><span className="block truncate text-xs text-muted-foreground">{agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "")?.role ?? ""}</span></span><span className="truncate text-xs text-muted-foreground">{harnessLabel(agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : ""))}</span>{item.id === assigneeValue ? <Check className="composer-run-settings-accent size-4" /> : null}</button>)}{!filteredAgents.length ? <p className="px-2 py-2 text-xs text-muted-foreground">No matches.</p> : null}</div>
+    <div className="mt-2 max-h-60 overflow-y-auto" role="listbox" aria-label="Assignees">{filteredAgents.map((item, index) => {
+      const optionAgent = agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "");
+      return <button key={item.id} type="button" role="option" aria-selected={item.id === assigneeValue} onMouseEnter={() => setHighlightedAssignee(index)} onClick={() => chooseAssignee(item.id)} className={cn("flex w-full items-center gap-2 rounded-md px-2 py-2 text-left focus-visible:outline-none", highlightedAssignee === index ? "bg-accent" : "hover:bg-accent")}>{renderAssigneeIdentity?.(item.id, item.label, "option")}<span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{item.label}</span>{optionAgent ? <span className="block truncate text-xs text-muted-foreground">{optionAgent.role}</span> : null}</span>{optionAgent ? <span className="truncate text-xs text-muted-foreground">{harnessLabel(optionAgent)}</span> : null}{item.id === assigneeValue ? <Check className="composer-run-settings-accent size-4" /> : null}</button>;
+    })}{!filteredAgents.length ? <p className="px-2 py-2 text-xs text-muted-foreground">No matches.</p> : null}</div>
   </div> : <div className="p-2">
     <div className="flex items-center gap-2 px-1 py-1.5"><button type="button" aria-label="Back to selection" onClick={() => setView("settings")} className="grid size-7 place-items-center rounded-md hover:bg-accent"><ArrowLeft className="size-4" /></button><span className="min-w-0 flex-1"><span className="block text-xs font-semibold">Choose model</span><span className="block truncate text-xs text-muted-foreground">{harnessLabel(agent)}</span></span>{closeButton}</div>
     <div className="relative mt-2"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden /><input autoFocus type="search" aria-label="Search or paste a model ID" placeholder="Search or paste a model ID" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && manualValid && !exactMatch) chooseModel(query); }} className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" /></div>
@@ -222,6 +236,6 @@ export function ComposerRunSettingsPicker({
   </div>;
 
   const onOpenChange = (next: boolean) => { setOpen(next); if (!next) { setView("settings"); setModelSearch(""); setAssigneeSearch(""); } };
-  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild>{trigger}</DialogTrigger><DialogContent aria-describedby={undefined} showCloseButton={false} className="composer-mobile-dialog top-(--pct-50) -translate-y-(--pct-50) gap-0 overflow-y-auto p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">Select assignee, model and effort</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
-    : <Popover open={open} onOpenChange={onOpenChange}><PopoverTrigger asChild>{trigger}</PopoverTrigger><PopoverContent side="top" align="end" sideOffset={8} className="w-80 max-w-full p-0 shadow-sm" data-testid="composer-model-popover"><AnimatedBody>{body}</AnimatedBody></PopoverContent></Popover>;
+  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}>{triggers}<DialogContent aria-describedby={undefined} showCloseButton={false} className="composer-mobile-dialog top-(--pct-50) -translate-y-(--pct-50) gap-0 overflow-y-auto p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">{view === "agents" ? "Select assignee" : "Select model and effort"}</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
+    : <Popover open={open} onOpenChange={onOpenChange}><PopoverAnchor asChild>{triggers}</PopoverAnchor><PopoverContent side="top" align="end" sideOffset={8} className="w-80 max-w-full p-0 shadow-sm" data-testid="composer-model-popover"><AnimatedBody>{body}</AnimatedBody></PopoverContent></Popover>;
 }
