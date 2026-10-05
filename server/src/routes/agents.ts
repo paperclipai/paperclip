@@ -103,6 +103,13 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import {
+  LIST_OFFSET_ERROR,
+  parseListOffsetParam,
+  probeLimit,
+  setListPaginationHeaders,
+  splitProbePage,
+} from "./list-truncation.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -292,6 +299,13 @@ function mergeDesiredSkillEntries(
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * Ceiling applied to `limit` on the company heartbeat-run list. An over-max
+ * request is clamped, not rejected; the applied value is reported in the
+ * X-Result-Limit response header and truncation in X-Result-Truncated.
+ */
+const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -6853,9 +6867,42 @@ export function agentRoutes(
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const limit = limitParam
+      ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || 200))
+      : undefined;
+    const parsedOffset = parseListOffsetParam(req.query.offset);
+    if (parsedOffset === null) {
+      res.status(400).json({ error: LIST_OFFSET_ERROR });
+      return;
+    }
+    const offset = parsedOffset ?? 0;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    // Read one row past the page so truncation is measured rather than
+    // inferred: with a server-side cap, `rows.length < requestedLimit` cannot
+    // tell a corpus that ends at the cap from one the cap cut off.
+    const [probed, total] = await Promise.all([
+      heartbeat.list(
+        companyId,
+        agentId,
+        limit === undefined ? undefined : probeLimit(limit),
+        { summary, offset },
+      ),
+      heartbeat.countRuns(companyId, agentId),
+    ]);
+    // No `limit` means the route applied no cap, so nothing was cut off and
+    // there is no probe row to drop.
+    const page =
+      limit === undefined
+        ? { rows: probed, truncated: false }
+        : splitProbePage(probed, limit);
+    const runs = page.rows;
+    setListPaginationHeaders(res, {
+      count: runs.length,
+      limit,
+      offset,
+      truncated: page.truncated,
+      total,
+    });
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 
