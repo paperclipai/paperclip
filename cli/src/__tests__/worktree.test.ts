@@ -349,20 +349,20 @@ describe("worktree helpers", () => {
   it("reuses the current pnpm executable for worktree dependency installation", () => {
     expect(
       resolvePnpmInstallInvocation(
-        { npm_execpath: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm.cjs" },
+        { npm_execpath: "/Users/test/.pnpm/pnpm/11.27.0/bin/pnpm.cjs" },
         "/usr/local/bin/node",
       ),
     ).toEqual({
       command: "/usr/local/bin/node",
-      argsPrefix: ["/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm.cjs"],
+      argsPrefix: ["/Users/test/.pnpm/pnpm/11.27.0/bin/pnpm.cjs"],
     });
     expect(
       resolvePnpmInstallInvocation(
-        { npm_execpath: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm" },
+        { npm_execpath: "/Users/test/.pnpm/pnpm/11.27.0/bin/pnpm" },
         "/usr/local/bin/node",
       ),
     ).toEqual({
-      command: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm",
+      command: "/Users/test/.pnpm/pnpm/11.27.0/bin/pnpm",
       argsPrefix: [],
     });
     expect(

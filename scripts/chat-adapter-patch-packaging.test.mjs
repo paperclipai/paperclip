@@ -14,6 +14,7 @@ import test from "node:test";
 import {
   createBundledInstallManifest,
   materializePublishManifest,
+  readWorkspacePatchedDependencies,
   selectBundledDependencyPatches,
 } from "./prepare-bundled-package.mjs";
 
@@ -28,6 +29,7 @@ const workspace = readFileSync(
   new URL("../pnpm-workspace.yaml", import.meta.url),
   "utf8",
 );
+const workspacePatches = readWorkspacePatchedDependencies(repoRoot);
 const required = [
   ["@chat-adapter/discord", "4.39.0"],
   ["@chat-adapter/github", "4.39.0"],
@@ -63,11 +65,12 @@ for (const [name, version] of required) {
       "the patched runtime must remain in the published tarball",
     );
     const specifier = `${name}@${version}`;
-    const patchPath = rootPackage.pnpm.patchedDependencies[specifier];
+    const patchPath = workspacePatches[specifier];
     assert.equal(typeof patchPath, "string");
+    assert.equal(rootPackage.pnpm, undefined, "package.json#pnpm must be removed");
     assert.ok(
       workspace.includes(`"${specifier}": ${patchPath}`),
-      "both supported pnpm configuration paths must match",
+      "pnpm-workspace.yaml must declare the patch",
     );
     // Parse the actual full patch, not merely its configured filename. This is
     // read-only; clean-package materialization is a separate qualification.
@@ -94,7 +97,7 @@ test("release selection includes every chat runtime patch and the existing ACPX 
   const selected = selectBundledDependencyPatches(
     destination,
     serverPackage.bundleDependencies,
-    rootPackage.pnpm.patchedDependencies,
+    workspacePatches,
   );
   assert.deepEqual(
     selected.map(({ specifier }) => specifier).sort(),
@@ -115,7 +118,7 @@ test("release selection includes every chat runtime patch and the existing ACPX 
       selectBundledDependencyPatches(
         destination,
         serverPackage.bundleDependencies,
-        rootPackage.pnpm.patchedDependencies,
+        workspacePatches,
       ),
     /installed @discordjs\/ws@1\.2\.4/,
   );

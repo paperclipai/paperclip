@@ -121,7 +121,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
           run_install: false
 
       # No dependency cache here: this workflow publishes release images, and

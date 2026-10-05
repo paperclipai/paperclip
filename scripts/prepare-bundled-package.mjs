@@ -116,9 +116,29 @@ export function selectBundledDependencyPatches(
   return selectedPatches;
 }
 
+// pnpm-workspace.yaml is the pnpm 11 patch manifest. scripts/provision-worktree.sh
+// embeds the same reader for its install fingerprint; keep the two in sync.
+export function readWorkspacePatchedDependencies(sourceRoot = repoRoot) {
+  const workspacePath = resolve(sourceRoot, "pnpm-workspace.yaml");
+  const content = readFileSync(workspacePath, "utf8");
+  const patched = {};
+  let inSection = false;
+  for (const line of content.split("\n")) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) {
+      inSection = /^patchedDependencies:\s*(#.*)?$/.test(line);
+      continue;
+    }
+    if (!inSection) continue;
+    const entry = line.match(/^\s+(?:"([^"]+)"|'([^']+)'|([^\s#"'][^:]*?))\s*:\s*(?:"([^"]+)"|'([^']+)'|([^\s#"'][^#]*?))\s*(#.*)?$/);
+    if (!entry) throw new Error(`Invalid patchedDependencies entry in ${workspacePath}: ${line.trim()}`);
+    patched[entry[1] ?? entry[2] ?? entry[3]] = entry[4] ?? entry[5] ?? entry[6];
+  }
+  return patched;
+}
+
 export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
-  const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
-  const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
+  const patchedDependencies = readWorkspacePatchedDependencies(sourceRoot);
 
   for (const { packageName, patchPath } of selectBundledDependencyPatches(
     destinationDir,
