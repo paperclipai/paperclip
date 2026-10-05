@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER,
+  HEARTBEAT_TASK_SCRATCH_LEASE_PREFIX,
   HEARTBEAT_TASK_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
@@ -430,6 +432,40 @@ describe("heartbeat task scratch is not removed from under a running run", () =>
     );
   });
 
+  it("records the cleanup request before it counts the leases", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+
+    // A run that releases its last lease between the count and the write would
+    // find no request waiting, leaving the directory with no lease to defer to
+    // and nothing left to sweep it. Reading the directory at the moment a lease
+    // is evaluated stands in for that order: the request must already be there.
+    let requestPresentWhenLeaseRead: boolean | null = null;
+    const observeDuringCount = () => {
+      requestPresentWhenLeaseRead = existsSync(
+        path.join(scratch.dir, HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER),
+      );
+      return true;
+    };
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt: new Date(),
+      isProcessAlive: observeDuringCount,
+    });
+
+    expect(requestPresentWhenLeaseRead).toBe(true);
+    expect(sweep.deferred).toEqual([scratch.dir]);
+  });
+
   it("completes the deferred sweep when the last lease is released", async () => {
     const instanceRoot = await makeInstanceRoot();
     const scratch = await prepareHeartbeatTaskScratch({
@@ -511,6 +547,177 @@ describe("heartbeat task scratch is not removed from under a running run", () =>
       serverPid: 999_999,
     });
 
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([scratch.dir]);
+    expect(sweep.deferred).toEqual([]);
+  });
+
+  it("keeps the directory when a lease cannot be read, rather than assuming no run holds it", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    await fs.writeFile(path.join(scratch.dir, "corpus.txt"), "work of the running run");
+    // A lease truncated by a crash part way through its write. It says nothing
+    // about whether its run is still going, so it may not be read as absence.
+    await fs.writeFile(
+      path.join(scratch.dir, `${HEARTBEAT_TASK_SCRATCH_LEASE_PREFIX}run-1.json`),
+      '{"version":1,"runId":"run-',
+    );
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([]);
+    expect(sweep.deferred).toEqual([scratch.dir]);
+    await expect(fs.readFile(path.join(scratch.dir, "corpus.txt"), "utf8")).resolves.toBe(
+      "work of the running run",
+    );
+  });
+
+  it("stops holding the directory once an unreadable lease passes the stale bound", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    const leasePath = path.join(
+      scratch.dir,
+      `${HEARTBEAT_TASK_SCRATCH_LEASE_PREFIX}run-1.json`,
+    );
+    await fs.writeFile(leasePath, "not json at all");
+    // Age the file past the bound: the fallback is the file's own mtime, so a
+    // damaged lease cannot pin a directory for good.
+    const longAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await fs.utimes(leasePath, longAgo, longAgo);
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([scratch.dir]);
+    expect(sweep.deferred).toEqual([]);
+  });
+
+  it("keeps a cleanup request a sweep left after this run took its lease", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const adoptedAt = new Date("2026-10-05T12:00:00.000Z");
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+      now: adoptedAt,
+    });
+    // The close lands after this run adopted the directory, so its sweep defers
+    // to the live lease and leaves its request behind.
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt: new Date(adoptedAt.getTime() + 1000),
+      isProcessAlive: aliveProcess,
+    });
+    expect(sweep.deferred).toEqual([scratch.dir]);
+
+    // A second heartbeat of the same run must not erase that request, or the
+    // release would find nothing to finish and the directory would stay.
+    await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+      now: adoptedAt,
+    });
+    expect(await fs.readdir(scratch.dir)).toContain(HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER);
+
+    const release = await releaseHeartbeatTaskScratchLease({
+      scratch,
+      instanceRoot,
+      isProcessAlive: aliveProcess,
+    });
+    expect(release.deferredCleanup).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("clears a cleanup request that predates the adoption, because the adoption supersedes it", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+      now: new Date("2026-10-05T11:00:00.000Z"),
+    });
+    await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt: new Date("2026-10-05T11:30:00.000Z"),
+      isProcessAlive: aliveProcess,
+    });
+    expect(await fs.readdir(scratch.dir)).toContain(HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER);
+
+    // The issue is reopened and a later heartbeat adopts the directory, so the
+    // earlier close no longer stands.
+    await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-2",
+      now: new Date("2026-10-05T12:00:00.000Z"),
+    });
+
+    expect(await fs.readdir(scratch.dir)).not.toContain(HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER);
+  });
+
+  it("leaves no half-written file behind, and never counts one as a lease", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    // Every file this module writes is renamed into place, so no temporary of
+    // its own is left over.
+    expect(
+      (await fs.readdir(scratch.dir)).filter((entry) =>
+        entry.startsWith(".paperclip-task-write-"),
+      ),
+    ).toEqual([]);
+
+    // A temporary left by a process that died mid-write must not read as a
+    // live lease, or a closed task would never be swept.
+    await fs.writeFile(
+      path.join(scratch.dir, ".paperclip-task-write-999-abc"),
+      '{"version":1,"runId":"run-9"',
+    );
     const sweep = await sweepHeartbeatTaskScratchForIssue({
       companyId: "company-1",
       issueId: "issue-1",

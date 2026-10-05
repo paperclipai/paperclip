@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,11 @@ export const HEARTBEAT_TASK_SCRATCH_LEASE_PREFIX = ".paperclip-task-lease-";
  * and completes the removal the sweep could not.
  */
 export const HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER = ".paperclip-task-scratch-closed.json";
+/**
+ * The in-progress half of an atomic write. It must not share the lease prefix,
+ * or the lease scan would count one as a live lease.
+ */
+const HEARTBEAT_TASK_SCRATCH_WRITE_PREFIX = ".paperclip-task-write-";
 
 export interface HeartbeatRunScratchMetadata {
   version: 1;
@@ -268,11 +274,36 @@ async function readTaskMarker(markerPath: string): Promise<HeartbeatTaskMarkerRe
   };
 }
 
+/**
+ * Write a file in the task directory so that a concurrent reader never sees it
+ * half written. A plain write truncates first, and a sweep reading in that
+ * window would find an unverifiable marker or lease — which it must then refuse
+ * to act on, leaving the directory behind with nothing to queue a second sweep.
+ * The rename is atomic, so a reader sees either the previous content or the new.
+ */
+async function writeTaskFileAtomically(filePath: string, body: string): Promise<void> {
+  // The temporary file sits in the same directory, because a rename is only
+  // atomic within one filesystem. Its own prefix keeps it out of the lease
+  // scan, which matches on a prefix and would otherwise read a half-written
+  // lease as a live one.
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `${HEARTBEAT_TASK_SCRATCH_WRITE_PREFIX}${process.pid}-${randomUUID()}`,
+  );
+  try {
+    await fs.writeFile(temporaryPath, body, { mode: 0o600 });
+    await fs.rename(temporaryPath, filePath);
+  } catch (err) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
 async function writeTaskMarker(
   markerPath: string,
   metadata: HeartbeatTaskScratchMetadata,
 ): Promise<void> {
-  await fs.writeFile(markerPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+  await writeTaskFileAtomically(markerPath, `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
 function parseTimestamp(value: string): number | null {
@@ -334,9 +365,23 @@ async function countLiveTaskLeases(input: {
       lease = null;
     }
     if (!lease) {
-      // An unreadable lease says nothing about a running command, and leaving
-      // it live would pin the directory until the age bound. Drop it.
-      await fs.rm(leasePath, { force: true }).catch(() => undefined);
+      // A lease we cannot verify is not a lease we may discard: the run that
+      // wrote it may still be executing, and dropping it here would hand the
+      // sweep permission to delete that run's files. Treat it as holding and
+      // fall back to the file's own age, so the stale bound still frees a
+      // directory a dead process left behind.
+      const writtenAt = await fs
+        .stat(leasePath)
+        .then((stats) => stats.mtimeMs)
+        .catch(() => null);
+      if (
+        writtenAt === null ||
+        input.now.getTime() - writtenAt > TASK_SCRATCH_LEASE_STALE_AFTER_MS
+      ) {
+        await fs.rm(leasePath, { force: true }).catch(() => undefined);
+        continue;
+      }
+      live += 1;
       continue;
     }
     const createdAt = parseTimestamp(lease.createdAt);
@@ -511,14 +556,22 @@ export async function prepareHeartbeatTaskScratch(input: {
       serverPid: input.serverPid ?? process.pid,
       createdAt: now.toISOString(),
     };
-    await fs.writeFile(path.join(dir, leaseFileName(runId)), `${JSON.stringify(lease)}\n`, {
-      mode: 0o600,
-    });
-    // A close that landed while this heartbeat was starting must not be
-    // completed by the lease this run is about to release: the task is live.
-    await fs.rm(path.join(dir, HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER), { force: true }).catch(
-      () => undefined,
+    await writeTaskFileAtomically(
+      path.join(dir, leaseFileName(runId)),
+      `${JSON.stringify(lease)}\n`,
     );
+    // A close that predates this adoption is superseded by it, so its request
+    // goes. A close recorded at or after this adoption is still in force: a
+    // sweep that deferred to the lease just written leaves its request here,
+    // and deleting that would leave the directory on disk with nothing left to
+    // sweep it. The comparison is the one the sweep itself uses, so the two
+    // agree whichever order they run in.
+    const pendingClosedAt = await readClosedMarkerAt(dir);
+    if (pendingClosedAt && pendingClosedAt.getTime() < now.getTime()) {
+      await fs.rm(path.join(dir, HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER), { force: true }).catch(
+        () => undefined,
+      );
+    }
   }
 
   return { dir, markerPath, metadata, leaseRunId: runId };
@@ -587,6 +640,17 @@ async function removeHeartbeatTaskScratchDir(input: {
     }
   }
 
+  // The request is recorded before the leases are counted, never after. A run
+  // that releases its last lease between a count that saw it and a write that
+  // followed would find no request waiting, and the directory would be left
+  // with no lease to defer to and nothing left to sweep it. Writing first makes
+  // every order safe: either the release sees the request and finishes the
+  // removal, or the count no longer sees the lease and this call does.
+  await writeTaskFileAtomically(
+    path.join(dir, HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER),
+    `${JSON.stringify({ version: 1, closedAt: (input.closedAt ?? now).toISOString() })}\n`,
+  ).catch(() => undefined);
+
   const liveLeases = await countLiveTaskLeases({
     dir,
     isProcessAlive: input.isProcessAlive ?? defaultIsProcessAlive,
@@ -594,15 +658,8 @@ async function removeHeartbeatTaskScratchDir(input: {
     excludeRunId: input.releasingRunId ?? null,
   });
   if (liveLeases > 0) {
-    // Defer rather than delete under a running command, and leave the note the
-    // last lease release needs to finish the job.
-    await fs
-      .writeFile(
-        path.join(dir, HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER),
-        `${JSON.stringify({ version: 1, closedAt: (input.closedAt ?? now).toISOString() })}\n`,
-        { mode: 0o600 },
-      )
-      .catch(() => undefined);
+    // Defer rather than delete under a running command. The request written
+    // above is what the last lease release reads to finish the job.
     return { removed: false, dir, reason: "run_active" };
   }
 
