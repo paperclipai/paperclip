@@ -137,6 +137,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  reassignIssueExecutionStageSchema,
   stalledReviewDecisionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
@@ -358,6 +359,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueExecutionStageReassignment,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -14163,6 +14165,103 @@ export function issueRoutes(
         action: req.body.action,
         comment: result.comment,
         wakeQueued,
+      });
+    },
+  );
+
+  router.post(
+    "/issues/:id/execution-policy/reassign",
+    validate(reassignIssueExecutionStageSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!existing) return;
+
+      const actor = getActorInfo(req);
+      const policy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+      const transition = applyIssueExecutionStageReassignment({
+        issue: existing,
+        policy,
+        actor: {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        isBoardActor: req.actor.type === "board",
+        toParticipant: req.body.toParticipant,
+        comment: req.body.comment,
+      });
+
+      const decisionId = randomUUID();
+      const nextExecutionState = transition.patch.executionState;
+      if (!nextExecutionState || typeof nextExecutionState !== "object") {
+        throw new Error("Execution policy reassignment patch is missing executionState");
+      }
+      transition.patch.executionState = {
+        ...nextExecutionState,
+        lastDecisionId: decisionId,
+      };
+
+      const issue = await db.transaction(async (tx) => {
+        const updated = await svc.update(
+          id,
+          {
+            ...transition.patch,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          tx,
+        );
+        if (!updated) return null;
+        await tx.insert(issueExecutionDecisions).values({
+          id: decisionId,
+          companyId: updated.companyId,
+          issueId: updated.id,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+          createdByRunId: actor.runId ?? null,
+        });
+        return updated;
+      });
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.execution_policy_reassigned",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          toParticipant: req.body.toParticipant,
+        },
+      });
+
+      res.json({
+        issue,
+        decision: {
+          id: decisionId,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+        },
       });
     },
   );
