@@ -82,13 +82,17 @@ test("new-task assignee and model sheets scroll by touch and retain the selected
   await page.getByRole("navigation", { name: "Mobile navigation" }).getByRole("button", { name: "New Task", exact: true }).tap();
   const draft = page.getByRole("textbox", { name: "editable markdown" });
   await draft.fill("Keep this touch selection draft");
-  const trigger = page.getByRole("button", { name: "Select assignee, model and effort" });
-  await trigger.tap();
-  await page.getByRole("button", { name: "Choose assignee", exact: true }).tap();
-  const picker = page.getByRole("dialog", { name: "Select assignee, model and effort", exact: true });
-  const lastAssignee = await swipeToLastOption(page, picker);
+  const assigneeTrigger = page.getByRole("button", { name: "Select assignee", exact: true });
+  const modelTrigger = page.getByRole("button", { name: "Select model and effort", exact: true });
+  await assigneeTrigger.tap();
+  const assigneePicker = page.getByRole("dialog", { name: "Select assignee", exact: true });
+  const lastAssignee = await swipeToLastOption(page, assigneePicker);
   await expect(lastAssignee).toContainText("Touch Agent 22");
   await lastAssignee.tap();
+  await expect(assigneePicker).toBeHidden();
+  await expect(assigneeTrigger).toBeFocused();
+  await modelTrigger.tap();
+  const picker = page.getByRole("dialog", { name: "Select model and effort", exact: true });
   await page.getByRole("button", { name: "Choose exact model" }).tap();
   // A reduced viewport exercises the space available when a phone keyboard opens.
   await page.setViewportSize({ width: 390, height: 430 });
@@ -97,25 +101,25 @@ test("new-task assignee and model sheets scroll by touch and retain the selected
   await lastModel.tap();
   await page.getByRole("button", { name: "Close picker" }).tap();
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(trigger).toContainText("Touch Agent 22");
-  await expect(trigger).toContainText("Touch Model 24");
+  await expect(assigneeTrigger).toContainText("Touch Agent 22");
+  await expect(modelTrigger).toContainText("Touch Model 24");
   await expect(draft).toHaveText("Keep this touch selection draft");
 
   // Closing the nested picker preserves the outer composer draft and choices.
-  await trigger.tap();
+  await modelTrigger.tap();
   await page.getByRole("button", { name: "Choose exact model" }).tap();
   await page.getByRole("searchbox", { name: "Search or paste a model ID" }).press("Escape");
   await expect(picker).toBeHidden();
-  await expect(trigger).toBeFocused();
+  await expect(assigneeTrigger).toBeFocused();
   await expect(page.getByRole("button", { name: "Create task", exact: true })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath("selected-mobile-assignee-and-model.png") });
 
   // The desktop picker uses the same selected values and supports model search.
   await page.setViewportSize({ width: 1280, height: 900 });
-  await trigger.click();
+  await modelTrigger.click();
   await page.getByRole("button", { name: "Choose exact model" }).click();
   await page.getByRole("searchbox", { name: "Search or paste a model ID" }).fill("Touch Model 01");
   await page.getByRole("option", { name: "Touch Model 01 touch-model-01", exact: true }).click();
   await page.getByRole("button", { name: "Choose exact model" }).press("Escape");
-  await expect(trigger).toContainText("Touch Model 01");
+  await expect(modelTrigger).toContainText("Touch Model 01");
 });
