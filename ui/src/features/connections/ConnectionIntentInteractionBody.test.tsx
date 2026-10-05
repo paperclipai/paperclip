@@ -779,7 +779,7 @@ describe("embedded agent access request", () => {
   };
   const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, serviceName: "Composio", accessRequest } };
 
-  it("shows the agent avatar and saved connection and grants inline without a setup modal", async () => {
+  it("shows the exact tool permissions before granting inline without a setup modal", async () => {
     setupOptionsMock.mockResolvedValue({ canGrantAccess: true });
     getAgentMock.mockResolvedValue({ id: interaction.payload.requestingAgentId, name: "Researcher" });
     completeMock.mockResolvedValue({ ...interaction, status: "accepted", result: { version: 1, outcome: "connected", connectionId: accessRequest.connectionId } });
@@ -787,6 +787,11 @@ describe("embedded agent access request", () => {
     await waitForAssertion(() => expect(button("Grant access")?.disabled).toBe(false));
     expect(document.body.textContent).toContain("Grant Researcher access to “Saved Composio”?");
     expect(document.body.querySelector('[data-slot="agent-avatar"]')?.getAttribute("aria-label")).toBe("Researcher");
+    expect(Array.from(document.body.querySelectorAll('ul[aria-label="Tool permissions"] li'), row => row.textContent)).toEqual([
+      "COMPOSIO_SEARCH_TOOLSAllowed",
+      "COMPOSIO_MANAGE_CONNECTIONSAsk first",
+    ]);
+    expect(completeMock).not.toHaveBeenCalled();
     await act(() => button("Grant access")?.click());
     await waitForAssertion(() => expect(completeMock).toHaveBeenCalledWith(interaction.id, accessRequest.connectionId));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
