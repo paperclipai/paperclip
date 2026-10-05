@@ -2113,10 +2113,13 @@ describe("IssueDetail", () => {
     const getCalls = mockIssuesApi.get.mock.calls.length;
     const link = document.createElement("a");
     link.href = "/PAP/issues/issue-1#document-plan";
+    const closePreview = vi.fn((event: Event) => expect(event.defaultPrevented).toBe(true));
+    link.addEventListener("click", closePreview);
     container.appendChild(link);
     const event = new MouseEvent("click", { bubbles: true, cancelable: true });
     await act(async () => { link.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true);
+    expect(closePreview).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith("/PAP/issues/PAP-1#document-plan", {
       preventScrollReset: true,
       state: { from: "inbox", taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname: "/PAP/issues/PAP-1" } },

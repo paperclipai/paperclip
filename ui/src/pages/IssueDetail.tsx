@@ -6099,9 +6099,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       const route = resolveIssueDocumentDeepLink(hash);
       if (route?.kind === "properties-pane" && (!taskInterfaceSettingsLoaded || !taskChatShellEnabled)) return;
       event.preventDefault();
-      // Task reference chips can also open a preview on click. This document
-      // intent belongs to the reader, so do not open a second surface.
-      event.stopPropagation();
+      // Let link handlers close any hovered task preview. Router links and
+      // popover triggers honor defaultPrevented and skip their navigation.
       if (hash === location.hash) {
         routeIssueDocumentDeepLink(hash);
       } else {
