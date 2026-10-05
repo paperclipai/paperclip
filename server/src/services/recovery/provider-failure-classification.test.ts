@@ -6,6 +6,7 @@ import {
   classifyAdapterFailureForRecovery,
   classifyContinuationFailure,
 } from "./service.js";
+import { WORKSPACE_UNSHIPPABLE_FAILURE_CODE } from "@paperclipai/adapter-utils/workspace-shippability";
 import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
@@ -177,5 +178,17 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: { errorFamily: "transient_upstream" } };
     expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
     expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
+  // On 2026-10-05 an unshippable workspace reached this classifier as the
+  // catch-all `adapter_failed`, which is transient infrastructure here, so the
+  // identical payload was re-dispatched until the attempts ran out and the run
+  // reported "Retry exhausted - manual intervention required". The two
+  // assertions below are the before and the after of exactly that.
+  it("does not re-dispatch a transfer whose payload or destination is at fault", () => {
+    expect(classifyContinuationFailure({ errorCode: "adapter_failed" } as never))
+      .toMatchObject({ kind: "transient_infra" });
+    expect(classifyContinuationFailure({ errorCode: WORKSPACE_UNSHIPPABLE_FAILURE_CODE } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
 });

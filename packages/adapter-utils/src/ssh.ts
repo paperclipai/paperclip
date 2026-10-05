@@ -22,6 +22,17 @@ import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import {
+  buildRemoteDestinationPrecheckScript,
+  buildRemoteDestinationRepairScript,
+  buildWorkspacePackArgs,
+  classifyTransferFailure,
+  parseRemoteDestinationPrecheckOutput,
+  requirePackableWorkspace,
+  workspacePackEnv,
+  WorkspaceUnshippableError,
+  type WorkspaceTransferStage,
+} from "./workspace-shippability.js";
+import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,
   type RuntimeProgressPhase,
@@ -435,9 +446,15 @@ async function createSshAuthArgs(
  */
 const WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES = 128 * 1024;
 
+// Derived from the one pack-argument builder the shippability rehearsal also
+// uses, so the excludes the rehearsal proves are byte for byte the excludes the
+// transfer applies. The remote read at `exportGitWorkspaceFromSsh` needs the
+// exclude flags alone rather than a whole argument list, so it slices them out
+// of the builder's output instead of assembling a second list that could drift.
 function tarExcludeArgs(exclude: readonly string[] | undefined): string[] {
-  const combined = ["._*", ...(exclude ?? [])];
-  return combined.flatMap((entry) => ["--exclude", entry]);
+  const args = buildWorkspacePackArgs({ localDir: ".", exclude, output: "-" });
+  const start = args.indexOf("--exclude");
+  return start < 0 ? [] : args.slice(start, args.lastIndexOf("-cf"));
 }
 
 /**
@@ -459,12 +476,10 @@ function remoteTarReadArgument(remoteDir: string, exclude: readonly string[] | u
   return `sh -c ${shellQuote(script)}`;
 }
 
+// The env the real pack runs under. One definition, in the shippability
+// module, so the rehearsal cannot run under a different one than the shipment.
 function tarSpawnEnv(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    // Prevent macOS bsdtar from emitting AppleDouble metadata files like ._README.md.
-    COPYFILE_DISABLE: "1",
-  };
+  return workspacePackEnv();
 }
 
 // Converts a tar `--exclude` pattern into a regexp for the local-size estimate.
@@ -740,6 +755,8 @@ async function streamLocalFileToSsh(input: {
   localFile: string;
   remoteScript: string;
   progress?: TransferProgress;
+  /** Which step of the transfer this is, carried into the failure message. */
+  stage: WorkspaceTransferStage;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -782,7 +799,18 @@ async function streamLocalFileToSsh(input: {
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        // There is no local `tar` in this path: the far end's own tooling is
+        // the only thing that can complain, and its words arrive over the
+        // connection behind ssh's known-hosts banner. The classifier strips
+        // the banner and names the step, so a git import that dies at the far
+        // end no longer reads as a sick box.
+        reject(classifyTransferFailure({
+          stage: input.stage,
+          tarStderr: "",
+          sshStderr,
+          tarExitCode: 0,
+          sshExitCode: code,
+        }));
         return;
       }
       resolve();
@@ -795,6 +823,8 @@ async function streamSshToLocalFile(input: {
   remoteScript: string;
   localFile: string;
   progress?: TransferProgress;
+  /** Which step of the transfer this is, carried into the failure message. */
+  stage: WorkspaceTransferStage;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -838,7 +868,13 @@ async function streamSshToLocalFile(input: {
         if (settled) return;
         settled = true;
         if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+          reject(classifyTransferFailure({
+            stage: input.stage,
+            tarStderr: "",
+            sshStderr,
+            tarExitCode: 0,
+            sshExitCode: code,
+          }));
           return;
         }
         resolve();
@@ -916,6 +952,7 @@ async function importGitWorkspaceToSsh(input: {
         localFile: bundlePath,
         remoteScript: remoteSetupScript,
         progress: progress ?? undefined,
+        stage: "workspace_git_import",
       });
       await progress?.finish();
     } catch (error) {
@@ -973,6 +1010,7 @@ async function exportGitWorkspaceFromSsh(input: {
         remoteScript: exportScript,
         localFile: bundlePath,
         progress: progress ?? undefined,
+        stage: "workspace_git_export",
       });
       await progress?.finish();
     } catch (error) {
@@ -1143,6 +1181,78 @@ async function clearRemoteDirectory(input: {
     timeoutMs: 30_000,
     maxBuffer: 256 * 1024,
   });
+}
+
+// How much of the precheck's output is read. One line per offending path, and
+// `find` will name every entry of a whole unreadable subtree, so the read is
+// bounded; a destination that overflows it resolves to unproven and is
+// refused, which is the safe direction.
+const REMOTE_DESTINATION_PRECHECK_MAX_BUFFER = 4 * 1024 * 1024;
+
+/**
+ * Prove the far end can receive the transfer, repairing it once if it cannot.
+ *
+ * A rehearsal on the sending side alone would have passed on the day of the
+ * outage. The failure's own words are GNU tar's (`Cannot open: Permission
+ * denied`), which is not the wording of the packer on this Mac, so what died
+ * was at the far end — and the far end's fault is not in the payload but in
+ * what is already sitting at the destination. That fault survives the clearing
+ * step, because `rm -rf` cannot empty a directory it may not enter.
+ *
+ * One repair attempt, then one re-check. The issue this answers asks the sync
+ * to refuse *or repair and proceed*, and repairing here is safe in a way
+ * repairing the payload is not: these are directories this run created on a box
+ * to receive a copy, and the repair only restores their owner's own access.
+ * Nothing is deleted. A destination still faulty after the repair is refused
+ * with the paths named, never shipped to in hope.
+ */
+async function rehearseRemoteDestination(input: {
+  spec: SshConnectionConfig;
+  remoteDir: string;
+  stage: WorkspaceTransferStage;
+}): Promise<void> {
+  const read = async () => {
+    const result = await runSshScript(
+      input.spec,
+      buildRemoteDestinationPrecheckScript({ remoteDir: input.remoteDir, quote: shellQuote }),
+      { timeoutMs: 60_000, maxBuffer: REMOTE_DESTINATION_PRECHECK_MAX_BUFFER },
+    );
+    return parseRemoteDestinationPrecheckOutput(result.stdout);
+  };
+
+  const refuse = (faultPaths: string[], summary: string) => {
+    throw new WorkspaceUnshippableError({
+      stage: input.stage,
+      summary,
+      faultPaths,
+      toolStderr: "",
+    });
+  };
+
+  const faults = await read();
+  // `null` means the check did not run to the end. Unproven is not clean: the
+  // defect this whole change replaces was a gate that answered yes to every
+  // question, and reading a missing answer as a pass would rebuild it.
+  if (faults === null) {
+    refuse([input.remoteDir], `Could not prove the destination at ${input.remoteDir} can receive the workspace`);
+    return;
+  }
+  if (faults.length === 0) return;
+
+  await runSshScript(
+    input.spec,
+    buildRemoteDestinationRepairScript({ faultPaths: faults, quote: shellQuote }),
+    { timeoutMs: 60_000, maxBuffer: 256 * 1024 },
+  );
+
+  const remaining = await read();
+  if (remaining === null) {
+    refuse(faults, `Could not prove the destination at ${input.remoteDir} can receive the workspace`);
+    return;
+  }
+  if (remaining.length > 0) {
+    refuse(remaining, `The destination at ${input.remoteDir} cannot receive the workspace`);
+  }
 }
 
 /**
@@ -1430,7 +1540,15 @@ export async function syncDirectoryToSsh(input: {
   followSymlinks?: boolean;
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /**
+   * Which step of the transfer this is, carried into the failure message.
+   *
+   * Two steps used to fail with the same words and no label, which is why the
+   * logs of the 2026-10-05 outage cannot say which of them failed.
+   */
+  stage?: WorkspaceTransferStage;
 }): Promise<void> {
+  const stage = input.stage ?? "directory_upload";
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -1461,18 +1579,18 @@ export async function syncDirectoryToSsh(input: {
 
   try {
     await new Promise<void>((resolve, reject) => {
-    const tarArgs = [
-      ...(input.followSymlinks ? ["-h"] : []),
-      "-C",
-      input.localDir,
-      ...tarExcludeArgs(input.exclude),
-      "-cf",
-      "-",
-      ".",
-    ];
+    // The same builder `rehearseWorkspacePack` uses, differing only in where
+    // the archive goes. That is what makes the rehearsal binding: it cannot
+    // pass a tree this pack would fail on.
+    const tarArgs = buildWorkspacePackArgs({
+      localDir: input.localDir,
+      exclude: input.exclude,
+      followSymlinks: input.followSymlinks,
+      output: "-",
+    });
     const tar = spawn("tar", tarArgs, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: tarSpawnEnv(),
+      env: workspacePackEnv(),
     });
     const ssh = spawn("ssh", sshArgs, {
       stdio: ["pipe", "ignore", "pipe"],
@@ -1491,12 +1609,21 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
-        reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
-        return;
-      }
-      if ((sshExitCode ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+      if ((tarExitCode ?? 0) !== 0 || (sshExitCode ?? 0) !== 0) {
+        // Names the step, strips ssh's known-hosts banner, and marks a fault
+        // in the payload or the destination non-retryable. Before this, a far
+        // end whose own `tar` died reported that banner first, so three
+        // healthy boxes read as three sick boxes and the retry re-sent the
+        // identical bytes twice.
+        reject(classifyTransferFailure({
+          stage,
+          localDir: input.localDir,
+          remoteDir: input.remoteDir,
+          tarStderr,
+          sshStderr,
+          tarExitCode,
+          sshExitCode,
+        }));
         return;
       }
       resolve();
@@ -1553,7 +1680,10 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /** Which step of the transfer this is, carried into the failure message. */
+  stage?: WorkspaceTransferStage;
 }): Promise<void> {
+  const stage = input.stage ?? "workspace_download";
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const sshArgs = [
@@ -1586,7 +1716,7 @@ export async function syncDirectoryFromSsh(input: {
       });
       const tar = spawn("tar", ["-xf", "-", "-C", stagingDir], {
         stdio: ["pipe", "ignore", "pipe"],
-        env: tarSpawnEnv(),
+        env: workspacePackEnv(),
       });
 
       let sshStderr = "";
@@ -1600,12 +1730,20 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
-          return;
-        }
-        if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+        if ((sshExitCode ?? 0) !== 0 || (tarExitCode ?? 0) !== 0) {
+          // The download's ends are the mirror image of the upload's: the
+          // remote `tar` packs and the local one extracts. `tarStderr` is
+          // therefore the local extractor and `sshStderr` carries the far
+          // end's packer, which is the direction the classifier already reads.
+          reject(classifyTransferFailure({
+            stage,
+            localDir: input.localDir,
+            remoteDir: input.remoteDir,
+            tarStderr,
+            sshStderr,
+            tarExitCode,
+            sshExitCode,
+          }));
           return;
         }
         resolve();
@@ -1747,6 +1885,28 @@ export async function prepareWorkspaceForSshExecution(input: {
     remoteDir,
   });
 
+  // The gate, and the order it runs in is the design.
+  //
+  // Excludes are computed above, so what is rehearsed is the payload rather
+  // than the directory as it sits. Measured across the fleet: 15 trees, 14 of
+  // them 0 to 4 seconds, and one 117 seconds because it holds 2.3 GB this list
+  // drops. Rehearsing before excluding would cost more than the transfer it
+  // protects, which is how a gate ends up switched off.
+  //
+  // Both ends, because either can be the one at fault and the outage was at
+  // the far end. Both refusals are non-retryable: another attempt sends the
+  // identical bytes to the identical place.
+  await requirePackableWorkspace({
+    localDir: input.localDir,
+    exclude: transferExclude,
+    stage: "workspace_pack_rehearsal",
+  });
+  await rehearseRemoteDestination({
+    spec: input.spec,
+    remoteDir,
+    stage: "workspace_destination_rehearsal",
+  });
+
   if (gitSnapshot) {
     await importGitWorkspaceToSsh({
       spec: input.spec,
@@ -1762,6 +1922,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       exclude: transferExclude,
       onProgress: input.onProgress,
       progressLabel: "workspace",
+      stage: "workspace_upload",
     });
     await removeDeletedPathsOnSsh({
       spec: input.spec,
@@ -1783,6 +1944,7 @@ export async function prepareWorkspaceForSshExecution(input: {
     exclude: transferExclude,
     onProgress: input.onProgress,
     progressLabel: "workspace",
+    stage: "workspace_upload",
   });
   return { gitBacked: false, transferExclude };
 }

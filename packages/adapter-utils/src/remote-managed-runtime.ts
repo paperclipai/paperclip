@@ -182,6 +182,7 @@ export async function prepareRemoteManagedRuntime(input: {
         exclude: asset.exclude,
         onProgress: input.onProgress,
         progressLabel: asset.key,
+        stage: "asset_upload",
       });
     }
   } catch (error) {
@@ -238,6 +239,7 @@ export async function prepareRemoteManagedRuntime(input: {
         exclude,
         onProgress: input.onProgress,
         progressLabel: `project-${projectId}`,
+        stage: "referenced_source_upload",
       });
       additionalSourceDirs[projectId] = remoteDir;
     } catch (error) {

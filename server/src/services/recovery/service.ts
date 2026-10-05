@@ -28,6 +28,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { WORKSPACE_UNSHIPPABLE_FAILURE_CODE } from "@paperclipai/adapter-utils/workspace-shippability";
 import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
@@ -510,6 +511,12 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "workspace_git_scan_cancelled",
   "workspace_git_scan_output_limit",
   "workspace_git_scan_failed",
+  // The fault is in the bytes being transferred, or in the place they were
+  // going. Another dispatch sends the identical payload to the identical
+  // destination, so it is guaranteed to fail identically. This is the lane
+  // that re-dispatched the 2026-10-05 transfer until the attempts ran out and
+  // reported "Retry exhausted - manual intervention required".
+  WORKSPACE_UNSHIPPABLE_FAILURE_CODE,
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
   "low_trust_boundary_mismatch",

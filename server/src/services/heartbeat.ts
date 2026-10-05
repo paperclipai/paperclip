@@ -64,6 +64,7 @@ import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-uti
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { isWorkspaceUnshippableError, WORKSPACE_UNSHIPPABLE_FAILURE_CODE } from "@paperclipai/adapter-utils/workspace-shippability";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
@@ -860,6 +861,12 @@ const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
   "setup_failed",
   CONFIGURATION_INCOMPLETE_FAILURE_CODE,
   WORKSPACE_VALIDATION_FAILURE_CODE,
+  // The workspace transfer is what carries the agent to the box, so a payload
+  // or destination fault means it never got there and can never comment.
+  // Without this the run waits for a comment that cannot arrive, and the
+  // missing-comment retry loops the identical failure -- the same "retry what
+  // cannot help" defect as the bounded retry this code exists to stop.
+  WORKSPACE_UNSHIPPABLE_FAILURE_CODE,
   ...NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
 ]);
 
@@ -26171,6 +26178,13 @@ export function heartbeatService(
         const failureErrorCode =
           workspaceValidationFailure?.code ??
           configurationIncompleteFailure?.code ??
+          // A fault in what was being transferred, or in the place it was
+          // going. It must not fall through to `adapter_failed`, which
+          // `classifyContinuationFailure` treats as transient infrastructure
+          // and re-dispatches: on 2026-10-05 that re-sent identical bytes
+          // twice and then blamed the boxes. The error carries the verdict
+          // itself; this is the line that reads it.
+          (isWorkspaceUnshippableError(err) ? WORKSPACE_UNSHIPPABLE_FAILURE_CODE : null) ??
           nonRetryablePreflightFailureCode(err) ??
           recordedResponsibleUserDenialCode ??
           nativeTerminalFailureCode ??
@@ -26425,6 +26439,9 @@ export function heartbeatService(
         const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
         const setupFailureErrorCode =
           workspaceGitScanFailure?.code ??
+          // The workspace transfer runs during setup, so this is the twin of
+          // the branch in the adapter catch and the one the outage took.
+          (isWorkspaceUnshippableError(outerErr) ? WORKSPACE_UNSHIPPABLE_FAILURE_CODE : null) ??
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
           (unresolvedBaseRefSetupFailure ||
