@@ -28,7 +28,7 @@ const codexPatch = await readFile(
 );
 const claudePatch = await readFile(
   new URL(
-    "../../../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "../../../patches/@agentclientprotocol__claude-agent-acp@0.85.1.patch",
     import.meta.url,
   ),
   "utf8",
@@ -60,7 +60,7 @@ test("the runner pins every qualified ACPX production dependency", () => {
   assert.equal(runnerPackage.dependencies["@openai/codex"], "0.156.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.280");
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.85.1>@anthropic-ai/claude-agent-sdk"], "0.3.286");
   assert.equal(runnerPackage.optionalDependencies, undefined);
   assert.equal(runnerPackage.dependencies.node, undefined);
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
@@ -70,7 +70,7 @@ test("the runner pins every qualified ACPX production dependency", () => {
   );
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-    "0.73.0",
+    "0.85.1",
   );
 });
 
@@ -117,9 +117,9 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/claude-agent-acp@0.73.0"
+      "@agentclientprotocol/claude-agent-acp@0.85.1"
     ],
-    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "patches/@agentclientprotocol__claude-agent-acp@0.85.1.patch",
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
@@ -134,7 +134,7 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   );
   assert.match(
     workspace,
-    /claude-agent-acp@0\.73\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.73\.0\.patch/,
+    /claude-agent-acp@0\.85\.1["']: patches\/@agentclientprotocol__claude-agent-acp@0\.85\.1\.patch/,
   );
   assert.equal(rootPackage.pnpm.patchedDependencies["node@24.11.0"], undefined);
   assert.doesNotMatch(workspace, /node@24\.11\.0:/);
@@ -233,4 +233,83 @@ test("the Claude patch removes ambient project and local configuration", () => {
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+// The test above only greps the patch *file text*. A fuzzy or partial
+// `patch -p1` application (see doc/plans/2026-10-03-claude-agent-acp-0.85.1-patch-report.md)
+// can leave the patch file untouched while the installed artifact only
+// gets some of the hunks — this test instead resolves and asserts against
+// the artifact pnpm actually installs, which is what the runner spawns.
+test("the installed Claude ACP artifact actually carries the isolation gates", async () => {
+  const packagePath = createRequire(import.meta.url).resolve(
+    "@agentclientprotocol/claude-agent-acp/package.json",
+  );
+  const installed = JSON.parse(await readFile(packagePath, "utf8"));
+  assert.equal(installed.version, "0.85.1");
+  const agentSource = await readFile(
+    resolve(dirname(packagePath), installed.bin["claude-agent-acp"].replace("index.js", "acp-agent.js")),
+    "utf8",
+  );
+
+  const queryCallSites = agentSource.match(/\bquery\(\{/g) ?? [];
+  assert.equal(
+    queryCallSites.length,
+    1,
+    "expected exactly one query({ call site; upstream added a second entry path that needs review",
+  );
+
+  const createSessionStart = agentSource.indexOf("async createSession(params, creationOpts = {})");
+  assert.ok(createSessionStart >= 0, "createSession method");
+  const queryCallIndex = agentSource.indexOf("query({", createSessionStart);
+  assert.ok(queryCallIndex > createSessionStart, "query({ call site inside createSession");
+  const optionsSlice = agentSource.slice(createSessionStart, queryCallIndex);
+
+  const userProvidedOptionsIndex = optionsSlice.indexOf("...userProvidedOptions,");
+  assert.ok(userProvidedOptionsIndex >= 0);
+  const settingSourcesGateIndex = optionsSlice.indexOf(
+    'PAPERCLIP_ACPX_ISOLATED_CONTEXT_SNAPSHOT === "1" && { settingSources: ["user"] }',
+  );
+  assert.ok(
+    settingSourcesGateIndex > userProvidedOptionsIndex,
+    "settingSources isolation gate comes after ...userProvidedOptions,",
+  );
+
+  const mcpServersBlockIndex = optionsSlice.indexOf("mcpServers: {");
+  const mcpServersGateIndex = optionsSlice.indexOf(
+    "PAPERCLIP_ACPX_ISOLATED_CONTEXT_SNAPSHOT === \"1\"\n                    ? {}\n                    : (userProvidedOptions?.mcpServers || {})",
+  );
+  assert.ok(mcpServersBlockIndex >= 0);
+  assert.ok(
+    mcpServersGateIndex > mcpServersBlockIndex,
+    "mcpServers isolation strip is inside the mcpServers: { block",
+  );
+
+  const canUseToolIndex = optionsSlice.indexOf("canUseTool: this.canUseTool(sessionId)");
+  const allowedToolsGateIndex = optionsSlice.indexOf(
+    'PAPERCLIP_ACPX_ISOLATED_CONTEXT_SNAPSHOT === "1" && {\n                allowedTools:',
+  );
+  assert.ok(canUseToolIndex >= 0);
+  assert.ok(
+    allowedToolsGateIndex > canUseToolIndex,
+    "allowedTools isolation gate comes after canUseTool",
+  );
+
+  // The managed-policy env-snapshot hardening: the two isolation env vars
+  // must be captured into module-level consts before any function body
+  // reads them, so a host-managed policy tier applied later (index.js
+  // awaits applyManagedPolicyEnv() after this module's static import already
+  // evaluated) cannot silently flip the isolation boundary after load.
+  const moduleLevelSnapshotIndex = agentSource.indexOf(
+    "const PAPERCLIP_ACPX_ISOLATED_CONTEXT_SNAPSHOT = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT;",
+  );
+  assert.ok(moduleLevelSnapshotIndex >= 0, "module-level isolation env snapshot");
+  assert.ok(
+    moduleLevelSnapshotIndex < createSessionStart,
+    "the env snapshot is captured before createSession ever runs",
+  );
+  assert.doesNotMatch(
+    optionsSlice.slice(userProvidedOptionsIndex),
+    /process\.env\.PAPERCLIP_ACPX_ISOLATED_CONTEXT\b/,
+    "the isolation gates read the module-level snapshot, not process.env directly",
+  );
 });

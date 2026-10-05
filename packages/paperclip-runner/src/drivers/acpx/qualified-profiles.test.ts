@@ -41,7 +41,7 @@ describe("qualified ACPX profiles", () => {
   it("binds Claude ACP to the SDK and native CLI runtime it launches", () => {
     expect(QUALIFIED_ACPX_PROFILES.claude).toMatchObject({
       agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-      agentRuntimeVersion: "0.3.280",
+      agentRuntimeVersion: "0.3.286",
     });
   });
 });

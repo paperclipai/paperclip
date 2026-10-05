@@ -14,6 +14,21 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    server: {
+      deps: {
+        // These two packages are an external ACPX provider's runtime, not
+        // part of this workspace. vi.mock() (used by
+        // claude-acp-isolation-gate.test.ts to intercept the SDK's query()
+        // before it can spawn a real CLI process) only applies to modules
+        // Vite transforms itself — by default every node_modules package is
+        // externalized and loaded through Node's native resolver instead,
+        // which silently bypasses the mock. Inlining both here is the fix.
+        inline: [
+          /@agentclientprotocol\/claude-agent-acp/,
+          /@anthropic-ai\/claude-agent-sdk/,
+        ],
+      },
+    },
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",

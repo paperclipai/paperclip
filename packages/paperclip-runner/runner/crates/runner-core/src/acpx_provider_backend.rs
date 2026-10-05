@@ -151,10 +151,10 @@ impl AcpxProviderDescriptor {
             "claude" => (
                 "claude-sonnet-5",
                 "@agentclientprotocol/claude-agent-acp",
-                "0.73.0",
+                "0.85.1",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.280"),
-                "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+                Some("0.3.286"),
+                "sha256:4a1f0fff5cdd26b8c9adb5f9b3d314640e06f876cfff97cac437159b4551ec27",
             ),
             "codex" => (
                 "gpt-5.6-sol",
@@ -2255,10 +2255,10 @@ mod tests {
                 (
                     "claude-sonnet-5",
                     "@agentclientprotocol/claude-agent-acp",
-                    "0.73.0",
+                    "0.85.1",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.280"),
-                    "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+                    json!("0.3.286"),
+                    "sha256:4a1f0fff5cdd26b8c9adb5f9b3d314640e06f876cfff97cac437159b4551ec27",
                 )
             } else {
                 (

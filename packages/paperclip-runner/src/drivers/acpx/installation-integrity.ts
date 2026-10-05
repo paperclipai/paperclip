@@ -48,13 +48,13 @@ const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
 
 const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@anthropic-ai/claude-agent-sdk",
-  runtimePackageVersion: "0.3.280",
+  runtimePackageVersion: "0.3.286",
   packageName: "@anthropic-ai/claude-agent-sdk-linux-x64",
-  packageVersion: "0.3.280",
-  dependencyDeclaration: "0.3.280",
+  packageVersion: "0.3.286",
+  dependencyDeclaration: "0.3.286",
   relativeExecutable: "claude",
   executableDigest:
-    "sha256:1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
+    "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
 });
 
@@ -62,12 +62,12 @@ const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
   arm64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-    executableDigest: "sha256:387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d",
+    executableDigest: "sha256:75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433",
   }),
   x64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
-    executableDigest: "sha256:c1d32d87630482250633208ab77855429b24010ae3086a7ff7539b57b93168d4",
+    executableDigest: "sha256:53e6a936e89519d695230f9cc97943991286b72766674fba11bee845f0a7c047",
   }),
 };
 
@@ -90,23 +90,29 @@ const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
 const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   Object.freeze({
     packageName: "@agentclientprotocol/sdk",
-    packageVersion: "1.4.0",
-    dependencyDeclaration: "1.4.0",
+    packageVersion: "1.6.0",
+    dependencyDeclaration: "1.6.0",
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
-    packageVersion: "0.3.280",
-    // The package's own package.json still declares 0.3.257 — 0.3.280 is
-    // only what pnpm resolves, forced by the
-    // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
-    // the workspace root. This field binds the declared string, not the
-    // resolved one; packageVersion above binds the resolved install.
-    dependencyDeclaration: "0.3.257",
+    packageVersion: "0.3.286",
+    // Unlike 0.73.0, the 0.85.1 package.json declares this exact version
+    // directly — the "claude-agent-acp@0.85.1>@anthropic-ai/claude-agent-sdk"
+    // override in the workspace root is redundant with the package's own
+    // declaration here, kept only as an explicit pin so a future declared-range
+    // change can't silently drift the resolved SDK version without this field
+    // also being updated.
+    dependencyDeclaration: "0.3.286",
   }),
   Object.freeze({
     packageName: "zod",
-    packageVersion: "4.4.3",
-    dependencyDeclaration: "^4.0.0",
+    packageVersion: "4.6.5",
+    dependencyDeclaration: "4.6.5",
+  }),
+  Object.freeze({
+    packageName: "diff",
+    packageVersion: "9.0.0",
+    dependencyDeclaration: "9.0.0",
   }),
 ]);
 

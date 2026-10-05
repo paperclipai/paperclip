@@ -444,18 +444,23 @@ describe("ACPX installation integrity", () => {
     const dependencyFixtures = [
       {
         name: "@agentclientprotocol/sdk",
-        version: "1.4.0",
+        version: "1.6.0",
         directory: join(dependencyRoot, "agentclient-sdk"),
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.280",
+        version: "0.3.286",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {
         name: "zod",
-        version: "4.4.3",
+        version: "4.6.5",
         directory: join(dependencyRoot, "zod"),
+      },
+      {
+        name: "diff",
+        version: "9.0.0",
+        directory: join(dependencyRoot, "diff"),
       },
     ] as const;
     await Promise.all([
@@ -472,13 +477,14 @@ describe("ACPX installation integrity", () => {
         fixture.serverPackageJsonPath,
         JSON.stringify({
           name: "@agentclientprotocol/claude-agent-acp",
-          version: "0.73.0",
+          version: "0.85.1",
           type: "module",
           bin: "bin/server.js",
           dependencies: {
-            "@agentclientprotocol/sdk": "1.4.0",
-            "@anthropic-ai/claude-agent-sdk": "0.3.257",
-            zod: "^4.0.0",
+            "@agentclientprotocol/sdk": "1.6.0",
+            "@anthropic-ai/claude-agent-sdk": "0.3.286",
+            zod: "4.6.5",
+            diff: "9.0.0",
           },
         }),
       ),
@@ -543,13 +549,14 @@ describe("ACPX installation integrity", () => {
     await writeFile(
       fixture.serverPackageJsonPath,
       JSON.stringify({
-        version: "0.73.0",
+        version: "0.85.1",
         type: "module",
         bin: "bin/server.js",
         dependencies: {
-          "@agentclientprotocol/sdk": "1.4.0",
-          "@anthropic-ai/claude-agent-sdk": "0.3.257",
-          zod: "^4.0.0",
+          "@agentclientprotocol/sdk": "1.6.0",
+          "@anthropic-ai/claude-agent-sdk": "0.3.286",
+          zod: "4.6.5",
+          diff: "9.0.0",
         },
       }),
     );
