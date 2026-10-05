@@ -7,7 +7,7 @@ import * as tree from "../services/issue-tree-control.js";
 function fixture() {
   const events: string[] = []; const writes: any[] = [];
   const root = { id: "root-1", companyId: "company-1", parentId: null, status: "todo",
-    identifier: "T-1", title: "Root", assigneeAgentId: null, assigneeUserId: null, executionRunId: null };
+    identifier: "T-1", title: "Root", assigneeAgentId: null, assigneeUserId: null, executionRunId: null, conversationAgentId: null as string | null };
   const tx = {
     execute: vi.fn(async (s: SQL) => {
       expect(new PgDialect().sqlToQuery(s).params).toEqual(["paperclip:issue-lifecycle:company-1"]);
@@ -20,8 +20,13 @@ function fixture() {
         const params = new PgDialect().sqlToQuery(p).params;
         expect(params).toContain("company-1");
         const sql = new PgDialect().sqlToQuery(p).sql;
-        q.rows = name === "issues" && params[0] === "root-1" && !sql.includes("conversation_agent_id")
-          ? [{ ...root }] : [];
+        if (name === "issues" && sql.includes("conversation_agent_id")) {
+          expect(params).toEqual(["root-1", "company-1"]);
+          expect(sql).toContain('"issues"."conversation_agent_id" is not null');
+          q.rows = root.conversationAgentId ? [{ id: root.id }] : [];
+        } else {
+          q.rows = name === "issues" && params[0] === "root-1" ? [{ ...root }] : [];
+        }
         return q;
       }, then: (resolve: any, reject: any) => Promise.resolve(q.rows).then(resolve, reject) };
       if (!["issues", "heartbeat_runs", "issue_tree_hold_members", "issue_tree_holds"].includes(name)) throw new Error(`unknown-read:${name}`);
@@ -81,12 +86,12 @@ describe("dark supplied-tx pause participant (not SQL serialization)", () => {
     expect(rootDb.transaction).toHaveBeenCalledTimes(1); expect(f.tx.transaction).not.toHaveBeenCalled();
     expect(result.hold).toMatchObject({ mode: "pause", companyId: "company-1", rootIssueId: "root-1" });
   });
-  it("captures opt-in scalars before deferred transaction startup", async () => {
+  it.each(["pause", "cancel", "restore"] as const)("captures opt-in %s scalars before deferred transaction startup", async mode => {
     const f = fixture(); let release!: () => void;
     const barrier = new Promise<void>(r => { release = r; });
     const rootDb = { ...f.tx, select: () => { throw new Error("root-read"); },
       transaction: vi.fn(async (cb: any) => { await barrier; return cb(f.tx); }) };
-    const input: any = { mode: "pause", actor: f.input.actor, reason: "original", lifecycleFence: true };
+    const input: any = { mode, actor: f.input.actor, reason: "original", lifecycleFence: true };
     const pending = tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", input);
     try {
       input.mode = "cancel"; input.reason = "mutated"; input.lifecycleFence = false;
@@ -95,7 +100,7 @@ describe("dark supplied-tx pause participant (not SQL serialization)", () => {
       expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
     } finally { release(); }
     const result = await pending;
-    expect(result.hold).toMatchObject({ companyId: "company-1", rootIssueId: "root-1", mode: "pause",
+    expect(result.hold).toMatchObject({ companyId: "company-1", rootIssueId: "root-1", mode,
       reason: "original", createdByActorType: "user", createdByUserId: "user-1",
       createdByAgentId: null, createdByRunId: null, releasePolicy: { strategy: "manual" } });
   });
@@ -117,7 +122,47 @@ describe("dark supplied-tx pause participant (not SQL serialization)", () => {
     expect((await settled).message).toBe("owned-fence-rejected");
     expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
   });
-  it.each(["cancel", "restore", "resume"])("rejects unsupported opt-in %s before transaction or reads", async mode => {
+  it.each(["cancel", "restore"] as const)("fences opt-in %s preview and persistence inside the owned transaction", async mode => {
+    const f = fixture(); const rootDb = { ...f.tx,
+      select: () => { throw new Error("root-read-before-transaction"); },
+      insert: () => { throw new Error("root-write-outside-transaction"); },
+      transaction: vi.fn(async (cb: any) => { f.events.push("owned-transaction"); return cb(f.tx); }),
+    };
+    const result = await tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
+      mode, actor: f.input.actor, reason: "original", lifecycleFence: true,
+    });
+    expect(f.events.slice(0, 3)).toEqual(["owned-transaction", "fence", "read:issues"]);
+    expect(result.hold).toMatchObject({ mode, reason: "original", releasePolicy: { strategy: "manual" } });
+    expect(f.writes.map(w => w.name)).toEqual(["issue_tree_holds", "issue_tree_hold_members"]);
+    expect(rootDb.transaction).toHaveBeenCalledTimes(1); expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
+  it("preserves the conversation cancel veto inside the fenced transaction before preview", async () => {
+    const f = fixture(); f.root.conversationAgentId = "conversation-agent";
+    const rootDb = { ...f.tx, select: () => { throw new Error("root-read"); },
+      transaction: vi.fn(async (cb: any) => { f.events.push("owned-transaction"); return cb(f.tx); }) };
+    await expect(tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
+      mode: "cancel", actor: f.input.actor, lifecycleFence: true,
+    })).rejects.toMatchObject({ status: 422, message: "Stop the active reply instead of cancelling the persistent conversation" });
+    expect(f.events).toEqual(["owned-transaction", "fence", "read:issues"]);
+    expect(f.writes).toEqual([]);
+  });
+  it.each(["cancel", "restore"] as const)("vetoes explicit policy before opt-in %s transaction startup", async mode => {
+    const f = fixture(); const rootDb = { ...f.tx, transaction: vi.fn(async (cb: any) => cb(f.tx)) };
+    await expect(tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
+      mode, actor: f.input.actor, lifecycleFence: true, releasePolicy: { strategy: "manual" },
+    })).rejects.toMatchObject({ status: 422 });
+    expect(rootDb.transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
+  });
+  it.each(["cancel", "restore"] as const)("fails closed on opt-in %s fence rejection before domain reads", async mode => {
+    const f = fixture(); f.tx.execute.mockRejectedValueOnce(new Error("fence-rejected"));
+    const rootDb = { ...f.tx, select: () => { throw new Error("root-read"); },
+      transaction: vi.fn(async (cb: any) => cb(f.tx)) };
+    await expect(tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
+      mode, actor: f.input.actor, lifecycleFence: true,
+    })).rejects.toThrow("fence-rejected");
+    expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
+  });
+  it.each(["resume"])("rejects unsupported opt-in %s before transaction or reads", async mode => {
     const f = fixture(); const rootDb = { ...f.tx, transaction: vi.fn(async (cb: any) => cb(f.tx)) };
     await expect(tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
       mode, actor: f.input.actor, lifecycleFence: true,

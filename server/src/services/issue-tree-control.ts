@@ -51,16 +51,34 @@ export async function createIssueTreePauseHoldInTransaction(
   tx: LifecycleTransaction,
   input: { companyId: string; rootIssueId: string; reason?: string | null; actor: ActorInput },
 ) {
-  const { companyId, rootIssueId, reason } = input;
+  return createIssueTreeNonResumeHoldInTransaction(tx, {
+    companyId: input.companyId, rootIssueId: input.rootIssueId, reason: input.reason,
+    actor: input.actor, mode: "pause",
+  });
+}
+
+// Private shared non-resume boundary; no production caller opts in.
+async function createIssueTreeNonResumeHoldInTransaction(
+  tx: LifecycleTransaction,
+  input: { companyId: string; rootIssueId: string; mode: "pause" | "cancel" | "restore";
+    reason?: string | null; actor: ActorInput },
+) {
+  const { companyId, rootIssueId, mode, reason } = input;
   const actor = { actorType: input.actor.actorType, actorId: input.actor.actorId,
     agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId };
   await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  if (mode === "cancel") {
+    const [conversation] = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.id, rootIssueId), eq(issues.companyId, companyId), sql`${issues.conversationAgentId} is not null`,
+    ));
+    if (conversation) throw unprocessable("Stop the active reply instead of cancelling the persistent conversation");
+  }
   const releasePolicy: IssueTreeHoldReleasePolicy = { strategy: "manual" };
   const holdPreview = await issueTreeControlService(tx as unknown as Db).preview(
-    companyId, rootIssueId, { mode: "pause", releasePolicy },
+    companyId, rootIssueId, { mode, releasePolicy },
   );
   const { hold, members } = await persistIssueTreeHold(tx, companyId, rootIssueId,
-    { mode: "pause", reason, actor }, releasePolicy, holdPreview);
+    { mode, reason, actor }, releasePolicy, holdPreview);
   return { hold: toHold(hold, members), preview: holdPreview };
 }
 
@@ -805,14 +823,14 @@ export function issueTreeControlService(db: Db) {
   }> {
     if (input.lifecycleFence) {
       // The owning boundary must precede every domain read, not just INSERT.
-      // Deliberately narrow until cancel/restore/resume policy paths migrate.
-      if (input.mode !== "pause" || input.releasePolicy != null) {
-        throw unprocessable("Fenced tree creation currently supports only pause with the default manual release policy");
+      // Resume has a separate multi-hold lifecycle; explicit policies remain unsupported.
+      if (!["pause", "cancel", "restore"].includes(input.mode) || input.releasePolicy != null) {
+        throw unprocessable("Fenced tree creation supports only pause/cancel/restore with the default manual release policy");
       }
-      const captured = { companyId, rootIssueId, reason: input.reason,
+      const captured = { companyId, rootIssueId, mode: input.mode as "pause" | "cancel" | "restore", reason: input.reason,
         actor: { actorType: input.actor.actorType, actorId: input.actor.actorId,
           agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId } };
-      return db.transaction((tx) => createIssueTreePauseHoldInTransaction(tx, captured));
+      return db.transaction((tx) => createIssueTreeNonResumeHoldInTransaction(tx, captured));
     }
     if (input.mode === "cancel") {
       const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
