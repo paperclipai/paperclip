@@ -26,7 +26,14 @@ function fixture() {
       then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject) };
     return q;
   }
+  const fenceQueries: Array<{ sql: string; params: unknown[] }> = [];
   const tx = {
+    execute: vi.fn(async (statement: SQL) => {
+      const { sql, params } = new PgDialect().sqlToQuery(statement);
+      fenceQueries.push({ sql, params });
+      events.push("lifecycle-fence");
+      return [];
+    }),
     select: () => ({ from: (table: any) => {
       const name = getTableName(table); events.push(`read:${name}`);
       if (name === "issues") return query([], (predicate) => {
@@ -52,12 +59,54 @@ function fixture() {
     assigneeAgentId: row.assigneeAgentId, blockerIssueIds: ["blocker-1"], blockedTransitionAt: row.blockedTransitionAt }]);
   service.update.mockImplementation(async () => { events.push("canonical-update"); return { ...row, status: "todo" }; });
   const owner = { db: {} as any, activityPublications: [], actions: [] };
-  return { row, blocker, interactions, approvals, wakes, events, intents, tx, owner,
+  return { row, blocker, interactions, approvals, wakes, events, intents, fenceQueries, tx, owner,
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
       companyId: "company-1", dependentIssueId: row.id, resolvedBlockerIssueId: "blocker-1" }, owner) };
 }
 
 describe("dark dependency restoration coordinator (mock-only)", () => {
+  it("acquires a company transaction lifecycle fence before any read or row lock", async () => {
+    const f = fixture();
+    expect(await f.run()).toBe("intent-1");
+    expect(f.events[0]).toBe("lifecycle-fence");
+    expect(f.fenceQueries).toEqual([{
+      sql: "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+      params: ["paperclip:issue-lifecycle:company-1"],
+    }]);
+    expect(f.tx.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read or write while the lifecycle fence is pending", async () => {
+    const f = fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    f.tx.execute.mockImplementationOnce(async () => { await barrier; f.events.push("lifecycle-fence"); return []; });
+    const pending = f.run();
+    try {
+      expect(f.tx.execute).toHaveBeenCalledTimes(1);
+      expect(f.events).toEqual([]); expect(f.intents).toEqual([]);
+      expect(service.update).not.toHaveBeenCalled();
+      expect(service.listWakeableBlockedDependents).not.toHaveBeenCalled();
+    } finally { release(); await pending; }
+    expect(await pending).toBe("intent-1");
+    expect(f.events[0]).toBe("lifecycle-fence");
+  });
+  it("propagates lifecycle fence rejection without any domain reads or writes", async () => {
+    const f = fixture(); const before = structuredClone(f.row);
+    f.tx.execute.mockRejectedValueOnce(new Error("lifecycle-fence-unavailable"));
+    await expect(f.run()).rejects.toThrow("lifecycle-fence-unavailable");
+    expect(f.events).toEqual([]); expect(f.intents).toEqual([]);
+    expect(f.row).toEqual(before); expect(service.update).not.toHaveBeenCalled();
+    expect(service.listWakeableBlockedDependents).not.toHaveBeenCalled();
+  });
+  it("company routing alone determines the fence key even for a vetoed target", async () => {
+    const f = fixture();
+    expect(await restoreDependencyReadyIssueInTransaction(f.tx as any, {
+      companyId: "company-2", dependentIssueId: "dependent-2", resolvedBlockerIssueId: "blocker-1",
+    }, f.owner)).toBeNull();
+    expect(f.fenceQueries[0].params).toEqual(["paperclip:issue-lifecycle:company-2"]);
+    expect(service.update).not.toHaveBeenCalled(); expect(f.intents).toEqual([]);
+  });
   it.each(["in_progress", "blocked", "cancelled"])("rejects resolved-blocker input whose authoritative status is %s", async (status) => {
     const f = fixture(); f.blocker.status = status;
     expect(await f.run()).toBeNull();

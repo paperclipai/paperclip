@@ -39,6 +39,13 @@ function fixture() {
   const emptyReads = new Set(["issue_thread_interactions", "issue_approvals", "agent_wakeup_requests",
     "issue_relations", "issue_labels", "labels", "issue_watchdogs", "goals", "projects"]);
   const tx = {
+    execute: vi.fn(async (statement: SQL) => {
+      const built = new PgDialect().sqlToQuery(statement);
+      expect(built.sql).toBe("select pg_advisory_xact_lock(hashtextextended($1, 0))");
+      expect(built.params).toEqual(["paperclip:issue-lifecycle:company-1"]);
+      events.push("lifecycle-fence");
+      return [];
+    }),
     transaction: vi.fn(() => { throw new Error("nested-transaction-not-owned"); }),
     select: (projection: Record<string, unknown> = {}) => ({ from: (table: any) => {
       const name = getTableName(table); events.push(`read:${name}`);

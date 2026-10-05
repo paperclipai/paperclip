@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { issueService } from "./issues.js";
 import { issueTreeControlService } from "./issue-tree-control.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
 import { buildIssueBlockersResolvedWakeStateKey, findExistingIssueBlockersResolvedWakeForReadyState } from "./issue-dependency-wakeups.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -22,6 +23,10 @@ export async function restoreDependencyReadyIssueInTransaction(
   const { companyId, dependentIssueId, resolvedBlockerIssueId } = input;
   const { db, activityPublications, actions } = owner;
   if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  // First operation on this path. This dark participant alone does NOT fence
+  // existing non-participating writers. Caller must also acquire the same fence
+  // before its earlier reads/locks; production wiring requires that migration.
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
   // Caller input is routing, not proof that the blocker completed. Keep its
   // authoritative status stable through this transaction. This is still dark:
   // graph-wide writer lock ordering/fences are not established by this lock.
