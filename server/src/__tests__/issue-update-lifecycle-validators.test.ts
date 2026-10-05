@@ -36,10 +36,16 @@ function fixture(owned: boolean, membership = true) {
       if (["goals", "projects", "issue_labels", "labels", "issue_watchdogs"].includes(name)) return query([], name);
       throw new Error(`unmodeled-tx-read:${name}`);
     } }),
-    update: (table: any) => ({ set: (patch: any) => ({ where: () => {
+    update: (table: any) => ({ set: (patch: any) => ({ where: (predicate: SQL) => {
       const name = getTableName(table);
-      if (name === "agent_wakeup_requests") { writes.push({ table: name, patch: structuredClone(patch) }); return query([]); }
+      predicates.push({ table: name, ...new PgDialect().sqlToQuery(predicate) });
+      if (name === "agent_wakeup_requests" || name === "issue_thread_interactions") {
+        // No matching synthetic rows: record the real ownership invalidation
+        // writes, but do not invent returned interactions or OAuth cleanup.
+        writes.push({ table: name, patch: structuredClone(patch) }); return query([]);
+      }
       expect(name).toBe("issues");
+      // Preserve the unevaluated statusVersion SQL expression; this is not DB execution.
       writes.push({ table: name, patch: { ...patch } }); row = { ...row, ...patch }; return query([{ ...row }]);
     } }) }),
   };
@@ -60,6 +66,21 @@ describe("dark canonical user validator uses preparation executor (recording onl
     expect(f.events.indexOf("fence")).toBeLessThan(f.events.indexOf("tx:company_memberships"));
     const predicate = f.predicates.find((p) => p.table === "company_memberships")!;
     expect(predicate.params).toEqual(["company-1", "user", "user-1", "active"]);
+    expect(f.writes).toEqual([
+      { table: "agent_wakeup_requests", patch: { status: "cancelled", finishedAt: expect.any(Date), updatedAt: expect.any(Date) } },
+      { table: "issues", patch: expect.objectContaining({ assigneeUserId: "user-1" }) },
+      { table: "issue_thread_interactions", patch: {
+        status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        resolvedAt: expect.any(Date), updatedAt: expect.any(Date),
+      } },
+    ]);
+    const expiration = f.predicates.find((p) => p.table === "issue_thread_interactions")!;
+    expect(expiration.params).toEqual(["company-1", "issue-1", "connection_intent", "pending"]);
+    expect(expiration.sql).toBe('(\"issue_thread_interactions\".\"company_id\" = $1 and \"issue_thread_interactions\".\"issue_id\" = $2 and \"issue_thread_interactions\".\"kind\" = $3 and \"issue_thread_interactions\".\"status\" = $4)');
+    expect(f.predicates.find((p) => p.table === "agent_wakeup_requests")?.params)
+      .toEqual(["company-1", "user", "issue-1"]);
+    expect(f.events.filter((event) => event === "fence")).toHaveLength(1);
+    expect(f.events.filter((event) => event === "callback-return")).toHaveLength(owned ? 1 : 0);
     expect(f.root.transaction).toHaveBeenCalledTimes(owned ? 1 : 0);
   });
   it.each([false, true])("rejects missing membership without recorded writes (owned=%s)", async (owned) => {
