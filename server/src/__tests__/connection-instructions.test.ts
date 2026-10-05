@@ -114,18 +114,21 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     return { ...run, ...connection, gateway, service, binding, resolve: () => gateway.resolveConnectionInstructionsForRun(binding) };
   }
 
-  it("withholds guidance without blocking a turn when the discovery queue is saturated", async () => {
+  it("keeps guidance stable and checks revocation even when the discovery queue is saturated", async () => {
     const f = await fixture();
+    const snapshot = await f.resolve();
+    expect(snapshot?.text).toContain(paragraph);
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     const listings = Array.from({ length: 34 }, () => toolDiscoveryScheduler.run(() => barrier));
     try {
+      expect(await f.resolve()).toEqual(snapshot);
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, f.connection.id));
       expect(await f.resolve()).toBeNull();
     } finally {
       release();
       await Promise.all(listings);
     }
-    expect((await f.resolve())?.text).toContain(paragraph);
   });
 
   it("persists a non-memory paragraph and captures it in actual process input and both prompt composers", async () => {

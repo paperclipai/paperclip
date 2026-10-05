@@ -56,9 +56,10 @@ policy. At least one tool must be available (including tools requiring approval)
 The resolver uses persisted settings and the cached catalog; it does not contact
 providers. It does not gate delivery on a provider name, memory category, or the
 presence of a catalog template.
-If the discovery queue is saturated, the turn proceeds without connection
-instructions rather than reusing unverified guidance. A subsequent turn resolves
-them again using current access.
+Prompt assembly checks access to candidate connections’ cached tools directly,
+using the same task restrictions and policy decisions as discovery. It does not
+enter the discovery queue, so queue saturation neither drops guidance nor replaces
+an otherwise compatible session. Revocation is still checked on every turn.
 
 Eligible blocks are sorted by connection ID. Each block identifies its
 connection, selected grant, optional template provenance, and declared public

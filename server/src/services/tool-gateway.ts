@@ -2975,10 +2975,9 @@ export function createToolGatewayService(
   async function listToolsForContext(
     session: ToolGatewaySession,
     signal?: AbortSignal,
-    includeOnDemandTargets = false,
   ): Promise<ToolGatewayDescriptor[]> {
     try {
-      return await toolDiscoveryScheduler.run(() => buildToolsForContext(session, signal, includeOnDemandTargets), signal);
+      return await toolDiscoveryScheduler.run(() => buildToolsForContext(session, signal), signal);
     } catch (error) {
       if (error instanceof ToolDiscoveryBusyError) {
         throw new ToolGatewayHttpError(503, error.message, "tool_discovery_busy");
@@ -2987,25 +2986,31 @@ export function createToolGatewayService(
     }
   }
 
+  /** Shared connection descriptors and task restrictions; no provider calls. */
+  async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
+    const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
+    const connectedTools = (await connectedMcpToolsForCompany(session.companyId))
+      .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
+    return [
+      ...await githubBotToolsForSession(db, session),
+      ...await slackToolsForSession(db, session),
+      ...connectedTools,
+    ];
+  }
+
   async function buildToolsForContext(
     session: ToolGatewaySession,
     signal?: AbortSignal,
-    includeOnDemandTargets = false,
   ): Promise<ToolGatewayDescriptor[]> {
     signal?.throwIfAborted();
     if (session.agentId) {
       await assertAgentInCompany(session.companyId, session.agentId);
     }
-    const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
-    const allConnectedTools = (await connectedMcpToolsForCompany(
-      session.companyId,
-    )).filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
-    const onDemandTargets = allConnectedTools.filter(isOnDemandRemoteTool);
+    const connectionTools = await connectionToolsForContext(session);
+    const onDemandTargets = connectionTools.filter(isOnDemandRemoteTool);
     const tools = [
       ...allTools(),
-      ...await githubBotToolsForSession(db, session),
-      ...await slackToolsForSession(db, session),
-      ...allConnectedTools.filter((tool) => includeOnDemandTargets || !isOnDemandRemoteTool(tool)),
+      ...connectionTools.filter((tool) => !isOnDemandRemoteTool(tool)),
     ].filter(
       (tool) =>
         session.agentId ||
@@ -9034,16 +9039,17 @@ export function createToolGatewayService(
       const session = await captureSessionIdentity({
         ...binding, ...runContext, id: randomUUID(), token: "", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
       });
-      let tools: ToolGatewayDescriptor[];
-      try {
-        tools = await listToolsForContext(session, undefined, true);
-      } catch (error) {
-        // Saturation must not block an otherwise runnable turn. Withhold all
-        // guidance until authorization can be checked; never reuse stale text.
-        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_discovery_busy") return null;
-        throw error;
-      }
-      const visible = new Set(tools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []));
+      await assertAgentInCompany(binding.companyId, binding.agentId);
+      const candidateIds = new Set(candidates.map((connection) => connection.id));
+      // Prompt assembly needs authorization, not a full discovery listing. Share
+      // descriptors and policy decisions, but only authorize candidate sources;
+      // discovery admission pressure must not remove guidance or reset sessions.
+      const tools = (await connectionToolsForContext(session))
+        .filter((tool) => tool.connectionId && candidateIds.has(tool.connectionId));
+      const decisions = await decideToolsForListing(tools, (tool) => policyInputForTool({ session, tool }));
+      const visible = new Set(decisions.flatMap(({ tool, decision }) =>
+        (decision.allowed || decision.decision === "require_approval") && tool.connectionId ? [tool.connectionId] : [],
+      ));
       const sources: Parameters<typeof composeConnectionInstructions>[0] = [];
       for (const connection of candidates) {
         if (!visible.has(connection.id)) continue;
