@@ -45,6 +45,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useTaskPageSlidesWithMobileNav } from "../hooks/useTaskPageSlidesWithMobileNav";
 import { healthApi } from "../api/health";
 import {
   resolveArchivedCompanyBounce,
@@ -154,6 +155,7 @@ export function Layout() {
     location.pathname,
     companyPrefix,
   );
+  const taskPageSlidesWithNav = useTaskPageSlidesWithMobileNav(location.pathname, companyPrefix);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
@@ -722,7 +724,13 @@ export function Layout() {
                 </div>
               ) : null}
             </div>
-            <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+            <div className={cn(
+              isMobile ? "block" : "flex flex-1 min-h-0",
+              // Clip the task page's slide below the fold so it never adds
+              // scrollable height. clip (not hidden) keeps the sticky composer
+              // working because it doesn't create a scroll container.
+              isMobile && taskPageSlidesWithNav && "overflow-y-clip",
+            )}>
               <main
                 id="main-content"
                 ref={mainContentRef}
@@ -730,12 +738,14 @@ export function Layout() {
                 // Publish the pinned-composer bottom offset to descendants
                 // (PAP-495): while the auto-hiding mobile nav is on screen, raise
                 // it to the nav height so a sticky composer clears the nav; drop
-                // it back to the safe-area dock when the nav hides. Desktop leaves
-                // the token at its :root default.
+                // it back to the safe-area dock when the nav hides. Task pages
+                // keep the nav-height offset and slide the whole page down
+                // instead (see the className below). Desktop leaves the token at
+                // its :root default.
                 style={
                   isMobile
                     ? ({
-                      "--tc-composer-bottom": mobileNavVisible
+                      "--tc-composer-bottom": mobileNavVisible || taskPageSlidesWithNav
                           ? "var(--tc-composer-visible-nav-offset)"
                           : "var(--sz-calc-8)",
                       } as CSSProperties)
@@ -746,10 +756,20 @@ export function Layout() {
                   // Reserve the scrollbar gutter on desktop so pages whose height
                   // changes (e.g. switching skill-detail tabs) don't widen/shift
                   // when the vertical scrollbar appears or disappears (PAP-10907).
+                  // On mobile task pages the bottom padding never changes with
+                  // the nav: changing it resized the page on every nav toggle,
+                  // which moved the scroll position and toggled the nav again.
+                  // The page slides with the nav instead. The Classic Task
+                  // Interface keeps the padding swap (see taskPageSlidesWithNav).
                   isMobile
-                    ? isTaskDetailRoute && mobileNavVisible
-                      ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
-                      : "overflow-visible pb-(--sz-calc-14)"
+                    ? taskPageSlidesWithNav
+                      ? cn(
+                          "overflow-visible pb-(--tc-composer-visible-nav-offset) transition-[translate] duration-(--motion-mobile-nav-duration) ease-(--motion-mobile-nav-ease)",
+                          !mobileNavVisible && "translate-y-(--tc-composer-classic-nav-slide)",
+                        )
+                      : isTaskDetailRoute && mobileNavVisible
+                        ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
+                        : "overflow-visible pb-(--sz-calc-14)"
                     : "overflow-auto [scrollbar-gutter:stable]",
                 )}
               >

@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { Layout as ProductionLayout } from "./Layout.production";
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -171,6 +173,30 @@ vi.mock("./SidebarAccountMenu", () => ({
   SidebarAccountMenu: () => <div>Account menu</div>,
 }));
 
+vi.mock("./Sidebar.production", () => ({
+  Sidebar: () => <div>Main company nav</div>,
+}));
+
+vi.mock("./CompanySettingsSidebar.production", () => ({
+  CompanySettingsSidebar: () => <div>Company settings sidebar</div>,
+}));
+
+vi.mock("./AppsSidebar.production", () => ({
+  AppsSidebar: () => <div>Apps sidebar</div>,
+}));
+
+vi.mock("./AppConnectionSidebar.production", () => ({
+  AppDetailSidebar: () => <div>App detail sidebar</div>,
+}));
+
+vi.mock("./BreadcrumbBar.production", () => ({
+  BreadcrumbBar: () => <div>Breadcrumbs</div>,
+}));
+
+vi.mock("./SidebarAccountMenu.production", () => ({
+  SidebarAccountMenu: () => <div>Account menu</div>,
+}));
+
 vi.mock("../plugins/slots", async () => {
   const actual =
     await vi.importActual<typeof import("../plugins/slots")>(
@@ -178,6 +204,7 @@ vi.mock("../plugins/slots", async () => {
     );
   return {
     resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
+    PluginSlotOutlet: () => null,
     usePluginSlots: (params: Record<string, unknown>) => {
       mockUsePluginSlots(params);
       return {
@@ -1325,7 +1352,31 @@ describe("Layout", () => {
     });
   });
 
-  async function renderLayoutRoot(): Promise<{
+  async function renderMobileTaskLayout(LayoutComponent: ComponentType) {
+    currentPathname = "/PAP/issues/PAP-1";
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+    const { root } = await renderLayoutRoot(LayoutComponent);
+    await flushReact();
+    return {
+      main: container.querySelector<HTMLElement>("#main-content")!,
+      scrollTo: (top: number) =>
+        act(async () => {
+          Object.defineProperty(window, "scrollY", { value: top, configurable: true });
+          window.dispatchEvent(new Event("scroll"));
+        }),
+      cleanup: async () => {
+        if (scrollY) Object.defineProperty(window, "scrollY", scrollY);
+        else Reflect.deleteProperty(window, "scrollY");
+        await act(async () => {
+          root.unmount();
+        });
+      },
+    };
+  }
+
+  async function renderLayoutRoot(LayoutComponent: ComponentType = Layout): Promise<{
     root: ReturnType<typeof createRoot>;
     rootEl: HTMLElement;
   }> {
@@ -1336,7 +1387,7 @@ describe("Layout", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Layout />
+          <LayoutComponent />
         </QueryClientProvider>,
       );
     });
@@ -1362,6 +1413,71 @@ describe("Layout", () => {
       root.unmount();
     });
   });
+
+  it.each([
+    { name: "Layout", LayoutComponent: Layout, slideClass: "translate-y-(--tc-composer-nav-slide)" },
+    {
+      name: "ProductionLayout",
+      LayoutComponent: ProductionLayout,
+      slideClass: "translate-y-(--tc-composer-classic-nav-slide)",
+    },
+  ])(
+    "$name keeps the mobile task page height fixed and slides it when the nav hides",
+    async ({ LayoutComponent, slideClass }) => {
+      const { main, scrollTo, cleanup } = await renderMobileTaskLayout(LayoutComponent);
+
+      try {
+        const clipWrapper = main.closest(".overflow-y-clip");
+        expect(clipWrapper).not.toBeNull();
+        expect(main.style.getPropertyValue("--tc-composer-bottom")).toBe(
+          "var(--tc-composer-visible-nav-offset)",
+        );
+        expect(main.classList.contains("pb-(--tc-composer-visible-nav-offset)")).toBe(true);
+        expect(main.classList.contains(slideClass)).toBe(false);
+
+        await scrollTo(400);
+
+        expect(main.classList.contains("pb-(--tc-composer-visible-nav-offset)")).toBe(true);
+        expect(main.classList.contains("pb-(--tc-composer-hidden-nav-offset)")).toBe(false);
+        expect(main.classList.contains("pb-(--sz-calc-14)")).toBe(false);
+        expect(main.style.getPropertyValue("--tc-composer-bottom")).toBe(
+          "var(--tc-composer-visible-nav-offset)",
+        );
+        expect(main.classList.contains(slideClass)).toBe(true);
+
+        await scrollTo(300);
+
+        expect(main.classList.contains(slideClass)).toBe(false);
+        expect(main.classList.contains("pb-(--tc-composer-visible-nav-offset)")).toBe(true);
+      } finally {
+        await cleanup();
+      }
+    },
+  );
+
+  it.each([
+    { name: "Layout", LayoutComponent: Layout, hiddenPadding: "pb-(--tc-composer-hidden-nav-offset)" },
+    { name: "ProductionLayout", LayoutComponent: ProductionLayout, hiddenPadding: "pb-(--sz-calc-14)" },
+  ])(
+    "$name keeps the padding swap for the Classic Task Interface, whose composer doesn't follow the nav",
+    async ({ LayoutComponent, hiddenPadding }) => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableApps: true,
+        enableClassicTaskInterface: true,
+      });
+      const { main, scrollTo, cleanup } = await renderMobileTaskLayout(LayoutComponent);
+
+      try {
+        await scrollTo(400);
+
+        expect(main.closest(".overflow-y-clip")).toBeNull();
+        expect(main.classList.contains(hiddenPadding)).toBe(true);
+        expect([...main.classList].some((name) => name.startsWith("translate-y-"))).toBe(false);
+      } finally {
+        await cleanup();
+      }
+    },
+  );
 
   it("clips overflow on the desktop layout root", async () => {
     mockSidebarState.isMobile = false;
